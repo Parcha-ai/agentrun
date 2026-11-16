@@ -10,7 +10,6 @@ import type { RunFolder } from "./conformance/types.js";
 import type { ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MachineHost } from "./host.js";
-import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
 
@@ -29,7 +28,8 @@ export interface ConformanceModule {
 	createDriftedProvider?(options?: object): ComputerProvider | Promise<ComputerProvider>;
 	/** A fresh run folder for a mount kind the provider declares, with its outside; undefined for a kind it cannot make. */
 	mountFor?(kind: MountKind, options?: object): RunFolder | undefined | Promise<RunFolder | undefined>;
-	conformanceImage?(options?: object): string | Promise<string>;
+	/** The run's image when --image names none; `signal` is the run's own (Ctrl-C), for one that makes or registers it. */
+	conformanceImage?(options?: object, context?: { signal?: AbortSignal }): string | Promise<string>;
 	conformanceNotes?: string[];
 	/**
 	 * A provider on the shared adapter: its MachineHost from the same settings, with no live switch, since it makes
@@ -42,18 +42,11 @@ export interface ConformanceModule {
 	readonly ENV?: Readonly<Record<string, string>>;
 }
 
-/** What every registry line resolves to: the provider file's module. */
+/**
+ * What every registry line resolves to: the provider file's module. Its mount kinds and configurations are its
+ * descriptor's (mounts, capabilities), read without loading it.
+ */
 export interface ProviderModule {
-	/**
-	 * The mount kinds its computers take, the same as its provider's capabilities().mount (none: []): a caller tells which
-	 * provider binds a local folder from the registry alone, without building one.
-	 */
-	readonly MOUNT: readonly MountKind[];
-	/**
-	 * The machine kind and groups of each configuration it offers, as its built providers' capabilities() declare them:
-	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
-	 */
-	readonly CAPABILITIES: readonly KindCapabilities[];
 	/**
 	 * The provider, built from its options alone, its key included; it reads no environment, and throws in words when an
 	 * option is missing or wrong, never echoing a key. Each provider file types its own options.

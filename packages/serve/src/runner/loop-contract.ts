@@ -42,11 +42,13 @@ export type EndOfRunTurn = (input: {
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
   /** `again`: the turn asked once more in the same session (its first answer out of format), as its own request.
    *  `round`: which end of the run this is (1, its first, when absent): an end after a follow-up opened the run again is
-   *  a later round, asked of the model anew under a request of its own. `keep`: what the step keeps with the turn as it
+   *  a later round, asked of the model anew under a request of its own. `step`: a turn of its own after the look-back,
+   *  in the same session (the compile turn's attempts, `compile-<n>`, learn/compile.ts), each its own request, answered
+   *  from its submission on a later claim as the turn is. `keep`: what the step keeps with the turn as it
    *  is first asked (the run's spend and time as it starts), written with its prompt before its first request leaves; a
    *  turn an earlier claim asked answers with that claim's (`kept`), never this one's, so a restart mid-turn never moves
    *  what the earlier attempt spent into the job's. A loop that keeps no record of its own (pi's) keeps none. */
-  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number; readonly keep?: EndOfRunKept }): Promise<EndOfRunAnswer>;
+  ask(prompt: string, opts: { readonly origin: "reflect"; readonly deadlineMs: number; readonly again?: true; readonly round?: number; readonly step?: string; readonly keep?: EndOfRunKept }): Promise<EndOfRunAnswer>;
   /** What round `round`'s turn kept as it was first asked (its ask's `keep`), when it was asked already: a look-back an
    *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
    *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */

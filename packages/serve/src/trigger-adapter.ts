@@ -7,6 +7,13 @@ import type { SettingsSpec } from "./sealed-settings-store.js";
 import { unknownFields } from "./validate.js";
 
 type Json = Record<string, unknown>;
+/** Whether a run `adapter`'s firing starts is handed its trigger's last completed result: the one place it is decided
+ *  (its previousResult, by default true). */
+export const carriesPrevious = (adapter: Pick<TriggerAdapter, "previousResult">): boolean => adapter.previousResult ?? true;
+
+/** The most of a firing's payload passed on, in bytes of UTF-8 (triggers.ts cuts past it, at a character's start). A
+ *  source that answers JSON fits its payload within it first (trigger-email.ts), so its JSON is never cut. */
+export const PAYLOAD_KEPT_BYTES = 16 * 1024;
 /** A source as the store keeps it: its kind, the adapter's id, and the adapter's own fields. */
 export type Source = { kind: string } & Json;
 
@@ -25,19 +32,19 @@ export type TriggerAdapter = {
   id: string;
   /** How a person names one: `the <label> "<name>"`, in each run's provenance line. */
   label: string;
-  /** `clock`: it fires on its own times, read by the engine's timer. `push`: a request delivered to the server fires it,
+  /** `clock`: it fires on its own times, read by the engine's timer (a source that polls, on each). `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
+  /** Whether a run it starts is handed its trigger's last completed result (trigger-targets.ts previousResultOf). Default
+   *  true: a repeat run (a schedule's weekly digest) leaves out what the last one reported. false: each firing is a
+   *  different person's (an email's sender), so one run's answer is never handed to the next. */
+  previousResult?: boolean;
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
   owner: boolean;
   /** What it keeps sealed (sealed-settings-store.ts), for the server or for each trigger: a field it mints (a signing secret)
    *  is made at a trigger's create and at a rotation, shown once, and goes with the trigger. */
   settings?: SettingsSpec;
-  /** Whether a trigger of this source keeps a secret its sender gave (a create's and a rotation's `secret`, Composio's)
-   *  instead of one this server mints: then the secret is required there, sealed as a minted one is, and never made
-   *  here. Default: it mints. */
-  givesSecret?(source: Source): boolean;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */
   describe: string;
   /** When it fires, for the OpenAPI document's source description. */
@@ -63,6 +70,9 @@ export type TriggerAdapter = {
   /** A pushed source's requests (push-handler.ts), served at /v2/hooks/{trigger_id} when its settings are a trigger's,
    *  else at /v2/hooks/{its id}, with no token: the request's check is its credential. */
   push?: Push;
+  /** For a pushed source whose hook is not the one its settings' scope gives (a source that keeps a key per scope, served
+   *  at /v2/hooks/{its id}/{scope}): the path under /v2/hooks/ a trigger of `source` is delivered at, its `hook_url`. */
+  hookOf?(source: Source): string;
   /** For a pushed source whose settings are the server's: the scope a trigger of it listens on, matched to each event's
    *  `scope` to find the triggers it fires. */
   scopeOf?(source: Source): string;
@@ -73,7 +83,28 @@ export type TriggerAdapter = {
   /** Whether each firing of a trigger of `source` starts its own run, its last run active or not (a webhook that takes
    *  only the events it names). Default false: a firing while the last run is active is skipped. */
   concurrent?(source: Source): boolean;
+  /** For a clock source that polls (the email trigger): what it finds when its time comes, read from outside the server.
+   *  The engine fires each event it returns through the path a pushed event takes (`takes`, `concurrent`,
+   *  max_active_runs, the day-kept keys, a run per event), records no `missed` row for a time it was not there for, and
+   *  keeps the poll's cursor once its firings are recorded. A poll with no cursor is where its trigger starts watching:
+   *  the engine polls at once when the trigger is made, turned on again (its cursor and last check forgotten first) or its
+   *  source edited (its cursor kept: a poll whose cursor was read elsewhere starts over itself). */
+  poll?(source: Source, ctx: PollContext): Promise<PollResult>;
+  /** A run's title after its trigger's name, from what its source says of the firing (its attrs): an email's sender and
+   *  subject. Default: the event and action the attrs name. */
+  title?(attrs: Record<string, string>): string | undefined;
 };
+
+/** What a poll is given: its trigger's own settings (its cursor, public, as the adapter's `settings` names them) and the
+ *  source's credentials, read now (TriggerDeps.credentials: the email account, opened). */
+export type PollContext = { trigger: string; setting(field: string): string | undefined; credentials(): Promise<unknown> };
+/** One event a poll found: a pushed event's fields; `cursor`, the settings to keep once it and every event before it are
+ *  recorded; `left`, when it is recorded as skipped and starts nothing, why (in words). */
+export type PolledEvent = PushEvent & { cursor: Record<string, string>; left?: string };
+/** What a poll found: `check`, said on the trigger as its last check; `refused`, the source's credentials refused (the
+ *  engine turns the trigger off at the third in a row, `detail` its words); `note`, one history line that starts no run
+ *  (a first poll's, a reset's); `events`, oldest first; `cursor`, the settings to keep once every event is recorded. */
+export type PollResult = { check: { ok: boolean; message: string }; refused?: { detail: string }; note?: string; events?: PolledEvent[]; cursor?: Record<string, string> };
 
 /** Request headers, as Node gives them. */
 export type Headers = Record<string, string | string[] | undefined>;
@@ -84,6 +115,10 @@ export type Push = {
   maxBodyBytes: number;
   /** The settings field it checks a request with. */
   key: string;
+  /** For a source whose settings are the server's: it keeps its key per scope (a Composio project's subscription, by its
+   *  hook), and is served at /v2/hooks/{its id}/{scope} alone, each request checked with that scope's key; its events'
+   *  `scope` is that scope, for its takes. */
+  scoped?: true;
   /** Why the headers alone are refused, before a byte of the body is read. */
   headers?(headers: Headers, nowMs: number): string | undefined;
   /** Why the request is not the sender's under `key`, or undefined when it is (and fits `source`, when given). */

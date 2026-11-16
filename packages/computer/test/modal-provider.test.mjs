@@ -5,16 +5,19 @@
 // (test/modal). The SDK slice here only records what it is given and answers nothing that makes a sandbox: no sandbox
 // exists, no Modal client is constructed unless a test says so, and nothing reaches the network.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, sweep } from "../dist/index.js";
+import { checkLifetime, kindRefusals, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 
 const modal = await import("../dist/modal.js");
-const { ModalProvider, labelsOf, tagsOf } = modal;
+const { MODAL } = await import("../dist/descriptors/modal.js");
+const { ModalProvider } = modal;
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
@@ -22,6 +25,11 @@ const APP = "computers";
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The box image the release publishes, tagged with box/recipe.mjs's hash: the Dockerfile, then install.sh and the helper it copies, 12 hex. */
+const BOX_IMAGE = `ghcr.io/parcha-ai/agentrun-box:${createHash("sha256")
+	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.digest("hex")
+	.slice(0, 12)}`;
 const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";
 const dir = mkdtempSync(join(tmpdir(), "computer-modal-"));
 const DAEMON_PATH = join(dir, "computerd-linux-amd64");
@@ -42,8 +50,9 @@ class InvalidError extends Error {
  * throws gRPC's UNAUTHENTICATED, as Modal does for a token it refuses. It shows what the provider gives the SDK, never
  * how Modal behaves.
  */
-function recorder({ refuse = false } = {}) {
+function recorder({ refuse = false, appMissing = false } = {}) {
 	const calls = [];
+	let made = !appMissing;
 	const denied = () => Object.assign(new Error("Token missing or invalid"), { code: 16 });
 	const record =
 		(name, answer) =>
@@ -54,7 +63,13 @@ function recorder({ refuse = false } = {}) {
 		};
 	const image = (from) => ({ from, dockerfileCommands: record("image.dockerfileCommands", (lines) => ({ from, lines })) });
 	const sdk = {
-		apps: { fromName: record("apps.fromName", async (name) => ({ appId: `ap-${name}` })) },
+		apps: {
+			fromName: record("apps.fromName", async (name, { createIfMissing } = {}) => {
+				if (!made && !createIfMissing) throw Object.assign(new Error(`App '${name}' not found`), { name: "NotFoundError" });
+				made = true;
+				return { appId: `ap-${name}` };
+			}),
+		},
 		images: { fromRegistry: record("images.fromRegistry", (tag) => image(tag)), fromId: record("images.fromId", async (id) => image(id)) },
 		sandboxes: {
 			create: record("sandboxes.create", async () => {
@@ -97,14 +112,15 @@ async function withProcessEnv(values, fn) {
 
 // --- what a Modal computer is ---
 
-test("capabilities, as before the move: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none alone with no read-back, a uid, no agent port, GPUs on gVisor", () => {
+test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none, open and a list with no vendor read-back, a uid, no agent port, GPUs on gVisor", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "modal");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "vendor",
-		network: ["none"],
+		network: ["none", "open", "allow"],
+		allow: { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true },
 		networkReadBack: false,
 		isolation: "vm",
 		os: "linux",
@@ -125,12 +141,30 @@ test("capabilities, as before the move: a linux VM whose lifetime Modal enforces
 			fence: "userns-netns",
 		},
 	});
-	assert.deepEqual(modal.CAPABILITIES[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
-	assert.deepEqual([...modal.MOUNT], ["archil"]);
+	assert.deepEqual(MODAL.capabilities[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
+	assert.deepEqual(provider.capabilities().mount, ["archil"]);
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend(): Modal's timeout cannot move");
 	assert.equal(provider.stream, undefined, "no stream()");
 	assert.deepEqual(rec.calls, []);
+});
+
+test("Modal's descriptor says it prepares its image and names no default image: every Modal sandbox starts from the box image", async () => {
+	assert.equal(MODAL.prepareImage, true);
+	assert.equal(MODAL.defaultImage, undefined, "every Modal computer starts from the image prepareImage answers");
+	assert.equal("MODAL_DEFAULT_IMAGE" in (await import("../dist/descriptors/index.js")), false);
+	assert.equal("MODAL_DEFAULT_IMAGE" in (await import("../dist/index.js")), false);
+});
+
+test("prepareImage answers the box image's public registry tag with no SDK call and no wait told (Modal pulls it at create), and create starts from it by images.fromRegistry", async () => {
+	const { provider, rec } = setup();
+	const waits = [];
+	assert.deepEqual(await provider.prepareImage({ onWait: (...said) => waits.push(said) }), { ok: true, value: BOX_IMAGE });
+	assert.deepEqual(await provider.prepareImage(), { ok: true, value: BOX_IMAGE }, "no context: the same tag");
+	assert.deepEqual(rec.calls, [], "no Modal call: nothing to pull ahead of the first create");
+	assert.deepEqual(waits, [], "never told a pull: the claim waits on create, and a warm workspace waits on nothing");
+	await create(provider, { ...SPEC, image: BOX_IMAGE });
+	assert.deepEqual(rec.calls.find(([name]) => name.startsWith("images."))?.slice(0, 2), ["images.fromRegistry", BOX_IMAGE]);
 });
 
 test("the constructor refuses, in words, what would make a computer it cannot vouch for", () => {
@@ -163,10 +197,9 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	for (const lifetimeMs of [undefined, 0, 1.5, DAY_MS + 1]) {
 		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs }), checkLifetime(lifetimeMs, provider.capabilities()), `lifetimeMs ${String(lifetimeMs)}: the shared rule's words`);
 	}
-	for (const network of ["open", { allow: ["8.8.8.0/24"] }]) {
-		assert.deepEqual(refused({ ...SPEC, network }), ["network"], `network ${JSON.stringify(network)}`);
-		assert.match(words({ ...SPEC, network }, "network"), /network "none" only/);
-	}
+	for (const network of ["open", { allow: ["8.8.8.0/24"] }]) assert.deepEqual(refused({ ...SPEC, network }), [], `network ${JSON.stringify(network)}`);
+	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
+	assert.match(words({ ...SPEC, network: "wifi" }, "network"), /network is required: none, open or a list/);
 	for (const cpus of [0, -1, 0.1, "2", Number.NaN]) assert.deepEqual(refused({ ...SPEC, cpus }), ["cpus"], `cpus ${String(cpus)}`);
 	assert.match(words({ ...SPEC, cpus: 0.1 }, "cpus"), /Modal counts physical cores, 2 CPUs each/);
 	for (const memoryMb of [0, 1.5, "512"]) assert.deepEqual(refused({ ...SPEC, memoryMb }), ["memoryMb"], `memoryMb ${String(memoryMb)}`);
@@ -174,11 +207,6 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	// A Modal computer works in its home: the daemon's working directory is read back as /work.
 	assert.deepEqual(refused({ ...SPEC, workdir: "/opt/app" }), ["workdir"]);
 	assert.match(words({ ...SPEC, workdir: "/opt/app" }, "workdir"), /works in \/work, its home/);
-	// Ten tags, five of them the adapter's own: a computer takes five labels of its caller's.
-	const six = Object.fromEntries([1, 2, 3, 4, 5, 6].map((n) => [`l${n}`, "v"]));
-	assert.deepEqual(refused({ ...SPEC, labels: six }), ["labels"]);
-	assert.match(words({ ...SPEC, labels: six }, "labels"), /a Modal computer takes 10 labels, 5 of them the provider's own: 6 is 1 too many/);
-	assert.deepEqual(provider.check({ ...SPEC, labels: Object.fromEntries(Object.entries(six).slice(1)) }), []);
 	for (const labels of [{ [COMPUTER]: "x" }, { [NAME]: "x" }, { a: 1 }, { "": "v" }, { "a\0": "v" }, []]) {
 		assert.deepEqual(refused({ ...SPEC, labels }), ["labels"], `labels ${JSON.stringify(labels)}`);
 	}
@@ -206,6 +234,33 @@ test("lifetime: maxLifetimeMs caps what check takes, in words, and create refuse
 	assert.deepEqual(rec.calls, [], "refused before any SDK call");
 });
 
+test("Modal takes 10 tags on a sandbox, the adapter's own among them: past that check() refuses in words with no SDK call, and create refuses the same words before any SDK call", async () => {
+	const seven = Object.fromEntries([1, 2, 3, 4, 5, 6, 7].map((n) => [`l${n}`, "v"]));
+	const six = Object.fromEntries(Object.entries(seven).slice(1));
+	// Each spec past the limit: the count is create's own, the caller's labels with the adapter's (four with no
+	// max-deadline, as Modal has no extend; and a GPU's).
+	for (const [spec, own] of [
+		[{ ...SPEC, labels: seven }, 4],
+		[{ ...SPEC, labels: six, gpu: { type: "T4", count: 1 } }, 5],
+	]) {
+		const { provider, rec } = setup();
+		const refusals = provider.check(spec);
+		assert.equal(refusals.length, 1, JSON.stringify(refusals));
+		assert.equal(refusals[0].field, "labels");
+		assert.equal(refusals[0].message, `a Modal computer carries at most 10 labels, the adapter's own among them, and this one's would carry 11, ${own} of them the adapter's: give at most ${10 - own} labels`);
+		assert.deepEqual(rec.calls, [], "check made no SDK call");
+		const made = await create(provider, spec);
+		assert.equal(made.error?.code, "refused");
+		assert.equal(made.error.message, `labels: ${refusals[0].message}`, "create's words are check's");
+		assert.deepEqual(rec.calls, [], "create refused before any SDK call: no app lookup, no listing, no sandboxes.create");
+	}
+	const at = setup();
+	assert.deepEqual(at.provider.check({ ...SPEC, labels: six }), [], "ten labels in all are Modal's limit, taken");
+	assert.deepEqual(at.rec.calls, []);
+	await create(at.provider, { ...SPEC, labels: six });
+	assert.equal(Object.keys(at.rec.params().tags).length, 10, "ten tags go to Modal");
+});
+
 test("the janitor does not sweep Modal computers: Modal ends them at their lifetime", async () => {
 	const { provider, rec } = setup();
 	const swept = await sweep(provider);
@@ -215,6 +270,17 @@ test("the janitor does not sweep Modal computers: Modal ends them at their lifet
 
 // --- what sandboxes.create is handed ---
 
+test("a listing before any computer makes no app: it looks the app up with createIfMissing false and finds none; create alone makes it", async () => {
+	const { provider, rec } = setup({}, { appMissing: true });
+	assert.deepEqual(await provider.list({}), { ok: true, value: [] }, "an app not made yet holds no computer");
+	assert.match((await provider.testConnection()).value?.detail ?? "", /^Modal answered: 0 computers of this provider$/, "Settings' test is the one shared listing");
+	assert.deepEqual(rec.names(), ["apps.fromName", "apps.fromName"], "two lookups, no sandboxes.list");
+	assert.ok(rec.calls.every(([, , options]) => options?.createIfMissing === false), "neither made the app");
+	assert.equal((await create(provider)).error?.code, "invalid", "a create Modal refused made nothing");
+	const lookups = rec.calls.filter(([name]) => name === "apps.fromName").map(([, , options]) => options.createIfMissing);
+	assert.deepEqual(lookups, [false, false, false, true], "the create's listing by name finds no app either; the create makes it");
+});
+
 test("create asks Modal for one VM sandbox in the app: the entrypoint as its command, init --own-network as 2510:2510, the lifetime as its timeout in whole seconds, Modal's small request under the spec's limits, no network, the labels as tags", async () => {
 	const { provider, rec } = setup();
 	const result = await create(provider, { ...SPEC, lifetimeMs: 600_500, labels: { team: "a" } });
@@ -222,7 +288,8 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	assert.deepEqual(rec.names().slice(0, 2), ["apps.fromName", "sandboxes.list"], "the listing by the request's name comes first");
 	const [, listed] = rec.calls.find(([name]) => name === "sandboxes.list");
 	assert.deepEqual(Object.keys(listed.tags).sort(), [COMPUTER, NAME]);
-	assert.deepEqual(rec.calls.find(([name]) => name === "apps.fromName").slice(1), [APP, { createIfMissing: true }]);
+	assert.deepEqual(rec.calls.find(([name]) => name === "apps.fromName").slice(1), [APP, { createIfMissing: false }], "the listing looks the app up without making it, and keeps the one it found");
+	assert.equal(rec.names().filter((name) => name === "apps.fromName").length, 1);
 	assert.deepEqual(rec.calls.find(([name]) => name === "images.fromRegistry").slice(1), ["debian:bookworm-slim"]);
 	assert.deepEqual(rec.calls.find(([name]) => name === "image.dockerfileCommands")[1], ["ENV HOME=/work", "WORKDIR /work"]);
 	const params = rec.params();
@@ -241,7 +308,9 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	assert.equal(params.tags.team, "a");
 	assert.equal(params.tags[COMPUTER], "1");
 	assert.match(params.tags[NAME], /^computer-[0-9a-f]{12}$/);
-	assert.deepEqual(Object.keys(params.tags).sort(), ["agentrun.computer", "agentrun.computer.deadline", "agentrun.computer.image", "agentrun.computer.max-deadline", "agentrun.computer.name", "team"]);
+	// No max-deadline tag: Modal has no extend, the tag's one reader, so none of its 512 bytes go to it.
+	assert.deepEqual(Object.keys(params.tags).sort(), ["agentrun.computer", "agentrun.computer.deadline", "agentrun.computer.image", "agentrun.computer.name", "team"]);
+	assert.ok(init.includes("--max-deadline"), "init still holds the most its deadline may reach");
 	assert.ok(!rec.names().includes("sandboxes.fromId"), "nothing was made, so nothing is read back");
 });
 
@@ -291,12 +360,12 @@ const MOUNT = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-ea
 const ARCHIL_SPEC = { ...SPEC, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: MOUNT };
 const noToken = (value, what) => assert.ok(!JSON.stringify(value ?? null).includes(TOKEN), `${what} holds the token`);
 
-test("check(): an Archil spec takes network none, the run and epoch labels, the helper's shapes and the tool user, with no SDK call; no refusal holds the token", () => {
+test("check(): an Archil spec takes network none or open, the run and epoch labels, the helper's shapes and the tool user, with no SDK call; no refusal holds the token", () => {
 	const { provider, rec } = setup();
 	assert.deepEqual(provider.check(ARCHIL_SPEC), []);
+	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, network: "open" }), [], "open: the tools' proxy beside root's mount");
 	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, user: "2510:2510" }), [], "the tool user, named");
 	const cases = [
-		[{ network: "open" }, "network", /none/],
 		[{ labels: { "agentrun.run": RUN } }, "labels", /agentrun\.epoch/],
 		[{ mount: { ...MOUNT, folder: "agents/a1/runs/r2/work" } }, "mount", /run r2/],
 		[{ mount: { ...MOUNT, token: "short" } }, "mount", /mount\.token/],
@@ -318,48 +387,41 @@ test("create of an Archil computer: Modal's network stays on for root to reach A
 	const { tags, blockNetwork } = rec.params();
 	assert.equal(blockNetwork, undefined, "root reaches Archil; the tools' none is init's own, read from inside");
 	assert.equal(tags["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
-	assert.equal(labelsOf(tags)["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }), "read back as the adapter wrote it");
+	assert.equal(recordedMount(tags).folder, MOUNT.folder, "read back as the adapter wrote it");
 	noToken(rec.calls, "what the SDK was handed");
 });
 
-test("tagsOf and labelsOf: only a mount label exactly as the adapter writes it, for the run its label names, is shortened, and it reads back the same", () => {
-	const mount = (folder) => JSON.stringify({ kind: "archil", disk: "d", region: "r", folder });
-	const labels = { "agentrun.run": "r1", "agentrun.mount": mount("agents/a1/runs/r1/work"), team: "x" };
-	assert.deepEqual(labelsOf(tagsOf(labels)), labels);
-	assert.equal(tagsOf(labels)["agentrun.mount"], '{"kind":"archil","disk":"d","region":"r","agent":"a1"}');
-	for (const other of [
-		{ "agentrun.run": "r2", "agentrun.mount": mount("agents/a1/runs/r1/work") },
-		{ "agentrun.mount": mount("agents/a1/runs/r1/work") },
-		{ "agentrun.run": "r1", "agentrun.mount": mount("elsewhere") },
-		{ "agentrun.run": "r1", "agentrun.mount": `${mount("agents/a1/runs/r1/work")} ` },
-		{ "agentrun.run": "r1", "agentrun.mount": "not json" },
-		{ team: "x" },
+test("create under open or a list leaves Modal's network on (no blockNetwork) for init's egress proxy, gives init --network and the form, and records it in a tag; an Archil computer under open too", async () => {
+	for (const [spec, form] of [
+		[{ ...SPEC, network: "open" }, "open"],
+		[{ ...SPEC, network: { allow: ["Example.com"] } }, "allow:example.com"],
+		[{ ...ARCHIL_SPEC, network: "open" }, "open"],
 	]) {
-		assert.deepEqual(tagsOf(other), other, JSON.stringify(other));
-		assert.deepEqual(labelsOf(tagsOf(other)), other, JSON.stringify(other));
-	}
-	// A tag of the short shape with no run label, or with more in it, is no mount the adapter wrote: left as it is.
-	for (const tags of [{ "agentrun.mount": '{"kind":"archil","disk":"d","region":"r","agent":"a1"}' }, { "agentrun.run": "r1", "agentrun.mount": '{"kind":"archil","disk":"d","region":"r","agent":"a1","x":1}' }]) {
-		assert.deepEqual(labelsOf(tags), tags);
+		const { provider, rec } = setup();
+		await create(provider, spec);
+		const { blockNetwork, command, tags } = rec.params();
+		assert.equal(blockNetwork, undefined, form);
+		assert.deepEqual(command.slice(-2), ["--network", form]);
+		assert.equal(tags["agentrun.computer.network"], form);
 	}
 });
 
-test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id fit; past the bound check() refuses in words, before any SDK call", async () => {
+test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id on the box image fit; past the bound check() refuses in words, before any SDK call", async () => {
 	const archilSpec = (agent, image) => ({ ...SPEC, image, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: { ...MOUNT, folder: `agents/${agent}/runs/${RUN}/work` } });
-	for (const spec of [archilSpec("qa35e-modal-mwdsumo1", "registry.example/agentrun-archil:qa36"), archilSpec("a".repeat(128), "debian:bookworm-slim")]) {
+	for (const spec of [archilSpec("qa35e-modal-mwdsumo1", "registry.example/agentrun-archil:qa36"), archilSpec("a".repeat(128), BOX_IMAGE)]) {
 		const { provider, rec } = setup();
 		assert.deepEqual(provider.check(spec), []);
 		await create(provider, spec);
 		const { tags } = rec.params();
 		assert.ok(bytesOf(tags) <= 512, `${bytesOf(tags)} bytes of tags`);
-		assert.equal(JSON.parse(labelsOf(tags)["agentrun.mount"]).folder, spec.mount.folder);
+		assert.equal(recordedMount(tags).folder, spec.mount.folder);
 	}
 	const { provider, rec } = setup();
 	const over = archilSpec("a".repeat(128), `registry.example/agentrun-archil@sha256:${"b".repeat(64)}`);
 	const refusals = provider.check(over);
 	assert.equal(refusals.length, 1, JSON.stringify(refusals));
 	assert.equal(refusals[0].field, "mount");
-	assert.match(refusals[0].message, /a Modal sandbox's tags come to at most 512 bytes, names and values together, and this computer's would come to \d+ \(.*agentrun\.mount \d+.*\): give a shorter image, mount folder or labels/);
+	assert.match(refusals[0].message, /a Modal computer's labels come to at most 512 bytes, names and values together, and this computer's would come to \d+ \(.*agentrun\.mount \d+.*\): give a shorter image, mount folder or labels/);
 	noToken(refusals, "the refusal of the tags' size");
 	const created = await create(provider, over);
 	assert.equal(created.error?.code, "refused");
@@ -474,7 +536,7 @@ test("the conformance module passes the COMPUTER_MODAL_ token to the client expl
 	}
 	const { ModalClient, made, rec } = fakeClient();
 	const host = await createHost({ env: { ...DEV_TOKEN, COMPUTER_MODAL_APP: APP }, ModalClient });
-	assert.equal(host.id, "modal");
+	assert.equal(host.descriptor.id, "modal");
 	assert.deepEqual(made, [{ tokenId: "fake-dev-id", tokenSecret: "fake-dev-secret" }]);
 	assert.deepEqual(rec.calls, [], "the host calls nothing until the sweep does");
 });
@@ -679,15 +741,67 @@ test("the drifted provider uploads a daemon built as <version>-drift", async () 
 	assert.equal(drifted.id, "modal");
 });
 
+/** A sandbox whose exec runs argv as a process on this machine, handed over as Modal's binary-mode ContainerProcess is. */
+function processSandbox(execs) {
+	return {
+		sandboxId: "sb-here",
+		exec: async (argv, params) => {
+			execs.push({ argv, params });
+			const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+			child.stdin.on("error", () => {});
+			await once(child, "spawn");
+			const code = new Promise((done) => child.on("close", (exit, signal) => done(exit ?? (signal ? 137 : -1))));
+			return {
+				stdout: child.stdout,
+				stderr: child.stderr,
+				stdin: { writeBytes: async (bytes) => void child.stdin.write(bytes), close: async () => void child.stdin.end() },
+				wait: () => code,
+			};
+		},
+	};
+}
+
+test("kill ends an exec and every process under it by its pid, as Modal has no kill for an exec, and its stderr is the process's own", async (t) => {
+	if (!existsSync("/proc/self/stat")) return t.skip("no /proc here: the pid wrapper and its kill read /proc/<pid>/stat");
+	const { PID_KILL, PID_WRAPPER } = await import("../dist/hosted/scripts.js");
+	const execs = [];
+	const rec = recorder();
+	rec.sdk.sandboxes.fromId = async () => processSandbox(execs);
+	const provider = new ModalProvider({ sdk: rec.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	// A child that left the process group too: a kill of the group alone misses it.
+	const proc = await provider.host.exec("sb-here", ["sh", "-c", "echo its own words >&2; setsid sleep 600 & echo $!; cat"], { timeoutMs: 2_000 });
+	const err = [];
+	const errRead = (async () => {
+		for await (const chunk of proc.stderr) err.push(Buffer.from(chunk));
+	})();
+	const out = proc.stdout[Symbol.asyncIterator]();
+	const sleeper = Number(Buffer.from((await out.next()).value).toString().trim());
+	const dead = (pid) => {
+		try {
+			return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].startsWith("Z");
+		} catch {
+			return true;
+		}
+	};
+	t.after(() => spawnSync("kill", ["-KILL", String(sleeper)]));
+	assert.equal(dead(sleeper), false);
+	await proc.kill();
+	assert.deepEqual(execs[0].argv, [...PID_WRAPPER, "sh", "-c", "echo its own words >&2; setsid sleep 600 & echo $!; cat"], "the process starts under the pid wrapper");
+	assert.deepEqual(execs[1].argv.slice(0, 4), ["sh", "-c", PID_KILL, "sh"], "kill is an exec of the kill script");
+	assert.equal(await proc.wait(), 137, "killed, while its stdin was still open");
+	for (let at = 0; at < 100 && !dead(sleeper); at++) await new Promise((done) => setTimeout(done, 20));
+	assert.equal(dead(sleeper), true, "the process under it is killed too");
+	await errRead;
+	assert.equal(Buffer.concat(err).toString(), "its own words\n", "the wrapper's line is taken off stderr");
+});
+
 // The loopback block: whatever Modal runs inside a sandbox, the daemon's programs get a network of their own (init
 // --own-network) and run as 2510:2510. No listener of Modal's inside is documented, so no port is declared.
 
-test("the loopback block: network none only, no agent port declared, open refused in words", () => {
+test("the loopback block: no agent port declared, open and a list taken through init's egress proxy alone", () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().network, ["none", "open", "allow"]);
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, []);
-	const refusals = provider.check({ ...SPEC, network: "open" });
-	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
-	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
 });

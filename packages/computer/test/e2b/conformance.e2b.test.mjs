@@ -1,5 +1,5 @@
 // The conformance suite on a real E2B desktop, one test per case. It is skipped unless AGENTRUN_COMPUTER_LIVE_E2B=1 and
-// COMPUTER_E2B_API_KEY is in the environment: a key the lead has OKed by name, never set by a test or a script.
+// COMPUTER_E2B_API_KEY is in the environment: a key for an account you can bill, never set by a test or a script.
 // E2B_API_KEY never counts, and the provider never reads it. It also needs the e2b package installed where Node finds
 // it, `npm run build` and `npm run build:daemon` (the daemon is uploaded into each sandbox), and Go on PATH: the drift
 // case builds a daemon of another version, and the screen and input cases a computerd-fixture for linux/amd64 (E2B's
@@ -21,7 +21,7 @@ const DAEMON = fileURLToPath(new URL("../../daemon", import.meta.url));
 
 describe(
 	"the conformance suite on an E2B desktop",
-	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_E2B=1 with COMPUTER_E2B_API_KEY (a key the lead OKed) to run on real E2B" },
+	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_E2B=1 with COMPUTER_E2B_API_KEY (for an account you can bill) to run on real E2B" },
 	() => {
 		let report;
 		let provider;

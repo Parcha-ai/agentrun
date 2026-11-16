@@ -47,8 +47,24 @@ export async function agentWithRevision(store, agentId = "agent-1", revisionId =
   await store.agents.create({ id: agentId, name: agentId }, { id: revisionId, kind: "agentic", body: { instructions: "Answer." } });
 }
 
-/** An agent, its revision and one queued run. */
-export async function queued(store, runId = "run-1") {
+/** The pin an agent's save would make granting every tool the registry's rows list now: per server its URL, each tool in
+ *  the harnesses' shape (inputSchema) and its prices. A run's claim reads only the tools its grants name. */
+export async function registryPin(store) {
+  const pin = {};
+  for (const row of await store.mcp.servers()) {
+    const tools = (row.tools ?? []).map(({ input_schema, ...tool }) => (input_schema === undefined ? tool : { ...tool, inputSchema: input_schema }));
+    pin[row.name] = { url: row.url, tools, ...(row.prices ? { prices: row.prices } : {}) };
+  }
+  return pin;
+}
+
+/** An agent, its revision and one queued run; with `mcpPin`, a revision of its own that a save pinned those MCP tools on. */
+export async function queued(store, runId = "run-1", { mcpPin } = {}) {
+  // A run whose revision a save pinned MCP tools on: an agent of its own, its one revision carrying the pin.
+  if (mcpPin !== undefined) {
+    await store.agents.create({ id: `agent-${runId}`, name: `agent-${runId}` }, { id: `rev-${runId}`, kind: "agentic", body: { instructions: "Answer." }, mcpPin });
+    return store.runs.create({ id: runId, agentId: `agent-${runId}`, revisionId: `rev-${runId}` });
+  }
   if (!(await store.agents.get("agent-1"))) await agentWithRevision(store);
   return store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" });
 }

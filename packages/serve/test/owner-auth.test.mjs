@@ -1,7 +1,8 @@
 // The owner: one person, one password. The first visit sets it (with the printed code at a public address), a signed
 // session cookie carries the sign-in for 30 days, signing out signs out this browser, signing out everywhere ends every
 // session, and reset-password clears it. The token
-// stays the way in for scripts and the CLI. Every route but capabilities, the contract and health needs one or the other.
+// stays the way in for scripts and the CLI. Ordinary API routes take one of those; source connectors and SDK receipts
+// require their dedicated scoped credentials. Public routes and browser callbacks keep their own checks.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
@@ -329,8 +330,11 @@ test("reset-password clears the password and ends every session; the next visit 
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/reset-password", headers: page(server), body: {} })).status, 404, "never an HTTP route");
 });
 
-test("every route, called with no credential, is a 401 but capabilities, the contract, health, an MCP server's OAuth callback and client document, GitHub's two browser legs back to Connect (a 302), and a driver's pair, whose code is its credential; the owner's session and the token are let into every one but the MCP endpoint, which takes the token only, approving a note, answering a tool call's approval, a run's live computer view or its hand-back, which take the session only, and a webhook trigger's hook, which takes its signature only", async (t) => {
+test("every route, called with no credential, enforces its public, owner, API or dedicated scoped credential boundary", async (t) => {
   const server = await owned(t);
+  // Source enrollment, connector commands and SDK receipts accept only their dedicated scoped credential.
+  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
+  for (const name of scoped) assert.ok(ROUTES.some(route => route.name === name), `${name} remains covered`);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
     // A write goes as the page sends it (its Origin, JSON); a DELETE carries no body, as a browser's does: Node's client
@@ -351,15 +355,17 @@ test("every route, called with no credential, is a 401 but capabilities, the con
     else assert.equal(anonymous.status, 401, `${route.method} ${path} with no credential: ${anonymous.text}`);
     for (const headers of [{ ...(writes ? page(server) : {}), cookie: server.cookie }, { ...(body ? json : {}), authorization: `Bearer ${server.token}` }]) {
       const res = await call(server.port, { method: route.method, path, headers, body });
-      if (route.name === "callMcp" && headers.cookie) assert.equal(res.status, 401, `${route.method} ${path} with the session alone: ${res.status} ${res.text}`);
+      if (scoped.has(route.name)) assert.equal(res.status, 401, `${route.method} ${path} takes a dedicated scoped credential, not ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
+      else if (route.name === "callMcp" && headers.cookie) assert.equal(res.status, 401, `${route.method} ${path} with the session alone: ${res.status} ${res.text}`);
       // A webhook trigger's request is let in by its signature alone (standard-webhooks.ts): neither the session nor the
       // token stands for it.
       else if (route.name === "receiveHook") assert.equal(res.status, 401, `${route.method} ${path} with ${headers.cookie ? "the session" : "the token"}: ${res.status} ${res.text}`);
-      // Approving or restoring a note, making a learned workflow an agent, and answering a tool call's approval take the
-      // owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs, learn-restore.test.mjs,
-      // learn-promote.test.mjs, tool-gate.test.mjs). So does a run's live computer view, a full-control credential for its
-      // session, and its hand-back (browser-live.test.mjs, browser-take-over.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // Approving or restoring a note, making a learned workflow an agent or replaying its revision, and answering a tool
+      // call's approval take the owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs,
+      // learn-restore.test.mjs, learn-promote.test.mjs, learn-replay-api.test.mjs, tool-gate.test.mjs). So does a run's live
+      // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
+      // browser-take-over.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "startLearnedWorkflowReplay" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
       // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
       else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);

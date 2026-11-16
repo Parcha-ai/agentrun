@@ -6,6 +6,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { stranger } from "./stranger.mjs";
 
 /** git, run in `cwd` with no config of this machine's. */
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" } }).trim();
@@ -40,6 +41,7 @@ export function pullRepo(root, repo, { shared = 3, ahead = 2, behind = 2 } = {})
 export async function gitHttp(t, root, { authorization } = {}) {
   const seen = [];
   const server = createServer((req, res) => {
+    if (stranger(req, res)) return;
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization ?? null });
     const given = req.headers.authorization;
     const ok = authorization === undefined || (typeof authorization === "function" ? authorization(given) : given === authorization);

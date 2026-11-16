@@ -35,6 +35,16 @@ const SOURCES = {
 /** A fetch that sends each request to the gateway at `url`, on its own path: a provider's origin (OpenAI's, OpenRouter's)
  *  stood in for by the loopback gateway. */
 const toGateway = (url) => (target, init) => fetch(`${url}${new URL(String(target)).pathname}`, init);
+/** OpenAI's count of a Responses request's input, which no route asks (the proxy counts each request locally), and what
+ *  it would answer here: the faux usage's input, as OpenAI counts it exactly. */
+const COUNT_PATH = "/v1/responses/input_tokens";
+const COUNTED = 10;
+/** `toGateway`, recording each path asked in `paths`, with a count (which the gateway does not serve) answered here. */
+const countingGateway = (url, paths) => (target, init) => {
+  const { pathname } = new URL(String(target));
+  paths.push(pathname);
+  return pathname === COUNT_PATH ? Promise.resolve(Response.json({ object: "response.input_tokens", input_tokens: COUNTED })) : toGateway(url)(target, init);
+};
 /** The tool names a request body offers, on its path's API. */
 const toolsOf = (request) => (request.body?.tools ?? []).map((tool) => tool.name ?? tool.function?.name).sort();
 /** The session's tool, sorted: the session's tool and the host's codemode (no catalog tools: no search or call). */
@@ -100,9 +110,13 @@ test("every source main's pi takes opens on the runner on its wire, offers the s
       const route = await routeOf(source.model, source.env(gateway.url), "default", PI_WIRES, toGateway(gateway.url));
       assert.equal(route.provider.api, source.wire, "its wire");
       assert.equal(typeof route.fetch === "function", Boolean(source.translated), "translated only where pi-ai speaks neither wire");
-      const { row, store } = await capRun(t, { specOf: () => specOn(route, toGateway(gateway.url)), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
+      const paths = [];
+      const { row, store, asked } = await capRun(t, { specOf: () => specOn(route, countingGateway(gateway.url, paths)), runCap: { capUsd: () => undefined, modelOf: () => undefined } });
       assert.equal(row.state, "ended", JSON.stringify(row));
       assert.ok(gateway.requests.length >= 1 && gateway.requests.every((request) => request.path.endsWith(source.path)), JSON.stringify(gateway.requests.map((request) => request.path)));
+      // No origin is asked for a count before an answer request, straight to OpenAI included: each request goes alone.
+      assert.ok(!paths.includes(COUNT_PATH), JSON.stringify(paths));
+      assert.ok(asked.length === gateway.requests.length && asked.every(({ request }) => request.inputTokensMax !== COUNTED), JSON.stringify(asked.map(({ request }) => request.inputTokensMax)));
       assert.deepEqual(toolsOf(gateway.requests[0]), OFFERED, "the session's tool is offered");
       assert.ok((await bookedUsd(store)) > 0, "booked on the run's ledger");
     });

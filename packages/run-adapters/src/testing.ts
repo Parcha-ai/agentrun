@@ -14,11 +14,13 @@ import { randomBytes } from "node:crypto";
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
 /** The model proxy's own parts, for tests of a provider policy and of the proxy: the host API (./host) keeps only what a
  *  harness runs. */
-export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf } from "./host/proxy.js";
+export { inputTokensMaxOf, matchRoute, parseStrict, reportedCostOf, streamErrorOf, usageCostOf } from "./host/proxy.js";
 
 /** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
- *  counts one more holder at once, and a writer appends only while its count is the newest. */
-export function memorySessionStore(): SessionStore & { keys(): string[] } {
+ *  counts one more holder at once, and a writer appends only while its count is the newest. `scope`: the run's identity
+ *  in this process, for a test that plays a claim lost and taken again in one process (SessionWriter.scope); without it,
+ *  each open plays a process of its own, which hands nothing on. */
+export function memorySessionStore(options: { scope?: string } = {}): SessionStore & { keys(): string[] } {
   const sessions = new Map<string, SessionRecord[]>();
   const holders = new Map<string, number>();
   const read = async (key: string) => structuredClone(sessions.get(key) ?? []);
@@ -29,6 +31,7 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
       holders.set(key, holder);
       return {
         key,
+        ...(options.scope === undefined ? {} : { scope: `${options.scope}\n${key}` }),
         read: () => read(key),
         async append(records) {
           if (holders.get(key) !== holder) throw new SessionFenced(key);
@@ -55,8 +58,9 @@ export function memorySessionStore(): SessionStore & { keys(): string[] } {
  *  session's (a resumed turn's, say) with no request of this process's own yet, and a side call's the only one open. The
  *  side call is paid at `usd` with this request (at once, or once its `bookWhen` file exists). */
 /** `onRefused: "next"`: a request its host refuses (its admission throws) is not the turn's end: the client goes on to its
- *  next action, as a CLI whose request the proxy refused sends another. */
-export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
+ *  next action, as a CLI whose request the proxy refused sends another. `effort`: the reasoning effort its body names, as
+ *  the proxy tells it beside its least (ProviderPolicy.effortOf). */
+export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number; effort?: string; until?: string; bookWhen?: string; sideAfterNote?: { usd: number }; sideDuring?: { usd: number }; sideFirst?: { usd: number; say: string } };
 
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
@@ -267,7 +271,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
               io.onEvent({ type: "text", delta: say });
             }
             // The output it asks for at most (a CLI's max_tokens), as a real adapter's proxy reads it from the body.
-            const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}) };
+            const asked = { ...("outputTokensAsked" in action && typeof action.outputTokensAsked === "number" ? { outputTokensAsked: action.outputTokensAsked } : {}), ...("outputTokensLeast" in action && typeof action.outputTokensLeast === "number" ? { outputTokensLeast: action.outputTokensLeast } : {}), ...("effort" in action && typeof action.effort === "string" ? { effort: action.effort } : {}) };
             const admit = () => io.models.beforeRequest({ model: own, inputTokensMax: note ? measured + Buffer.byteLength(note, "utf8") : measured, ...asked, ...(note ? { noted: true as const, inputTokensMaxWithoutNote: measured } : {}) });
             let ticket: Awaited<ReturnType<typeof admit>>;
             try {

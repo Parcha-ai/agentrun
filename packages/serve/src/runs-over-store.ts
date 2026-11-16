@@ -1,3 +1,5 @@
+import { nativeOf } from "./native/binding.js";
+import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
 // model (runs.ts: a child process, an HTTP door, serve.json, carry-back) is gone; the server only writes rows. A start is an
@@ -27,7 +29,8 @@ import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { AnswerTaken, ExternalBodyConflict, type NewRevision, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint } from "./store/index.js";
+import { AnswerTaken, ExternalBodyConflict, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -95,6 +98,7 @@ export async function archiveRun(store: RunsStore, runId: string, archived: bool
 export async function stop(store: RunsStore, runId: string): Promise<boolean> {
   const row = await store.runs.get(runId);
   if (!row || row.importedFrom) return false;
+  await refuseSdkStop(store,runId);
   try {
     await sendCommand(store, runId, { kind: "stop", body: {} });
     return true;
@@ -110,6 +114,7 @@ export async function stop(store: RunsStore, runId: string): Promise<boolean> {
  *  nothing written). A run's first end is its last, so a cancel that races the end is the runner's to drop. */
 export async function cancel(store: RunsStore, moment: RunMoment): Promise<boolean> {
   if (moment.importedSource !== undefined) return false;
+  await refuseSdkStop(store,moment.id);
   // Already ended, or already ending (an outcome being written, or a cancel in flight): a run's first end is its last.
   if (moment.terminal || moment.cancelled) return false;
   try {
@@ -119,6 +124,23 @@ export async function cancel(store: RunsStore, moment: RunMoment): Promise<boole
     if (error instanceof RunFinal) return false;
     throw error;
   }
+}
+
+/** Older rows can lack launch metadata. Only that typed absence leaves their controls unchanged; a failed read
+ * must still fail the command, since it could be hiding native or SDK execution constraints. */
+async function controlLaunchBody(store: RunsStore, runId: string): Promise<unknown> {
+  try {
+    return (await store.runs.launch(runId)).body;
+  } catch (error) {
+    if (error instanceof StoreLaunchMissing) return undefined;
+    throw error;
+  }
+}
+
+/** Only the application can abort its SDK and tools. An HTTP acknowledgement must not pretend that it did. */
+async function refuseSdkStop(store: RunsStore, runId: string): Promise<void> {
+  const launch = await controlLaunchBody(store, runId);
+  if (isObject(launch) && launch.sdk) throw new ApiError("not_continuable", "This agent runs in your backend SDK. Cancel it using the original application's cancellation signal; its wrapper will report that outcome here.");
 }
 
 /** Pauses a workflow run, or resumes it (pauseRun/resumeRun): a pause or resume command the run's runner reads and applies.
@@ -157,6 +179,9 @@ export async function message(
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
+  const launchBody = await controlLaunchBody(store, moment.id);
+  if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
+  if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
@@ -313,7 +338,7 @@ async function endBefore(store: RunsStore, runId: string, { before = Number.POSI
  *  again changes nothing, another is 409 already-answered — and a run with no such waiting call is 404. Two answers at once
  *  each write or lose to the store's one-answer index, and the one that loses reads the one that won. The note is the
  *  person's words, carried on the command for the run's gate. */
-export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string): Promise<void> {
+export async function approve(store: RunsStore, moment: RunMoment, id: string, decision: "allow" | "deny", note?: string, confirmed = false): Promise<void> {
   const settle = (given: { decision: ApprovalDecision; ended?: true }): void => {
     if (given.decision !== decision) throw alreadyAnswered(id, given.decision, given.ended === true);
   };
@@ -328,6 +353,9 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
     return settle(given);
   }
   if (!(moment.approvalIds?.has(id) ?? false)) throw new ApiError("not_found", `The run ${moment.id} has no tool call ${id} waiting for approval.`);
+  // A call its run's pin marks destructive takes a second, explicit confirm to allow: nothing is written without it. The
+  // issue carries its own example, so the 422's telling (explain.ts) adds none to a sentence that already says what to send.
+  if (decision === "allow" && !confirmed && moment.destructiveIds?.has(id)) throw invalid([{ field: "confirm_destructive", reason: "missing", message: `The tool call ${id} is one its MCP server marks destructive. To allow it, confirm a second time and send the allow again with confirm_destructive: true.`, example: true }]);
   const ending = await endBefore(store, moment.id);
   if (ending) throw alreadyAnswered(id, ending.decision);
   const body: Record<string, unknown> = { approval: id, ...(note !== undefined ? { note } : {}) };
@@ -362,7 +390,7 @@ export async function approve(store: RunsStore, moment: RunMoment, id: string, d
 // ---- start -----------------------------------------------------------------------------------------------------------
 
 /** A UUIDv7 run id: time-ordered, so a listing by start time is stable, and unique per run. */
-function uuidv7(now = Date.now()): string {
+export function uuidv7(now = Date.now()): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
   bytes[6] = (bytes[6]! & 0x0f) | 0x70;
@@ -371,9 +399,9 @@ function uuidv7(now = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The revision's body fields a start reads: its default cap and cap mode, its place, and (agentic) its tools, for the
- *  place fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly capMode?: string; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
+/** The revision's body fields a start reads: its default cap, its place, and (agentic) its tools, for the place
+ *  fallback. Read with the shapes the old start read them with. */
+type StartBody = { readonly maxCostUsd?: number; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host
@@ -395,6 +423,10 @@ export interface StartDeps {
   told(error: ApiError): ApiError;
   /** Refuses a revision this host cannot run, by field (server.ts runnable). */
   runnable(revision: Revision, place: Place, options: { capped: boolean }): Promise<void>;
+  /** The revision a run starts on, its MCP tools pinned: one that grants an MCP tool and was saved with no pin (before
+   *  pins were made at save, or an inline agent's version stored then) is pinned once, at its first run (server.ts
+   *  pinFirst); any other as it is. */
+  pinFirst?(revision: Revision): Promise<Revision>;
   /** The uploaded files named by file_ids, ready to copy; throws when one is not ready (server.ts uploads.readyFiles). The
    *  copy into the run's work/ is the runner's at its claim; this only checks they are ready before the run starts. */
   readyFiles(ids: readonly unknown[]): Promise<unknown>;
@@ -468,12 +500,12 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
  *  seedNotes when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
  *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. */
-async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown, use: boolean): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; notesLeftOut?: string[]; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined> {
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown, use = false): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; notesLeftOut?: string[]; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined> {
   // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps nothing
   // (no grade model: nothing is graded); the server's learning off still gives it nothing.
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
   // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
-  const notesOnly = rbody.learning === "notes" ? { notesOnly: true as const } : {};
+  const notesOnly = rbody.learning === "notes" || nativeOf(revision.body) ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
   const grade = use ? { use: true as const } : deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
   const seeded = await deps.seedFor(entry.agent.id);
@@ -491,7 +523,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
     const notesLeftOut = left.map((note) => options.shown.name(note.file));
     // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
     // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
-    // end-of-run turn counts the runs each served (runner/learning-end.ts draftForOf).
+    // agent's impact counts the runs each served.
     const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
     // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
     // agent's impact counts a run as started from, beside its notes and skills.
@@ -508,6 +540,7 @@ async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Re
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
 export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed }: StartOptions = {}): Promise<RunRow> {
+  if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
@@ -546,7 +579,14 @@ export interface InlineAgent {
   readonly name: string;
   readonly description: string | null;
   readonly revision: NewRevision & { readonly note?: string };
+  /** The revision its version already has here (Agents.externalRevision), when this is not the version's first run: the
+   *  run starts on it, as a run of a stored agent starts on its revision. */
+  readonly stored?: RevisionRow;
 }
+
+/** 409 external_body_conflict: a version that already ran here, given with a different definition. */
+const bodyConflict = ({ source, kind, id, version }: InlineAgent["external"]): ApiError =>
+  new ApiError("external_body_conflict", `${source} ${kind} ${id} version ${version} already ran here with a different definition. A version's definition never changes here: publish a new version and run that.`, { details: { external: { source, kind, id, version } } });
 
 /** Starts a run of an agent given inline, as POST /agents/{id}/runs starts a run of a stored one: the same checks over the
  *  revision the definition makes (prepareLaunch), then ONE transaction (store.runs.createInline) that writes the agent on
@@ -555,8 +595,10 @@ export interface InlineAgent {
  *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
  *  `origin`, a key that already started a run gets that run, as startRun's. */
 export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
-  const { external, revision } = inline;
+  const { external, revision, stored: storedRevision } = inline;
   const ref = externalKey(external);
+  // A version's body never changes here: a different one is refused before anything else is read or written.
+  if (storedRevision && canonical(storedRevision.body) !== canonical(revision.body)) throw bodyConflict(external);
   const mapped = await store.agents.byExternal(ref);
   const stored = mapped ? await getAgent(store, mapped.id) : null;
   // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
@@ -571,20 +613,17 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
-  const { launch } = await prepareLaunch(deps, entry, body, { revision: revision as unknown as Revision });
+  const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision });
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     return await withHeldFiles(deps, runId, launch, () => store.runs.createInline({
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
-      revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}) },
+      revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}), ...(revision.mcpPin !== undefined ? { mcpPin: revision.mcpPin } : {}), ...(revision.monidPin !== undefined ? { monidPin: revision.monidPin } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}) },
       launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) },
     }));
   } catch (error) {
-    if (error instanceof ExternalBodyConflict) {
-      const { source, kind, id, version } = external;
-      throw new ApiError("external_body_conflict", `${source} ${kind} ${id} version ${version} already ran here with a different definition. A version's definition never changes here: publish a new version and run that.`, { details: { external: { source, kind, id, version } } });
-    }
+    if (error instanceof ExternalBodyConflict) throw bodyConflict(external);
     if (origin && error instanceof StoreConstraint) {
       const existing = await store.runOfOrigin(origin.key);
       const row = existing && (await store.runs.get(existing.runId));
@@ -613,10 +652,13 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // Each a ready file, before anything starts: checked ready here, then named in the launch (in order) for the runner to
   // copy into the run's work/inputs/ at its claim.
   const fileIds = Array.isArray(body.file_ids) ? (body.file_ids as string[]) : [];
-  if (fileIds.length) await deps.readyFiles(fileIds);
   const pinned = await pinnedOf();
   if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
   const { revision } = pinned;
+  const native = nativeOf(revision.body);
+  if (native && !nativeOf(entry.revision?.body)?.connected) throw new ApiError("agent_not_runnable", "This native connection is disconnected. Reconnect its source project before starting any revision.");
+  if(native && (body.effort!==undefined || fileIds.length || body.archil_disk!==undefined))throw new ApiError("input_invalid","Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.");
+  if (fileIds.length) await deps.readyFiles(fileIds);
   const rbody = revision.body as StartBody;
   const input = body.input as Json;
   const wrong = await deps.inputIssuesOf(revision, input);
@@ -624,11 +666,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's own cap, else the agent's default: the caller chose its own.
   const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
   if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
-  // How its cap prices a request: the run's own, else the agent's, else expected (cap.ts). Only a run with a cap has one.
-  if (body.cap_mode !== undefined && cap === undefined) throw invalid([{ field: "cap_mode", reason: "not_allowed", message: "cap_mode says how a run's cap prices its requests, and this run has no cap: give it a max_cost_usd, or set the agent's." }]);
-  const capMode = cap === undefined ? undefined : typeof body.cap_mode === "string" ? body.cap_mode : rbody.capMode;
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
-  await deps.runnable(revision, place, { capped: cap !== undefined });
+  // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
+  // its server could not be listed, is refused with the rest (runnable).
+  await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined });
   // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
   // revision's computer, else its place's).
   const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);
@@ -659,7 +700,8 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
-  const effort = typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  const effort = native ? undefined : typeof body.effort === "string" ? body.effort : (thinkingLevel(rbody.thinking) ?? thinkingLevel(deps.planeEnv().AGENT_THINKING));
+  const nativeLaunch = native?.remote ? native : native ? await launchNative(native) : undefined;
   // The repository a person's run reaches (run-repo.ts): the one the body names when the agent is bound to it, else the
   // agent's one repository when the first message names none. A trigger's run takes its repository from its event.
   const namedRepo = typeof body.repo === "string" ? body.repo : undefined;
@@ -667,6 +709,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const picked = trigger ? {} : repoOf(await (deps.boundRepos?.(entry.agent.id) ?? { repos: [], open: false }), namedRepo, githubTargetOf(typeof input.content === "string" ? input.content : undefined) !== undefined);
   if (picked.refused) throw invalid([{ field: "repo", reason: "not_allowed", message: picked.refused }]);
   const launch: RunLaunch = {
+    ...(nativeLaunch ? { native: nativeLaunch } : {}),
     input,
     ...(picked.repo !== undefined ? { repo: picked.repo } : {}),
     title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
@@ -674,7 +717,6 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     harness: harnessOfBody(revision.body),
     ...(effort !== undefined ? { effort } : {}),
     ...(cap !== undefined ? { maxCostUsd: cap } : {}),
-    ...(capMode !== undefined ? { capMode } : {}),
     ...(Object.keys(plane).length ? { plane } : {}),
     ...(deps.approvers !== undefined ? { approvers: deps.approvers } : {}),
     ...(deps.documents !== undefined ? { documents: deps.documents } : {}),

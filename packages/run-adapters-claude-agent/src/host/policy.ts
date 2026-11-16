@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { messagesImagesIn, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, messagesInputAfter, messagesLocalInputTokens, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type BilledRequest, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -221,6 +221,12 @@ export function anthropicOutputLeast(body: Record<string, unknown>): number {
   return isPlain(body.thinking) && body.thinking.type === "enabled" ? ANSWER_TOKENS_LEAST + THINKING_BUDGET_LEAST : ANSWER_TOKENS_LEAST;
 }
 
+/** The effort a Messages body asks its model at (`output_config.effort`), when it names one. */
+export function anthropicEffort(body: Record<string, unknown>): string | undefined {
+  const config = body.output_config;
+  return isPlain(config) && typeof config.effort === "string" && config.effort.length > 0 ? config.effort : undefined;
+}
+
 /** The thinking tokens a Messages request may bill that its stream never shows: Claude 4-class models stream only a
  *  summary of their thinking (and a redacted block shows none of it), so a request that thinks counts its thinking
  *  budget, or its `max_tokens` when its thinking is adaptive (no budget); one with thinking off, none. A stopped request
@@ -349,8 +355,10 @@ export function withWebSearches(price: (model: string, usage: ProxyUsage) => num
 /** The usage a Messages response reports, read by parsing it, never by matching its text (the API nests objects in
  *  `usage`): a whole body's `usage`, or a stream's `message_start` usage (input and cache tokens) with its last
  *  `message_delta` usage over it (the final counts, the web searches among them). Each SSE `data:` line is parsed on its
- *  own and one that does not parse is skipped (the proxy keeps only the head and tail of a long answer). A stream that
- *  never stopped, or an answer with no readable usage, is unknown. */
+ *  own and one that does not parse is skipped (the proxy keeps only the head and tail of a long answer). A stream the
+ *  provider ended in its `error` event (an overload, a rate limit) is whole too: the counts it reported before it, which
+ *  the proxy books at list (a `message_start`'s input). A stream that never stopped, or an answer with no readable usage,
+ *  is unknown. */
 export function anthropicUsage(text: string): AnthropicUsage | undefined {
   const lines = text.split(/\r?\n/);
   if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
@@ -366,7 +374,7 @@ export function anthropicUsage(text: string): AnthropicUsage | undefined {
       if (isPlain(event)) events.push(event);
     } catch { /* cut at the kept window's edge, or not JSON: skipped */ }
   }
-  if (!events.some((e) => e.type === "message_stop")) return undefined;
+  if (!events.some((e) => e.type === "message_stop" || e.type === "error")) return undefined;
   const started = events.find((e) => e.type === "message_start")?.message;
   const startUsage = isPlain(started) && isPlain(started.usage) ? started.usage : {};
   const lastDelta = events.filter((e) => e.type === "message_delta").at(-1)?.usage;
@@ -491,7 +499,17 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     outputAsked: anthropicOutputAsked,
     countInput: ANTHROPIC_INPUT_COUNTER,
+    // A request Anthropic does not count (a gateway, serve's translation to a model of another API): a model whose
+    // tokenizer is o200k_base is counted locally with its stated margin (pi on gpt-6.1-sol through OpenRouter, whose
+    // bytes would bound it at four times its tokens and, past 272,000, at the long-context price). A Claude model, a body
+    // with a document, or one offering the hosted search (its allowance is part of the byte bound) keeps the byte bound.
+    countInputLocally: (body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesLocalInputTokens(body)),
+    // A request that carries the session's earlier one its provider billed: that bill and the bytes it adds, on any model
+    // (Claude through OpenRouter, which counts nothing, held at its bytes four times what it bills). Not with the hosted
+    // search offered: what its searches read in has no bound.
+    inputAfter: (earlier: BilledRequest, body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesInputAfter(earlier, body)),
     outputLeast: anthropicOutputLeast,
+    effortOf: anthropicEffort,
     reasoningHidden: anthropicReasoningHidden,
     reasoningBytesOf: anthropicReasoningBytes,
     contentBytesOf: anthropicContentBytes,

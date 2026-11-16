@@ -2,12 +2,12 @@
 // The computer's per-step tools' schemas and the `computer` object's declarations, split by group.
 
 /** Each per-step tool's parameters, as JSON Schema. */
-export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "computer_act" | "computer_screenshot" | "computer_script"]: object } = {
+export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "computer_act" | "computer_screenshot"]: object } = {
   "computer_observe": {
     "type": "object",
     "properties": {
       "app": {
-        "description": "Default: the app in front.",
+        "description": "Default: the app in front. With no ui group, opened or brought in front first.",
         "type": "string"
       },
       "image": {
@@ -25,7 +25,7 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
     "type": "object",
     "properties": {
       "app": {
-        "description": "Default: the state's app, else the app in front.",
+        "description": "Default: the state's app, else the app in front. With no ui group, opened or brought in front first.",
         "type": "string"
       },
       "state": {
@@ -309,27 +309,6 @@ export const COMPUTER_TOOL_SCHEMAS: { readonly [tool in "computer_observe" | "co
       }
     },
     "additionalProperties": false
-  },
-  "computer_script": {
-    "type": "object",
-    "properties": {
-      "code": {
-        "description": "An async function's body; `return` what you need.",
-        "type": "string"
-      },
-      "title": {
-        "description": "For the run's timeline.",
-        "type": "string"
-      },
-      "timeoutMs": {
-        "description": "Default 120000, at most 600000.",
-        "type": "number"
-      }
-    },
-    "additionalProperties": false,
-    "required": [
-      "code"
-    ]
   }
 };
 
@@ -419,13 +398,18 @@ const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] 
   },
   {
     "name": "UiStep",
-    "uses": [],
-    "text": "type UiStep = object; // computer_act's steps"
+    "uses": [
+      "UiRef",
+      "Point"
+    ],
+    "text": "type UiStep = { press: UiRef; } | { set: UiRef; value: string; } | { perform: UiRef; action: string; } | { click: UiRef | Point; button?: \"left\" | \"right\"; count?: 1 | 2 | 3; } | { type: string; into?: UiRef; } | { key: string; } | { nav: \"back\" | \"home\" | \"app_switch\"; } | { scroll: UiRef | Point; dx?: number; dy?: number; } | { drag: Point[]; ms?: number; };"
   },
   {
     "name": "UiExpect",
-    "uses": [],
-    "text": "type UiExpect = object; // computer_act's expect"
+    "uses": [
+      "UiRef"
+    ],
+    "text": "interface UiExpect { text?: string; ref?: UiRef; window?: { title?: string; role?: string; }; gone?: boolean; timeoutMs?: number; }"
   },
   {
     "name": "Image",

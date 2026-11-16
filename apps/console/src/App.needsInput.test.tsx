@@ -5,7 +5,7 @@ import { App } from "./App";
 import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 
 // Mission Control's Needs input tile counts exactly what Needs you lists: the runs with a pending ask (any `pending`, a
-// question today). A run the person stopped (input_required, idle, pending null) asks nothing: it is not counted, and it
+// question today), but a stop's. A run the person stopped (input_required, idle, pending kind stopped) asks nothing: it is not counted, and it
 // shows in Recent runs as Stopped, with "send a message to continue". The server's own needs_input counts both.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -16,7 +16,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const CAPS = { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } };
 const run = (id: string, title: string, extra: object) => ({ run_id: id, agent_id: "calc", agent_version: 1, revision: "rv1", kind: "agentic", title, created_at: "2026-11-05T00:30:00Z", ended_at: null, result: null, error: null, cost: null, archived_at: null, ...extra });
 const ASKING = run("q1", "Which city do you mean", { status: "input_required", state: "waiting", pending: { kind: "question", question: "Which city do you mean?", asked_at: "2026-11-05T00:31:00Z" } });
-const STOPPED = run("s1", "Write five files", { status: "input_required", state: "idle", pending: null });
+const STOPPED = run("s1", "Write five files", { status: "input_required", state: "idle", pending: { kind: "stopped" } });
 const STATS = {
   agents: 1, runs: { total: 2, active: 0, needs_input: 2, failed: 0, status_unknown: 0, needs_review: 0 },
   per_agent: [{ agent_id: "calc", name: "Calculator", runs: 2 }], cost: { usd: null, basis: null, unknown_runs: 2 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS,

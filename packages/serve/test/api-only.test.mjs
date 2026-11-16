@@ -32,7 +32,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
   for (const [method, raw] of [
     ["POST", "/v2/agents/a1/runs"], ["POST", "/v2/runs"], ["GET", "/v2/runs"], ["GET", "/v2/agents/a1/runs"],
     ["GET", "/v2/runs/run_1"], ["HEAD", "/v2/runs/run_1"], ["PATCH", "/v2/runs/run_1"], ["GET", "/v2/runs/run_1/timeline"],
-    ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
+    ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
     ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"],

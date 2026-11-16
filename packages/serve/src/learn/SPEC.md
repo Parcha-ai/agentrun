@@ -190,7 +190,7 @@ Over a cap is refused, never cut.
 | `skill_outcome` | a skill from a run whose job did not complete |
 | `too_many_skills` | a skill added or changed past the first |
 | `too_many_workflows` | a workflow draft added or changed past the first |
-| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, a README that does not name its folder or has no description, or one of the two files without the other |
+| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, one whose answering step (the model node writing the key `output.path` reads) names tier `fast`, one whose answer carries quotes of pages it fetched with no code quote check (below), a README that does not name its folder or has no description, or one of the two files without the other |
 | `no_tool_list` | a draft that names a tool, checked with no tool list |
 | `executable_node` | a draft with a `code` node, or a call via shell or executor |
 
@@ -200,6 +200,31 @@ Over a cap is refused, never cut.
 - Text shaped like a secret: well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web
   tokens, Standard Webhooks signing secrets (`whsec_`), URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
+- The quote check is code. A draft whose output schema has a `quote` or `quotes` property (its `#/definitions` refs
+  read as the DSL reads them, its own inline definitions before the catalog; items and `anyOf`/`oneOf`/`allOf` read) and which fetches pages (a call step, under any chain, branch or body) must
+  check each place in its answer holding quotes with an escalate whose `when` is the DSL's `quote_missing` reading
+  them: its `path` and `field` the list and the field the schema puts them at. A quote key's schema is read shape by
+  shape (each `anyOf`/`oneOf` branch, each kind a `type` list names; `allOf` members are one value, read together),
+  each shape a place of its own, so
+  `quotes: string | [{quote}]` needs a check reading `quotes` and one reading `quotes` with `field` `quote`. Quotes no
+  one `path` and `field` read (under two lists, in a map, in records with no `quote` key) are refused whatever checks
+  run, as `quote_missing` would read none of them. The escalate is a step of the top-level chain after the last
+  step writing the answer's key, the one path every run takes: a check in one route branch, or before the answer is
+  written, misses the answer of another run. Each of its `pages` must be a key holding a page as fetched: a call's
+  `as`, a map's whose item result (its `resultPath`, else its body's `as`; never its whole item state, which carries
+  the state around it) is a call's, a composed workflow's whose
+  answer is a call's result, and no step writing that key writes anything else. A model's summary of a page is no
+  page, nor is the key a model step writes it back to. A composed workflow node writing the whole answer whose own
+  workflow passes this rule in its own state has checked the places its own schema declares; any other place the
+  parent's schema declares is the parent's to check. An answer schema holding quotes in more than 8 places, nesting
+  past 16 keys, or recurring around them (a definition used again inside itself), is refused rather than read in part. Otherwise the draft is refused, the detail naming the predicate
+  to write. The predicate reads each page string alone, so no quote runs from one page into the next. A judge or an
+  `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
+  question flagged 149 of 170 answers while 416 of 429 quotes were in the fetched pages, and it could not tell the 8
+  answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
+  straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
+  are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
+  reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked

@@ -58,9 +58,11 @@ test("a learned workflow's trace names the model each model node ran on, and its
   assert.equal("tier" in trace[1], false, "a node of no tier has no tier key");
 });
 
-// Review on #2513: a learned workflow may repeat a label. Each node's model is kept by its own execution (its execution
-// path), never by its label: two parallel model nodes of one label and different tiers each keep their own.
-test("two model nodes with one label each keep the model they ran on", { timeout: 60_000 }, async (t) => {
+// Review on #2513: each node's model is kept by its own execution (its execution path): two parallel model nodes of
+// different tiers each keep their own. Review on #2644 (r7): a label names one step (its guard rows key the serving
+// thresholds, a replay's score and a refit by it), so a learned workflow that repeats one is refused before any model
+// is asked.
+test("two parallel model nodes keep the model they ran on; one label on both is refused before a request", { timeout: 60_000 }, async (t) => {
   const work = mkdtempSync(join(tmpdir(), "learned-model-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   let requests = 0;
@@ -74,20 +76,27 @@ test("two model nodes with one label each keep the model they ran on", { timeout
       return answered ? message([{ type: "text", text: "Done." }], "stop") : message([{ type: "toolCall", id: `submit-${requests}`, name: "submit", arguments: { value: { answer: 42 } } }], "toolUse");
     },
   };
-  const flow = { ...FLOW, name: "same-label", root: { node: "chain", steps: [
+  const flowOf = (second) => ({ ...FLOW, name: "two-checks", root: { node: "chain", steps: [
     { node: "parallel", label: "both", branches: [
       { node: "extract", label: "check", tier: "fast", instructions: "Answer the question.", out: "Answer", as: "a" },
-      { node: "extract", label: "check", instructions: "Answer it again.", out: "Answer", as: "b" },
+      { node: "extract", label: second, instructions: "Answer it again.", out: "Answer", as: "b" },
     ] },
     { node: "extract", label: "final answer", instructions: "Answer it.", out: "Answer", as: "answer" },
-  ] } };
+  ] } });
   const modelOf = (tier) => (tier === "fast" ? { provider: `${PORT_PROVIDER}-fast`, modelId: "gpt-6-luna" } : { provider: PORT_PROVIDER, modelId: "session" });
-  const tool = learnedWorkflowTool({ workflows: [{ name: "same-label", description: "Same label", workflow: JSON.stringify(flow) }], granted: [], env: {}, work, models, modelOf, modelName: () => "gpt-6-1-sol", policy: () => "allow", denyFrom: () => "default" });
-  const kept = [];
-  const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
-  const said = await tool.execute({ name: "same-label", input: { question: "six times seven" } }, api, { abortSignal: new AbortController().signal });
+  const callOf = async (flow) => {
+    const tool = learnedWorkflowTool({ workflows: [{ name: "two-checks", description: "Two checks", workflow: JSON.stringify(flow) }], granted: [], env: {}, work, models, modelOf, modelName: () => "gpt-6-1-sol", policy: () => "allow", denyFrom: () => "default" });
+    const kept = [];
+    const api = { callId: "call-1", commit: async (change) => change({ appendEntry: async (_conversation, entry) => void kept.push(entry) }) };
+    const said = await tool.execute({ name: "two-checks", input: { question: "six times seven" } }, api, { abortSignal: new AbortController().signal });
+    return { said, trace: kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.nodes ?? [] };
+  };
+  const refused = await callOf(flowOf("check"));
+  assert.equal(refused.said.isError, true, JSON.stringify(refused.said));
+  assert.match(JSON.stringify(refused.said), /\\"check\\" names two steps/);
+  assert.equal(requests, 0, "no model asked");
+  const { said, trace } = await callOf(flowOf("recheck"));
   assert.equal(said.isError, false, JSON.stringify(said));
-  const trace = kept.find((entry) => entry.kind === LEARNED_NODES)?.data?.nodes ?? [];
-  const checks = trace.filter((n) => n.label === "check").map(({ model, tier }) => `${tier ?? "-"}:${model}`).sort();
-  assert.deepEqual(checks, ["-:gpt-6-1-sol", "fast:gpt-6-luna"], JSON.stringify(trace));
+  const checks = trace.filter((n) => n.label === "check" || n.label === "recheck").map(({ label, model, tier }) => `${label}:${tier ?? "-"}:${model}`).sort();
+  assert.deepEqual(checks, ["check:fast:gpt-6-luna", "recheck:-:gpt-6-1-sol"], JSON.stringify(trace));
 });

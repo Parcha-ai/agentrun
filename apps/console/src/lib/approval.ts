@@ -13,9 +13,10 @@ export function approvalOf(run: Pick<Run, "status" | "state" | "pending">): Pend
 }
 
 /** What one call costs, as the card says it: dollars where its tool names a price, "Not metered" for an unpriced call,
- *  nothing when its tool names none. */
+ *  how a monid call priced by usage is priced, nothing when its tool names none. */
 export function priceLine(price: PendingApproval["price"]): string | null {
   if (price === "not metered") return "Not metered";
+  if (price === "priced by usage") return "Priced by usage: monid estimates the cost when the call runs, and can charge more.";
   if (price === 0) return "Costs nothing per call";
   return typeof price === "number" ? `Costs ${dollars(price)} per call` : null;
 }

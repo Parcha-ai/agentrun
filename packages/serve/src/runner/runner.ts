@@ -124,6 +124,10 @@ export interface RunnerOptions {
   endRetryCapMs?: number;
   endRetryAtCap?: number;
   onEvent?: (event: RunnerEvent) => void;
+  /** Called once a run this runner ended is final, before its end is said (the "ended" event), with the claim that ended
+   *  it: what the run's earlier claims left is let go (workspace/run-end-computers.ts, their computers). A throw is said
+   *  as an error; the run's end stands. Absent: nothing. */
+  runEnded?: (claim: Claim) => Promise<void>;
   /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
    *  Date.now. */
   now?: () => number;
@@ -151,8 +155,9 @@ export type RunnerEvent =
   | { type: "claimed"; claim: Claim }
   /** A run's start, once: its first claim (from queued). `agent` and `kind` are ids, never a secret. */
   | { type: "started"; runId: string; agent: string; kind: string }
-  /** A run's end, once it is final (ended, stopped, failed): its state and the cost its row holds. */
-  | { type: "ended"; runId: string; agent: string; status: RunState | "cancelled"; costUsd: number | null }
+  /** A run's end, once it is final (ended, stopped, failed): its state and the cost its row holds, exact (null when
+   *  unknown or only a bound), and `costAtMostUsd` when what it holds is the most the run can have cost. */
+  | { type: "ended"; runId: string; agent: string; status: RunState | "cancelled"; costUsd: number | null; costAtMostUsd?: number }
   | { type: "claim-lost"; runId: string; epoch: number; why: "fenced" | "not-renewed" }
   | { type: "released"; runId: string; epoch: number; end: LoopEnd["state"] }
   | { type: "refused"; runId: string; commandId: number; reason: string }
@@ -220,6 +225,7 @@ export function startRunner(options: RunnerOptions): Runner {
     endRetryCapMs = END_RETRY_CAP_MS,
     endRetryAtCap = END_RETRY_AT_CAP,
     onEvent = () => {},
+    runEnded,
     redact: given = processSecretRedactor(),
     now = Date.now,
     onBeat = () => {},
@@ -271,14 +277,15 @@ export function startRunner(options: RunnerOptions): Runner {
     return said;
   };
   /** A run's end, said once its row is final: read after the run's release, so a stop that only released it (a shutdown,
-   *  a lost claim: the run still running) says nothing. */
+   *  a lost claim: the run still running) says nothing. What its earlier claims left goes first (runEnded). */
   const announceEnd = async (claim: Claim): Promise<void> => {
     if (!store.runs.get) return;
     try {
       await startLines.get(claim.runId);
       const run = await store.runs.get(claim.runId);
       if (!run || !FINAL_STATES.includes(run.state)) return;
-      emit({ type: "ended", runId: claim.runId, agent: run.agentId, status: endedStatus(run), costUsd: run.costUsd === null || run.costUsd === undefined ? null : Number(run.costUsd.toFixed(6)) });
+      await runEnded?.(claim).catch((error: unknown) => emit({ type: "error", runId: claim.runId, step: "run end", message: message(error) }));
+      emit({ type: "ended", runId: claim.runId, agent: run.agentId, status: endedStatus(run), costUsd: run.costUsd === null || run.costUsd === undefined ? null : Number(run.costUsd.toFixed(6)), ...(typeof run.costAtMostUsd === "number" ? { costAtMostUsd: Number(run.costAtMostUsd.toFixed(6)) } : {}) });
     } catch {
       // A line that could not be read is not said; the run's end stands.
     }
@@ -579,7 +586,10 @@ export function startRunner(options: RunnerOptions): Runner {
     const wait = Math.min(endRetryBackoffMs * 2 ** (tries - 1), endRetryCapMs);
     emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId}: its end with a withdrawal was refused (try ${tries}); retrying in ${wait} ms: ${why}` });
     await store.flush();
-    await release(claim, { backoffUntil: now() + wait });
+    // Running, said: a stop that reached the loop while it parked (its ask landed with the run parked, under this claim)
+    // leaves the row parked, and a release with no state keeps it so; the store's parked rule admits an untaken stop
+    // whatever its backoff (a person's stop never waits on a failed resume's), so the run would be claimed again at once.
+    await release(claim, { state: "running", backoffUntil: now() + wait });
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "interrupted" });
   };
 

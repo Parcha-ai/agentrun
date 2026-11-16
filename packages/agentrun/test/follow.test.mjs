@@ -364,6 +364,27 @@ test("a run waiting on its spend cap is paused at it, in the wait's line and in 
   assert.doesNotMatch(skill, /stopped at its spend cap|stops at its cap/);
 });
 
+test("a run a person stopped (pending kind stopped) is said to be stopped; one idle on nothing named (its harness ended its turn) is not", async (t) => {
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
+  const cli = cliOf({ ...env, AGENTRUN_API_KEY: "fake-test-key" }, []);
+  const said = [];
+  for (const pending of [{ kind: "stopped" }, null]) {
+    const run = { run_id: "r1", status: "input_required", state: "idle", pending };
+    const base = await loopback(t, (req, res) => {
+      const timeline = new URL(req.url, "http://host").pathname.endsWith("/timeline");
+      const body = timeline ? { run_id: "r1", status: "input_required", state: "idle", reset: false, rows: [], drop: [], next_after: 1, unchanged: false, has_more: false, final: false } : run;
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    });
+    const waited = await cli(["runs", "wait", "r1", "--base-url", base]);
+    assert.equal(waited.code, 8, waited.err);
+    said.push(waited.err);
+  }
+  assert.deepEqual(said, [
+    "Run r1 was stopped by a person: send it a message with `agentrun runs message r1 --content TEXT`, then `agentrun runs wait r1`.\n",
+    "Run r1 ended its turn: send it a message with `agentrun runs message r1 --content TEXT`, then `agentrun runs wait r1`.\n",
+  ]);
+});
+
 test("backoff: the client's own delay doubles up to its cap; the server's retry is the floor, above that cap too", () => {
   assert.deepEqual([1, 2, 3, 4].map((tries) => backoff(tries)), [500, 1000, 2000, 4000]);
   assert.equal(backoff(20), 30_000, "capped");

@@ -1,0 +1,5 @@
+# The parameters this case's agent is applied with. No MCP server: the diff is in the prompt, and AgentRun saves the
+# prompt as the run's inputs/message.md, which the reviewers read.
+parameters:
+  owner: example
+  repo: shop

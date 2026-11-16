@@ -17,8 +17,9 @@
 // vendor's flag.
 //
 // One viewer per computer: a second socket is refused viewer_in_use. The viewer closing or losing its socket mid-take is
-// the hold's away (again once a take it was waiting for lands, if it lands after). close("released" | "ended") drops the
-// row under the claim, ends the socket, the watch and the endpoint. Re-registering the same tag (a relaunch) replaces the
+// the hold's away (again once a take it was waiting for lands, if it lands after). close("released" | "ended" | a park's
+// ParkedEnd) drops the row under the claim, ends the socket, the watch and the endpoint; a park's tells the viewer what
+// the run waits for and how long its computer is kept, never that it ended. Re-registering the same tag (a relaunch) replaces the
 // row, and the old viewer is ended. Every frame the watch hands over is acked once: drawn, replaced, or let go with its
 // viewer. The token is in no log, no error and no row in plaintext.
 import { randomBytes } from "node:crypto";
@@ -34,6 +35,7 @@ import { type ComputerHoldChange, onComputerHold } from "./runner/computer-journ
 import { sealColumn, sealedAt } from "./store/seal.js";
 import type { Claim } from "./store/store.js";
 import type { ComputerHold, HoldEnd, HoldState } from "./workspace/computer-hold.js";
+import { lapsedWords, type ParkedEnd, parkedWords } from "./workspace/computer-kept.js";
 
 export type { HoldEnd, HoldState } from "./workspace/computer-hold.js";
 
@@ -117,9 +119,14 @@ export function viewerHoldOf<S>(places: PlacesHold<S>, store: S, runId: string, 
 /** The computer's live frames and input: its provider's watch on the computer's ref (provider.watch(ref, ...)). */
 export type ComputerWatchOf = (handlers: ScreenWatchHandlers, options: WatchOptions) => Promise<Result<ScreenWatch>>;
 
+/** Why a view closes: its computer was released, its run ended, or its run parked with the computer kept (ParkedEnd: why
+ *  it parked and until when it is kept), said to its viewer as the run's wait (parkedWords), never as an end. */
+export type ViewClose = "released" | "ended" | ParkedEnd;
+
 export interface ComputerView {
-  /** The computer's session is over: the row is dropped under the claim, the token dies, an open socket gets "ended". */
-  close(why: "released" | "ended"): Promise<void>;
+  /** The computer's session is over: the row is dropped under the claim, the token dies, an open socket gets "ended"
+   *  with why, in words. */
+  close(why: ViewClose): Promise<void>;
 }
 
 export type OpenComputerView = {
@@ -133,6 +140,10 @@ export type OpenComputerView = {
   tag: string;
   watch: ComputerWatchOf;
   hold: ViewerHold;
+  /** Whether the computer is gone now: its provider no longer has it. Asked when its watch ends gone or does not start
+   *  for want of the computer (not found, gone); a gone one's view closes "released", so the run's Screen reads it
+   *  released. A stream that ended with the computer still there keeps its view. Absent: never asked. */
+  gone?: () => Promise<boolean>;
   /** The frames' width at most, and their JPEG quality (the computer's defaults when absent). */
   maxWidth?: number;
   quality?: number;
@@ -163,6 +174,7 @@ export type ClaimViewArgs = {
   readonly tag: string;
   readonly watch: ComputerWatchOf;
   readonly hold: unknown;
+  readonly gone?: () => Promise<boolean>;
 };
 
 /** The runner's opener for computerForClaim's openComputerView dep (runner/main.ts runnerComputers): the view of a run's
@@ -176,6 +188,7 @@ export const claimViewOpener = (at?: RunnerLive) => (args: ClaimViewArgs): Promi
   return openComputerView({
     store, sealKey: args.sealKey, claim, kind: args.kind, input: args.input, tag: args.tag, watch: args.watch,
     hold: viewerHoldOf(PLACES, store, claim.runId, args.hold as RunnersHold),
+    ...(args.gone ? { gone: args.gone } : {}),
     ...(at ? { at } : {}),
   });
 };
@@ -238,7 +251,10 @@ type ServerMessage =
   | { type: "take_refused"; message: string }
   | { type: "held"; reason: "not_taken" | "taking" | "bad_message" | "refused" | "failed" | "busy"; message: string }
   | { type: "refused"; reason: "unauthorized" | "viewer_in_use" | "released" | "bad_message" | "slow_viewer" }
-  | { type: "ended"; reason: "released" | "ended" | "gone" | "unreachable" | "refused" | "unsupported"; message: string };
+  | { type: "ended"; reason: "released" | "ended" | "gone" | "unreachable" | "refused" | "unsupported"; message: string }
+  /** The run parked with its computer kept: what it waits for (`message`), the ms the computer is kept for from now
+   *  (`keptMs`), and what the page says once they pass (`lapsed`). */
+  | { type: "ended"; reason: "parked"; message: string; keptMs: number; lapsed: string };
 
 /** The answer to input outside a hold. */
 export const NOT_TAKEN = "Take over to drive.";
@@ -246,7 +262,7 @@ export const NOT_TAKEN = "Take over to drive.";
 const ENDED: Record<"released" | "ended", string> = { released: "This computer was released.", ended: "This computer's session has ended." };
 
 /** The views open in this process, by run, kind and tag: a relaunch's registration ends the one before it. */
-const opened = new Map<string, { close(why: "released" | "ended"): Promise<void> }>();
+const opened = new Map<string, { close(why: ViewClose): Promise<void> }>();
 /** The opens of each run, kind and tag, one after another: two at once would each start an endpoint and one be orphaned. */
 const opening = new Map<string, Promise<unknown>>();
 
@@ -472,6 +488,13 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
     }
   };
 
+  /** The watch ended (or never started) for want of its computer: a computer its provider no longer has (deleted under
+   *  the run) is released, and its view closes; one still there (its stream ended) keeps its view. */
+  const goneAsked = (): void => {
+    if (!input.gone || closed) return;
+    void input.gone().then((gone) => (gone ? view.close("released") : undefined), () => undefined);
+  };
+
   const startWatch = async (conn: WsConn): Promise<void> => {
     const current = viewer!;
     const handlers: ScreenWatchHandlers = {
@@ -482,6 +505,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
         if (viewer !== current) return;
         send(conn, { type: "ended", reason: error.code, message: redactWords(error.message) });
         conn.close(CLOSE_CODES.browser_closed, "ended");
+        if (error.code === "gone") goneAsked();
       },
     };
     const started = await watch(handlers, { signal: current.abort.signal, ...(input.maxWidth ? { maxWidth: input.maxWidth } : {}), ...(input.quality ? { quality: input.quality } : {}) }).catch((error: unknown) => ({ ok: false as const, error: { code: "unreachable" as const, message: (error as Error)?.message ?? String(error) } }));
@@ -490,6 +514,7 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
         const code = started.error.code === "gone" || started.error.code === "unsupported" || started.error.code === "refused" ? started.error.code : "unreachable";
         send(conn, { type: "ended", reason: code, message: redactWords(started.error.message) });
         conn.close(CLOSE_CODES.browser_closed, "ended");
+        if (started.error.code === "gone" || started.error.code === "not_found") goneAsked();
       }
       return;
     }
@@ -680,10 +705,12 @@ async function openOne(input: OpenComputerView, key: string): Promise<OpenedComp
       // TODO(tl-untangle): liveViewers.drop by the row's id in the store, so the read and the drop are one statement.
       const row = (await store.liveViewers.of(claim.runId).catch(() => [])).find((each) => each.kind === kind && each.tag === tag);
       if (row?.id === id) await store.liveViewers.drop(claim, kind, tag).catch(() => undefined);
-      const reason = why === "released" ? "released" : "ended";
+      const said: ServerMessage = typeof why === "object"
+        ? { type: "ended", reason: "parked", message: parkedWords(kind, why.parked), keptMs: Math.max(0, why.until - Date.now()), lapsed: lapsedWords(kind) }
+        : { type: "ended", reason: why, message: ENDED[why] };
       for (const conn of [...pending, ...(viewer ? [viewer.conn] : [])]) {
-        send(conn, { type: "ended", reason, message: ENDED[why] });
-        conn.close(CLOSE_CODES.released, reason);
+        send(conn, said);
+        conn.close(CLOSE_CODES.released, typeof why === "object" ? "parked" : why);
       }
       pending.clear();
       if (viewer) {
