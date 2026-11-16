@@ -16,6 +16,8 @@ Use `--agent NAME` for a discovered Claude named agent. Use `--data DIR` for ano
 
 ## Connect another machine
 
+For an agent your backend or terminal already runs, use [metadata observation](../connector/README.md#observe-agents-that-already-run-elsewhere). The OSS server accepts the existing hosted CLI/Collector protocol. It shows observed sessions without creating runnable copies of the agent. The following remote execution path is for jobs AgentRun starts.
+
 The existing Python AgentRun CLI is bundled in `connector/`, with an opt-in `remote` command. Install it and the Node runtime from the same reviewed build as the server. Older released observation-only launchers do not provide remote native execution. From a built source checkout, use `uv tool install ./connector`; its `agentrun` command accepts `remote discover`, `remote connect`, `remote worker`, `remote status` and `remote disconnect`. `python -m agentrun_cli` in that installed environment avoids a command-name collision with the Node management CLI.
 
 1. On the source machine, run `agentrun remote discover --project /absolute/project --runtime claude-code` or `codex`. Only the selected project is discovered; past sessions are not read.
@@ -27,7 +29,7 @@ The CLI finds `agentrun-serve remote-bridge` from the matching Node installation
 
 `agentrun remote worker --state-dir /private/connector --foreground` owns the worker in a terminal. A persistent service is optional and must be explicitly installed by the source operator. `remote disconnect` or the console's Revoke action prevents future work and stops the worker on its next poll. Loss of a command lease closes native execution; an interrupted dispatch is recorded as uncertain and never automatically replayed. The source worker makes outbound HTTPS requests only, with no public inbound listener.
 
-Import here means an ordinary agent/revision referencing the selected source setup. Its configuration, skills, MCP, hooks and sign-in stay on that machine. Run prompts, results, tool activity, usage and an immutable standing-instruction snapshot are sent to the destination for the approved runs and learning. The server cannot select another source path, executable or environment through the worker protocol. The original source permissions remain authoritative. The existing hosted metadata observer remains separate and unchanged.
+Import here means an ordinary agent/revision referencing the selected source setup. Its configuration, skills, MCP, hooks and sign-in stay on that machine. Run prompts, results, tool activity, usage and an immutable standing-instruction snapshot are sent to the destination for the approved runs and learning. The server cannot select another source path, executable or environment through the worker protocol. The original source permissions remain authoritative. Metadata observation uses the existing observer protocol on both hosted and OSS servers.
 
 ### Import selected history
 

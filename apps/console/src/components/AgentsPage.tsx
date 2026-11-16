@@ -5,6 +5,7 @@ import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { Banner } from "@/components/ui";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { useObservations } from "@/lib/observations";
 import { AgentsList } from "@/components/AgentsList";
 import { ConnectExistingAgents } from "@/components/NativeConnections";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
@@ -17,6 +18,7 @@ const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { k
 
 /** The agents on the live server: the list, or the archived ones (`#/agents?archived=true`), every page of them. */
 export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean; go: (hash: string) => void }) {
+  const observations = useObservations(v2, { active: !archived });
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0);
@@ -36,7 +38,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <AgentsList agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
+    <AgentsList observations={observations} agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
       handoff={<ConnectExistingAgents />}
       actions={{
         onOpen: (id) => go(agentHash(id)),

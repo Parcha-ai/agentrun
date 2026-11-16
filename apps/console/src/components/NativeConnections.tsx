@@ -12,8 +12,8 @@ export function ConnectExistingAgents({ variant }: Pick<CodingAgentActionProps, 
 }
 
 /** Reads only the server host's explicitly selected project. It never presents browser-local discovery as possible. */
-export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Client; go: (hash: string) => void; initialSource?: "server" | "remote" }) {
-  const [source, setSource] = useState<"server" | "remote">(initialSource);
+export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Client; go: (hash: string) => void; initialSource?: "server" | "remote" | "observe" }) {
+  const [source, setSource] = useState<"server" | "remote" | "observe">(initialSource);
   const [project, setProject] = useState("");
   const [targets, setTargets] = useState<NativeTarget[] | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
@@ -40,10 +40,15 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
   };
   return <section className="mx-auto max-w-page space-y-6 p-5 md:p-8" aria-label="Connect agent">
     <div className="flex flex-wrap items-center gap-3"><h1 className="mr-auto text-2xl font-semibold">Connect agent</h1><Button size="sm" onClick={() => go("#/agents")}>Back to agents</Button></div>
-    <p className="max-w-prose text-lead text-muted-foreground">Connect a native setup for new jobs. Keep its instructions, tools, permissions and sign-in.</p>
-    <Banner title="Choose how to connect">Choose this server or another machine to launch jobs from an existing native setup. This browser cannot scan your laptop.</Banner>
-    <Segmented name="native-source" label="Connection method" value={source} onChange={setSource} options={[{ value: "server", label: "This server", disabled: busy }, { value: "remote", label: "Another machine", disabled: busy }]} />
-    {source === "remote" ? <RemoteConnections v2={v2} /> : <>
+    <p className="max-w-prose text-lead text-muted-foreground">Connect a native setup for new jobs, or observe an agent already running in its original application. Keep its instructions, tools, permissions and sign-in.</p>
+    <Banner title="Choose how to connect">Choose this server or another machine to launch jobs from an existing native setup. Choose an existing application to observe its activity and token usage through the CLI. This browser cannot scan your laptop.</Banner>
+    <Segmented name="native-source" label="Connection method" value={source} onChange={setSource} options={[{ value: "server", label: "This server", disabled: busy }, { value: "remote", label: "Another machine", disabled: busy }, { value: "observe", label: "Existing application", disabled: busy }]} />
+    {source === "observe" ? <section className="space-y-4 border bg-card p-4" aria-label="Observe an existing application">
+      <h2 className="text-lg font-semibold">Observe your existing agent</h2>
+      <p className="max-w-prose text-body text-muted-foreground">Connect Claude Code or Codex running locally, in Docker, or on another server. Your application continues to start and control its jobs; AgentRun receives session activity, model and token usage.</p>
+      <p className="max-w-prose text-small text-muted-foreground">The setup skill configures the existing CLI and telemetry collector for this server. Adding self-improvement requires the backend SDK integration.</p>
+      <CodingAgentAction variant="primary" label="Connect agent" prompt={`${connectExistingAgentsPrompt(location.origin)}\n\nI selected observation of an existing application. Preserve its current job trigger and SDK configuration; do not import or launch a replacement agent.`} />
+    </section> : source === "remote" ? <RemoteConnections v2={v2} /> : <>
     <ConnectExistingAgents />
     <section className="space-y-4 border bg-card p-4" aria-label="Discover native setups">
       <h2 className="text-lg font-semibold">Discover on this server</h2>
