@@ -715,11 +715,14 @@ test("connect dial: create starts agentrun-dial once as root with the boot env, 
 	assert.ok(calls.some(([what, id]) => what === "Sandbox.kill" && id === "sbx-dial"), "and is deleted");
 });
 
-test("connect dial takes kind linux alone, no Archil mount and no value but exec or dial, in words; exec stays the default", () => {
+test("connect dial takes kind linux alone, its default there, no Archil mount and no value but exec or dial, in words; exec stays the default", () => {
 	const { Sandbox } = dialSandbox();
 	const options = { apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, dial: dialOf() };
-	// E2B's default kind is desktop, which agentrun-dial cannot start.
-	assert.throws(() => new E2BProvider({ ...options, connect: "dial" }), /E2B's machines dial this server \(facts\.connect "dial"\), and agentrun-dial starts init with no display: make it kind linux/);
+	// A server passes connect alone (its e2bConnect setting): on dial the kind is linux unless one is named, and desktop,
+	// which agentrun-dial cannot start, is refused when named.
+	assert.equal(new E2BProvider({ ...options, connect: "dial" }).capabilities().kind, "linux");
+	assert.throws(() => new E2BProvider({ ...options, kind: "desktop", connect: "dial" }), /E2B's machines dial this server \(facts\.connect "dial"\), and agentrun-dial starts init with no display: make it kind linux/);
+	assert.equal(new E2BProvider(options).capabilities().kind, "desktop");
 	assert.throws(() => new E2BProvider({ ...options, connect: "ssh" }), /connect is how E2B reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	const provider = new E2BProvider({ ...options, kind: "linux", connect: "dial" });
 	assert.deepEqual(provider.capabilities().mount, []);

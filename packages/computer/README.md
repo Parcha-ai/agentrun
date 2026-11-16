@@ -1978,7 +1978,8 @@ provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 ### E2B on dial
 
 With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
-([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): kind linux alone, no Archil mount, and the host has no
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): kind linux alone (its default on dial; a desktop named
+there is refused), no Archil mount, and the host has no
 exec and no upload. E2B runs a template's start command once, at the template's build, and snapshots it running, so
 it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
 So create starts the box template's `agentrun-dial` itself, once, right after `Sandbox.create`: one envd process as
