@@ -2376,7 +2376,9 @@ A run names up to `limits.max_files_per_run`, 20, ready files in `file_ids`: an 
 `422` at `file_ids` before anything starts. Each is copied, never linked, into the run's `work/inputs/` at its `path`,
 folders kept, before the run's process starts, whatever its harness; a name already taken gets a suffix (`notes-2.txt`,
 `docs-2/`), the same for the same files in the same order. The run reads them as any file of its workspace, and
-`GET /v2/runs/{id}/files` lists them. An agentic run is told of them in its first message, on every harness: after the
+`GET /v2/runs/{id}/files` lists them. A run's opening message is saved beside them as `inputs/message.md`, its
+`content` byte for byte, so an agent can name it to a subagent instead of copying it (a run with no text `content` has
+none; an upload at that path takes `message-2.md`); the files line never names it. An agentic run is told of them in its first message, on every harness: after the
 input's `content` and a blank line, one line,
 `Files for this run: "inputs/notes.txt" (32 B), "inputs/docs/plan.md" (1.5 KB).`, each file by the path the run's tools
 take, quoted as a JSON string with a control, format or separator character as its `\uXXXX` escape (so no name forges an

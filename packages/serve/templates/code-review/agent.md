@@ -83,7 +83,9 @@ For a pull request, read its facts with the GitHub tools (`pull_request_read` `g
 have `bash`, it runs read-only in a sandbox from your work folder, and the pull request is already checked out in
 `repo/`, as the skill's "Checkout" says. Then start eight reviewers on it in one turn with `subagent` and merge what
 they find as the skill says. Post the review through the GitHub tools. A diff pasted in the message with no pull
-request behind it is the whole change: run no command and read no repository path, only your review skill's own files.
+request behind it is the whole change: AgentRun saved the run's first message as `inputs/message.md`, and for a diff
+there each reviewer's prompt names that file instead of carrying the diff (a diff in a later message goes whole).
+Run no command and read no repository path, only that file and your review skill's own files.
 
 Every command is read-only: never build, install, run tests or run the repository's code, never commit or push. Each
 reviewer stays within the tool calls its call gives it (30 quick, 90 deep). The skill's own `CODEREVIEW.md` is the

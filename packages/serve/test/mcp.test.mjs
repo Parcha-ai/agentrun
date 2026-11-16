@@ -91,7 +91,7 @@ test("demo: an MCP client sets up and drives an agent: initialize, the ten tools
   assert.deepEqual([run.status, run.result, run.revision, run.effort, run.cost], [direct.status, direct.result, direct.revision, direct.effort, direct.cost]);
 
   const listed = (await mcp.tool("runs_files", { run_id: started.run_id })).structuredContent;
-  assert.deepEqual(listed.files.map((f) => f.path), ["report.md"]);
+  assert.deepEqual(listed.files.map((f) => f.path), ["inputs/message.md", "report.md"]);
   const file = await mcp.tool("runs_files", { run_id: started.run_id, path: "report.md" });
   assert.deepEqual(file.content, [{ type: "text", text: "# Report\n\nThe answer is 42.\n" }]);
   assert.deepEqual([file.structuredContent.content_type, file.structuredContent.size_bytes, file.structuredContent.truncated], ["text/markdown", 28, false]);
