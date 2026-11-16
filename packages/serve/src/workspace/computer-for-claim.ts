@@ -333,7 +333,8 @@ async function readyImage(entry: ProviderEntry, provider: ComputerProvider, sign
   if (!entry.prepareImage) return undefined;
   if (provider.prepareImage === undefined) throw new Error(`${entry.label}'s descriptor says it prepares its image, but its provider has no prepareImage()`);
   const ready = await provider.prepareImage({ ...(signal ? { signal } : {}), ...(onWait ? { onWait } : {}) });
-  if (!ready.ok) throw new Error(ready.error.message);
+  // An outage preparing it (a 503 reading a template) keeps its transient mark, so the claim may fail over.
+  if (!ready.ok) throw launchError(ready.error);
   return ready.value;
 }
 

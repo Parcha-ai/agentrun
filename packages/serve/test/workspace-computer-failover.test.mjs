@@ -168,3 +168,57 @@ test("at the claim: a provider's list that answers 504 before its create fails t
   ]);
   await answer.release();
 });
+
+test("at the claim: a provider whose image read answers 503 fails the claim over, as a launch's outage does; nothing is made on it", async () => {
+  const { randomBytes } = await import("node:crypto");
+  const { mkdtempSync, realpathSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { readBackOf } = await import("@parcha/agentrun-computer");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const { computerForClaim, localWorkspace } = await import("../dist/workspace/index.js");
+  const { fakeComputer } = await import("./workspace-fake-computer.mjs");
+  const root = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-failover-image-")));
+  const keys = new Map();
+  const store = {
+    agents: { revision: async () => undefined },
+    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [] },
+    computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+  };
+  const sealKey = randomBytes(32);
+  for (const [name, value] of Object.entries({ ...SAVED.e2b, ...SAVED.modal })) await putSealedKey(store, sealKey, name, value);
+  const made = [];
+  const provider = (id) => () => {
+    const computer = fakeComputer(root);
+    return {
+      id,
+      version: "0",
+      capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
+      check: () => [],
+      // E2B's template read is down: the vendor's 503, marked as the computer package marks it.
+      prepareImage: async () => (id === "e2b" ? { ok: false, error: { code: "vendor", vendor: "e2b", message: "reading the template: 503", transient: true } } : { ok: true, value: "i" }),
+      list: async () => ({ ok: true, value: [] }),
+      async create() {
+        made.push(id);
+        return { ok: true, value: { id: `${id}-c1`, name: `${id}-c1` } };
+      },
+      async connect() {
+        return { ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } };
+      },
+      async attach() {
+        const read = await computer.readBack();
+        return { ok: true, value: { id: `${id}-c1`, name: `${id}-c1`, spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
+      },
+      release: async () => ({ ok: true, value: undefined }),
+    };
+  };
+  const said = [];
+  const answer = await computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "e2b" } }, store, {
+    mode: 2, kinds: KINDS, sealKey, providers: { e2b: provider("e2b"), modal: provider("modal") }, spec: () => ({ image: "i", lifetimeMs: 60_000, network: "none" }),
+    workspace: localWorkspace(root), check: { readBackOf, epoch: 1 }, failover: ["e2b", "modal"], onFailover: (one) => said.push(one), failoverCleanup: { pauseMs: 1, maxPauseMs: 1, attempts: 1 },
+  });
+  assert.deepEqual(made, ["modal"], "nothing made on E2B; the run's computer is Modal's");
+  assert.equal(said[0]?.to, "Modal");
+  assert.match(said[0].reason, /reading the template: 503/);
+  await answer.release();
+});

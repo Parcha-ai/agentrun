@@ -146,3 +146,17 @@ test("an aborted prepare stops waiting and says so", async () => {
 	assert.equal(stopped.ok, false);
 	assert.match(stopped.error.message, /agentrun-box-[0-9a-f]{12}/);
 });
+
+test("a template read that Agent37 answers 503 is a transient failure, so serve may fail the run over; a 403 is a refusal, unmarked", async () => {
+	const down = withTemplates();
+	down.answer("GET", `/v1/templates/${NAME}`, () => envelope(503, "unavailable", "Service unavailable"));
+	const outage = await down.provider.prepareImage();
+	assert.equal(outage.ok, false);
+	assert.match(outage.error.message, new RegExp(`reading the Agent37 template ${NAME}: .*503`));
+	assert.equal(outage.error.transient, true);
+	const refused = withTemplates();
+	refused.answer("GET", `/v1/templates/${NAME}`, () => envelope(403, "forbidden", "Not allowed"));
+	const no = await refused.provider.prepareImage();
+	assert.equal(no.ok, false);
+	assert.equal(no.error.transient, undefined);
+});
