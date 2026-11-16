@@ -59,7 +59,7 @@ test("install.sh is POSIX shell that stops at the first failure, runs its steps 
   const code = INSTALL.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
   assert.ok(!/\[\[|\bfunction\b|\$\{[A-Za-z_]+\[|<<<|\bsource\b/.test(code), "no bash: no [[, function, arrays, here-strings or source");
   assert.ok(spawnSync("sh", ["-n", fileURLToPath(box("install.sh"))]).status === 0, "sh reads it");
-  assert.match(INSTALL, /^case "\$\*" in\n""\) packages; desktop; helper; checked ;;\nchecked\) checked ;;\n/m, "the whole build in order, or the last step alone");
+  assert.match(INSTALL, /^case "\$\*" in\n""\) debian \/etc\/os-release; packages; desktop; helper; checked ;;\nchecked\) checked ;;\n/m, "the whole build in order, or the last step alone");
   // A vendor's snapshot flow may retry the build on the same machine: each step that makes something checks first.
   assert.match(step("packages"), /getent group agentrun-tool >\/dev\/null \|\| groupadd /);
   assert.match(step("packages"), /id -u agentrun-tool >\/dev\/null 2>&1 \|\| useradd /);
@@ -399,4 +399,88 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   assert.ok(apps.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
   // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
+});
+
+// --- a vendor that pulls a registry image, or needs its own agent in the image (provider.md, "prepareImage") ---
+
+/** A vendor's agent, put in the image from the vendor's own image, and the entrypoint that starts it. */
+const AGENT = "COPY --from=vendor.example/sandbox-agent:1.4 /sandbox-agent /usr/local/bin/sandbox-agent";
+const ENTRYPOINT = 'ENTRYPOINT ["/usr/local/bin/sandbox-agent"]';
+
+test("vendorDockerfile puts the box image on a vendor's base: as root, the vendor's agent first, install.sh's whole build once and last, then the vendor's entrypoint", async () => {
+  const { vendorDockerfile } = await import("../box/recipe.mjs");
+  const { dockerfile } = vendorDockerfile("vendor.example/base:bookworm", { agent: [AGENT], start: [ENTRYPOINT] });
+  assert.deepEqual(dockerfile.split("\n"), [
+    "FROM vendor.example/base:bookworm",
+    "USER root",
+    AGENT,
+    `COPY install.sh ${STAGE}/install.sh`,
+    `COPY agentrun-archil ${STAGE}/agentrun-archil`,
+    `RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}`,
+    ENTRYPOINT,
+    "",
+  ]);
+  // install.sh runs once, after the agent: its checked step (sudo taken away, every check) is the image's last build step.
+  assert.equal(dockerfile.match(/^COPY install\.sh /gm).length, 1, "copied once");
+  assert.equal(dockerfile.match(/^RUN .*install\.sh/gm).length, 1, "run once");
+  assert.ok(dockerfile.indexOf(AGENT) < dockerfile.indexOf("RUN sh"), "the agent is in before install.sh runs");
+  assert.ok(!/^CMD /m.test(dockerfile), "no CMD of ours: the vendor's entrypoint is the first process");
+  // The same build lines as the box Dockerfile, read from it: one source.
+  for (const line of INSTRUCTIONS.filter((line) => /^(COPY|RUN) /.test(line))) assert.ok(dockerfile.includes(`${line}\n`), line);
+});
+
+test("vendorDockerfile with no start lines ends in the box Dockerfile's CMD, and with start [] keeps what the base starts", async () => {
+  const { vendorDockerfile } = await import("../box/recipe.mjs");
+  const ours = vendorDockerfile("debian:bookworm-slim").dockerfile.split("\n");
+  assert.deepEqual(ours, ["FROM debian:bookworm-slim", "USER root", `COPY install.sh ${STAGE}/install.sh`, `COPY agentrun-archil ${STAGE}/agentrun-archil`, `RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}`, 'CMD ["sleep", "infinity"]', ""]);
+  // Docker keeps a base's ENTRYPOINT and CMD when the file names neither: a base whose own agent is its entrypoint.
+  const kept = vendorDockerfile("vendor.example/sandbox:1.4", { start: [] }).dockerfile;
+  assert.ok(!/^(CMD|ENTRYPOINT) /m.test(kept), "nothing replaces the base's entrypoint");
+  assert.ok(kept.endsWith(`RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}\n`));
+});
+
+test("a vendor's Dockerfile is named by the recipe's hash with it in the box Dockerfile's place: a changed base, agent or start is a new tag, the same ones the tag built before", async () => {
+  const { recipeHash, vendorDockerfile } = await import("../box/recipe.mjs");
+  const made = vendorDockerfile("vendor.example/base:bookworm", { agent: [AGENT], start: [ENTRYPOINT] });
+  const expected = createHash("sha256").update(Buffer.concat([Buffer.from(made.dockerfile), readFileSync(box("install.sh")), readFileSync(box("agentrun-archil"))])).digest("hex").slice(0, 12);
+  assert.equal(made.hash, expected);
+  assert.equal(made.hash, recipeHash(undefined, made.dockerfile));
+  assert.equal(vendorDockerfile("vendor.example/base:bookworm", { agent: [AGENT], start: [ENTRYPOINT] }).hash, made.hash, "the same inputs, the same tag");
+  const others = [
+    vendorDockerfile("vendor.example/base:trixie", { agent: [AGENT], start: [ENTRYPOINT] }),
+    vendorDockerfile("vendor.example/base:bookworm", { agent: [AGENT.replace("1.4", "1.5")], start: [ENTRYPOINT] }),
+    vendorDockerfile("vendor.example/base:bookworm", { agent: [AGENT] }),
+  ].map((one) => one.hash);
+  assert.equal(new Set([made.hash, recipeHash(), ...others]).size, 5, "each differs from the others and from the box image's");
+});
+
+test("install.sh builds on Debian alone: it reads /etc/os-release first and refuses another base in words, before it installs anything", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  assert.match(INSTALL, /^""\) debian \/etc\/os-release; packages; desktop; helper; checked ;;$/m, "the first step of the whole build");
+  const dir = mkdtempSync(join(tmpdir(), "box-debian-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = (name, text) => {
+    writeFileSync(join(dir, name), text);
+    return spawnSync("sh", ["-c", `set -eu\ndebian() {\n${step("debian")}}\ndebian "$1"`, "sh", join(dir, name)], { encoding: "utf8" });
+  };
+  for (const [name, text] of [
+    ["bookworm", 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nID=debian\n'],
+    ["quoted", 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID="debian"\n'],
+  ]) {
+    const ok = run(name, text);
+    assert.equal(ok.status, 0, `${name}: ${ok.stderr}`);
+  }
+  const alpine = run("alpine", 'NAME="Alpine Linux"\nID=alpine\nPRETTY_NAME="Alpine Linux v3.20"\n');
+  assert.equal(alpine.status, 1);
+  assert.equal(alpine.stderr, `install.sh builds on Debian (its packages are Debian's, through apt), and this base is Alpine Linux v3.20 by ${join(dir, "alpine")}: start FROM python:3.12-slim, debian:bookworm-slim or a vendor's base built on Debian\n`);
+  const ubuntu = run("ubuntu", 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nID=ubuntu\nID_LIKE=debian\n');
+  assert.equal(ubuntu.status, 1, "Ubuntu has apt but not Debian's packages (firefox-esr)");
+  assert.match(ubuntu.stderr, /this base is Ubuntu 24\.04\.1 LTS by \S+: start FROM /);
+  const none = run("none", "");
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /this base is unnamed by \S+: start FROM /);
+  const missing = spawnSync("sh", ["-c", `set -eu\ndebian() {\n${step("debian")}}\ndebian "$1"`, "sh", join(dir, "no-such-file")], { encoding: "utf8" });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /this base is unnamed by \S+no-such-file: start FROM /);
 });

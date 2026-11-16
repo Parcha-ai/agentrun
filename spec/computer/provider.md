@@ -176,11 +176,25 @@ A provider whose computers start from an image it makes declares `prepareImage: 
 the box image: `packages/computer/box/install.sh` holds every step of its build, as POSIX shell run as root on the
 Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only runs it.
 
-- A vendor that builds images in the account (a snapshot, a blueprint, a template, its own registry): `prepareImage`
-  boots the vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
+- A vendor that builds images from a running machine (a snapshot, a blueprint, a template): `prepareImage` boots the
+  vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
+- A vendor that pulls a registry image at create or deploy (by tag or digest), or whose own agent must be in the image
+  (its entrypoint, or a layer): `prepareImage` builds a Dockerfile, `vendorDockerfile(base, { agent, start })` in
+  `box/recipe.mjs`, and pushes it to the account's registry. The file starts `FROM` the vendor's base (or ours), as
+  root, then the vendor's agent's instructions, then the box Dockerfile's `COPY` and `RUN` lines: the agent goes in
+  before `install.sh`, so its checked step (sudo taken away, every check) runs last. Then the start lines: the vendor's
+  `ENTRYPOINT` where its agent must be the first process, none to keep the base's own, or by default the box
+  Dockerfile's `CMD`. The build's context is that file, `install.sh` and `agentrun-archil`.
+- Any base is Debian: `install.sh` installs Debian's packages through apt, and its first step reads `/etc/os-release`
+  and refuses another base in words, before it installs anything (Ubuntu has apt, but not Debian's `firefox-esr`).
 - It is idempotent by name. The name carries the box recipe's hash (`boxRecipeHash()`, which covers `install.sh`), so
   a second call finds the image by that name and answers it, with no build and no `onWait`. A name the vendor refuses
-  as taken is another build of it: wait for that one.
+  as taken is another build of it: wait for that one. A registry image's tag is `vendorDockerfile`'s `hash`, the
+  recipe's with that file in the box Dockerfile's place, so a new base, agent or start line is a new tag; it looks the
+  tag up before it builds, and answers its digest where the vendor pins images by digest.
+- A vendor whose image is fixed when something of ours deploys (Cloudflare Containers: the Worker's `image`) builds the
+  same Dockerfile at that deploy, and has no `prepareImage`. A vendor with no custom image at all (Fly Sprites) can't
+  take the box image: no Archil mount and no desktop there.
 - It calls `ctx.onWait("build" | "pull", tag)` once, and only when it really builds or pulls.
 - It answers the image a create then names: ok with it, or an error in the vendor's words.
 

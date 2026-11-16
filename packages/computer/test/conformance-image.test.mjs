@@ -1,8 +1,10 @@
 // provider.prepare-image, the twice-call case: a provider with prepareImage() is asked for its image twice in one run,
 // and the second call finds the image the first made by its name, with no build and no pull. The providers here sit on
 // the fake host (test/fake-host.mjs) with an in-memory vendor that builds images by name, the shape PROVIDERS.md's
-// worked example has: boot the base, run box/install.sh, snapshot. No network, no vendor.
+// worked example has: boot the base, run box/install.sh, snapshot. And PROVIDERS.md's registry example, on an in-memory
+// registry: build box/recipe.mjs's vendorDockerfile, push it under its hash, find that tag first. No network, no vendor.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -190,6 +192,85 @@ test("two servers that build the same recipe at once both answer its image: the 
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.message, `building the box image ${NAME}: the account is at its snapshot quota`);
 	assert.deepEqual(refusing.deleted, ["vm-1"]);
+});
+
+// --- the registry path: a vendor that pulls a registry image, or needs its own agent in the image ---
+
+const { vendorDockerfile } = await import("../box/recipe.mjs");
+/** The vendor's base, its agent and the entrypoint that starts it: a sandbox API the vendor needs as the first process. */
+const VENDOR = { base: "vendor.example/base:bookworm", agent: ["COPY --from=vendor.example/sandbox-agent:1.4 /sandbox-agent /usr/local/bin/sandbox-agent"], start: ['ENTRYPOINT ["/usr/local/bin/sandbox-agent"]'] };
+const REPOSITORY = "registry.example/acct-1/agentrun-box";
+
+/**
+ * A vendor whose computers start from an image in the account's registry, in memory: its tags and their digests, and
+ * every build its builder ran (the Dockerfile and the context's files). A build pushes its tag and answers the digest.
+ */
+function registry() {
+	const account = { tags: new Map(), builds: [] };
+	const live = (ctx) => ctx?.signal?.throwIfAborted();
+	account.client = {
+		findImage: async (tag, ctx) => (live(ctx), account.tags.get(tag)),
+		buildAndPush: async (tag, context, ctx) => {
+			live(ctx);
+			account.builds.push({ tag, context });
+			const digest = `${tag.slice(0, tag.lastIndexOf(":"))}@sha256:${createHash("sha256").update(context.Dockerfile).digest("hex")}`;
+			account.tags.set(tag, digest);
+			return digest;
+		},
+	};
+	return account;
+}
+
+/** PROVIDERS.md's registry example on the fake host: the box image on the vendor's base, found by its tag (findsByTag) or built and pushed. */
+function registryProvider(account, { findsByTag }) {
+	const host = Object.assign(fakeHost().host, { client: account.client });
+	return new (class extends HostedProvider {
+		async prepareImage(ctx = {}) {
+			const { dockerfile, hash } = vendorDockerfile(VENDOR.base, { agent: VENDOR.agent, start: VENDOR.start });
+			const tag = `${REPOSITORY}:${hash}`;
+			const vendor = this.host.client;
+			try {
+				const found = findsByTag ? await vendor.findImage(tag, ctx) : undefined;
+				if (found) return { ok: true, value: found };
+				ctx.onWait?.("build", tag);
+				const box = (file) => readFile(new URL(file, BOX));
+				return { ok: true, value: await vendor.buildAndPush(tag, { Dockerfile: dockerfile, "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") }, ctx) };
+			} catch (error) {
+				return { ok: false, error: { code: codeOfError(this.host, error), message: `building the box image ${tag}: ${error instanceof Error ? error.message : String(error)}` } };
+			}
+		}
+	})(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+}
+
+test("on the registry path, a prepareImage that finds its tag passes: one build of the vendor's Dockerfile, pushed under the recipe's hash, and both calls answer its digest", async () => {
+	const account = registry();
+	const report = await run(registryProvider(account, { findsByTag: true }));
+	const [result] = report.results;
+	assert.equal(result.status, "pass", result.reason);
+	const { dockerfile, hash } = vendorDockerfile(VENDOR.base, { agent: VENDOR.agent, start: VENDOR.start });
+	const tag = `${REPOSITORY}:${hash}`;
+	const digest = account.tags.get(tag);
+	assert.match(digest, new RegExp(`^${REPOSITORY}@sha256:[0-9a-f]{64}$`));
+	assert.deepEqual(result.observed, [`the first prepareImage was told onWait(build ${tag}) and answered ${digest}`]);
+	assert.equal(account.builds.length, 1);
+	const [{ context }] = account.builds;
+	assert.equal(context.Dockerfile, dockerfile);
+	assert.deepEqual(Object.keys(context).sort(), ["Dockerfile", "agentrun-archil", "install.sh"], "the context is the Dockerfile and what it copies");
+	assert.deepEqual(context["install.sh"], readFileSync(new URL("install.sh", BOX)));
+	// The next run on an account that has the tag builds nothing.
+	const again = await run(registryProvider(account, { findsByTag: true }));
+	assert.equal(again.results[0].status, "pass", again.results[0].reason);
+	assert.deepEqual(again.results[0].observed, [`the first prepareImage found ${digest} and was told no onWait`]);
+	assert.equal(account.builds.length, 1, "no build on the next run");
+});
+
+test("on the registry path, a prepareImage that builds and pushes every call fails Core in the same words", async () => {
+	const account = registry();
+	const [result] = (await run(registryProvider(account, { findsByTag: false }))).results;
+	const tag = `${REPOSITORY}:${vendorDockerfile(VENDOR.base, { agent: VENDOR.agent, start: VENDOR.start }).hash}`;
+	assert.equal(result.status, "fail");
+	assert.equal(result.reason, `the second prepareImage was told onWait(build ${tag}): it must find the image the first made by its name (one that carries the box recipe's hash) and answer it with no build and no pull`);
+	assert.equal(account.builds.length, 2, "a build and a push for each call");
 });
 
 test("a build cancelled by the caller's signal still deletes its machine: the delete has its own deadline", async () => {
