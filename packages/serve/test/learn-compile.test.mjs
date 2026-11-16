@@ -630,10 +630,20 @@ test("the quote check re-picks once: a checked answer step that hands back on it
   const inner = { node: "escalate", label: "inner_quotes", when: QUOTES_WHEN({ pages: ["page"] }), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" };
   assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, inner] })), [INNER_CHECK("repick", "inner_quotes")], "a check in the loop's chain");
   assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, { node: "route", label: "which", branches: { a: { body: inner }, b: { body: { node: "chain", steps: [] } } } }] })), [INNER_CHECK("repick", "inner_quotes")], "a check deeper in the body");
+  // The re-pick reads the failed draft only when its step takes the whole state: the DSL sends a step with a `state` map
+  // only the keys it names (each pass a fresh model session), and naming the answer there fails the first pass, which
+  // has no draft yet. The one shape that sees the draft is no `state` map at all.
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { page: "{page}" } })), [NO_DRAFT("answer", "repick")], "an explicit state without the draft");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { page: "{page}", draft: "{answer}" } })), [NO_DRAFT("answer", "repick")], "an explicit state naming the answer, unset on the first pass");
+  assert.deepEqual(again((loop) => (loop.body = { node: "route", label: "which", branches: { a: { body: { ...ANSWER_STEP, state: { page: "{page}" } } }, b: { body: ANSWER_STEP } } })), [NO_DRAFT("answer", "repick")], "deeper in the body");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP })), [], "no state map: the whole state, the draft included");
+  assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [{ node: "extract", label: "note", instructions: "Note the page.", state: { page: "{page}" }, out: "Facts", as: "note", tier: "fast" }, ANSWER_STEP] })), [], "a step in the loop not writing the answer may name its state");
   // The compile turn is told the same.
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the check after the loop, never inside it/);
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the step in the loop has no `state` map, so it reads the whole run state and its second pass sees the failed draft/);
 });
+const NO_DRAFT = (step, loop) => `the step "${step}" in the re-pick loop "${loop}" writes the answer from a "state" map, which passes it only the keys it names, so its second pass never sees the failed draft (and naming the answer there fails the first pass, before any draft exists): give it no "state" map, so it reads the whole run state, the failed draft included`;
 const INNER_CHECK = (loop, check) => `the re-pick loop "${loop}" holds the quote_missing escalate "${check}" in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`;
 
 // A loop's `until` is one predicate, and no predicate joins two quote_missing checks: a loop watching one of several
