@@ -27,7 +27,7 @@ export interface ExecPieces<P> {
 	/**
 	 * Ends the process in the machine. Leave it out where the vendor has none: the process then starts under a sh that
 	 * writes its pid and its start time on stderr first (framedExec reads that line and passes on the rest), and kill()
-	 * starts a sh that sends `kill -KILL <pid>` only while that pid still has that start time.
+	 * starts a sh that kills that pid, and every process under it, only while that pid still has that start time.
 	 */
 	kill?(handle: P): Promise<void>;
 }
@@ -39,8 +39,32 @@ export interface ExecPieces<P> {
  */
 export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")" >&2; exec "$@"', "sh"];
 
-/** The sh kill() starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let be. */
-export const PID_KILL = 's=$(cat "/proc/$1/stat" 2>/dev/null) || exit 0; pid=$1 start=$2; set -- ${s##*") "}; [ "${20}" = "$start" ] && kill -KILL "$pid"; exit 0';
+/**
+ * The sh kill() starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let
+ * be. Otherwise it kills the process and every process under it (an upload's head and base64 would wait on the open
+ * stdin, and hold stderr open, past their sh): each is stopped as it is found, so none forks away, by its parent pid
+ * (field 4 of its stat) until a pass over /proc finds no more, and then all are killed.
+ */
+export const PID_KILL = [
+	"pid=$1 start=$2",
+	'read -r s 2>/dev/null <"/proc/$pid/stat" || exit 0',
+	'set -- ${s##*") "}',
+	'[ "${20}" = "$start" ] || exit 0',
+	'kill -STOP "$pid" 2>/dev/null',
+	'all=" $pid " new=$pid',
+	'while [ -n "$new" ]; do',
+	"\tnew=",
+	"\tfor f in /proc/[0-9]*/stat; do",
+	'\t\tread -r s 2>/dev/null <"$f" || continue',
+	"\t\tp=${s%% *}",
+	'\t\tset -- ${s##*") "}',
+	'\t\tcase "$all" in *" $p "*) continue ;; esac',
+	'\t\tcase "$all" in *" $2 "*) all="$all$p " new="$new $p"; kill -STOP "$p" 2>/dev/null ;; esac',
+	"\tdone",
+	"done",
+	"kill -KILL $all 2>/dev/null",
+	"exit 0",
+].join("\n");
 
 /** argv started through a vendor's pieces, as the MachineProcess exec answers. */
 export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {

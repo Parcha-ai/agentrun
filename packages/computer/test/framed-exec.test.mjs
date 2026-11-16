@@ -5,11 +5,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as pause } from "node:timers/promises";
 import { runConformance } from "../dist/index.js";
 import { checkExecStream, formatExecStream } from "../dist/conformance/exec-stream.js";
 import { framedExec, ndjson, PID_KILL, PID_WRAPPER } from "../dist/hosted/framed-exec.js";
@@ -215,19 +216,40 @@ test("framedExec with no vendor kill still kills by pid when the event stream br
 	assert.equal(done.calls.length, 1, "an exit read: the pid may be another process's, so no kill starts");
 });
 
-test("the pid wrapper's line is the pid and its start time, and the kill script kills that pid only while the start time matches", async (t) => {
+test("the pid wrapper's line is the pid and its start time, and the kill script kills that pid and every process under it only while the start time matches", async (t) => {
 	if (!HAS_PROC) return t.skip(NO_PROC);
-	const child = spawn(PID_WRAPPER[0], [...PID_WRAPPER.slice(1), "sleep", "600"], { stdio: ["ignore", "ignore", "pipe"] });
-	t.after(() => child.kill("SIGKILL"));
+	// A pipeline under its sh, as the upload is: its children outlive a kill of the sh alone, waiting on stdin.
+	const child = spawn(PID_WRAPPER[0], [...PID_WRAPPER.slice(1), "sh", "-c", "sleep 600 | cat; :"], { stdio: ["pipe", "ignore", "pipe"] });
+	const stat = (pid) => {
+		try {
+			return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ");
+		} catch {
+			return undefined;
+		}
+	};
+	const under = (pid) => readdirSync("/proc").filter((p) => /^\d+$/.test(p) && stat(p)?.[1] === pid);
+	let kids = [];
+	t.after(() => {
+		child.kill("SIGKILL");
+		for (const kid of kids) spawnSync("kill", ["-KILL", kid]);
+	});
 	const [line] = await once(child.stderr, "data");
 	const [pid, start] = line.toString().trim().split(" ");
 	assert.equal(pid, String(child.pid));
-	assert.equal(start, readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[19], "field 22 of its stat");
+	assert.equal(start, stat(pid)[19], "field 22 of its stat");
+	for (let at = 0; at < 100 && kids.length < 2; at++) {
+		await pause(20);
+		kids = under(pid);
+	}
+	assert.equal(kids.length, 2, "sleep and cat");
 	const kill = (startTime) => spawnSync("sh", ["-c", PID_KILL, "sh", pid, startTime]).status;
 	assert.equal(kill(String(Number(start) + 1)), 0);
 	assert.equal(child.exitCode ?? child.signalCode, null, "another start time: another process, let be");
+	assert.ok(kids.every((kid) => stat(kid) !== undefined), "and its children too");
 	assert.equal(kill(start), 0);
 	assert.deepEqual(await once(child, "exit"), [null, "SIGKILL"]);
+	for (let at = 0; at < 100 && kids.some((kid) => stat(kid) !== undefined && stat(kid)[0] !== "Z"); at++) await pause(20);
+	assert.deepEqual(kids.filter((kid) => stat(kid) !== undefined && stat(kid)[0] !== "Z"), [], "every process under it is killed");
 });
 
 test("framedExec reads events no faster than stdout is read, and kill() lets a held reader go", async () => {
