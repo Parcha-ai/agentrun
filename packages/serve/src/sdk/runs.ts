@@ -1,6 +1,6 @@
 // Backend SDK calls remain in their application. This inbox only records their evidence and immutable completion;
 // the ordinary fenced runner owns journals, reflection, checking and learning commits.
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError } from "../errors.js";
 import { canonical, isObject, type AgenticBody } from "../store/agent-body.js";
@@ -159,25 +159,36 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
   }
 }
 
+/** The key a server signs its SDK runs' credentials with: derived from its seal key (seal-key.ts), which stays the
+ *  store's for its life, so adding, reordering or removing an API token (api-token.ts) never changes a run's credential. */
+export const sdkRunSecret = (sealKey: Buffer): string => createHmac("sha256", sealKey).update("agentrun sdk-run credentials").digest("base64url");
+
+const sign = (secret: string, runId: string) => `ar_sdk_${createHmac("sha256", secret).update(`sdk-run\0${runId}`).digest("base64url")}`;
+const digest = (text: string) => createHash("sha256").update(text).digest();
+
 export class SdkRuns {
+  /** `earlier` are the keys credentials were once signed with (the server's API tokens, before `secret` was its seal
+   *  key's): a credential any of them signed is still taken, so a run started before an upgrade keeps its credential. */
   constructor(
     private readonly store: Store,
     private readonly data: string,
     private readonly secret: string,
     private readonly secrets: () => readonly string[] = () => [],
+    private readonly earlier: readonly string[] = [],
   ) {}
   token(runId: string): string {
-    return `ar_sdk_${createHmac("sha256", this.secret).update(`sdk-run\0${runId}`).digest("base64url")}`;
+    return sign(this.secret, runId);
   }
   async authenticate(runId: string, token: string): Promise<void> {
-    const expected = Buffer.from(this.token(runId)),
-      actual = Buffer.from(token);
-    if (expected.length !== actual.length || !timingSafeEqual(expected, actual))
-      throw new ApiError("unauthenticated", "This credential is scoped to a different SDK run.");
+    // Every key compared, on equal-length digests, with no early return.
+    const given = digest(token);
+    let ok = false;
+    for (const key of [this.secret, ...this.earlier]) ok = timingSafeEqual(given, digest(sign(key, runId))) || ok;
+    if (!ok) throw new ApiError("unauthenticated", "This credential is scoped to a different SDK run.");
     await sdkInbox(this.store, runId);
   }
   private clean<T>(body: T, runId?: string): T {
-    const redact = secretRedactor([...this.secrets(), ...(runId ? [this.token(runId)] : [])]);
+    const redact = secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId)) : [])]);
     // Redact values structurally: a long string or encoded credential can be withheld whole,
     // so treating serialized JSON as prose could remove its delimiters and corrupt the envelope.
     return redactedOutput(body, redact.heldValues?.() ?? []) as T;

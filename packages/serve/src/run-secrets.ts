@@ -23,7 +23,7 @@ const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.i
  *  (place-offers.ts BOX_KEYS) and every other computer provider's account key, which only the server's and the runner's
  *  computer providers use, and the Archil account key (archil-key.ts), from which the claim mints each run's own mount
  *  credential. */
-const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV]);
+const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
