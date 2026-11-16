@@ -10,10 +10,30 @@ import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const hooked = { source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "target", input: { content: "Go." }, max_cost_usd: 0.5 } };
-const holdsPiece = (text, secret) => [...Array(Math.max(0, secret.length - 7)).keys()].some((i) => text.includes(secret.slice(i, i + 8)));
 /** The forms of `secret` its `whsec_` shape does not catch, but its value does: what a person may paste of it. Its body,
  *  the base64 after `whsec_`, is the signing key itself. */
 const formsOf = (secret) => ({ hex: Buffer.from(secret).toString("hex"), base64: Buffer.from(secret).toString("base64"), body: secret.slice("whsec_".length) });
+/** How long a piece of each form is: 8 characters, and 16 of the hex, which writes each character as two digits, so every
+ *  piece holds 8 characters of the secret. A piece of 8 hex digits holds only 4, and the served text has digits of its
+ *  own: a Timeline page's cursor is 16 of them (the clock's start in milliseconds, times 1000, plus a count), and now and
+ *  then one of its 8-digit runs spells 4 characters of a random secret in hex, a match that says nothing about the
+ *  redaction. */
+const PIECE = { hex: 16, base64: 8, body: 8 };
+/** Where `text` shows a piece of `form`, with what is around it; undefined when it shows none. */
+const pieceIn = (text, form, size) => {
+  for (let i = 0; i + size <= form.length; i++) {
+    const at = text.indexOf(form.slice(i, i + size));
+    if (at >= 0) return `${form.slice(i, i + size)} at ${at}: ${text.slice(Math.max(0, at - 200), at + size + 200)}`;
+  }
+  return undefined;
+};
+/** That `text` shows no piece of any of `forms`, saying where it does. */
+const showsNone = (text, forms, which) => {
+  for (const [form, value] of Object.entries(forms)) {
+    const piece = pieceIn(text, value, PIECE[form]);
+    assert.equal(piece, undefined, `${which} ${form} form shows nowhere: ${piece}`);
+  }
+};
 
 /** A run of agent `id` whose message holds each of `forms`: everything the server shows of it, as one text. The run is held
  *  (the faux model's answer waits for a file) until a live page, read while it still works, holds its message row; then it
@@ -58,10 +78,10 @@ test("a webhook trigger's secret pasted into a run's message, as hex, base64 or 
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const first = formsOf(created.body.signing_secret);
   const shown = await pasted(t, api, "pasted", first);
-  for (const [form, value] of Object.entries(first)) assert.equal(holdsPiece(shown, value), false, `the secret's ${form} form shows nowhere: ${shown.slice(0, 600)}`);
+  showsNone(shown, first, "the secret's");
   const rotated = await api("POST", `/triggers/${created.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
   const next = formsOf(rotated.body.signing_secret);
   const after = await pasted(t, api, "rotated", next);
-  for (const [form, value] of Object.entries(next)) assert.equal(holdsPiece(after, value), false, `the new secret's ${form} form shows nowhere: ${after.slice(0, 600)}`);
+  showsNone(after, next, "the new secret's");
 });
