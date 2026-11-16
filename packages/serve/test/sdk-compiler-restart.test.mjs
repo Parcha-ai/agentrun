@@ -47,14 +47,14 @@ for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real comp
   sdk=client(s.baseUrl,start.body.token);
   const done=await sdk("POST",`/sdk-runs/${runId}/complete`,{status:"completed",answer:'{"ready":true}',usage:{cost_usd:0.25,input_tokens:20,output_tokens:5,cache_read_tokens:0,cache_write_tokens:0}});assert.equal(done.status,200);
   await settle(runId,n===4);
-  if(n<4)assert.equal(sent.length,n+1,"before the real five-run threshold there is only the look-back");
+  if(n<4)assert.equal(sent.length,0,"before the real five-run threshold an SDK run, with no owner feedback to look back on, sends no request");
  }
  const before=await journalEntries(s.store.readJournal(runId),BACKGROUND_CONTEXT);
  const prompts=before.filter(e=>e.kind==="agentrun.end-of-run.turn"&&e.data.role==="person");
- assert.deepEqual(prompts.map(e=>e.data.requestId),[reflectRequestId(runId),reflectRequestId(runId,false,1,"compile-1"),reflectRequestId(runId,false,1,"compile-2")]);
- assert.equal(before.filter(e=>e.kind==="agentrun.end-of-run.turn"&&e.data.role==="model").length,3);
+ assert.deepEqual(prompts.map(e=>e.data.requestId),[reflectRequestId(runId,false,1,"compile-1"),reflectRequestId(runId,false,1,"compile-2")]);
+ assert.equal(before.filter(e=>e.kind==="agentrun.end-of-run.turn"&&e.data.role==="model").length,2);
  assert.equal(await s.store.learning.proposal(runId),undefined,"proposal and end remain atomic through the crash");
- const requests=sent.length;assert.equal(requests,7,"four earlier look-backs, then look-back and two actual compiler requests");
+ const requests=sent.length;assert.equal(requests,2,"no look-back on any run; the fifth run's end asks only the compile: the malformed answer, then the corrected one");
  await settle(runId);
  assert.equal(sent.length,requests,"reclaim reuses all durable answers, with no repeated paid request");
  const kept=await s.store.learning.proposal(runId);assert.equal(kept.proposal.state,"proposed",JSON.stringify(kept.proposal));
@@ -63,6 +63,6 @@ for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real comp
  const view=await sdk("GET",`/sdk-runs/${runId}`);assert.equal(view.status,200,JSON.stringify(view.body));
  assert.deepEqual(view.body.learning.compiled.attempts.map(a=>a.ok),[false,true],"the actual SDK HTTP learning response retains both compiler attempts");
  assert.equal(view.body.learning.compiled.digest,kept.proposal.compiled.digest);assert.deepEqual(view.body.learning.draft_errors,[],"the HTTP contract reports no remaining draft errors after correction");
- assert.equal(kept.proposal.job_cost_usd,0.25);assert.ok(Math.abs(kept.proposal.look_back_usd-0.15)<1e-9);
- assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd-0.4)<1e-9,"task plus exactly three learning charges");
+ assert.equal(kept.proposal.job_cost_usd,0.25);assert.ok(Math.abs(kept.proposal.look_back_usd-0.1)<1e-9);
+ assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd-0.35)<1e-9,"task plus exactly two learning charges, the two compiler requests");
 });
