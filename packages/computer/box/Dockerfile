@@ -19,8 +19,9 @@
 #
 # No sudo and no sudoers file: the image's user is root, so the provider's own exec (Daytona's toolbox, Modal's exec,
 # E2B's commands as root) runs the helper as root, and the tool user has no way to root. The build fails if the base
-# brings either. computerd is not part of the image: the provider uploads and installs it, root's alone, at create, and
-# the helper's serve runs that one.
+# brings either. computerd is not part of the image: the provider uploads and installs it, root's alone, at create (or,
+# on a machine that dials the server, agentrun-dial fetches it from the server, checked by sha256), and the helper's
+# serve runs that one.
 #
 # /proc with hidepid=2 is not part of an image: the helper remounts /proc so before each mount, as root, and refuses the
 # mount in a computer where that fails.
@@ -35,5 +36,6 @@ RUN sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box
 
 USER root
 # A computer's first process is its provider's own (Daytona's runs this when a snapshot names no entrypoint; Modal's and
-# E2B's are their own): never the base image's python.
-CMD ["sleep", "infinity"]
+# E2B's are their own): never the base image's python. A machine whose create set AGENTRUN_ATTACH_URL dials the server
+# instead (install.sh's agentrun-dial).
+CMD ["sh", "-c", "[ -z \"${AGENTRUN_ATTACH_URL-}\" ] || exec agentrun-dial; exec sleep infinity"]
