@@ -18,6 +18,7 @@ import { checked } from "./email-support.mjs";
 import { created, feed, feedKey, feedTrigger, firedFeed, incident, posts, pull, T0, tick } from "./feed-support.mjs";
 
 /** The same items, each summary edited: a new body and ETag, so the next check reads and parses it, and no key new. */
+const PRIVATE = "10.0.0.5"; // key-gate: denylist a private address a feed trigger refuses
 const edited = (faux) => faux.set(faux.items().map((item) => ({ ...item, summary: `edited ${Date.now()}` })));
 /** The trigger's source edited to `source` (a feed's), as an owner's PATCH does; its answer. */
 async function editedTo(api, id, source) {
@@ -393,7 +394,7 @@ test("a feed on a private address is refused, and so is a loopback one where the
   const clock = fakeClock(T0);
   const { api } = await serve(t, { triggerClock: clock, runner: false, mcpLoopback: false });
   await made(api, "reader");
-  const inside = await checked(api, (await created(api, feedTrigger("reader", { urls: ["https://10.0.0.5/feed"] }))).id, T0);
+  const inside = await checked(api, (await created(api, feedTrigger("reader", { urls: [`https://${PRIVATE}/feed`] }))).id, T0);
   assert.deepEqual([inside.enabled, inside.last_check.ok], [true, false], JSON.stringify(inside.last_check));
   assert.match(inside.last_check.message, /private (address|network)/);
   const blog = await feed(t, { format: "rss", items: posts(1) });

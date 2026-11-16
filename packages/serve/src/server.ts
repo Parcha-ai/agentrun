@@ -352,6 +352,9 @@ export type ServeOptions = {
   learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** A test's and a template eval's seam: the URL a feed trigger's read of `url` goes to in its place (a fake feed on
+   *  loopback, feed/feed-faux.ts), or undefined to read it as it is. The trigger, its payload and its words keep `url`. */
+  feedsAt?: (url: string) => string | undefined;
   /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
    *  it the trigger routes answer unavailable and nothing fires. */
   store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;
@@ -1680,7 +1683,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     adapters,
     unavailable: async (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : kind === "email" && !(await openAccount(store, sealKey)) ? noAccount() : undefined),
     // The email trigger's account, its password opened as it polls (email/account.ts): never kept in the engine.
-    credentials: async (kind) => (kind === "email" ? openAccount(store, sealKey) : undefined),
+    // A feed trigger's reach: where its reads may go, as an MCP server's requests may (mcp-oauth.ts feedAt), and a test's
+    // or an eval's route to its fake feeds (feedsAt).
+    credentials: async (kind) => (kind === "email" ? openAccount(store, sealKey) : kind === "feed" ? { ...(await mcpServers.feedReach()), ...(options.feedsAt ? { route: options.feedsAt } : {}) } : undefined),
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
     // The trigger target policy (what a trigger may start or message, and in what words it is refused) is the one store's
     // (trigger-targets.ts, over the run write half and the run view): targetIssues, start, message, statusOf, runOf. The

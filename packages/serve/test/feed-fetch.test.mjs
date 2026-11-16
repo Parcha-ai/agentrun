@@ -18,6 +18,12 @@ function network(names, answers) {
   };
   return { sent, net: { lookup: async (host) => names[host] ?? [], local: () => [], fetch: answer, dial: answer } };
 }
+// The private addresses the check refuses, each named once.
+const PRIVATE = "10.0.0.5"; // key-gate: denylist a private address the check refuses
+const INTRA = "10.1.2.3"; // key-gate: denylist the address of a private host the owner allows
+const HOME_NET = "192.168.1.10"; // key-gate: denylist a home network address the check refuses
+const METADATA = "169.254.169.254"; // key-gate: denylist the link-local metadata address the check refuses
+const LOOPBACK_V6 = "[::1]"; // key-gate: loopback-rule a v6 loopback URL host the check refuses
 const ok = (body, headers = {}) => () => new Response(body, { status: 200, headers });
 const moved = (to, status = 302) => () => new Response(null, { status, headers: { location: to } });
 
@@ -34,8 +40,8 @@ test("plain http reads a feed on a public address, dialled at the address checke
 });
 
 test("a private address is refused, http or https; a private host the owner allows is read over https alone; a URL that isn't http(s) is refused", async () => {
-  const { sent, net } = network({ "inside.example": ["10.0.0.5"], "intra.example": ["10.1.2.3"] }, { "https://intra.example/feed": ok("{}") });
-  for (const url of ["http://inside.example/feed", "https://inside.example/feed", "https://10.0.0.5/feed"]) {
+  const { sent, net } = network({ "inside.example": [PRIVATE], "intra.example": [INTRA] }, { "https://intra.example/feed": ok("{}") });
+  for (const url of ["http://inside.example/feed", "https://inside.example/feed", `https://${PRIVATE}/feed`]) {
     await assert.rejects(readFeed(url, {}, { network: net, reach: {} }), /private (address|network)/, url);
   }
   assert.equal((await readFeed("https://intra.example/feed", {}, { network: net, reach: { allowed: ["intra.example"] } })).status, 200);
@@ -45,7 +51,7 @@ test("a private address is refused, http or https; a private host the owner allo
 });
 
 test("each redirect is checked as the first URL is, at most 5: one to a private address is refused, a sixth is refused", async () => {
-  const names = { "a.example": ["93.184.216.34"], "inside.example": ["10.0.0.5"] };
+  const names = { "a.example": ["93.184.216.34"], "inside.example": [PRIVATE] };
   const { net: toPrivate } = network(names, { "https://a.example/feed": moved("http://inside.example/feed") });
   await assert.rejects(readFeed("https://a.example/feed", {}, { network: toPrivate, reach: {} }), /private address/);
   const hops = Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`https://a.example/${i}`, i < 6 ? moved(`https://a.example/${i + 1}`, 301) : ok("<feed/>")]));
@@ -62,12 +68,12 @@ test("a body over 5 MB is refused, read no further", async () => {
 });
 
 test("plain http to a private address is refused before a byte is sent: a private IP, the metadata address, a redirect from a public http feed to it, and a private host the owner allows (https only there)", async () => {
-  const names = { "feeds.example": ["93.184.216.34"], "intra.example": ["10.1.2.3"] };
+  const names = { "feeds.example": ["93.184.216.34"], "intra.example": [INTRA] };
   const { sent, net } = network(names, {
-    "http://feeds.example/rss": moved("http://169.254.169.254/latest/meta-data/"),
+    "http://feeds.example/rss": moved(`http://${METADATA}/latest/meta-data/`),
     "http://feeds.example/hop": moved("http://feeds.example/rss", 301),
   });
-  for (const url of ["http://10.0.0.5/feed", "http://192.168.1.10/feed", "http://169.254.169.254/latest/meta-data/", "http://[::1]:8080/feed"]) {
+  for (const url of [`http://${PRIVATE}/feed`, `http://${HOME_NET}/feed`, `http://${METADATA}/latest/meta-data/`, `http://${LOOPBACK_V6}:8080/feed`]) {
     await assert.rejects(readFeed(url, {}, { network: net, reach: {} }), /private|link-local|refused/, url);
   }
   await assert.rejects(readFeed("http://feeds.example/rss", {}, { network: net, reach: {} }), /169\.254\.169\.254.*refused|private|link-local/);

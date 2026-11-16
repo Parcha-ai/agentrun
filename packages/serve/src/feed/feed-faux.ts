@@ -26,8 +26,8 @@ export type FeedFauxOptions = {
   title?: string;
   /** Its items, newest first. */
   items?: FauxItem[];
-  /** The loopback name it is reached at: 127.0.0.1 (the default) or localhost, another host to a URL's eye. */
-  host?: "127.0.0.1" | "localhost";
+  /** The loopback name it is reached at: the v4 loopback address (the default) or its name, another host to a URL's eye. */
+  host?: "127.0.0.1" | "localhost"; // key-gate: loopback-rule a fake feed is reached on loopback alone
   /** For a JSON list: the pointer its array is served under (`/data/items` serves {"data": {"items": [...]}}); none, the
    *  document is the array. */
   under?: string;
@@ -109,9 +109,12 @@ function bodyOf(format: FeedFormat, title: string, items: FauxItem[], under: str
   return { body: `<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>${xml(title)}</title><link>${xml(url)}</link><description>${xml(title)}</description>${rssItems.join("")}</channel></rss>`, type: "application/rss+xml; charset=utf-8" };
 }
 
+/** Where a fake feed listens, and its URL's host by default. */
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule a fake feed listens on loopback alone
+
 /** A feed on loopback, closed with `close`. */
 export async function startFeedFaux(options: FeedFauxOptions): Promise<FeedFaux> {
-  const host = options.host ?? "127.0.0.1";
+  const host = options.host ?? LOOPBACK;
   let items = [...(options.items ?? [])];
   let failing: number | undefined;
   let moved: string | undefined;
@@ -142,7 +145,7 @@ export async function startFeedFaux(options: FeedFauxOptions): Promise<FeedFaux>
     req.resume();
     req.on("end", () => answer(req, res));
   });
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => http.listen(0, LOOPBACK, resolve));
   url = `http://${host}:${(http.address() as AddressInfo).port}/feed`;
   const touch = () => void (changed = new Date().toUTCString());
   return {
