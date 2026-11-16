@@ -184,12 +184,19 @@ async function main(argv, env) {
 		return bearer === undefined ? undefined : (await store.byToken(sha256Hex(bearer)))?.machine;
 	};
 
+	// A request's path and query from its raw target, as serve's own server reads them: a target no URL parses (`//[/`)
+	// is a path that matches no route, not a throw.
+	const targetOf = (req) => {
+		const target = req.url ?? "/";
+		const at = target.indexOf("?");
+		return at < 0 ? { path: target, query: new URLSearchParams() } : { path: target.slice(0, at), query: new URLSearchParams(target.slice(at + 1)) };
+	};
 	const server = createServer((req, res) => {
 		void (async () => {
-			const url = new URL(req.url ?? "/", "http://localhost");
-			if (req.method === "GET" && url.pathname === "/v2/health") return answer(res, 200, { status: "ok" });
-			if ((req.method === "GET" || req.method === "HEAD") && url.pathname === DAEMON_PATH) {
-				const arch = url.searchParams.get("arch");
+			const { path, query } = targetOf(req);
+			if (req.method === "GET" && path === "/v2/health") return answer(res, 200, { status: "ok" });
+			if ((req.method === "GET" || req.method === "HEAD") && path === DAEMON_PATH) {
+				const arch = query.get("arch");
 				const file = await attach.daemon(req.headers.authorization, arch);
 				const machine = await machineOf(req.headers.authorization);
 				const bytes = await readFile(drift.machines.has(machine) ? (drift.paths.get(arch) ?? file) : file);
@@ -209,7 +216,7 @@ async function main(argv, env) {
 			const lines = Object.entries({ ...headers, "content-type": "text/plain; charset=utf-8", "content-length": String(Buffer.byteLength(words)) }).map(([key, value]) => `${key}: ${value}\r\n`).join("");
 			socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n${lines}\r\n${words}`);
 		};
-		if (new URL(req.url ?? "/", "http://localhost").pathname !== ATTACH_PATH) return deny("404 Not Found");
+		if (targetOf(req).path !== ATTACH_PATH) return deny("404 Not Found");
 		attach.upgrade(req, socket, head, deny);
 	});
 	await new Promise((done, fail) => server.once("error", fail).listen(port, () => done()));

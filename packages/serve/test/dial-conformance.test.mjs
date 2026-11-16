@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -83,6 +83,32 @@ test("a run whose Core does not pass still prints its report between the markers
   const report = reportOf(ran.stdout);
   assert.deepEqual(report.results.map(({ id, status }) => [id, status]), [["health.declared", "skip"]]);
   assert.equal(report.core, "fail");
+  assert.equal(ran.code, 1, ran.stderr);
+});
+
+/** The status line `request` (raw HTTP/1.1, sent as is) gets from 127.0.0.1:`port`, or the error that ended it. */
+function statusLine(port, request) {
+  return new Promise((done) => {
+    let said = "";
+    const socket = connect(port, "127.0.0.1", () => socket.write(request));
+    socket.on("data", (chunk) => (said += chunk));
+    socket.on("error", (error) => done(`error: ${error.code ?? error.message}`));
+    socket.on("close", () => done(said.split("\r\n")[0]));
+  });
+}
+
+test("a request target no URL parses (//[/) is refused, a socket's and a plain request's alike, and the run goes on to its report", { skip: BUILT, timeout: 120_000 }, async () => {
+  const port = await freePort();
+  let refused;
+  const ran = await run(["--provider", FIXTURE, "--only", "health.declared"], { PORT: String(port), AGENTRUN_PUBLIC_URL: `http://127.0.0.1:${port}` }, (line) => {
+    if (!line.startsWith("dial-conformance: listening on port ")) return;
+    refused = Promise.all([
+      statusLine(port, "GET //[/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"),
+      statusLine(port, "GET //[/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"),
+    ]);
+  });
+  assert.deepEqual(await refused, ["HTTP/1.1 404 Not Found", "HTTP/1.1 404 Not Found"]);
+  assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
   assert.equal(ran.code, 1, ran.stderr);
 });
 
