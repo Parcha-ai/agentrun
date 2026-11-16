@@ -1784,7 +1784,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   // A composio trigger kept with a credential of its config in the clear (saved before the config was sealed) is sealed
   // before the first request: no answer shows it from this start on.
-  await composioTriggers.sealKept(async (id, source) => void (await (options.store ?? store).triggers.update(id, { source }))).catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Rewritten under the store's secureRewrite, so the row's old bytes (the key) are not left in its files.
+  const sealing = options.store ?? store;
+  await composioTriggers.sealKept(async (id, source) => {
+    const write = async () => void (await sealing.triggers.update(id, { source }));
+    await (sealing === store && store.secureRewrite ? store.secureRewrite(write) : write());
+  }).catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
   {

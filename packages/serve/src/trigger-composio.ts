@@ -47,10 +47,10 @@ export const configScope = (id: string, field: string) => `config:${id}:${encode
  *  developer_api_key both read developer, api, key). */
 const wordsOf = (name: string): string[] => name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 /** A word that names a credential wherever it stands in a name. */
-const SECRET_WORDS = new Set(["secret", "password", "passwd", "passphrase", "token", "credential", "credentials", "apikey"]);
+const SECRET_WORDS = new Set(["secret", "password", "passwd", "passphrase", "token", "credential", "credentials", "apikey", "authorization", "bearer", "cookie"]);
 
 /** Whether config field `name` is named like a credential: a word of it is secret, password, passwd, passphrase, token,
- *  credential(s) or apikey, or its last word is key (api_key, developer_api_key, private_key, signing_key; key_id and
+ *  credential(s), apikey, authorization, bearer or cookie, or its last word is key (api_key, developer_api_key, private_key, signing_key; key_id and
  *  keyword are not). Conservative: a field so named that holds no secret is sealed all the same. */
 export const secretConfigName = (name: string): boolean => {
   const words = wordsOf(name);
@@ -72,15 +72,47 @@ export const sealedSchemaFields = (schema: unknown): string[] => {
   }).map(([name]) => name);
 };
 
-/** `source` as every answer sends it: each config field sealedConfigFields names as SEALED_MASK, and named in
- *  sealed_config, whether it is sealed yet or still kept in the clear (a trigger saved before this rule, until the next
- *  start seals it: composio-triggers.ts sealKept). */
+/** A credential in a config, where it is: `name`, its top-level field's name or, below the top level, its JSON Pointer
+ *  (/auth/api_key), as sealed_config names it and its sealed scope is keyed (configScope); `path`, its keys from the
+ *  config down; `value`. */
+export type ConfigSecret = { name: string; path: string[]; value: string };
+const pointerOf = (path: readonly string[]) => `/${path.map((key) => key.replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}`;
+
+/** Every credential `config` holds in the clear, at any depth: a string, not empty and not SEALED_MASK, whose field is
+ *  named like a credential (secretConfigName), or that is anywhere inside an object or array so named. A create takes one
+ *  at the top level alone (composio-triggers.ts make); a trigger an earlier server kept may hold one deeper. */
+export const configSecrets = (config: unknown): ConfigSecret[] => {
+  const found: ConfigSecret[] = [];
+  const walk = (node: unknown, path: string[], named: boolean): void => {
+    if (typeof node === "string") {
+      if (named && node !== "" && node !== SEALED_MASK) found.push({ name: path.length === 1 ? path[0]! : pointerOf(path), path, value: node });
+    } else if (Array.isArray(node)) node.forEach((item, i) => walk(item, [...path, String(i)], named));
+    else if (isObject(node)) for (const [key, item] of Object.entries(node)) walk(item, [...path, key], named || secretConfigName(key));
+  };
+  if (isObject(config)) for (const [key, item] of Object.entries(config)) walk(item, [key], secretConfigName(key));
+  return found;
+};
+
+/** `config` with each of `secrets` as SEALED_MASK, at its place. */
+const maskedConfig = (config: Json, secrets: readonly ConfigSecret[]): Json => {
+  const copy = structuredClone(config);
+  for (const { path } of secrets) {
+    let node = copy as Record<string, unknown>;
+    for (const key of path.slice(0, -1)) node = node[key] as Record<string, unknown>;
+    node[path.at(-1)!] = SEALED_MASK;
+  }
+  return copy;
+};
+
+/** `source` as every answer sends it: each credential in its config (configSecrets, at any depth) as SEALED_MASK, and
+ *  named in sealed_config, whether it is sealed yet or still kept in the clear (a trigger saved before this rule, until
+ *  the next start seals it: composio-triggers.ts sealKept). */
 export const shownSource = (source: Source): Source => {
   const config = source.config;
-  const clear = sealedConfigFields(config).filter((name) => (config as Json)[name] !== SEALED_MASK);
-  if (!clear.length) return source;
+  const clear = configSecrets(config);
+  if (!clear.length || !isObject(config)) return source;
   const sealed = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as string[]) : [];
-  return { ...source, config: { ...(config as Json), ...Object.fromEntries(clear.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealed, ...clear])] };
+  return { ...source, config: maskedConfig(config, clear), [SEALED_FIELD]: [...new Set([...sealed, ...clear.map((secret) => secret.name)])] };
 };
 
 const jsonOf = (text: string): unknown => {
@@ -132,12 +164,12 @@ export const composio: TriggerAdapter = {
         kind: { const: "composio" },
         server: { type: "string", pattern: MCP_SERVER_NAME.source, description: "A saved Composio MCP server (Settings → MCP servers): its key makes the instance, for the account it is connected as." },
         event: { type: "string", pattern: COMPOSIO_EVENT.source, description: "One of the server's toolkit's events, Composio's trigger slug (GET /settings/mcp-servers/{name}/composio/events)." },
-        config: { type: "object", description: `The event's config, as its schema in the events list says (GitHub's new-issue event: {owner, repo}). A field named like a credential (a word of its name is secret, password, passwd, passphrase, token, credential or apikey, or its last word is key: developer_api_key), holding a string, is sealed at the save: Composio gets it, and every answer has "${SEALED_MASK}" in its place, the field named in ${SEALED_FIELD}. A PATCH that leaves it out or sends "${SEALED_MASK}" keeps it; another value is a change to the config, refused as any is.` },
+        config: { type: "object", description: `The event's config, as its schema in the events list says (GitHub's new-issue event: {owner, repo}). A field named like a credential (a word of its name is secret, password, passwd, passphrase, token, credential, apikey, authorization, bearer or cookie, or its last word is key: developer_api_key), holding a string, is sealed at the save: Composio gets it, and every answer has "${SEALED_MASK}" in its place, the field named in ${SEALED_FIELD}. One below the config's top level is refused 422. A PATCH that leaves it out or sends "${SEALED_MASK}" keeps it; another value is a change to the config, refused as any is.` },
       },
       {
         accept: { ...ACCEPT_SCHEMA, description: "Optional: which of the event's deliveries fire it. A rule's `event` is the trigger's own, `where` pointers read the delivery, its event's data under `/data` (`/data/title`). None: every delivery for its instance fires." },
         instance_id: { type: "string", readOnly: true, description: "Composio's id for the trigger's instance, set by this server when it makes it: the delivery's metadata.trigger_id. Triggers with the same server, event and config share one." },
-        [SEALED_FIELD]: { type: "array", items: { type: "string" }, readOnly: true, description: `The config's sealed fields, set by this server at the save: each answered as "${SEALED_MASK}", its value kept sealed here.` },
+        [SEALED_FIELD]: { type: "array", items: { type: "string" }, readOnly: true, description: `The config's sealed fields, set by this server at the save: each answered as "${SEALED_MASK}", its value kept sealed here. Each is a top-level field's name, or, for one an earlier server kept below the top level, its JSON Pointer (/auth/api_key).` },
         hook: { type: "string", pattern: COMPOSIO_HOOK.source, readOnly: true, description: "The id of the project's route here, /hooks/composio/{hook}, set by this server: the address of the project's webhook subscription on Composio." },
         [MOVE_FIELD]: { type: "boolean", enum: [true], writeOnly: true, description: "At a create alone, never kept: the project's webhook subscription is at another address, and the owner moves it here. Without it, such a create is refused 409 composio_subscription_elsewhere, naming the address." },
       },

@@ -1749,6 +1749,18 @@ class SqliteStore implements Store {
     };
   }
 
+  async secureRewrite<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#db.dialect.name !== "sqlite") return work();
+    await this.#db.all("PRAGMA secure_delete = ON");
+    try {
+      return await work();
+    } finally {
+      await this.#db.all("PRAGMA secure_delete = OFF");
+      // A reader in another process (a runner) may hold the log back: the next checkpoint then copies the new pages over.
+      await this.#db.all("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
+  }
+
   async claim(runId: string, runner: string, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim | null> {
     return (await this.#claimRuns(runner, leaseMs, { runId }))[0] ?? null;
   }

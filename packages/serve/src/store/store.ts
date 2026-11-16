@@ -1342,6 +1342,11 @@ export interface Store {
   readonly signIns: SignIns;
   /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
   readonly sealedSecrets: SealedSecrets;
+  /** Runs `work`, writes that replace a secret the store kept in the clear, so the bytes they replace are not left in the
+   *  store's files. SQLite: secure_delete on while it runs (a rewritten or deleted row's old bytes zeroed in its page), and
+   *  a WAL checkpoint (TRUNCATE) after, so the database file takes the new pages and the log keeps no older frame.
+   *  Postgres: `work` alone (a replaced row version is the database's until its vacuum). */
+  secureRewrite?<T>(work: () => Promise<T>): Promise<T>;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

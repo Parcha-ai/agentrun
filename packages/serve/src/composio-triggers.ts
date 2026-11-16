@@ -26,7 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
-import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedSchemaFields, shownSource } from "./trigger-composio.js";
+import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -108,6 +108,10 @@ export class ComposioTriggers implements TriggerUpstream {
     if (!this.deps.publicUrl) throw new ApiError("composio_no_public_url", "Composio can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address Composio sends events to), then make the trigger.");
     for (const field of ["instance_id", "hook", SEALED_FIELD]) if (source[field] !== undefined) throw invalid([{ field: `source.${field}`, reason: "not_allowed", message: `${field} is set by this server when it makes the trigger on Composio: leave it out.` }]);
     const config = source.config as Json;
+    // A credential below the config's top level is refused: a create seals one as a top-level field alone (and Composio's
+    // trigger configs are flat), so none is kept here in the clear.
+    const deeper = configSecrets(config).filter((secret) => secret.path.length > 1);
+    if (deeper.length) throw invalid(deeper.map((secret) => ({ field: `source.config.${secret.path.join(".")}`, reason: "not_allowed", message: `${secret.name} is a credential below the config's top level: this server seals a credential only as a top-level field of the config, so it can't keep this one. Give it as a top-level field, or leave it out.` })));
     const sealing = sealedConfigFields(config);
     const masked = sealing.filter((name) => config[name] === SEALED_MASK);
     if (masked.length) throw invalid(masked.map((name) => ({ field: `source.config.${name}`, reason: "invalid", message: `${name} is a credential: give its value. "${SEALED_MASK}" is what an answer shows in its place.` })));
@@ -160,7 +164,8 @@ export class ComposioTriggers implements TriggerUpstream {
     const shown = shownSource(was);
     const sealed = sealedOf(shown);
     const sent = given.config;
-    const config = isObject(sent) && sealed.length ? { ...sent, ...Object.fromEntries(sealed.filter((name) => sent[name] === undefined).map((name) => [name, SEALED_MASK])) } : sent;
+    const top = isObject(shown.config) ? shown.config : {};
+    const config = isObject(sent) && sealed.length ? { ...sent, ...Object.fromEntries(sealed.filter((name) => Object.hasOwn(top, name) && sent[name] === undefined).map((name) => [name, SEALED_MASK])) } : sent;
     if (!same(config, shown.config)) throw invalid([{ field: "source.config", reason: "not_allowed", message: fixed }]);
     if (given[MOVE_FIELD] !== undefined) throw invalid([{ field: `source.${MOVE_FIELD}`, reason: "not_allowed", message: `${MOVE_FIELD} is a create's alone.` }]);
     const { [SEALED_FIELD]: _given, ...rest } = given;
@@ -319,16 +324,17 @@ export class ComposioTriggers implements TriggerUpstream {
   async sealKept(rewrite: (id: string, source: Source) => Promise<void>): Promise<number> {
     let done = 0;
     for (const holder of await this.deps.holders()) {
-      const config = holder.source.config;
-      const clear = sealedConfigFields(config).filter((name) => isObject(config) && config[name] !== SEALED_MASK);
-      if (!clear.length || !isObject(config)) continue;
+      // At any depth: an earlier server took a config with one below its top level, each sealed by its JSON Pointer.
+      const clear = configSecrets(holder.source.config);
+      if (!clear.length) continue;
+      const names = clear.map((secret) => secret.name).join(",");
       try {
-        for (const name of clear) await this.deps.sealed.set(configScope(holder.id, name), configFieldFor(config[name] as string), config[name] as string);
+        for (const secret of clear) await this.deps.sealed.set(configScope(holder.id, secret.name), configFieldFor(secret.value), secret.value);
         await rewrite(holder.id, shownSource(holder.source));
-        this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: clear.join(",") });
+        this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: names });
         done++;
       } catch (error) {
-        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: clear.join(","), error: hidden(String((error as Error)?.message ?? error), clear.map((name) => config[name] as string)) });
+        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: names, error: hidden(String((error as Error)?.message ?? error), clear.map((secret) => secret.value)) });
       }
     }
     return done;

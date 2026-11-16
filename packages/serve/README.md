@@ -2181,7 +2181,8 @@ key, in order, and undoes what it made when a later step fails:
 - The trigger here. Its `source` names what was made: `instance_id` and `hook`.
 
 A config field named like a credential is sealed at the create. That is a field whose value is a string and where a word
-of the name is secret, password, passwd, passphrase, token, credential or apikey, or where the last word is key. For
+of the name is secret, password, passwd, passphrase, token, credential, apikey, authorization, bearer or cookie, or where
+the last word is key. A create with such a value below the config's top level is refused `422`, naming it. For
 example, HubSpot's deal-stage event takes `{app_id, developer_api_key}`. Composio's trigger schemas mark no field
 secret, so the name decides. The value is kept in the composio source's sealed settings, next to the subscription's
 secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
@@ -2189,8 +2190,10 @@ secret. Composio gets it once, in the instance's upsert. Every answer has `"[sea
 takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
 change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
 The trigger's delete removes the value. A trigger saved by an earlier server with such a value in plain text is answered
-masked by the same rule at once, and sealed at the next start. The log line names the trigger and the field, never the
-value.
+masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
+and sealed at the next start. On SQLite that rewrite runs with `secure_delete` on and a WAL checkpoint after, so the old
+row's bytes are not left in the store's files; on Postgres the old row version stays until the database vacuums it. The
+log line names the trigger and the field, never the value.
 
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
