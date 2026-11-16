@@ -436,6 +436,15 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 
+A provider that can do both takes one option, `connect: "exec" | "dial"`, read once in its constructor, which picks
+its host's facts: on `dial` the host declares `connect: "dial"` and has no `exec` or `upload`, and create boots the
+machine with `req.boot.env`. Its descriptor declares the option as a setting with no default (`e2bConnect`,
+`modalConnect`), so exec holds unless the server's settings say dial. E2B and Modal do this. Modal's create gives
+the sandbox `agentrun-dial` as its command and the env as `env`. E2B can't: a template's start command runs once at
+the template's build and never sees a create's env, so E2B's create starts `agentrun-dial` itself through envd, once,
+with the env as that one process's ([README](README.md#e2b-on-dial)). Their conformance modules' `dialKit()` refuse, since
+a machine dials the server that minted its token: the Core run happens inside the public server's process.
+
 ### Wire it up
 
 Your provider class hands the host to `HostedProvider`, which turns it into a whole `ComputerProvider`, the interface

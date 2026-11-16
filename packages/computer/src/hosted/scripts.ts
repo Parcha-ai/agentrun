@@ -93,6 +93,9 @@ export const shellCommand = (script: string, args: readonly string[]) => ["sh", 
 export const shellLine = (argv: readonly string[]) => argv.map((word) => (/^[A-Za-z0-9_./:=@%+-]+$/.test(word) ? word : quote(word))).join(" ");
 const argvOf = (script: string, args: readonly string[]): string[] => ["sh", "-c", script, "sh", ...args];
 
+/** The box image's agentrun-dial (box/install.sh): what a dial machine runs first, from MachineRequest.boot.env. */
+export const AGENTRUN_DIAL = "/usr/local/bin/agentrun-dial";
+
 /** Where start leaves what init writes, root's alone: the words a create that never hears the daemon gives back. */
 export const INIT_LOG = `${SOCKET_DIR}-init.log`;
 
