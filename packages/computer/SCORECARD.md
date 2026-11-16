@@ -10,8 +10,7 @@ As of main `bf56d3ced8`, 2026-11-16, from the vendors' public documentation and 
 vendor's account.
 
 **The bar for a clean fit.** Every host member ([the twelve members](PROVIDERS.md#the-twelve-members)) fits with what's
-on main; the provider is about 250 lines; and nothing of AgentRun's runs on the vendor beyond computerd and the box
-image.
+on main, and nothing of AgentRun's runs on the vendor beyond computerd and the box image.
 
 **Fits if** means no workaround code is left, but a fact about the vendor hasn't been checked on a real account. Those
 facts are marked **unverified** everywhere on this page. Most of them are lines the
@@ -20,7 +19,7 @@ facts are marked **unverified** everywhere on this page. Most of them are lines 
 
 **Needs a workaround** names the code a provider would carry that the contract has no shared piece for. **Blocked**
 names the member that can't be written on the shared adapter today. Sizes are estimates of the provider file, from the
-documented calls, not from written code.
+documented calls, not from written code. The size column is an estimate, and size alone doesn't change a verdict.
 
 ## The table
 
@@ -43,14 +42,14 @@ need a workaround, 7 are blocked.
 | [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | needs a workaround (no image or snapshot a create can name, so no desktop or Archil; `extend` rewrites the label list, or is left out) | 220-290, sandbox only | [framedExec][fe], [packLabels][pl] |
 | [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | needs a workaround (a per-VM SSH identity made and deleted outside create, delete and the sweep) | about 280 | [ssh-exec][se], [packLabels][pl], [prepareImage][pi] |
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
-| [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host, an estimate over the bar; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
+| [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packLabels][pl], [backstopAt][bs], [prepareImage][pi] |
 | [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | needs a workaround (an SSE event reader in the host) | 250-280 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
 | [Kasm Workspaces](https://docs.kasm.com/docs/reference/developer-api) | a container session streamed to a person | blocked (`exec`: no two-way exec stream) | n/a | none |
-| [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status); estimate over the bar | 260-300 | [framedExec][fe], [labels "machine"][lm] |
+| [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status) | 260-300 | [framedExec][fe], [labels "machine"][lm] |
 | [microsandbox](https://docs.microsandbox.dev/cloud/overview.md) | libkrun microVMs (hosted cloud in private beta) | needs a workaround (exec only through an SDK whose backend and key are process-wide) | 220-240 | [prepareImage][pi] |
 | [Morph Cloud](https://cloud.morph.so/docs) | VM instances booted from snapshots | fits if (unverified: SSH lands as root; `/ttl` counts from now; `morphvm-minimal` runs `install.sh`; root makes a network namespace) | 240-270 | [ssh-exec][se], [packLabels][pl], [prepareImage][pi] |
-| [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut); estimate over the bar | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
+| [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut) | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packLabels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [keepalive][ka], [prepareImage][pi] |
 | [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (no stdin call: a fifo pump of ours) | about 320 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
@@ -256,9 +255,8 @@ provider spec.
 - **GKE labels and lifetime:** Kubernetes labels, packed with `packLabels`; `shutdownTime` with a delete policy, moved
   by `extend` ([lifecycle](https://agent-sandbox.sigs.k8s.io/docs/sandbox/lifecycle/)).
 - **GKE image:** the published box image's tag in the pod template, from [prepareImage](PROVIDERS.md#wire-it-up).
-- **GKE, what's open:** size. Every member fits on main, but the Kubernetes client and GKE auth the host carries put
-  the estimate at 300-380 lines, over the bar of about 250. Unverified: root's network namespace under gVisor, and idle
-  limits on a silent exec stream.
+- **GKE, what's open:** the host carries a Kubernetes client and GKE auth, code no shared piece covers. Unverified:
+  root's network namespace under gVisor, and idle limits on a silent exec stream.
 - **Agent Platform:** a sandbox's command is one-shot and runs without root
   ([shell quickstart](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox/shell-sandbox-quickstart)):
   blocked on `exec`. Whether `bidiExecute` keeps a process open is unverified
@@ -323,7 +321,7 @@ provider spec.
 - **Network:** the vendor's egress list takes CIDRs only ([Python SDK](https://github.com/koyeb/koyeb-python-sdk),
   `egress.py`), so `allow` is init's proxy; blocking the network is hardening.
 - **Open:** ours, a docs line on finding the exec in a vendor's CLI, and a listing hint if a rate limit bites. The
-  facts in the table are unverified; the estimate is over the bar.
+  facts in the table are unverified.
 
 ### microsandbox
 
@@ -370,8 +368,7 @@ provider spec.
 - **Network:** network policies are documented for your own cluster
   ([network policies](https://northflank.com/docs/v1/application/network/configure-network-policies.md)), so `none`
   rests on init's fence.
-- **Open:** ours, a requests-per-hour hint for the adapter's polling. Unverified: the facts in the table; the estimate
-  is over the bar.
+- **Open:** ours, a requests-per-hour hint for the adapter's polling. Unverified: the facts in the table.
 
 ### OpenSandbox
 
