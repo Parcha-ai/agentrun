@@ -19,6 +19,7 @@ import {
   momentOf,
   type Pending,
   pendingOf,
+  stoppedTurn,
   type RunFacts,
   type RunMoment,
   type RunView,
@@ -536,8 +537,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
   // person's approval (approvalOf, its arguments shown through the run's redactor), else a run parked at its cap (the budget
   // card), else its agent waiting on a person in its browser (browserPending), else the question its turn ended on (pendingOf).
+  // A turn a person stopped reads kind stopped (stoppedTurn, which the run.needs_input webhook reads through this field):
+  // it holds none of the run's words, so a withheld run says it too.
   const redactor = redactorOf(values);
-  const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : null;
+  const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : stoppedTurn(view, { status, state }) ? { kind: "stopped" } : null;
   const settled = terminal && ended;
 
   return {

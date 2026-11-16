@@ -1,6 +1,6 @@
 // A stop withdraws the call that waits for approval in the same write that ends the run's turn: from the first read where
 // the run reads stopped (input_required and idle, main's status for a stopped run; cancelled when its stop could only be
-// written on its row), nothing is pending and every call it asked about is answered withdrawn in its journal. Nothing
+// written on its row), no call is pending (kind stopped, or none once cancelled) and every call it asked about is answered withdrawn in its journal. Nothing
 // reopens the withdrawn call: a later approval of it, or a command row on the stopped run, is refused, and the call is
 // never sent.
 // - Held at the end's commit (not slept), so reads land between the stop and its end.
@@ -125,10 +125,11 @@ async function read(server) {
  *  by a person (input_required and idle, as main reads a stopped run), or cancelled (a stop written on its row alone). */
 const stoppedRead = (seen) => seen.final || seen.status === "cancelled";
 
-/** The rule at one read: a run that reads stopped waits on nothing, and every call it asked about is withdrawn. */
+/** The rule at one read: a run that reads stopped waits on no call (pending kind stopped while it reads input_required,
+ *  none once cancelled), and every call it asked about is withdrawn. */
 function holds(seen) {
   if (!stoppedRead(seen)) return;
-  assert.equal(seen.pending, null, `stopped, yet pending: ${JSON.stringify(seen)}`);
+  assert.deepEqual(seen.pending, seen.status === "input_required" ? { kind: "stopped" } : null, `stopped, yet pending: ${JSON.stringify(seen)}`);
   assert.ok(seen.asked.length > 0, JSON.stringify(seen));
   for (const [callId, decision] of seen.asked) assert.equal(decision, "withdrawn", `stopped, yet ${callId} reads ${decision ?? "waiting"}: ${JSON.stringify(seen)}`);
 }
@@ -183,7 +184,7 @@ test("the stop fixture's retry clock stays fixed while real runner polls continu
   assert.deepEqual(sent, []);
 });
 
-test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads nothing pending and the call withdrawn", { timeout: 60_000 }, async (t) => {
+test("a stop of a run parked on a call ends it withdrawn in one write: every read that says stopped reads no call pending and the call withdrawn", { timeout: 60_000 }, async (t) => {
   let reached;
   const atEnd = new Promise((resolve) => (reached = resolve));
   let go;

@@ -4238,7 +4238,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // change would be the next seam.
   const RUN_CHANGES_POLL_MS = 250;
   const final = (row: { state: string }) => (FINAL_STATES as readonly string[]).includes(row.state);
-  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}) });
+  /** A row its stop ended (stopEnd), which may stand at the person's stop (store.ts stoppedByPerson: an agentic run, its
+   *  status input_required and idle, a message continues it) and not have ended: its view says which. */
+  const stopRow = (row: RunRow) => row.state === "stopped" && row.outcome === "stopped" && row.importedFrom === null;
+  const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}), ...(stopRow(row) ? { stop: true } : {}) });
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
     const row = await store.runs.get(id);
@@ -4262,9 +4265,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** When each held wait (a run waiting on its person with its claim held) was last read again. */
   const heldReadAt = new Map<string, number>();
   const HELD_WAIT_REREAD_MS = 1_000;
-  const waitKinds = new Set(["question", "approval", "budget", "browser"]);
+  const waitKinds = new Set(["question", "approval", "budget", "browser", "computer", "stopped"]);
   /** The wait of a run its runner left parked (or let go of), or holds in its claim, told once per ask: its marker the
-   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (a stop's when it waits on no card). False when it
+   *  ask's own (webhooks.ts waitMarkerOf), its kind the pending card's (none when the run waits on no card). False when it
    *  is not done (a read that failed, or its notice not saved): it is read again. */
   const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
@@ -4272,13 +4275,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
-    // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last.
-    const marker = waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
-    if (!marker) return (readWaits.set(row.id, seen), true);
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
-    const kind = view.state !== "waiting" ? "stopped" : typeof card === "string" && waitKinds.has(card) ? card : "question";
-    const wait = { kind } as NonNullable<RunNotice["pending"]>;
-    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", pending: wait };
+    // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last. A stop's is when
+    // its stop ended the row: rows its stopped turn still streams in (a late result, a charge) never move it.
+    const marker = card === "stopped" && row.endedAt !== null ? `stopped:${new Date(row.endedAt).toISOString()}` : waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
+    if (!marker) return (readWaits.set(row.id, seen), true);
+    // Its kind is the read's own `pending.kind` (a stop's is stoppedTurn's), so the notice and GET never disagree; a wait
+    // whose card is withheld is a question. A run idle on nothing named (its harness ended its turn on its own) names no kind.
+    const kind = typeof card === "string" && waitKinds.has(card) ? card : view.state === "waiting" ? "question" : undefined;
+    const wait = kind === undefined ? undefined : ({ kind } as NonNullable<RunNotice["pending"]>);
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", ...(wait ? { pending: wait } : {}) };
     if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
     readWaits.set(row.id, seen);
     return true;
@@ -4289,10 +4295,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (an end's time, a wait's ask), on which each dedupes in a ledger of its own. An end from while no server was up
    *  reaches the webhook alone, through its own catch-up (webhooks.ts catchUp). */
   const endedSubscribers: Array<(run: RunNotice, marker: string) => unknown> = [];
-  const waitSubscribers: Array<(run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown> = [];
+  const waitSubscribers: Array<(run: RunNotice, wait: RunNotice["pending"], marker: string) => unknown> = [];
   const runNotices = {
     onEnded: (tell: (run: RunNotice, marker: string) => unknown) => void endedSubscribers.push(tell),
-    onWaits: (tell: (run: RunNotice, wait: NonNullable<RunNotice["pending"]>, marker: string) => unknown) => void waitSubscribers.push(tell),
+    onWaits: (tell: (run: RunNotice, wait: RunNotice["pending"], marker: string) => unknown) => void waitSubscribers.push(tell),
   };
   runNotices.onEnded(async (run, marker) => {
     if ((await webhooks.emit("run.ended", run, marker)) === "unsaved") throw new Error("its run.ended is not saved yet");
@@ -4324,6 +4330,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const tellEnd = async (id: string): Promise<boolean> => {
     const now = await endNotice(id).catch((error: Error) => (sayUnread(id, error.message), undefined));
     if (now === undefined) return false;
+    // A person's stop of an agentic run ends its row but not the run: it reads input_required (pending kind stopped), so
+    // it is told as that wait, run.needs_input, never as an end.
+    if (now?.notice.status === "input_required") {
+      const row = await rowNow(id);
+      if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
+      const told = row === undefined || (await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false)));
+      if (told) unreadSaid.delete(id);
+      return told;
+    }
     readWaits.delete(id);
     heldReadAt.delete(id);
     if (!now?.endedAt || toldEnds.get(id) === now.endedAt) return (unreadSaid.delete(id), true);
@@ -4357,7 +4372,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const tellLetGo = async (id: string): Promise<boolean> => {
     const row = await rowNow(id);
     if (row === UNREAD) return (sayUnread(id, "its row could not be read"), false);
-    if (row === undefined || !letGo(row)) return true;
+    if (row === undefined || !(letGo(row) || stopRow(row))) return true;
     const told = await tellWait(row).catch((error: Error) => (sayUnread(id, error.message), false));
     if (told) unreadSaid.delete(id);
     return told;
@@ -4430,7 +4445,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (endsLeft): it is before the feed's head, so no change of the feed brings it back.
     const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
     for (const id of unsaved) endsLeft.add(id);
-    for (const row of rows) if (!closing && letGo(row) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
+    // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
+    for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
   followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
