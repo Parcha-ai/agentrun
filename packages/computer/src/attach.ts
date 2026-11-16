@@ -241,9 +241,6 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
 		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
 	}
-	if (paired.hello.arch !== "" && hello.arch !== paired.hello.arch) {
-		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired on ${paired.hello.arch} and now says ${hello.arch}: pair it again` };
-	}
 	// A computer that lacks a group its kind needs can't be given to an agent: refused at connect, in the hello's own
 	// words for what it is, never at a run's first call.
 	const lacks = kindServed(hello);

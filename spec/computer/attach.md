@@ -159,7 +159,7 @@ time to at most 60 s, less up to a fifth at random so a fleet that lost the serv
 The server maps an attached computer to a provider so a run takes it like any other computer.
 
 - **One connection.** `AttachHub.accept(paired, socket)` calls `hello` on a new socket and keeps it when the `hello` is
-  what the computer paired as (same kind and os, the same arch where the pairing named one, this protocol version). Every caller in the server shares that one
+  what the computer paired as (same kind and os, this protocol version). Every caller in the server shares that one
   connection: one run holds the computer at a time, so its refs and states are that run's.
 - **A provider per paired computer.** `attachedProvider(paired, hub)` is a `ComputerProvider` with id `attached`. Its
   capabilities are the computer's kind and os as it paired, the groups of its live `hello`, network as the machine has

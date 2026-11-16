@@ -3,7 +3,8 @@
 // reads it back over that socket; a server with no public address makes nothing; a machine that never dials is deleted;
 // delete revokes the token; Core's provider cases, provider.dial-token among them, pass over it.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -193,6 +194,24 @@ test("hostedDaemonPath(arch) is the build in dist a hosted machine of that arch 
 	for (const arch of ["amd64", "arm64"]) assert.equal(hostedDaemonPath(arch), fileURLToPath(new URL(`../dist/computerd-linux-${arch}`, import.meta.url)));
 });
 
+test("HostedProvider's default daemonPath is hostedDaemonPath(facts.arch): the sha256 a dial machine checks is that file's", async () => {
+	for (const arch of ["amd64", "arm64"]) {
+		const path = hostedDaemonPath(arch);
+		const built = existsSync(path);
+		const { fake, provider } = fakeDialHost({ daemon: built ? readFileSync(path) : DAEMON_BYTES, facts: { arch } });
+		const result = await create(provider({ timeouts: TIMEOUTS }));
+		if (built) {
+			made(result);
+			const { env } = fake.calls.find(([what]) => what === "create")[1].boot;
+			assert.equal(env.AGENTRUN_DAEMON_SHA256, createHash("sha256").update(readFileSync(path)).digest("hex"), arch);
+		} else {
+			// No build here (npm run build:daemon makes them): the create names the file it read.
+			assert.equal(result.error?.code, "not_found");
+			assert.equal(result.error.message.includes(`no daemon binary at ${path}:`), true, result.error.message);
+		}
+	}
+});
+
 test("a machine that never dials is deleted, its token revoked, and create fails naming the address it was given", async () => {
 	const { fake, provider, tokens } = setup({ dials: false });
 	const failed = await create(provider);
@@ -230,7 +249,7 @@ test("the constructor refuses a dial host with exec or upload, with labels kept 
 	assert.throws(() => new HostedProvider(host, { daemonPath: DAEMON_PATH, kind: "desktop" }), /agentrun-dial starts init with no display: make it kind linux/);
 });
 
-test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's of another arch too", () => {
+test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's arch may change", () => {
 	const minted = mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" });
 	const hello = { protocol: minted.hello.protocol, version: "0.1.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	assert.equal(helloMismatch(minted, hello), undefined);
@@ -239,11 +258,9 @@ test("a minted machine's hello of another kind, os or arch is closed 4400 in a m
 		assert.equal(wrong?.code, ATTACH_CLOSE.mismatch, JSON.stringify(other));
 		assert.match(wrong.message, /^computer-5f3a9c1e7b2d was made a linux linux on amd64 and says .*: its token is that machine's alone$/);
 	}
-	const groups = ["screen", "input.pointer", "input.keys", "apps", "ui"];
-	const paired = { id: "c-1", name: "Test Mac", hello: { ...hello, os: "macos", kind: "desktop", groups }, labels: {} };
-	assert.equal(helloMismatch(paired, paired.hello), undefined);
-	assert.deepEqual(helloMismatch(paired, { ...paired.hello, arch: "arm64" }), { code: ATTACH_CLOSE.mismatch, message: "Test Mac paired on amd64 and now says arm64: pair it again" });
-	assert.equal(helloMismatch({ ...paired, hello: { ...paired.hello, arch: "" } }, { ...paired.hello, arch: "arm64" }), undefined, "a pairing that named no arch holds none");
+	// A paired computer's driver may move from amd64 (under Rosetta) to arm64: the same computer.
+	const paired = { id: "c-1", name: "Test Mac", hello: { ...hello, os: "macos", kind: "desktop", groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }, labels: {} };
+	assert.equal(helloMismatch(paired, { ...paired.hello, arch: "arm64" }), undefined);
 });
 
 test("Core's provider cases pass over a dial host, provider.dial-token among them, and leave nothing behind", { timeout: 60_000 }, async () => {
