@@ -1774,19 +1774,26 @@ describe("the loop on the Learning tab", () => {
     expect(notes.textContent).toContain("2 notes");
     expect(notes.textContent).toContain("1 compiled into a workflow");
   });
-  it("early: says how far it is from a compile, at 3 notes or 5 runs", async () => {
-    const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }) });
+  it("early: says how far it is from a compile, at the definition's compile_after completed runs (20 by default)", async () => {
+    const runs = [runOf("run-ok", "kith.com", null)];
+    const notes = async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } });
+    const t = await open(agent(true, { learning: { compile_after: 5 } }), { learning: notes, runs });
     const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
     expect(stage.getAttribute("data-state")).toBe("now");
-    expect(stage.textContent).toContain("1 of 3 notes");
-    expect(stage.textContent).toContain("a workflow compiles at 3 notes or 5 runs");
+    expect(stage.textContent).toContain("1 of 5 completed runs: a workflow compiles at 5");
+    const byDefault = await open(agent(true), { learning: notes, runs });
+    expect(byDefault.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("1 of 20 completed runs: a workflow compiles at 20");
+  });
+  it("learning set as an object is on: the switch shows it on", async () => {
+    const t = await open(agent(undefined, { learning: { agree_min: 0.9 } }));
+    expect((t.host.querySelector('[role="switch"]') as HTMLButtonElement).getAttribute("aria-checked")).toBe("true");
   });
   it("counts only completed runs toward a compile, as the server does: failed and cancelled runs are in the cost series, not the count", async () => {
     const runs = [runOf("run-ok", "kith.com", null), ...["run-f1", "run-f2", "run-f3"].map((id) => ({ ...runOf(id, id, null), status: "failed" as const })), { ...runOf("run-s", "run-s", null), status: "cancelled" as const }];
     const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] });
     const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, cost });
     const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
-    expect(stage.textContent).toContain("1 of 5 runs");
+    expect(stage.textContent).toContain("1 of 20 completed runs");
   });
   it("the cheaper stage: 'about N times cheaper at the same accuracy' over the replay's line when the serving replay cleared the bar; the reason in its place when a run's cost isn't all known", async () => {
     const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };

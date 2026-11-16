@@ -28,7 +28,7 @@ function route(sent) {
 }
 for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real compile threshold, malformed retry and reclaimed end preserve request identity and cost once`,async t=>{
  const s=await serve(t,{runner:false}),id="sdk-compiler";
- assert.equal((await s.api("POST","/agents",{definition:{id,name:id,instructions:"Report release readiness using the declared backend callback.",sdk:{runtime},learning:true,tools:[],output_schema:tool.output_schema}})).status,201);
+ assert.equal((await s.api("POST","/agents",{definition:{id,name:id,instructions:"Report release readiness using the declared backend callback.",sdk:{runtime},learning:{compile_after:5},tools:[],output_schema:tool.output_schema}})).status,201);
  const sent=[],grader=route(sent);
  const settle=async(runId,crash=false)=>{
   const claim=await s.store.claim(runId,"sdk-compiler-proof",{leaseMs:60_000});assert.ok(claim);
@@ -47,7 +47,7 @@ for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real comp
   sdk=client(s.baseUrl,start.body.token);
   const done=await sdk("POST",`/sdk-runs/${runId}/complete`,{status:"completed",answer:'{"ready":true}',usage:{cost_usd:0.25,input_tokens:20,output_tokens:5,cache_read_tokens:0,cache_write_tokens:0}});assert.equal(done.status,200);
   await settle(runId,n===4);
-  if(n<4)assert.equal(sent.length,0,"before the real five-run threshold an SDK run, with no owner feedback to look back on, sends no request");
+  if(n<4)assert.equal(sent.length,0,"before its definition's five-run threshold (compile_after 5) an SDK run, with no owner feedback to look back on, sends no request");
  }
  const before=await journalEntries(s.store.readJournal(runId),BACKGROUND_CONTEXT);
  const prompts=before.filter(e=>e.kind==="agentrun.end-of-run.turn"&&e.data.role==="person");

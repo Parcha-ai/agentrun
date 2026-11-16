@@ -1,5 +1,5 @@
-// The compile turn (learn/compile.ts): once an agent's job repeats (COMPILE_AFTER_NOTES kept notes or COMPILE_AFTER_RUNS
-// completed runs, and no learned workflow yet), the end-of-run look-back writes the whole job as a learned workflow from
+// The compile turn (learn/compile.ts): once an agent's job repeats (its definition's compile_after completed runs, and no
+// learned workflow yet), the end-of-run look-back writes the whole job as a learned workflow from
 // its notes and its last runs' traces. It authors against the checker: a DSL reference generated from the DSL's own
 // vocabulary, one worked example the checks pass, then the static checks and the dry run, their refusals sent back up to
 // COMPILE_RETRIES times, every attempt recorded. The notes it absorbs get `compiled_into: <workflow>` when it merges, and
@@ -32,17 +32,17 @@ const reflect_ = reflect;
 const NOTES = [{ file: "rule-1.md", text: note({ name: "Rule 1", description: "First" }) }, { file: "rule-2.md", text: note({ name: "Rule 2", description: "Second" }) }];
 const ASK = (extra = {}) => ({ mode: "new", reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), notes: NOTES, traces: [], tools: ["web_fetch"], judges: false, ...extra });
 
-test("compileDue: a completed run of a job with 3 kept notes or 5 completed runs and no learned workflow, not compiled lately", () => {
-  const due = (facts) => compile.compileDue({ completed: true, notes: 0, runs: 0, workflows: 0, compiledLately: false, ...facts });
-  assert.equal(compile.COMPILE_AFTER_NOTES, 3);
-  assert.equal(compile.COMPILE_AFTER_RUNS, 5);
+test("compileDue: a completed run of an agent with its definition's compile_after completed runs and no learned workflow, not compiled lately", () => {
+  const due = (facts) => compile.compileDue({ completed: true, runs: 0, workflows: 0, compiledLately: false, compileAfter: 20, ...facts });
   assert.equal(compile.COMPILE_RETRIES, 3);
-  assert.equal(due({ notes: 3 }), true);
-  assert.equal(due({ runs: 5 }), true);
-  assert.equal(due({ notes: 2, runs: 4 }), false);
-  assert.equal(due({ notes: 3, workflows: 1 }), false, "a learned workflow already: the revision path asks, not this one");
-  assert.equal(due({ notes: 3, compiledLately: true }), false, "one compile in the last runs is enough");
-  assert.equal(due({ notes: 3, completed: false }), false, "a failed run compiles nothing");
+  assert.equal("COMPILE_AFTER_NOTES" in compile || "COMPILE_AFTER_RUNS" in compile, false, "no engine constant says when: the definition does");
+  assert.equal(due({ runs: 20 }), true);
+  assert.equal(due({ runs: 19 }), false);
+  assert.equal(due({ runs: 5, compileAfter: 5 }), true);
+  assert.equal(due({ runs: 4, compileAfter: 5 }), false);
+  assert.equal(due({ runs: 20, workflows: 1 }), false, "a learned workflow already: the revision path asks, not this one");
+  assert.equal(due({ runs: 20, compiledLately: true }), false, "one compile in the last runs is enough");
+  assert.equal(due({ runs: 20, completed: false }), false, "a failed run compiles nothing");
 });
 
 test("the compile reference is generated from the DSL's own author contract, with this host's node kinds and rules; judge kinds only with decision providers", () => {
@@ -993,7 +993,12 @@ test("compileAskOf: a compile in an earlier run's first round holds the cooldown
   const opened = [];
   const deps = (byRun) => ({
     store: {
-      runs: { list: async () => [{ id: "run-2", agentId: "agent-1", state: "ended", outcome: "completed" }, { id: "run-1", agentId: "agent-1", state: "ended", outcome: "completed" }] },
+      runs: {
+        list: async () => [{ id: "run-2", agentId: "agent-1", state: "ended", outcome: "completed" }, { id: "run-1", agentId: "agent-1", state: "ended", outcome: "completed" }],
+        get: async (id) => ({ id, agentId: "agent-1", revisionId: "rev-1" }),
+      },
+      // Its definition compiles at 2 completed runs: run-2 ending is its second.
+      agents: { revision: async () => ({ id: "rev-1", body: { learning: { compile_after: 2 } } }) },
       learning: {
         proposal: async (runId, round) => {
           const kept = byRun[runId] ?? [];
@@ -1004,7 +1009,7 @@ test("compileAskOf: a compile in an earlier run's first round holds the cooldown
     },
     learningFolder: (agentId) => { opened.push(agentId); throw new Error("the folder is not read in this test"); },
   });
-  const ask = { runId: "run-2", agentId: "agent-1", outcome: "completed", refuse: [], seedNotes: 3, seedWorkflows: 0 };
+  const ask = { runId: "run-2", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 };
   assert.equal(await learningEnd.compileAskOf(deps(rounds), ask).catch(() => undefined), undefined);
   assert.deepEqual(opened, [], "compiled lately: the folder is never opened for a compile turn");
   // No compile in any round: due, and the folder is read.

@@ -218,19 +218,18 @@ test("a grader that could not grade says so: ungraded, from a run that did not f
   assert.equal((await bench.gradeLlm({ ...down, options: { deadline: Date.now() - 1, runTimeoutMs: 1000 } }, "x")).ungraded, true, "the deadline passed");
 });
 
-// C3: workflow reuse. The compile turn (learn/compile.ts) writes the agent's job as a learned workflow once it keeps
-// COMPILE_AFTER_NOTES notes or has completed COMPILE_AFTER_RUNS runs, so with every step completed a workflow is due by
-// step COMPILE_AFTER_RUNS at the latest (sooner with notes), and never before the teach step it learns from; one kept
-// there is first callable at the step after that. A job that measures reuse (job.yaml `reuse: true`) runs at least
-// REUSE_STEPS steps past that point, and each series where a workflow was kept says how its later steps used it.
-const { COMPILE_AFTER_RUNS } = await import("../dist/learn/compile.js");
-
+// C3: workflow reuse. The compile turn (learn/compile.ts) writes the agent's job as a learned workflow once it has its
+// definition's compile_after completed runs (the bench sets bench.COMPILE_AFTER), so with every step completed a workflow
+// is due by step COMPILE_AFTER, and never before the teach step it learns from; one kept there is first callable at the
+// step after that. A job that measures reuse (job.yaml `reuse: true`) runs at least REUSE_STEPS steps past that point,
+// and each series where a workflow was kept says how its later steps used it.
 test("a job that measures workflow reuse runs at least 3 steps after the step a workflow is compiled by; expense is one", () => {
   const reuse = jobs.map((name) => readJob(join(jobsDir, name))).filter((job) => job.reuse);
   assert.ok(reuse.some((job) => job.name === "expense"), "expense teaches a skill: it measures reuse");
+  assert.equal(bench.COMPILE_AFTER, 5);
   for (const job of reuse) {
     const teach = job.steps.findIndex((s) => s.kind === "teach");
-    const keptAt = Math.max(teach, COMPILE_AFTER_RUNS - 1);
+    const keptAt = Math.max(teach, bench.COMPILE_AFTER - 1);
     assert.ok(job.steps.length - (keptAt + 1) >= bench.REUSE_STEPS, `${job.name}: ${job.steps.length} steps, a workflow compiled by step ${job.steps[keptAt]?.id ?? keptAt + 1}, ${job.steps.length - (keptAt + 1)} after it`);
   }
   assert.equal(bench.REUSE_STEPS, 3);

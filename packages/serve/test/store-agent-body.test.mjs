@@ -95,6 +95,9 @@ test("a revision keeps a default spend cap, and the learning switch, when they a
   assert.equal("learning" in bodyOf(A).body, false);
   for (const maxCostUsd of [0, -1, "2", Number.NaN]) assert.throws(() => bodyOf({ ...A, maxCostUsd }), refused(/maxCostUsd/), String(maxCostUsd));
   assert.throws(() => bodyOf({ ...A, learning: "yes" }), refused(/learning/));
+  // An object is on with the loop's numbers: kept in one order, a bad one refused.
+  assert.deepEqual(Object.entries(bodyOf({ ...A, learning: { agree_min: 0.9, compile_after: 5 } }).body.learning), [["compile_after", 5], ["agree_min", 0.9]]);
+  for (const learning of [{ compile_after: 0 }, { agree_min: 2 }, { alone_min: Number.NaN }, { other: 1 }]) assert.throws(() => bodyOf({ ...A, learning }), refused(/learning\./), JSON.stringify(learning));
 });
 
 test("bodyOf keeps a tool setting's pin as given (the caller made it canonical); it does not reimplement the pin check", () => {
