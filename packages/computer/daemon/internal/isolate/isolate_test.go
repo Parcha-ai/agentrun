@@ -380,7 +380,7 @@ func denySocketsChild() int {
 	fmt.Println("vsock", errnoWords(socketErr(afVsock)))
 	_, _, errno := syscall.Syscall(sysIOURingSetup, 1, uintptr(unsafe.Pointer(nil)), 0)
 	fmt.Println("io_uring", errnoWords(errno))
-	// Without the filter a descriptor of no namespace meets EBADF; the filter answers before the descriptor is read.
+	// A descriptor of no namespace meets EBADF from the kernel; a filter that refused setns would answer EPERM first.
 	_, _, errno = syscall.Syscall(sysSetns, ^uintptr(0), 0, 0)
 	fmt.Println("setns", errnoWords(errno))
 	fmt.Println("inet", errnoWords(socketErr(syscall.AF_INET)))
@@ -394,7 +394,7 @@ func denySocketsChild() int {
 	return 0
 }
 
-func TestDenySocketsRefusesVsockIOURingAndSetnsOnEveryThreadAndInEveryProgram(t *testing.T) {
+func TestDenySocketsRefusesVsockAndIOURingOnEveryThreadAndInEveryProgram(t *testing.T) {
 	nocgo.Require(t)
 	var stderr strings.Builder
 	cmd := exec.Command(os.Args[0], denySocketsArg)
@@ -404,9 +404,9 @@ func TestDenySocketsRefusesVsockIOURingAndSetnsOnEveryThreadAndInEveryProgram(t 
 		t.Fatalf("the child: %v; stdout %q, stderr %s", err, out, stderr.String())
 	}
 	eperm := fmt.Sprintf("errno %d", int(syscall.EPERM))
-	// Review (#2787, PRRT_kwDOUmdVMs63e4QM): a program of the user's could join a namespace another one made, the
-	// window manager's, and reach the session bus it holds.
-	want := map[string]string{"vsock": eperm, "io_uring": eperm, "setns": eperm, "inet": "opened", "unix": "opened", "program vsock": eperm}
+	// setns passes: nsenter, `ip netns exec` and rootless containers join namespaces their own user made.
+	ebadf := fmt.Sprintf("errno %d", int(syscall.EBADF))
+	want := map[string]string{"vsock": eperm, "io_uring": eperm, "setns": ebadf, "inet": "opened", "unix": "opened", "program vsock": eperm}
 	threads := 0
 	got := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

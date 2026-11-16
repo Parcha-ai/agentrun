@@ -152,6 +152,27 @@ test("a CLI harness: a stop that comes while a held run's computer is still comi
   assert.ok(stop.takenAt !== null && stop.refused === null, `the stop's row is taken by the end: ${JSON.stringify(stop)}`);
 });
 
+test("a CLI harness: a stop while the computer's start still waits (a first image pull or Agent37's registration, minutes) ends that wait at once: the claim hands the start the run's stop", { timeout: 120_000 }, async (t) => {
+  let launching;
+  const entered = new Promise((resolve) => (launching = resolve));
+  let signalled;
+  const { server } = await heldRun(t, async (_entry, { signal }) => {
+    signalled = signal;
+    launching();
+    // A start that ends only on its signal: without the run's stop handed on, the run would wait for it forever.
+    await new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(new Error("the start was stopped")), { once: true }));
+  });
+  await entered;
+  assert.ok(signalled instanceof AbortSignal, "the start is given the run's signal");
+  await sendCommand(server, RUN, { kind: "stop" });
+  const row = await until(async () => {
+    const now = await server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run ends once the stop ends the start's wait", 20_000);
+  assert.equal(signalled.aborted, true, "the stop reached the start");
+  assert.equal(row.state, "stopped", JSON.stringify(row));
+});
+
 test("a CLI harness: a cancel after a stop that kept the held computer ends the run at once, cancelled, and lets the computer go", { timeout: 120_000 }, async (t) => {
   const { server, held } = await heldAndWorking(t);
   await sendCommand(server, RUN, { kind: "stop" });

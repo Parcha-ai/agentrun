@@ -4,6 +4,7 @@
 // a pid1 host's machine runs the entrypoint as its main process, which waits for the daemon and becomes init. Every
 // connection runs stdio. Each is one argv, `sh -c '<script>' sh <args>`; shellCommand gives it as one string for a
 // vendor whose exec takes a shell line.
+import { PassThrough } from "node:stream";
 import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "../drift.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import type { ComputerCapabilities, ComputerConnection } from "../provider.js";
@@ -66,15 +67,17 @@ export function installerOf(output: string): string | undefined {
  *  them (Daytona's toolbox, E2B's envd), which runs commands as root for whoever reaches it: a network of their own,
  *  their loopback alone, no vsock, no other process of their uid (src/isolation.ts). Init holds every process and ends
  *  them at the deadline. A display, when given, is init's DISPLAY, the X display its screen and input methods drive; a
- *  maximum, when given, is the most deadline.extend may move the deadline to. */
+ *  maximum, when given, is the most deadline.extend may move the deadline to; a network form, when given (open, or
+ *  allow: and a list), has init start the egress proxy that serves it before it leaves the machine's network
+ *  (./network.ts). */
 const INIT_SCRIPT = [
 	"# agentrun-computer: init",
-	// The display is v, not x: held() assigns x, and runs before the exec that reads it.
-	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}",
+	// The display is v, not x: held() assigns x, and runs before the exec that reads it. The network form is n.
+	"d=$1; t=$2; w=$3; h=$4; r=$5; v=${6-}; m=${7-}; n=${8-}",
 	HELD,
 	'held "$d" >&2 || exit 6',
 	ROOT,
-	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"}`,
+	`exec $p env -i PATH=${PATH} HOME="$h" AGENTRUN_COMPUTERD_SOCKET="$r/computerd.sock" \${v:+DISPLAY="$v"} sh -c 'cd "$HOME" && exec "$@"' sh "$d" init --deadline "$t" --user "$w" --own-network \${m:+--max-deadline "$m"} \${n:+--network "$n"}`,
 ].join("\n");
 
 /** The bridge one connection runs: stdin and stdout to init's socket. As root, to reach a socket in a directory that is
@@ -100,8 +103,15 @@ export const INIT_LOG = `${SOCKET_DIR}-init.log`;
 const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
 
 /**
- * Takes others' access off every path unix socket the vendor's patterns ($@, each a shell pattern with no space) name,
- * as root: what init does itself under /run (daemon/internal/isolate CloseSystemSockets), for a vendor's socket
+ * The session buses a vendor's own processes leave in /tmp (Daytona's D-Bus, /tmp/dbus-Y8OW6E3FDx), which no network
+ * namespace cuts: every child host's create closes them to the computer's user before init starts. The window
+ * manager's bus is its own, at an abstract address, so closing these takes nothing from it.
+ */
+export const SESSION_BUSES: readonly string[] = ["/tmp/dbus-*"];
+
+/**
+ * Takes others' access off every path unix socket the patterns ($@, each a shell pattern with no space) name, as
+ * root: what init does itself under /run (daemon/internal/isolate CloseSystemSockets), for a vendor's socket
  * elsewhere. The owner's and group's access stays, so the vendor's own service keeps its socket; the computer's user
  * is neither. A link is never followed. Prints `closed <path>` for each socket it closed and `failed <path>` for one
  * it could not; any failure fails the script, and create then refuses the computer.
@@ -119,6 +129,28 @@ const SOCKETS_SCRIPT = [
 	"exit $failed",
 ].join("\n");
 
+/**
+ * Makes each path ($@) root's alone, as root, and for a directory everything under it (no link is followed): root owns
+ * every entry (a link itself, `chown -h`), and no group or other user may write one. Only the entries that need it are
+ * changed. Then it reads them back: an entry not root's alone fails the script, and create then refuses the computer.
+ * An owner who is not root could give write back with chmod, so the owner is made root as well as the mode. A path the
+ * image lacks is skipped. For a host whose image leaves places root runs or reads open to other users
+ * (HostFacts.rootOnly); it runs before the daemon's upload. Root is the user `$p` runs as, read by `id -u`.
+ */
+const ROOT_ONLY_SCRIPT = [
+	"# agentrun-computer: root-only",
+	ROOT,
+	'r=$($p id -u) || { echo "running a command as root failed"; exit 5; }',
+	'for f in "$@"; do',
+	'\t[ -e "$f" ] || [ -L "$f" ] || continue',
+	'\t[ ! -L "$f" ] || { echo "$f is a symbolic link"; exit 6; }',
+	'\t$p find "$f" ! -user "$r" -exec chown -h "$r" {} + || { echo "making root the owner of $f failed"; exit 5; }',
+	'\t$p find "$f" ! -type l -perm /022 -exec chmod go-w {} + || { echo "taking write off $f failed"; exit 5; }',
+	'\tw=$($p find "$f" \\( ! -user "$r" -o ! -type l -perm /022 \\) -print 2>/dev/null | head -n 1)',
+	'\t[ -z "$w" ] || { echo "$w is not root\'s alone"; exit 5; }',
+	"done",
+].join("\n");
+
 /** The sockets the sockets script closed, from its `closed <path>` lines. */
 export function closedSocketsOf(output: string): string[] {
 	return output.split("\n").flatMap((line) => (line.startsWith("closed ") ? [line.slice("closed ".length).trim()] : []));
@@ -126,6 +158,31 @@ export function closedSocketsOf(output: string): string[] {
 
 /** The last words init wrote to its log, as root; nothing when it wrote none. */
 const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "$l" 2>/dev/null || true'].join("\n");
+
+/**
+ * Where a machine of a host that keeps no labels (HostFacts.labels "machine") holds its label map, as JSON. Under
+ * /var/lib, on the machine's disk, so it outlives a restart: /run is a tmpfs, and /run/agentrun is the daemon user's.
+ * In a directory root's alone (0700), so the computer's user can neither read nor change it.
+ */
+export const LABEL_FILE = "/var/lib/agentrun/labels.json";
+
+/**
+ * The label file, as root. With write <bytes>, that many bytes of stdin replace it, read by length so no end of stdin
+ * is needed: written to a file of its own beside it (two writers never share one) and renamed in, 0600 in a 0700
+ * directory, both root's. Then it prints the file; exit 3 when there is none.
+ */
+const LABELS_SCRIPT = [
+	"# agentrun-computer: labels",
+	"f=$1",
+	ROOT,
+	'if [ "${2-}" = write ]; then',
+	`\t$p sh -c 'umask 077; d=\${0%/*}; mkdir -p "$d" && chown 0:0 "$d" && chmod 700 "$d" && t=$(mktemp "$0.XXXXXX") || exit 5; head -c "$1" >"$t" && [ "$(wc -c <"$t")" -eq "$1" ] && mv -f "$t" "$0" || { rm -f "$t"; exit 5; }' "$f" "$3" || exit 5`,
+	"fi",
+	`exec $p sh -c '[ -e "$0" ] || exit 3; exec cat "$0"' "$f"`,
+].join("\n");
+
+/** The label file's read, or given the byte length of the JSON on stdin, its write and then its read. */
+export const labelsCommand = (bytes?: number): string[] => argvOf(LABELS_SCRIPT, [LABEL_FILE, ...(bytes === undefined ? [] : ["write", String(bytes)])]);
 
 /**
  * A pid1 machine's main process: waits, bounded, for the daemon this create installed to be moved into place executable
@@ -170,8 +227,10 @@ export interface HostedCommands {
 	install: string[];
 	/** child: init's start, detached; it answers once init is started. */
 	start: string[];
-	/** child: the vendor's sockets (HostFacts.vendorSockets) closed to others, run before start; none when it names none. */
-	sockets?: string[];
+	/** child: the session buses in /tmp (SESSION_BUSES) closed to others, run before start. */
+	sockets: string[];
+	/** Write taken off every user but root on the host's rootOnly paths, run before the daemon's upload. */
+	rootOnly: string[];
 	stdio: string[];
 	log: string[];
 	/** pid1: the machine's command. */
@@ -182,8 +241,9 @@ export interface HostedCommands {
  * The adapter's commands for one computer. Init's flags are the child's (childCommands) for both modes: --own-network
  * always, the display and the most deadline.extend may move the deadline to when given. waitS bounds a pid1 entrypoint's
  * wait for the daemon (and gate, for an Archil computer); with atomic, install moves the daemon into place last, and only
- * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. vendorSockets
- * (HostFacts') gives a child its sockets command.
+ * once it reads sha256, when given, then writes nonce, when given, to the marker the entrypoint waits for. sockets are
+ * the patterns a child's sockets command closes (default SESSION_BUSES); rootOnly the paths its root-only command takes
+ * others' write off (default none).
  */
 export function hostedCommands({
 	staging = "",
@@ -196,17 +256,19 @@ export function hostedCommands({
 	gate,
 	sha256 = "",
 	nonce = "",
-	vendorSockets = [],
-}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; vendorSockets?: readonly string[] } = {}): HostedCommands {
-	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
-	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
-	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline])];
+	sockets = SESSION_BUSES,
+	rootOnly = [],
+	network = "",
+}: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[] } = {}): HostedCommands {
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
+	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]), ...(network === "" ? [] : ["--network", network])];
 	return {
 		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", sha256, nonce] : [])]),
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
 		stdio: argvOf(STDIO_SCRIPT, [DAEMON_IN_COMPUTER, SOCKET_DIR]),
 		log: argvOf(LOG_SCRIPT, [INIT_LOG]),
-		...(vendorSockets.length === 0 ? {} : { sockets: argvOf(SOCKETS_SCRIPT, vendorSockets) }),
+		sockets: argvOf(SOCKETS_SCRIPT, sockets),
+		rootOnly: argvOf(ROOT_ONLY_SCRIPT, rootOnly),
 		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
 }
@@ -222,6 +284,17 @@ export interface ChildCommandOptions {
 	display?: string;
 	/** The most deadline.extend may move the deadline to, an ISO time; none, and the deadline cannot move. */
 	maxDeadline?: string;
+	/** The network form init's egress proxy serves (./network.ts networkFormOf): open, or allow: and a list; none, no proxy. */
+	network?: string;
+}
+
+/** The init script's arguments: the daemon, the deadline, the user, home and the socket's folder, then the display, the
+ *  maximum and the network form, each empty when not given, where any of them is. */
+function initScriptArgs({ deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "" }: ChildCommandOptions): string[] {
+	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
+	if (network !== "") init.push(display, maxDeadline, network);
+	else if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
+	return init;
 }
 
 /**
@@ -229,9 +302,8 @@ export interface ChildCommandOptions {
  * its sha256 printed), init (long-lived) and stdio (one per connection). Each is one string for a shell, `sh -c` with
  * every argument quoted.
  */
-export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "" }: ChildCommandOptions = {}) {
-	const init = [DAEMON_IN_COMPUTER, deadline, user, WORK, SOCKET_DIR];
-	if (display !== "" || maxDeadline !== "") init.push(display, maxDeadline);
+export function childCommands({ staging = "", deadline = "", user = TOOL_USER, display = "", maxDeadline = "", network = "" }: ChildCommandOptions = {}) {
+	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
 	return {
 		install: shellCommand(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR]),
 		init: shellCommand(INIT_SCRIPT, init),
@@ -281,7 +353,7 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 		const value = fields.get(set);
 		if (value === undefined || !/^0+$/.test(value)) found.push(`daemon ${set}: declared no capabilities, read back ${show(value)}`);
 	}
-	if (fields.get("Seccomp") !== "2") found.push(`daemon seccomp: declared 2 (the filter that refuses vsock, io_uring and setns), read back ${show(fields.get("Seccomp"))}`);
+	if (fields.get("Seccomp") !== "2") found.push(`daemon seccomp: declared 2 (the filter that refuses vsock and io_uring), read back ${show(fields.get("Seccomp"))}`);
 	// Its own network, as its user sees it: the live interfaces lo alone, and none it could bring up (computerd probe).
 	const net = await readOwnNetwork(connection.client, timeoutMs, bounded());
 	if (!net.ok) return fail(net.error.code === "aborted" && !signal?.aborted ? "timeout" : net.error.code, net.error.message);
@@ -295,4 +367,120 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 		if (stat.value.target !== want) found.push(`daemon ${what}: declared ${want}, read back ${show(stat.value.target)}`);
 	}
 	return ok(found);
+}
+
+/**
+ * The sh a process starts under where the vendor has no kill that ends it (framedExec with no kill, SSH, Modal): one
+ * line on stderr, its pid and its start time (field 22 of /proc/<pid>/stat, counted past the command's name in
+ * parentheses, which may hold spaces), then the command in its place, which keeps both. pidLine takes the line off.
+ */
+export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")" >&2; exec "$@"', "sh"];
+
+/**
+ * The sh pidKill starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let
+ * be. Otherwise it kills the process and every process under it (an upload's head and base64 would wait on the open
+ * stdin, and hold stderr open, past their sh; a child that left the process group too): each is stopped as it is found,
+ * so none forks away, by its parent pid (field 4 of its stat) until a pass over /proc finds no more, and then all are
+ * killed. When the pid leads its own process group (field 5), as a command an sshd starts does, every process in that
+ * group is taken too: a background job whose parent exited is under no process the walk finds, but still in the group.
+ * A pid that leads no group of its own is let be past its tree, so a kill never reaches what it didn't start.
+ */
+export const PID_KILL = [
+	"pid=$1 start=$2",
+	'read -r s 2>/dev/null <"/proc/$pid/stat" || exit 0',
+	'set -- ${s##*") "}',
+	'[ "${20}" = "$start" ] || exit 0',
+	'group=; [ "$3" = "$pid" ] && group=$pid',
+	'kill -STOP "$pid" 2>/dev/null',
+	'all=" $pid " new=$pid',
+	'while [ -n "$new" ]; do',
+	"\tnew=",
+	"\tfor f in /proc/[0-9]*/stat; do",
+	'\t\tread -r s 2>/dev/null <"$f" || continue',
+	"\t\tp=${s%% *}",
+	'\t\tset -- ${s##*") "}',
+	'\t\tcase "$all" in *" $p "*) continue ;; esac',
+	'\t\tcase "$all" in *" $2 "*) ;; *) [ -n "$group" ] && [ "$3" = "$group" ] || continue ;; esac',
+	'\t\tall="$all$p " new="$new $p"; kill -STOP "$p" 2>/dev/null',
+	"\tdone",
+	"done",
+	"kill -KILL $all 2>/dev/null",
+	"exit 0",
+].join("\n");
+
+/** A process's pid and start time, from PID_WRAPPER's line. */
+export interface PidOf {
+	pid: string;
+	start: string;
+}
+
+/** The argv that kills a process started under PID_WRAPPER, and every process under it, while its pid has that start time. */
+export const pidKill = ({ pid, start }: PidOf): string[] => ["sh", "-c", PID_KILL, "sh", pid, start];
+
+/** What pidLine and pidStderr answer: the pid and start time once the line ends, waited for at most ms. */
+export type PidWithin = (ms: number) => Promise<PidOf | undefined>;
+
+/**
+ * PID_WRAPPER's line taken off a process's stderr: take() is given each piece of stderr and answers what of it is the
+ * process's own (nothing while the line has not ended). pid answers once the line ends; undefined for a line that is
+ * no pid and start time, once end() came first (the stream ended), or past ms.
+ */
+export function pidLine(): { take(bytes: Uint8Array): Buffer; end(): void; pid: PidWithin } {
+	let held: Buffer | undefined = Buffer.alloc(0);
+	let got: (found: PidOf | undefined) => void = () => {};
+	const found = new Promise<PidOf | undefined>((done) => (got = done));
+	return {
+		take(bytes) {
+			const piece = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+			if (held === undefined) return piece;
+			held = Buffer.concat([held, piece]);
+			const at = held.indexOf(0x0a);
+			if (at < 0) return Buffer.alloc(0);
+			const line = /^([1-9][0-9]*) ([0-9]+)$/.exec(held.subarray(0, at).toString("latin1").trim());
+			got(line ? { pid: line[1] as string, start: line[2] as string } : undefined);
+			const rest = held.subarray(at + 1);
+			held = undefined;
+			return rest;
+		},
+		end: () => got(undefined),
+		pid: async (ms) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const late = new Promise<undefined>((done) => (timer = setTimeout(() => done(undefined), ms)));
+			try {
+				return await Promise.race([found, late]);
+			} finally {
+				clearTimeout(timer);
+			}
+		},
+	};
+}
+
+/**
+ * A stream's stderr with PID_WRAPPER's line taken off (pidLine), read from its start whether or not anyone reads what
+ * it passes on, so the pid comes; the rest waits for its reader.
+ */
+export function pidStderr(source: AsyncIterable<Uint8Array>): { stderr: PassThrough; pid: PidWithin } {
+	const line = pidLine();
+	const stderr = new PassThrough().on("error", () => {});
+	const drained = () =>
+		new Promise<void>((done) => {
+			const go = () => {
+				stderr.off("drain", go).off("close", go);
+				done();
+			};
+			stderr.on("drain", go).on("close", go);
+		});
+	void (async () => {
+		try {
+			for await (const bytes of source) {
+				const own = line.take(bytes);
+				if (own.length > 0 && !stderr.destroyed && !stderr.write(own)) await drained();
+			}
+		} catch {
+			// A stream that broke ends here, as one that ended.
+		}
+		line.end();
+		stderr.end();
+	})();
+	return { stderr, pid: line.pid };
 }

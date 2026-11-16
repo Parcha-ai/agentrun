@@ -100,7 +100,7 @@ test("a file this server cannot read (created private in the box) is listed, fla
   t.after(() => chmod(join(server.work, "private.txt"), 0o600).catch(() => {}));
   const list = await get(server, "");
   assert.equal(list.status, 200);
-  assert.deepEqual(list.body.files.map((f) => [f.path, f.unreadable ?? false]), [["open.txt", false], ["private.txt", true]]);
+  assert.deepEqual(list.body.files.map((f) => [f.path, f.unreadable ?? false]), [["inputs/message.md", false], ["open.txt", false], ["private.txt", true]]);
   const res = await get(server, "/private.txt");
   assert.equal(res.status, 403);
   assert.equal(res.body.error.code, "system_file_forbidden");

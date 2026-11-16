@@ -261,6 +261,13 @@ const LOOKS: ReadonlySet<string> = new Set(["observe", "screenshot", "apps.list"
 /** The ops that act, each by what the model is told was not done: parked, then refused. */
 const ACTS: ReadonlyMap<string, string> = new Map([["act", "act"], ["input.act", "input"], ["apps.open", "app opening"]]);
 
+/** What an op does: an act's words, or undefined for a look or a pass-through. On a computer with apps and no ui group,
+ *  an observe that names an app opens it, or brings it in front, first: an app opening. */
+function actOf(port: Port, op: string, args: unknown): string | undefined {
+  const opens = op === "observe" && !port.groups.includes("ui") && port.groups.includes("apps") && typeof (args as { app?: unknown } | undefined)?.app === "string";
+  return opens ? "app opening" : ACTS.get(op);
+}
+
 /** The computer's one port, as heldHands needs it (run-adapters kernel/registry Hands.computer). */
 type Port = { readonly groups: readonly string[]; call(op: string, args: unknown, signal?: AbortSignal): Promise<unknown> };
 type WithPort = Partial<Hands> & { readonly computer?: Port };
@@ -272,7 +279,7 @@ function heldPort<P extends Port>(port: P, hold: ComputerHold): P {
   return {
     ...port,
     async call(op: string, args: unknown, signal?: AbortSignal) {
-      const what = ACTS.get(op);
+      const what = actOf(port, op, args);
       if (what === undefined && !LOOKS.has(op)) return port.call(op, args, signal);
       const parked = hold.state() !== "agent";
       const leave = await hold.enter(signal);

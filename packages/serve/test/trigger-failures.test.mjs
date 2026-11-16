@@ -11,6 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { RUN_EXEC, fakeClock, firings, keyOf, made, schedule } from "./trigger-support.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
@@ -20,7 +21,7 @@ async function receiver(t) {
   const got = [];
   const path = `/hook/${randomBytes(8).toString("hex")}`;
   const server = createServer((req, res) => {
-    if (req.url !== path) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (at) => at === path })) return;
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {

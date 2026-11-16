@@ -7,7 +7,8 @@
 // frames it has its own (hands=page in the fragment: the console's Screen tab); no address bar, back or reload (a browser's). A desktop gets the mouse, the wheel and keys; a phone gets taps, swipes, its back, home and
 // recents buttons, and keys (a soft keyboard's too, through beforeinput). Coordinates are the screen's real pixels, the w and h each frame carries. A swipe lasts 1,000 ms
 // at most, as the computer takes it (createActionMapper's bound). Losing focus tells the endpoint ("blur"), which lets go of
-// the buttons held.
+// the buttons held. A park's end (reason "parked") says what the run waits for and until when the computer is kept, by
+// this page's clock, then that it wasn't kept once that time passes: never that it ended.
 
 const html = `<!doctype html>
 <html lang="en">
@@ -162,6 +163,17 @@ const js = `"use strict";
   }
   var REFUSED = { unauthorized: "This link's token was not accepted.", viewer_in_use: "Another viewer already has this computer.", released: "This computer has been released.", bad_message: "The host did not understand this viewer.", slow_viewer: "This view fell too far behind the computer's screen: open the live view again." };
   var ENDED = { gone: "This computer has ended.", released: "This computer has been released.", ended: "This computer's session has ended.", unreachable: "The computer can't be reached right now.", refused: "The computer refused its live view.", unsupported: "This computer has no screen to show." };
+  // The run parked with its computer kept: what it waits for, and until when (this page's clock) the computer is kept;
+  // once that passes, that it wasn't kept. No take-over meanwhile: there is no screen to take.
+  function parked(m) {
+    var ms = typeof m.keptMs === "number" && m.keptMs > 0 ? m.keptMs : 0;
+    var at = new Date(Date.now() + ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    var waiting = typeof m.message === "string" ? m.message : "";
+    var lapsed = typeof m.lapsed === "string" ? m.lapsed : "";
+    if (!ms) { say(lapsed || waiting, true); return; }
+    say(waiting.replace(/\\.$/, "") + ", until " + at + ".", true);
+    if (lapsed) setTimeout(function () { say(lapsed, true); }, ms);
+  }
   ws.onmessage = function (event) {
     if (typeof event.data !== "string") { draw(event.data); return; }
     var m;
@@ -184,6 +196,7 @@ const js = `"use strict";
     else if (m.type === "take_refused") say(m.message || "The computer could not be handed to you.");
     else if (m.type === "held") say(m.message || "That input was held.");
     else if (m.type === "refused") { fatal = true; ready = false; say(REFUSED[m.reason] || "The host refused this viewer.", true); }
+    else if (m.type === "ended" && m.reason === "parked") { fatal = true; ready = false; holding = false; handsEl.disabled = true; parked(m); }
     else if (m.type === "ended") { fatal = true; ready = false; holding = false; handsEl.disabled = true; say(ENDED[m.reason] || "This computer has ended.", true); }
   };
   ws.onclose = function () { closed = true; ready = false; holding = false; handsEl.disabled = true; setDrive(""); if (!fatal) say("Disconnected. Open the live view again.", true); };

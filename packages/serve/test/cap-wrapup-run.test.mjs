@@ -4,8 +4,8 @@
 // holds it and no input is queued, so the model's answer ends the turn. A next turn under the same cap is told nothing
 // again. Another harness (the faux harness standing in for claude-agent): the same words go in a main-model request (the
 // model proxy adds them to its body), once, worked out with what is left as the request takes them, and the row is
-// written only once a request carrying them is admitted: never for a note no request carried, across a crash or a
-// turn's end.
+// written only once a request carrying them is answered: never for a note no request carried, across a crash or a
+// turn's end, nor for one whose request failed (it gives the note back, and the next request carries it).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -24,14 +24,21 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 const WRAP_UP = (left) => `About ${left} left of this run's budget: finish now with your answer.`;
 /** The same with no priced request yet: its typical cost the next request's expected cost (step 0). */
 const WRAP_UP_FIRST = (left) => `This run's budget is about ${left}, enough for little work: answer as soon as you can.`;
-/** Each note the faux harness took, with the index of the request that carried it (its first request is 0), from the run's
- *  journal in the store: the note is filed as it is admitted, before that request's own record. */
+/** What every note the model is told begins with: the row of the server's says the words after it. */
+const LABEL = "AgentRun server note: ";
+/** A note's words after its label, which it must begin with. */
+const unlabelled = (text) => {
+  assert.ok(text.startsWith(LABEL), `the note is labelled as the server's: ${text}`);
+  return text.slice(LABEL.length);
+};
+/** Each note the faux harness took (after its label), with the index of the request that carried it (its first request
+ *  is 0), from the run's journal in the store: the note is filed as it is admitted, before that request's own record. */
 const noteRequests = async (store, runId) => {
   let requests = 0;
   const out = [];
   for (const entry of await journalOf(store, runId)) {
     if (entry.kind === "faux.request") requests += 1;
-    else if (entry.kind === "faux.note") out.push([requests, entry.data.text]);
+    else if (entry.kind === "faux.note") out.push([requests, unlabelled(entry.data.text)]);
   }
   return out;
 };
@@ -41,8 +48,8 @@ const WORDS = /^AgentRun: (?:About \$\d+(?:\.\d\d)? left of this run's budget: f
 const rowsOf = async (api, runId) => (await api("GET", `/runs/${runId}/timeline`)).body.rows.filter((row) => row.kind === "phase" && WORDS.test(row.summary ?? ""));
 /** The run's journal entries, from the one store (a runner writes them as it goes: nothing to let go first). */
 const journalOf = async (store, runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
-/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), from the run's journal in the store. */
-const notesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => entry.data.text);
+/** The faux harness's notes taken into its requests (FAUX_RECORDS.note), after their label, from the run's journal in the store. */
+const notesOf = async (store, runId) => (await journalOf(store, runId)).filter((entry) => entry.kind === "faux.note").map((entry) => unlabelled(entry.data.text));
 /** The words inside a request's reminder (the proxy places the note in the last user text, in a <system-reminder>). */
 const reminderIn = (text) => /<system-reminder>([\s\S]*?)(?:<\/system-reminder>|$)/.exec(text)?.[1] ?? text;
 /** Until the run's runner has let it go (its claim released). */
@@ -72,8 +79,10 @@ test("pi: near its cap the model is told once, in the request it is sent, to fin
   assert.equal(rows[0].text, WRAP_UP_FIRST("$0.50"), "told at step 0, in its words");
   const seen = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((call) => call.note);
   assert.equal(seen.length, 1, "the model saw the note in one request");
-  // The proxy places the note in the request's last user text, inside its reminder: the words between the tags are the row's.
-  assert.equal(`AgentRun: ${reminderIn(seen[0].note)}`, rows[0].summary, "the words it saw are the row's");
+  // The proxy places the note in the request's last user text, inside its reminder: the words between the tags are the
+  // label, then the row's, which the row says once labelled.
+  assert.equal(`AgentRun: ${unlabelled(reminderIn(seen[0].note))}`, rows[0].summary, "the words it saw are the row's");
+  assert.ok(!rows[0].summary.includes(LABEL), "the row is labelled once");
   assert.ok(!(await journalOf(store, runId)).some((entry) => JSON.stringify(entry.model ?? []).includes("run's budget")), "no entry of pi's transcript holds it");
 });
 
@@ -233,6 +242,39 @@ test("claude-agent on Sonnet 5.5 under $0.11, the next request taking its note b
   assert.deepEqual((await rowsOf(api, runId)).map((row) => row.text), [WRAP_UP_FIRST("$0.09")]);
   await released(store, runId);
   assert.deepEqual(await notesOf(store, runId), [WRAP_UP_FIRST("$0.09")]);
+});
+
+test("claude-agent on Sonnet 5.5 under $0.10, the request carrying the note answered with an error status (a 429): it gives the note back, the next request carries it, and one row says so", { timeout: 120_000 }, async (t) => {
+  const { store, runId, run, rows } = await sonnetRun(t, { harness: "claude-agent", instructions: "Wrap up with the carrier unanswered (status).", cap: 0.1, id: "s55-carrier-status" });
+  assert.equal(run.status, "completed", JSON.stringify(run.pending ?? run.error));
+  assert.deepEqual(rows.map((row) => row.text), [WRAP_UP_FIRST("$0.10")], "one row, once a request carrying it was answered");
+  await released(store, runId);
+  assert.deepEqual(await noteRequests(store, runId), [[0, WRAP_UP_FIRST("$0.10")], [1, WRAP_UP_FIRST("$0.10")]], "the failed request carried it, then the next");
+});
+
+test("claude-agent on Sonnet 5.5 under $0.035, two requests in flight: the first carries the note, the second, sent while the first is out, carries none, and the row is written only once the first is answered", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const [first, second] = [join(dir, "first"), join(dir, "second")];
+  const sonnet = new URL("./fixtures/faux-sonnet55.mjs", import.meta.url).pathname;
+  const { api, store } = await serve(t, { faux: sonnet, harnessTable: fauxTable(FAUX_HARNESS) });
+  assert.equal((await api("POST", "/agents", agent("s55-two", { harness: "claude-agent", instructions: `Carry the note with a second request in flight (the first booked when ${first}, the second answered when ${second}).` }))).status, 201);
+  // Request 0's step-0 figure, its 1,000 input tokens and the 1,024 it asks ($0.0127), is over a third of $0.035.
+  const runId = (await api("POST", "/agents/s55-two/runs", { input: { content: "go" }, max_cost_usd: 0.035 })).body.run_id;
+  for (const end = Date.now() + 60_000; !(await journalOf(store, runId)).some((entry) => entry.kind === "faux.request" && entry.data?.index === 1); await new Promise((resolve) => setTimeout(resolve, 50))) {
+    if (Date.now() > end) assert.fail(`request 1 was sent within 60 s: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body).slice(0, 1500)}`);
+  }
+  assert.deepEqual(await rowsOf(api, runId), [], "no row while the request carrying the note is out");
+  assert.equal((await notesOf(store, runId)).length, 1, "request 1, sent while request 0 is out, carries no note");
+  await writeFile(first, "");
+  for (const end = Date.now() + 60_000; (await rowsOf(api, runId)).length === 0; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    if (Date.now() > end) assert.fail(`the note was told within 60 s of its answer: ${JSON.stringify((await api("GET", `/runs/${runId}`)).body).slice(0, 1500)}`);
+  }
+  await writeFile(second, "");
+  await follow(api, runId, ["completed", "failed", "input_required"], { deadlineMs: 60_000 });
+  const rows = (await rowsOf(api, runId)).map((row) => row.text);
+  assert.equal(rows.length, 1, `one row: ${JSON.stringify(rows)}`);
+  await released(store, runId);
+  assert.deepEqual(await noteRequests(store, runId), [[0, rows[0]]], "request 0 alone carried it");
 });
 
 test("claude-agent on Sonnet 5.5 under $0.10, a $0.04 first request: the measured typical makes it due, and request 2 is told to finish (a guard)", { timeout: 120_000 }, async (t) => {

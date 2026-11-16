@@ -1,6 +1,6 @@
-// The over-cap row: a request's cost is booked once it answers, never clipped, so a run can pass its cap by a cache miss
-// (by at most the bound of the requests since the cost last fit) or by a hosted tool's allowance. After the usage row that
-// passes it, one row says by how much, in cents; none at or under the cap, or with no cap or no known cost.
+// The over-cap row: a request's cost is booked once it answers, never clipped. A request is held at its worst case, a cache
+// miss included, so only a charge past its hold (a hosted tool's usage-priced charge) can pass the cap. After the usage
+// row that passes it, one row says by how much, in cents; none at or under the cap, or with no cap or no known cost.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { overCapWords } from "../dist/kernel/cap/index.js";
@@ -13,7 +13,7 @@ test("the over-cap row follows the usage row once the booked cost passes the cap
   assert.equal(overCapWords(null, 1), undefined, "no known cost");
 });
 
-test("the over-cap row after a cache miss says by how much and the most it could have, in cents, once", () => {
-  assert.equal(overCapWords(0.5034, 0.5, 0.012), "Went $0.01 over its cap on a cache miss (at most $0.02).");
-  assert.equal(overCapWords(0.53, 0.5, 0.012), "Spent $0.53, $0.03 over the run's cap of $0.50", "past the bound: not a miss");
+test("no row excuses a spend past the cap as a cache miss: a cent over reads as any spend over", () => {
+  assert.equal(overCapWords(0.5034, 0.5), "Spent $0.50, $0.01 over the run's cap of $0.50");
+  assert.equal(overCapWords(0.53, 0.5), "Spent $0.53, $0.03 over the run's cap of $0.50");
 });

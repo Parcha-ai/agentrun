@@ -12,9 +12,10 @@ const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "PARALLEL_API_KEY"];
 
 // Writes the file the first message names (`write NAME.md`); asks its person first when told to ask, and writes what
-// they said; then answers. Priced on output only, $100 a million, as the server's cap tests price it: a request's least
-// (1,024 tokens) is $0.1024, so a run capped under that stops at its cap before its first request.
-const FAUX = `const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
+// they said (the server's notes, its <system-reminder> blocks, are not their words: an answered run resumes on a new
+// computer, and is told so); then answers. Priced on output only, $100 a million, as the server's cap tests price it: a
+// request's least (1,024 tokens) is $0.1024, so a run capped under that stops at its cap before its first request.
+const FAUX = `const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join("")).replace(/<system-reminder>[\\s\\S]*?<\\/system-reminder>/g, "");
 export default (context, faux) => {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const wrote = context.messages.some((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((c) => c.type === "toolCall" && c.name === "write"));

@@ -6,7 +6,8 @@
 // - `Learn once: <JSON>`: the same, less the files the run's `# Learned` names already, in the index or a note's heading
 //   (a later run of the agent adds none);
 // - `Answer: <JSON>`: the turn's whole answer, as given (a string), in place of the planned notes.
-// A user message that starts "Review: " is a reviewer's word on the run's answer: the end-of-run turn answers it as a note,
+// A user message that starts "Review: " (or a grade's words that do, in a feedback round's ask) is a reviewer's word on
+// the run's answer: the end-of-run turn answers it as a note,
 // `reviewed.md`, its body the review's words (superseding the note a "Wrong: <file>" in it names). A later end-of-run turn of the same run (a follow-up's: its prompt says it
 // looked back before) answers that note alone.
 // On pi, "Fail the job." has the job's turn fail (the model's error), and the end-of-run turn is answered all the same.
@@ -63,10 +64,11 @@ const remembered = (users) => {
   const said = users.map((text) => /Remember for next time: (.+)/.exec(text)?.[1]).filter(Boolean);
   return said.length ? [["remembered.md", `---\nname: What the user asked to keep\ndescription: The user's standing request\ntype: user\n---\n${said.join("\n")}\n`]] : [];
 };
-/** A reviewer's word on the run's answer, in `users` (the user messages' texts): a message that starts "Review: ", the
- *  note the end-of-run turn gives for it (one, the newest review's). */
+/** A reviewer's word on the run's answer, in `users` (the user messages' texts): a message that starts "Review: ", or a
+ *  grade's words that do (a feedback round's ask, runner/feedback-round.ts feedbackAsk: "What they said:" then the
+ *  words), the note the end-of-run turn gives for it (one, the newest review's). */
 const reviewed = (users) => {
-  const review = users.findLast((text) => text.startsWith("Review: "));
+  const review = users.map((text) => (text.startsWith("Review: ") ? text : /What they said:\n\n(Review: [^\n]*)/.exec(text)?.[1])).findLast(Boolean);
   // A review that says "Wrong: <file>" corrects a note an earlier round added: the note supersedes it.
   const wrong = review && /Wrong: (\S+\.md)/.exec(review)?.[1];
   return review ? [["reviewed.md", note("What the reviewer said", "The reviewer's answer for a case like this one", `${review.slice("Review: ".length)}\n`, wrong ? `supersedes: [${wrong}]\n` : "")]] : [];
@@ -170,7 +172,8 @@ export default function reply(context, faux) {
   if (first.startsWith("You grade what an agent proposes to remember.")) return grade(first, faux);
   const system = systemOf(context);
   // The folder as the prompt names it, relative to the run's workspace, where pi's file tools resolve it.
-  const asked = /^The task is done\.[\s\S]*?Your notes from earlier runs are in `([^`]+)`/.exec(last);
+  // A feedback round's ask tells the grade first (runner/feedback-round.ts feedbackAsk), then the end-of-run prompt.
+  const asked = /(?:^|\n)The task is done\.[\s\S]*?Your notes from earlier runs are in `([^`]+)`/.exec(last);
   // The runner's one re-ask of an answer its parser refused (learn/reflect.ts reflectAgain) is the end-of-run turn too:
   // answered as the turn was.
   const again = /^Your answer could not be read: /.test(last);

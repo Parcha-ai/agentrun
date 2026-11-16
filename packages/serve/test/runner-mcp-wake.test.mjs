@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { queued, storeOn, T0 } from "./store-helpers.mjs";
+import { queued, registryPin, storeOn, T0 } from "./store-helpers.mjs";
 
 const mcpClaimModule = await import("../dist/runner/mcp-claim.js");
 const { mcpClaim } = mcpClaimModule;
@@ -86,8 +86,8 @@ function manualTimer() {
 /** The server saved under "fake" with the expired sign-in, through `store`, and runs run-1 and run-2 queued. */
 async function saved(store) {
   await store.mcp.put({ name: "fake", url: MCP_URL, auth: "bearer", tools: [ADD], sealed: sealedSet(expiredSet()) });
-  await queued(store, "run-1");
-  await queued(store, "run-2");
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
+  await queued(store, "run-2", { mcpPin: await registryPin(store) });
 }
 
 const stepOf = (store, claim, extra) => mcpClaim({ loopback: true, store, claim, grants: ["mcp:fake/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 5_000, tries: 1 }, now: () => T0, ...extra });

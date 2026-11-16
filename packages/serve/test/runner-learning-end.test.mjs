@@ -252,12 +252,12 @@ test("the compile ask describes each tool a call node may run, by the server's o
   assert.ok(!prompt.includes("- `read`:"), "read is no call node's tool");
 });
 
-test("the compile ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name or under its server's wildcard; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
+test("the compile ask describes each MCP tool a call node may run by its server's listing, the schema it takes and the one it gives, granted by name; one its gate denies is not offered (one set to ask is: its learned_workflow call asks once), and the run is asked its turn (LS-07)", async (t) => {
   const takes = { type: "object", properties: { title: { type: "string" } }, required: ["title"] };
   const gives = { type: "object", properties: { id: { type: "string" } } };
   // create_issue allowed, delete_issue denied, github's unset (ask: its learned_workflow call asks once, #2424).
   const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:linear/delete_issue": { permission: "deny" } };
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/*"], toolSettings: settings, learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/create_pull_request"], toolSettings: settings, learning: true }, compiling(), async (server) => {
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [
       { name: "create_issue", description: "Create an issue in a team", input_schema: takes, output_schema: gives },
       { name: "delete_issue", description: "Delete an issue", input_schema: { type: "object" } },
@@ -277,7 +277,7 @@ test("the compile ask describes each MCP tool a call node may run by its server'
 
 test("with no one to answer an ask (the store's approvers row: the server's accounts off), the compile ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
   const { writeApprovers } = await import("../dist/server-approvers.js");
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/*"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/create_pull_request"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, compiling(), async (server) => {
     await writeApprovers(server.settings, false);
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue in a team", input_schema: { type: "object" } }] });
     await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object" } }] });
@@ -290,9 +290,10 @@ test("with no one to answer an ask (the store's approvers row: the server's acco
   assert.ok(!prompt.includes("mcp:github/create_pull_request"), "github's tool asks, and no one can answer: not offered");
 });
 
-// #2424's card rule on the runner path: the learning end hands the draft check the MCP tools set to ask and learnedAskFits,
-// so a draft calling more ask-set MCP tools than one approval card can name is left out of what the run keeps.
-test("a run's workflow draft whose ask-set MCP tools would not all fit on its learned call's approval card is left out in the gate's words; its note is kept (LS-07, #2424)", async (t) => {
+// The card's bound on the runner path: a learned call's card names the ask-set MCP actions its preview shows whole, and
+// each one past it asks on its own as it runs, so a draft calling more of them than one card names is kept, never left out
+// for its card's size.
+test("a run's workflow draft whose ask-set MCP tools would not all fit on its learned call's approval card is kept: those past the card ask as they run (LS-07)", async (t) => {
   const names = Array.from({ length: 40 }, (_, i) => `create_issue_with_a_rather_long_descriptive_name_${String(i).padStart(2, "0")}`);
   const flow = {
     v: 2, name: "file-issues",
@@ -301,7 +302,7 @@ test("a run's workflow draft whose ask-set MCP tools would not all fit on its le
     root: { node: "chain", steps: names.map((name, i) => ({ node: "call", label: `Call ${i}`, via: "tool", tool: `mcp:linear/${name}`, args: { title: "{title}" }, out: "R", as: `r${i}`, deadline_s: 30 })) },
   };
   const answer = `${REFLECTED}\n\n\`\`\`\`workflow file-issues\n---\ndescription: Files the week's issues; use when asked to file them\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/*"], learning: true }, async (dir) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", ...names.map((name) => `mcp:linear/${name}`)], learning: true }, async (dir) => {
     const seed = await seedOf(dir, "agent-1");
     return runner(() => ({ given: [], seed: seed.sha, section: "", seedNotes: 0 }))(dir);
   }, async (server) => {
@@ -310,8 +311,8 @@ test("a run's workflow draft whose ask-set MCP tools would not all fit on its le
   await w.start((deps) => learningEndOfRun(w.launch, deps), { script: [{ say: "The job's answer." }, { say: answer }, { say: answer }] });
   await w.ended();
   const kept = await w.server.learning.proposal("run-1");
-  assert.equal(kept?.proposal?.workflows, 0, JSON.stringify(kept?.proposal));
-  assert.match(JSON.stringify(kept?.proposal?.left ?? kept?.proposal), /its approval card can't name all 40 MCP tools it would call that are set to ask/);
+  assert.equal(kept?.proposal?.workflows, 1, JSON.stringify(kept?.proposal));
+  assert.doesNotMatch(JSON.stringify(kept?.proposal), /approval card/);
 });
 
 test("a run's workflow draft calling an MCP tool with no declared price is proposed held, saying which step, tool and server; one calling a priced tool is not (LS-07)", async (t) => {
@@ -476,7 +477,7 @@ const compiledBlock = ({ output = "answer", tools } = {}) => `\`\`\`\`workflow a
   v: 2, name: "answer",
   schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "number" }, confidence: { type: "number" } }, required: ["answer", "confidence"] } },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output, tier: "fast", ...(tools ? { tools } : {}) }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: output, ...(tools ? { tools } : {}) }] },
 })}\n\`\`\`\``;
 
 test("compile: a draft the checks refuse goes back with their words, up to 3 times; the fixed draft is proposed beside the note, every attempt recorded", async (t) => {
@@ -546,7 +547,7 @@ const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a
   v: 2, name: "answer",
   schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Out: out },
   input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the merchant's category code.", out: "Out", as: "answer", tier: "fast" }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "pick", instructions: "Pick the merchant's category code.", out: "Out", as: "answer" }] },
 })}\n\`\`\`\``;
 
 test("compile against the agent's output schema: a draft answering part of the object fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the partial draft is kept at once", async (t) => {

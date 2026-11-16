@@ -179,6 +179,8 @@ export function fakeDesktopProvider({ holdShot } = {}) {
     version: "0",
     capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
     check: () => [],
+    // E2B's descriptor says it prepares its image: the stand-in answers a template at once, as E2B's does.
+    prepareImage: async () => ({ ok: true, value: "desktop" }),
     list: async () => ({ ok: true, value: [] }),
     async create(spec) {
       record.created.push(spec);

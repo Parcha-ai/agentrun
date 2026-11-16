@@ -2,9 +2,8 @@
 // module reads the run's settings from its own COMPUTER_DAYTONA_* names (never a bare DAYTONA_ variable, which may hold
 // another organization's key on a host that runs other Daytona work) and passes each to create() as its option, the key
 // read only when createProvider() runs. Every sandbox of a run has a bounded life besides its TTL: Daytona stops one
-// after 30 minutes with no outside activity and deletes it as soon as it stops, so a stop deletes, and the provider
-// declares it (stopDeletes; see conformanceNotes). The live sweep (sweep.ts, --provider daytona) reads the same names
-// through createHost: it makes nothing.
+// after 30 minutes with no outside activity and deletes it as soon as it stops (see conformanceNotes). The live sweep
+// (sweep.ts, --provider daytona) reads the same names through createHost: it makes nothing.
 import { create, type DaytonaProvider, type DaytonaProviderOptions } from "../daytona.js";
 import { DAYTONA_DEFAULT_SNAPSHOT } from "../descriptors/daytona.js";
 import type { MachineHost } from "../host.js";
@@ -70,12 +69,9 @@ export const CONFORMANCE_AUTO_STOP_MINUTES = 30;
 /** Minutes a run's sandbox may stay stopped: 0, Daytona deletes it as soon as it stops. */
 export const CONFORMANCE_AUTO_DELETE_MINUTES = 0;
 
-/**
- * For the run's report: what this configuration means for the suite. The provider declares it (stopDeletes), and the
- * note says it in words.
- */
+/** For the run's report: what this configuration means for the suite, in words. */
 export const conformanceNotes: string[] = [
-	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer, and the provider declares stopDeletes. Core provider.stop holds it to that: a stopped computer is gone, neither listed nor attachable. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor).`,
+	`daytona: every sandbox runs with autoStopMinutes ${CONFORMANCE_AUTO_STOP_MINUTES} and autoDeleteMinutes ${CONFORMANCE_AUTO_DELETE_MINUTES}, besides its TTL: Daytona deletes a sandbox as soon as it stops, so this configuration keeps no stopped computer. A computer here is deleted, never stopped: release stop is refused. Full provider.janitor, which needs a stopped computer kept, is skipped (the lifetime being vendor).`,
 ];
 
 export interface DaytonaModuleOptions {

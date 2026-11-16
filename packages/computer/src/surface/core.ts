@@ -160,8 +160,11 @@ export function actText(names: readonly string[], result: ActResult): string {
 /** A chord's keys: "ctrl+shift+t" is ctrl, shift, t; a trailing "+" is the plus key ("ctrl++"). */
 export const chordKeys = (chord: string): string[] => chord.split(/\+(?=.)/).filter((key) => key !== "");
 
-/** The surface of one computer, over its connection. */
-export function createSurface(client: ComputerClient, hello: HelloResult): Surface {
+/**
+ * The surface of one computer, over its connection. `cwd`: where shell.run and processes.start start a program whose
+ * call names no folder (the run's folder, where the computer mounts it); absent, where the computer starts it.
+ */
+export function createSurface(client: ComputerClient, hello: HelloResult, { cwd }: { readonly cwd?: string } = {}): Surface {
 	const card = cardOf(hello);
 	const has = (group: string) => card.groups.includes(group);
 	const ops = opsOf(card.groups);
@@ -241,16 +244,28 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		};
 	}
 
-	/** The screen as a state, for a computer with no ui group: its image, no elements. */
+	/** On a computer with no ui group, input goes to what is in front: an app a look or an act names is opened, or brought
+	 *  in front, first (apps.launch), so the per-step tools open an app as a script's computer.apps.open does. */
+	async function inFront(app: string | undefined, signal?: AbortSignal): Promise<void> {
+		if (app && has("apps")) await call("apps.launch", { id: app }, signal);
+	}
+
+	/** The screen as a state, for a computer with no ui group: its image, no elements. With nothing in front, the head
+	 *  lists the apps to name. */
 	async function screenState(signal?: AbortSignal): Promise<State> {
 		const image = await shot(undefined, signal);
-		const app = has("apps") ? ((await call("apps.list", {}, signal)).foreground ?? "") : "";
-		const head = `screen ${image.width}×${image.height} px${app ? ` · ${app} in front` : ""} · this computer has no ui group: no elements; act at points of this image`;
+		const listed = has("apps") ? await call("apps.list", {}, signal) : undefined;
+		const app = listed?.foreground ?? "";
+		const front = app ? ` · ${app} in front` : listed ? ` · no app in front; name one as app to open it: ${listed.apps.map((one) => one.id).join(", ")}` : "";
+		const head = `screen ${image.width}×${image.height} px${front} · this computer has no ui group: no elements; act at points of this image`;
 		return { id: "screen", app: { id: app, name: "" }, window: { id: "screen", bounds: [0, 0, image.width, image.height] }, elements: [], truncated: false, outline: head, image };
 	}
 
 	async function observe(args: ObserveArgs, signal?: AbortSignal): Promise<State> {
-		if (!has("ui")) return screenState(signal);
+		if (!has("ui")) {
+			await inFront(args.app, signal);
+			return screenState(signal);
+		}
 		const imageInUi = args.image === true && card.features["ui.image"] === true;
 		const result = await call("ui.observe", { ...(args.app ? { target: { app: args.app } } : {}), ...(imageInUi ? { image: true } : {}), ...(args.full ? { full: true } : {}) }, signal);
 		const state = stateOf(result);
@@ -316,7 +331,12 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 		if (!Array.isArray(steps)) throw new SurfaceError("invalid", "steps is a list of steps");
 		if (!has("ui")) {
 			if (args.expect) throw new SurfaceError("unsupported", "this computer has no ui group, so it can't check an expect: take a screenshot to see the effect");
-			return runInput(inputActionsOf(steps), Boolean(args.observe), signal);
+			const actions = inputActionsOf(steps);
+			// Kept on every act that names an app, never skipped for the app this surface last brought in front: raw input
+			// goes to whatever has focus, and focus can move where the surface never sees it (a person's take-over, a window a
+			// program the agent started opens, a dialog), so typing could land in another app. An act that names none makes no call.
+			await inFront(args.app, signal);
+			return runInput(actions, Boolean(args.observe), signal);
 		}
 		const app = args.app;
 		const state = args.state ?? (hasPoint(steps) ? lastState.get(app ?? lastApp ?? "") : undefined);
@@ -397,7 +417,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 	async function run(args: { command?: unknown; cwd?: string; timeoutMs?: number; env?: Record<string, string> }, signal?: AbortSignal): Promise<RunResult> {
 		const argv = argvOf(args.command);
 		const timeoutMs = Math.min(Math.max(1, args.timeoutMs ?? DEFAULT_RUN_MS), MAX_RUN_MS);
-		const result = await call("exec.run", { argv, timeoutMs, ...(args.cwd ? { cwd: args.cwd } : {}), ...envOf(args.env) }, signal);
+		const folder = args.cwd || cwd;
+		const result = await call("exec.run", { argv, timeoutMs, ...(folder ? { cwd: folder } : {}), ...envOf(args.env) }, signal);
 		return {
 			stdout: Buffer.from(result.stdout, "base64").toString("utf8"),
 			stderr: Buffer.from(result.stderr, "base64").toString("utf8"),
@@ -451,7 +472,8 @@ export function createSurface(client: ComputerClient, hello: HelloResult): Surfa
 			case "processes.start": {
 				const argv = argvOf(args.command);
 				// orphans "keep": what the program starts (a launcher that forks its app and exits) runs on too.
-				const started = await call("process.start", { argv, ...(typeof args.cwd === "string" && args.cwd ? { cwd: args.cwd } : {}), ...envOf(args.env as Record<string, string> | undefined), orphans: "keep" }, signal);
+				const folder = (typeof args.cwd === "string" && args.cwd) || cwd;
+				const started = await call("process.start", { argv, ...(folder ? { cwd: folder } : {}), ...envOf(args.env as Record<string, string> | undefined), orphans: "keep" }, signal);
 				return { value: { pid: started.pid }, text: `started ${argv.join(" ")} (pid ${started.pid})`, images: [] };
 			}
 			case "files.read": {

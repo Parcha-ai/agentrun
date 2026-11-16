@@ -19,19 +19,29 @@ const TOKEN = `not-a-secret-${"first-bearer-0123"}`;
 const NEXT = `not-a-secret-${"second-bearer-4567"}`;
 const HOUR = 3_600_000;
 
-/** A store (its clock the test's), the registry the server builds over it as a local install, and run-1 queued. */
+/** A store (its clock the test's) and the registry the server builds over it as a local install. */
 async function registryOn(t) {
   const { store, clock, dir } = await storeOn(t);
   const registry = mcpServersOverStore(store, { AGENTRUN_SEAL_KEY: KEY.toString("base64") }, "test");
   registry.attach("http://127.0.0.1:9", "http://127.0.0.1:9", true); // key-gate: loopback-rule a local install's own address in a test, never an endpoint
   t.after(() => registry.close());
-  await queued(store, "run-1");
   return { store, clock, dir, registry };
+}
+
+/** `runId` queued, of a revision whose save pinned `servers`' tools as the registry lists them now. */
+async function pinnedRun(store, runId, servers) {
+  const pin = {};
+  for (const name of servers) {
+    const row = await store.mcp.server(name);
+    pin[name] = { url: row.url, tools: row.tools.map(({ input_schema, ...tool }) => ({ ...tool, inputSchema: input_schema })) };
+  }
+  await queued(store, runId, { mcpPin: pin });
 }
 
 /** The run's MCP for its claim, granted `server`'s add, and a call of it by id. `redact.hold`: the run's redactor's hold, which
  *  every credential value is handed to. */
 async function claimed(t, { store, dir }, server, redact) {
+  await pinnedRun(store, "run-1", [server]);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
   // A runner beside a local install, as the CLI's is: the fake MCP server is on loopback.
   const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, ...(redact ? { hold: redact.hold } : {}) });
@@ -157,7 +167,6 @@ test("an OAuth access token near its end, its authorization server hanging: the 
 
 test("another run's refresh moves the row's token on: this run's next call, its own token near its end, goes on the refreshed one, with no refresh of its own", async (t) => {
   const on = await registryOn(t);
-  await queued(on.store, "run-2");
   const oauth = await startFakeOAuth();
   const seen = [];
   const mcp = await startFakeMcp({ token: oauth.accepts, oauth: oauth.issuer, inspect: (headers) => seen.push(headers.authorization) });
@@ -167,6 +176,7 @@ test("another run's refresh moves the row's token on: this run's next call, its 
   assert.deepEqual(await callA("a-1"), { text: "5" });
   const first = seen.at(-1);
   // run-2's claim on the same server: a minute left by the store's clock, it refreshes behind its call.
+  await pinnedRun(on.store, "run-2", ["docs"]);
   const claimB = await on.store.claim("run-2", "runner-b", { leaseMs: 10 * HOUR });
   const mcpB = await mcpForClaim({ loopback: true, claim: claimB, store: on.store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => on.dir });
   t.after(() => mcpB.release());
@@ -198,6 +208,7 @@ test("every credential value the claim hands over is held by the run's redactor 
   const minted = [first, again];
   const armed = [];
   const held = [];
+  await pinnedRun(on.store, "run-1", ["live", "gh"]);
   const claim = await on.store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
   const step = await mcpClaim({
     store: on.store, claim, grants: ["mcp:live/add", "mcp:gh/add"], sealKey: KEY, signal: new AbortController().signal,

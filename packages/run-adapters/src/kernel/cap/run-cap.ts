@@ -3,19 +3,21 @@
 // (modelPortFor: runner.request with what it holds before it leaves, runner.turn with what it cost once it answers). So
 // a decision is judged on the run's model spend beside its own and a model request on the run's decisions, a refusal's
 // figures are the run's (main's holdPaid reads the whole run), and a claim taken again after a lost one rebuilds the
-// spend of both from the journal: a decision held and never answered counts at its hold and its bound, as any request.
-// Decisions book under their own session (DECISION_SESSION), priced as main holds them (decisionAsk).
+// spend of both from the journal: a decision held and never answered counts at its hold, as any request.
+// Decisions book under their own session (DECISION_SESSION), held at their worst case (decisionAsk).
 import { runBooking, type RunSessions } from "../../run-booking.js";
 import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from "../../runner.js";
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
-import { overCapEnd } from "./words.js";
+import type { Refusal } from "../../runner.js";
+import { aloneRefusal, overCapEnd, SPEND_CAP_REACHED } from "./words.js";
+import { freeCeilingEnd, freeRequest } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
-import type { Admission, CapMode, CapModel, DecisionCapRequest, ModelCapRequest, Previous, RefusalFigures, Settled } from "./types.js";
+import type { Admission, CapModel, DecisionCapRequest, ModelCapRequest, RefusalFigures, Settled } from "./types.js";
 
 /** A verdict of the run's rule, as a decision's admission reads it. */
-type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; holdUsd?: number; boundUsd?: number };
+type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; holdUsd?: number };
 
 /** The session a run's workflow decisions book under. */
 export const DECISION_SESSION = "decisions";
@@ -25,18 +27,27 @@ export interface RunCapOptions {
   readonly sessions: RunSessions;
   /** The run's cap, read before every check, so a raise holds from the next one. Undefined: no cap. */
   capUsd(): number | undefined;
-  readonly mode?: CapMode;
-  readonly now?: () => number;
   /** The run's model requests' models, by id and route (BeforeRequestOptions.modelOf; its decisions' are the cap's own). */
   modelOf(id: string, route?: string): CapModel | undefined;
-  /** The session's previous request, by the id its model is priced under (BeforeRequestOptions.previousOf). */
-  previousOf?(model: string): Previous | undefined;
   /** The run's priced tools' charges and holds beside its requests (beforeRequestOf's), when it has any. */
   spentUsd?(): number | null;
   heldUsd?(): number | null;
+  /** What the host keeps back beside a model request while it streams (BeforeRequestOptions.keepBackUsd). */
+  keepBackUsd?(request: Parameters<BeforeRequest>[0], asked: ModelCapRequest): number | undefined;
   /** Told each request the rule judged, with the run's totals it was asked with, and its answer (an observer: a live
    *  view of the cap, a test's record). */
   judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
+  /** The most model requests on free models (free.ts freeModel) the run makes, capped or not: the next one past it is
+   *  refused for good, in freeCeilingEnd's words. Its paid tool calls, its decisions and ChatGPT-plan requests never
+   *  count. Undefined: no such limit. */
+  freeRequests?: number;
+  /** Whether the run has parked (its host's pause): a model request waiting for room (runBooking) leaves the line then,
+   *  refused in its own words, so nothing more is sent until a raise. */
+  parked?(): boolean;
+  /** How long a request waits for room with nothing it waits on settling (runBooking's WAIT_STALL_MS by default). */
+  waitStallMs?: number;
+  /** The run's stop: a step waiting for room (a paid call's or a decision's as a model request's) leaves at it, unsent. */
+  stopped?: AbortSignal;
 }
 
 /** A run's decisions on its one cap: each admitted before it is sent and settled once it answered. */
@@ -54,8 +65,8 @@ export interface RunDecisions {
 export interface RunCap {
   /** The run's one rule for every model request (a model booking's beforeRequest), its decisions' models known to it. */
   readonly before: BeforeRequest;
-  /** A model request as `before` prices it (port.ts capRequestOf, with the same models and the session's previous
-   *  request): what the wrap-up's note and the reserve (requestFigures) price, so they read a warm cache as admission does. */
+  /** A model request as `before` prices it (port.ts capRequestOf, with the same models): what the wrap-up's note and the
+   *  reserve (requestFigures) price, so they price it as admission does. */
   asked(request: PricedRequest): ModelCapRequest;
   /** The run's decisions, booked on `writer` (the run's DECISION_SESSION) under the same rule. `flush`: makes what the
    *  journal holds survive a lost box, awaited once a decision's hold is written and before it is sent, as a model
@@ -74,8 +85,10 @@ export interface RunTools {
    *  for it, named there as `charged_by`; `tool` and `tag`, the tool whose charge it is and its session (ModelRequest.paid);
    *  `owed`, money its provider is already owed: held and booked, never refused. `hold`: a hold-only step: money
    *  reserved, not spent; given back on a lost claim, never booked as cut. `ref`: the one booking it names: a ref already
-   *  booked (on the run's records, or on this claim) books nothing again, and the answer says `booked`. */
-  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string; readonly tool?: string; readonly tag?: string; readonly owed?: true; readonly hold?: true; readonly ref?: string }): Promise<Admission & { readonly booked?: true }>;
+   *  booked (on the run's records, or on this claim) books nothing again, and the answer says `booked`. `under`: the key
+   *  of the model session whose tool call it runs in (ModelRequest.paid.under): it is judged beside that session's
+   *  requests in flight and never waits on them, since one of them may be the request that asked for it. */
+  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string; readonly tool?: string; readonly tag?: string; readonly owed?: true; readonly hold?: true; readonly ref?: string; readonly under?: string }): Promise<Admission & { readonly booked?: true }>;
   /** Settles it at what it charged (null: at its hold; 0: nothing was billed). `givenBack`: its hold let go unused,
    *  nothing sent (at 0), its record marked so (ModelUsage.givenBack): never read as a $0 charge or an unpriced one. */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<number | null>;
@@ -86,44 +99,69 @@ export interface RunTools {
 /** The session a run's paid tool calls book under. */
 export const TOOL_SESSION = "paid-tools";
 
-/** How a run ends once its booked spend passed its cap (overCapEnd), read from its model session's `records` and what
- *  its other sessions spent (`othersUsd`): each request at the figure the cap counts it at (sessionSpendOf's figures: one
- *  cut by a crash at its hold plus its bound), and the bound of the requests since the spend last fit, so a cache miss
- *  within that bound (a cut request's possible one included) pauses the run instead. Undefined while it fits, by such a
- *  miss, or with a spend unknown. */
+/** How a run ends once its booked spend passed its cap (overCapEnd), read from its model session's `records` (each
+ *  request at the figure the cap counts it at, sessionSpendOf's: one cut by a crash at its hold) and what its other
+ *  sessions spent (`othersUsd`). Undefined while it fits, or with a spend unknown. */
 export function overCapOf(records: readonly SessionRecord[], othersUsd: number, capUsd: number): string | undefined {
   const read = sessionSpendOf(records);
   if (read.spentUsd === null) return undefined;
-  let running = othersUsd;
-  let bound = 0;
-  for (const { turn, usd } of read.figures) {
-    running += usd ?? 0;
-    bound = running <= capUsd ? 0 : bound + (read.bounds.get(turn) ?? 0);
-  }
-  return overCapEnd(othersUsd + read.spentUsd, capUsd, bound);
+  return overCapEnd(othersUsd + read.spentUsd, capUsd);
 }
 
 export function runCap(options: RunCapOptions): RunCap {
-  const mode: CapMode = options.mode ?? "expected";
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
   const deciding = new Map<string, CapModel>();
-  const pricing = {
-    modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route),
-    ...(options.previousOf ? { previousOf: (model: string) => (deciding.has(model) ? undefined : options.previousOf!(model)) } : {}),
-  };
+  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route) };
   const rule = beforeRequestOf({
     capUsd: options.capUsd,
-    mode,
-    ...(options.now ? { now: options.now } : {}),
     ...pricing,
     ...(options.spentUsd ? { spentUsd: options.spentUsd } : {}),
     ...(options.heldUsd ? { heldUsd: options.heldUsd } : {}),
+    ...(options.keepBackUsd ? { keepBackUsd: options.keepBackUsd } : {}),
   });
-  const before = runBooking(options.sessions, options.judged ? async (request) => {
+  // A request on a free model (freeRequest), under a cap or none. The dollar cap cannot stop such requests, so a model
+  // request of the run's own sessions past the run's limit of them (`freeRequests`) is refused for good, before the
+  // dollar rule; one within it goes to the rule, and its admission says it counts (`freeRequest`, written on its
+  // runner.request, so the next count holds it in any process). A paid tool call and a decision book under their own
+  // sessions and never count; nor does a ChatGPT plan's request (no free model). A free model's request is also admitted
+  // `free`: the runner books it a known $0 however it ends (runner.ts Admitted), never unknown. One on a person's plan
+  // (CapModel.plan) is admitted `plan`: $0 to the run however it ends, cut by a crash included. A request is never both:
+  // freeModel refuses a plan model (its listing's price is no price), so `free` is false for every plan request, and the
+  // plan mark is returned before the free one is looked at. One the rule refused stays refused.
+  const limit = options.freeRequests;
+  const judge: BeforeRequest = async (request) => {
+    const free = freeRequest(request, pricing.modelOf);
+    const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
-    options.judged!(request, answer);
+    if (answer && "refuse" in answer) return await roomOf(request, answer);
+    if (!request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
+    if (!free) return answer;
+    return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
+  };
+  // A step (a model request, a decision, a paid tool call) refused for room while steps in flight hold some of it: judged
+  // again by the same rule as if none of the steps that settle on their own were out (a hold-only step, one the booking
+  // no longer waits on, and a paid call's own session's requests in flight, one of which may have asked for it, still
+  // count: runBooking marks them `stays`). Fits so: it `waits` (runBooking asks again once they settle, and never passes the
+  // cap: every admission is the rule's over the holds as they are then). Refused even so: refused now, its figures that
+  // refusal's (the least cap that sends it once they settle), its words saying what is spent and what is held apart
+  // (aloneRefusal), never holds as spent. A step in flight that holds $0 (a free model's request) frees no room when it
+  // settles, so with only such steps beside the ones that stay, the refusal is the rule's own.
+  const roomOf = async (request: Parameters<BeforeRequest>[0], refused: Refusal): Promise<Refusal> => {
+    if (refused.forGood !== false || !refused.figures || !request.inFlight.some((flight) => !flight.stays && flight.holdUsd !== 0)) return refused;
+    const alone = await rule({ ...request, inFlight: request.inFlight.filter((flight) => flight.stays) });
+    if (!(alone && "refuse" in alone)) return { ...refused, waits: true };
+    const capUsd = options.capUsd();
+    if (alone.forGood !== false || !alone.figures || capUsd === undefined) return alone;
+    const figures = { ...alone.figures, heldUsd: refused.figures.heldUsd ?? 0 };
+    return { ...alone, refuse: aloneRefusal(capUsd, figures), figures };
+  };
+  const before = runBooking(options.sessions, options.judged ? async (request) => {
+    const answer = await judge(request);
+    // An observer sees each verdict the run goes by: a refusal that waits is asked again, its verdict told then.
+    if (!(answer && "refuse" in answer && answer.waits)) options.judged!(request, answer);
     return answer;
-  } : rule);
+  } : judge, { ...(options.parked ? { parked: options.parked } : {}), ...(options.waitStallMs === undefined ? {} : { stallMs: options.waitStallMs }), ...(options.stopped ? { stopped: options.stopped } : {}) });
 
   const forget = (key: string) => void deciding.delete(key);
   return {
@@ -136,7 +174,7 @@ export function runCap(options: RunCapOptions): RunCap {
           const capUsd = options.capUsd();
           // Under no cap a decision is not priced: nothing is read, nothing refused (its model may be "unreadable").
           if (capUsd !== undefined && request.model === "unreadable") throw new DecisionPriceUnreadable();
-          const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request, mode);
+          const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request);
           const key = `decision:${request.id}`;
           if (asked) deciding.set(key, { ...asked.model, id: key });
           return steps.book(request.id, { model: key, ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }) });
@@ -161,12 +199,12 @@ export async function paidCalls(writer: SessionWriter, before: BeforeRequest, op
   const refsOf = () => (refs ??= writer.read().then((records) => new Set(records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data as { ref?: unknown } | undefined)?.ref).filter((ref): ref is string => typeof ref === "string"))));
   const book = (request: Parameters<RunTools["admit"]>[0]) =>
     // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
-    steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }), ...(request.tool === undefined ? {} : { tool: request.tool }), ...(request.tag === undefined ? {} : { tag: request.tag }), ...(request.owed ? { owed: true as const } : {}), ...(request.hold ? { hold: true as const } : {}), ...(request.ref === undefined ? {} : { ref: request.ref }) } });
+    steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }), ...(request.tool === undefined ? {} : { tool: request.tool }), ...(request.tag === undefined ? {} : { tag: request.tag }), ...(request.owed ? { owed: true as const } : {}), ...(request.hold ? { hold: true as const } : {}), ...(request.ref === undefined ? {} : { ref: request.ref }), ...(request.under === undefined ? {} : { under: request.under }) } });
   return {
     admit: async (request) => {
       if (request.ref === undefined) return book(request);
       const booked = await refsOf();
-      if (booked.has(request.ref)) return { id: request.id, heldUsd: 0, boundUsd: 0, worstUsd: 0, stoppedUsd: () => 0, booked: true as const };
+      if (booked.has(request.ref)) return { id: request.id, heldUsd: 0, stoppedUsd: () => 0, booked: true as const };
       booked.add(request.ref);
       try {
         return await book(request);
@@ -185,13 +223,20 @@ export async function paidCalls(writer: SessionWriter, before: BeforeRequest, op
  *  each a runner.request before it is sent (flushed when `flush` is given) and a runner.turn once settled. */
 async function stepsOn(writer: SessionWriter, before: BeforeRequest, flush: (() => Promise<void>) | undefined, what: string, forget: (key: string) => void) {
   {
-    /** The verdict of the step being admitted (admissions run one at a time on the booking), for its refusal. */
+    /** The verdict of the step being admitted (admissions run one at a time on the booking), for its hold or refusal: set
+     *  as its check begins and ends, and taken by its book once its admission ends, before the next one's check begins. A
+     *  step booked while another waits for room sets nothing, so it never wipes the verdict of the one before it. */
     let verdict: Verdict | undefined;
-    const lastVerdict = (): Verdict | undefined => verdict;
+    const takeVerdict = (): Verdict | undefined => {
+      const taken = verdict;
+      verdict = undefined;
+      return taken;
+    };
     const booking = await modelPortFor(writer, {
       key: writer.key,
       label: writer.key,
       beforeRequest: async (request) => {
+        verdict = undefined;
         const answer = await before(request);
         verdict = (answer ?? undefined) as Verdict | undefined;
         return answer;
@@ -199,29 +244,27 @@ async function stepsOn(writer: SessionWriter, before: BeforeRequest, flush: (() 
       // Its hold durable before it leaves: the booking awaits request_start once its runner.request is written.
       ...(flush ? { onEvent: async (event: { type: string }) => { if (event.type === "request_start") await flush(); } } : {}),
     });
-    // A step an earlier claim admitted and that never answered: booked cut, counted at its hold and its bound.
+    // A step an earlier claim admitted and that never answered: booked cut, counted at its hold.
     await booking.bookCut();
     const open = new Map<string, { ticket: ModelTicket; key: string; heldUsd: number }>();
     return {
       /** Books step `id`, asked as `asked` (its model key a decision's priced model, or a paid call's name). */
       async book(id: string, asked: ModelRequest): Promise<Admission> {
         const key = asked.model;
-        verdict = undefined;
         let ticket: ModelTicket | void;
         try {
           ticket = await booking.models.beforeRequest(asked);
         } catch (error) {
           forget(key);
-          const refused = lastVerdict();
+          const refused = takeVerdict();
           if (refused?.refuse !== undefined) throw new CapRefused(refused.refuse, { forGood: refused.forGood ?? true, spentUsd: refused.figures?.spentUsd ?? null, ...(refused.figures ? { figures: refused.figures } : {}) });
           throw error;
         }
         if (!ticket) throw new Error(`${what} ${id}: its booking gave it no ticket`);
-        const admitted = lastVerdict();
+        const admitted = takeVerdict();
         const held = typeof admitted?.holdUsd === "number" ? admitted.holdUsd : 0;
-        const bound = typeof admitted?.boundUsd === "number" ? admitted.boundUsd : 0;
         open.set(id, { ticket, key, heldUsd: held });
-        return { id, heldUsd: held, boundUsd: bound, worstUsd: held + bound, stoppedUsd: () => held };
+        return { id, heldUsd: held, stoppedUsd: () => held };
       },
       async settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<number | null> {
         const step = open.get(id);

@@ -26,16 +26,17 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { isMessageRow, type TimelineEvent } from "../timeline/index.js";
+import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference,COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
-import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
+import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
+import { META_TOOLS } from "../meta-tool-names.js";
 import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
 import { reflects, type Reflect } from "../reflect-range.js";
@@ -44,15 +45,18 @@ import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
 import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
-import { getMcpServer, listMcpServers } from "../mcp-store.js";
+import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
-import { runEntries, runReflect, runTimeline } from "../store-reads/journal.js";
+import { runEntries, runReflect, runTimeline, withFeedback, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf } from "./journal-kinds.js";
-import { fits, reviseOf, servedOf, workflowDigest } from "./workflow-first.js";
+import { bookedCapSpend, bookedSpend } from "./metrics.js";
+import { fits, reviseOf, servedAnswerOf, servedOf, workflowDigest } from "./workflow-first.js";
+import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { type Checked, createReflectHook, type ReflectDeps, type ReflectTurn } from "./reflect-hook.js";
+import { sdkDraftTools, type SdkWorkflowTool } from "../sdk/workflows.js";
 import { runnerSecrets } from "./redact.js";
-import { isMcpWildcard, mcpNameOf } from "../tool-names.js";
+import { mcpNameOf } from "../tool-names.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a
@@ -97,23 +101,41 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
     // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests
     // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
-    // What its earlier rounds' grades took beside it counts toward that cap as its own spend does (Learning.spentBeside, the
-    // figure its gates read): unknown, no room.
+    // Its spend under that cap is what the run's own gates read (capSpendOf: a request with no price of its own at the
+    // figure it was held at), never the cost a person is shown, which is unknown once one request's is. What its earlier
+    // rounds' grades took beside it counts toward that cap as its own spend does (Learning.spentBeside, the figure its
+    // gates read). Either unknown: the spend is unknown, said so, never read as the whole cap.
     facts: async (runId) => {
-      const costUsd = costOf(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }));
-      const capUsd = launch.maxCostUsd === undefined ? undefined : capNowOf(launch.maxCostUsd, await runEntries(deps.store, runId, BACKGROUND_CONTEXT));
-      if (capUsd === undefined) return { learns: true, costUsd };
-      const beside = await deps.store.learning.spentBeside(runId);
-      return { learns: true, costUsd, capUsd, capReached: costUsd !== null && (beside === null || costUsd + beside >= capUsd) };
+      const [rows, entries] = await Promise.all([
+        runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }),
+        runEntries(deps.store, runId, BACKGROUND_CONTEXT),
+      ]);
+      // A pi retry's Timeline carries the answered requests alone. Its earlier cut request is still an unknown charge
+      // in the booking: keep it unknown in the task snapshot too, as the run's end does, never just the retry's subtotal.
+      // A request a crash cut booked at its hold (`bounded`) is an upper bound, not a spend: the job's and look-back's
+      // figures say no "at most", so they stay unknown, as the run's stored cost reads once it ends (RunRow.costUsd null,
+      // the bound apart in costAtMostUsd). This reads the booking before the run's row has a cost, hence its own check.
+      const unknown = (["model", "paid", "decisions"] as const).some((kind) => {
+        const spend = bookedSpend(entries, kind);
+        return spend.usd === null || spend.bounded > 0;
+      });
+      const costUsd = unknown ? null : costOf(rows);
+      if (launch.maxCostUsd === undefined) return { learns: true, costUsd };
+      const capUsd = capNowOf(launch.maxCostUsd, entries)!;
+      const spentUsd = await capSpendOf(deps.store, runId, entries);
+      return { learns: true, costUsd, capUsd, spentUsd, capReached: spentUsd !== null && spentUsd >= capUsd };
     },
-    nothingNew: async (runId) => onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
+    // A grade's feedback round always has something new, the grade's words (feedback-round.ts: heard, never "nothing
+    // new"), whatever the job did: said here, never left to the words' row counting as a message of the job's.
+    nothingNew: async (runId) => !pendingFeedbackOf(await runEntries(deps.store, runId, BACKGROUND_CONTEXT)) && onlyLearnedWorkflows(await runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })),
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
     // A notes run (`learning: "notes"`) compiles nothing.
     ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
-      for (const entry of entries) hearing.note(entry);
+      // A grade's feedback round's words (feedback-round.ts) are heard as the reviewer's, as its Timeline shows them.
+      for (const entry of withFeedback(entries)) hearing.note(entry);
       const heard = [...hearing.heard].filter(([id]) => !reflects(reflect as Reflect | undefined, id)).sort(([a], [b]) => a - b).map(([, one]) => one);
       const triggered = heard.flatMap(({ text, source }) => (source === undefined ? [] : [{ source, text }]));
       return { asked: heard.filter((one) => one.source === undefined).map(({ text }) => text), ...(triggered.length ? { triggered } : {}) };
@@ -132,14 +154,17 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       }
       return runnerSecrets(env, [...(deps.handed ?? []), ...stored, ...pointers.refs.filter((ref) => ref.length >= MIN_SECRET)]);
     },
-    check: async ({ runId, agentId, turn, outcome, refuse }) => {
+    check: async ({ runId, agentId, turn, outcome, refuse, revised }) => {
       if (start.seed === null) throw new Error("the run's learning start names no commit of main to propose against");
       // A later round checks against the main the earlier rounds merged into, not the seed the run started from: a note
       // round 1 added and a reviewer corrected is a supersedes target round 2 may name.
       // The skills and workflows keep the seed the run was laid from as their conflict base (the merge refuses a file main
-      // changed since), so only the notes are checked against that main.
+      // changed since), so only the notes are checked against that main; but a workflow the compile turn revised from
+      // main's text (`revised`, in the compile turn's checks) has the commit its first ask read it at as its base (kept with
+      // that ask, so a restart that replays its answer never reads main again), so a change to it before that read is what
+      // the revision was written over, and only one after it is a conflict.
       const notesSeed = round > 1 ? await mainOf(deps, agentId) : undefined;
-      return checkedOf(deps, { runId, agentId, seed: start.seed, ...(notesSeed ? { notesSeed } : {}), turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
+      return checkedOf(deps, { runId, agentId, seed: start.seed, ...(notesSeed ? { notesSeed } : {}), ...(revised ? { revised } : {}), turn, outcome, refuse, ...(start.notesOnly ? { workflows: false as const } : {}) });
     },
     // The learning run's id, one per round of the run: a replayed end queues the same one (the store adds it once).
     newRunId: () => learningRunIdOf(runId, round),
@@ -177,21 +202,38 @@ export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning">,
   return () => store.learning.spentBeside(runId);
 }
 
+/** What capped run `runId` has spent under its cap, as every gate of the run reads it: its sessions' booking as the kernel
+ *  cap counts it (metrics.ts bookedCapSpend over `entries`, its journal) and what was spent beside it on its behalf
+ *  (Learning.spentBeside; `beforeRound`: its earlier rounds' grades alone). Null when either is unknown.
+ *
+ *  The rule for a cost no one knows (a request answered with no price of its own, one cut short or lost): under a cap it
+ *  counts at the figure the cap held it at when it was admitted (its worst case at the model's price, and a lost one's
+ *  cache-miss bound), as the kernel cap's own admissions count it (sessionSpendOf). Never $0, which could overspend, and
+ *  never the whole cap, which reads a run that spent $2 as one with nothing left. The cost a person is shown stays
+ *  unknown (a held figure is the cap's, never a charge). Only a request held at no figure (none is, under a cap) leaves
+ *  the spend itself unknown: then nothing more is sent under the cap, and the words say the spend is unknown, as the
+ *  kernel's unknownSpend refusal does, never "no room". */
+export async function capSpendOf(store: Pick<Store, "learning">, runId: string, entries: readonly EntryLike[], beforeRound?: number): Promise<number | null> {
+  const spent = bookedCapSpend(entries);
+  if (spent === null) return null;
+  const beside = await store.learning.spentBeside(runId, beforeRound === undefined ? {} : { beforeRound });
+  return beside === null ? null : spent + beside;
+}
+
 /** The cap the grade of round `round` of run `runId` runs under (its learning run's max_cost_usd), so the run's grades
  *  never take it past its cap: the cap the run is held to now (capNowOf: its newest raise's, else `launchCapUsd`), less
- *  what the run spent (its job, its follow-ups and every look-back, its timeline's cost) and what was spent beside it on its
- *  behalf by its earlier rounds (Learning.spentBeside, the figure the run's own gates read: each earlier grade at its cost
- *  once it ended, at its own cap while it has not). $0, no room, when any of those is unknown (a cost null, or a read that
- *  fails): a grade whose room can't be read is skipped, never run past the cap. */
-export async function gradeCapOf(store: Store, runId: string, round: number, launchCapUsd: number): Promise<number> {
+ *  what the run spent under it (its job, its follow-ups and every look-back) and what was spent beside it on its behalf by
+ *  its earlier rounds (capSpendOf: each earlier grade at its cost once it ended, at its own cap while it has not). Null
+ *  when that spend is unknown, or a read fails: the grade is then not run, said so (said.gradeUnknownSpend), never run
+ *  with a room nobody knows and never told it has none. */
+export async function gradeCapOf(store: Store, runId: string, round: number, launchCapUsd: number): Promise<number | null> {
   try {
-    const capUsd = capNowOf(launchCapUsd, await runEntries(store, runId, BACKGROUND_CONTEXT));
-    const spent = costOf(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }));
-    const beside = await store.learning.spentBeside(runId, { beforeRound: round });
-    if (capUsd === undefined || spent === null || !Number.isFinite(spent) || beside === null) return 0;
-    return Math.max(0, capUsd - spent - beside);
+    const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+    const capUsd = capNowOf(launchCapUsd, entries)!;
+    const spent = await capSpendOf(store, runId, entries, round);
+    return spent === null ? null : Math.max(0, capUsd - spent);
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -203,19 +245,29 @@ export const learningRunIdOf = (runId: string, round = 1): string => (round > 1 
  *  A harness that names it another way reads as another tool, so its run is asked as before. */
 export const LEARNED_NAMES: ReadonlySet<string> = new Set([LEARNED_WORKFLOW_TOOL, `mcp__hands__${LEARNED_WORKFLOW_TOOL}`]);
 
+/** Over a run's timeline `rows`: whether a row is a call the job's model made, or its result: one at the top, or one a
+ *  script or tools_call made for it (a call nested in a META_TOOLS call, by any harness's name for it), never a
+ *  subagent's row or a call another tool nested (a learned workflow's own). */
+export function modelsOwn(rows: readonly TimelineEvent[]): (row: TimelineEvent) => boolean {
+  const named = new Map(rows.flatMap((row) => (row.kind === "tool_use" && row.tool_use_id ? [[row.tool_use_id, row.tool_name ?? ""] as const] : [])));
+  return (row) => !row.parent_tool_use_id || META_TOOLS.has((named.get(row.parent_tool_use_id) ?? "").replace(/^(?:mcp__hands__|hands_)/, ""));
+}
+
 /** Whether a run's job, by its timeline `rows` (the end-of-run turn's own, labelled LEARNING_LABEL, left out), gave
  *  nothing new to look back on: it called tools, every one of them learned_workflow (a workflow's own nested calls are
  *  its), each answering; no tool result failed or was refused; no error, approval or wait; and one message, its first,
- *  came in. Anything else is asked its end-of-run turn. */
+ *  came in. Anything else is asked its end-of-run turn. Read on the job's turns (withoutFeedbackRounds): a grade's
+ *  feedback round is no message of the job's. */
 export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
-  const own = rows.filter((row) => row.agent_label !== LEARNING_LABEL);
+  const own = withoutFeedbackRounds(rows).filter((row) => row.agent_label !== LEARNING_LABEL);
   if (own.some((row) => row.kind === "error" || row.kind === "tool_approval_requested" || row.kind === "waiting")) return false;
   if (own.filter(isMessageRow).length !== 1) return false;
-  const calls = own.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id);
+  const models = modelsOwn(own);
+  const calls = own.filter((row) => row.kind === "tool_use" && models(row));
   if (!calls.length || calls.some((row) => !LEARNED_NAMES.has(row.tool_name ?? ""))) return false;
   const results = own.filter((row) => row.kind === "tool_result");
   if (results.some((row) => row.tool_status !== "success")) return false;
-  const answered = new Set(results.filter((row) => !row.parent_tool_use_id).map((row) => row.tool_use_id));
+  const answered = new Set(results.filter(models).map((row) => row.tool_use_id));
   return calls.every((row) => answered.has(row.tool_use_id));
 }
 
@@ -224,7 +276,8 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
  *  onlyLearnedWorkflows asks of a run with nothing new to look back on, `handed_back` when it called a learned workflow
  *  otherwise, `agent` when it called none. */
 export function runPathOf(rows: readonly TimelineEvent[]): RunPath {
-  const ran = rows.some((row) => row.agent_label !== LEARNING_LABEL && row.kind === "tool_use" && !row.parent_tool_use_id && LEARNED_NAMES.has(row.tool_name ?? ""));
+  const models = modelsOwn(rows);
+  const ran = rows.some((row) => row.agent_label !== LEARNING_LABEL && row.kind === "tool_use" && models(row) && LEARNED_NAMES.has(row.tool_name ?? ""));
   if (!ran) return "agent";
   return onlyLearnedWorkflows(rows) ? "workflow" : "handed_back";
 }
@@ -242,7 +295,7 @@ export function workflowNameOf(calls: readonly { tool: string; args: Record<stri
 /** Why each draft of `proposal` waits for its owner's OK whatever the grade: its steps calling an MCP tool with no
  *  declared price (skills.ts unpricedCalls), by its workflow.json's path, from the prices each server's row keeps
  *  (mcp-probe.ts McpPrices). A server the store can't read gives no price: held. */
-async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Record<string, string[]>> {
+async function heldOf(store: Pick<Store, "mcp">, proposal: unknown, manifest?: readonly SdkWorkflowTool[]): Promise<Record<string, string[]>> {
   const files = ((proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).filter((one): one is { file: string; text: string } => typeof one?.file === "string" && one.file.endsWith("/workflow.json") && typeof one.text === "string");
   const { draftMcpTools, unpricedCalls, unpricedLine } = await import("../learn/skills.js");
   const rows = new Map<string, Promise<McpServerRow | undefined>>();
@@ -258,6 +311,7 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
     // Every MCP tool its call nodes run, as the workflow's own read reads them (draftMcpTools over the parsed JSON: an
     // escaped "\/" is a slash there), its price read first (unpricedCalls asks synchronously).
     for (const name of draftMcpTools(doc)) {
+      if (manifest) { priced.set(name, manifest.find((tool) => tool.name === name)?.price_usd); continue; }
       const { server, tool } = mcpNameOf(name)!;
       if (!rows.has(server)) rows.set(server, getMcpServer(store, server).catch(() => undefined));
       const price = ((await rows.get(server))?.prices as Record<string, unknown> | undefined)?.[tool];
@@ -269,12 +323,9 @@ async function heldOf(store: Pick<Store, "mcp">, proposal: unknown): Promise<Rec
   return held;
 }
 
-/** The tools each saved MCP server lists now, by the server's name (none for one not saved, or a store that can't be
- *  read): what a wildcard grant names (tools.ts mcpGrantsListed). */
-async function mcpListedOf(store: Pick<Store, "mcp">): Promise<(server: string) => readonly string[]> {
-  const rows = await listMcpServers(store).catch(() => [] as McpServerRow[]);
-  const byName = new Map(rows.map((row) => [row.name, ((row.tools ?? []) as { name?: unknown }[]).flatMap((tool) => (typeof tool?.name === "string" ? [tool.name] : []))]));
-  return (server) => byName.get(server) ?? [];
+/** The backend manifest is data describing existing callbacks, not a server MCP connection. */
+function sdkDescribed(manifest: readonly SdkWorkflowTool[]): { name: string; does: string }[] {
+  return manifest.map((tool) => ({ name: tool.name, does: `${tool.description}. Takes ${JSON.stringify(tool.input_schema)}.${tool.output_schema ? ` Gives ${JSON.stringify(tool.output_schema)}.` : ""}` }));
 }
 
 /** What each of `tools` takes and gives a workflow's call node, in the server's own words for it (tools.ts ToolEntry's
@@ -321,14 +372,16 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
 /** A run's trace from its timeline rows, the end-of-run turn's (LEARNING_LABEL) left out: its first message (the
  *  person's, or a trigger's firing: what it was asked), each tool call its job made at the top level, its answer, and
  *  each message the person sent after the first (`user_message`: their feedback), never the server's words (an
- *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back) or a trigger's; every text
- *  cut of `refuse` and every secret's shape. */
+ *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back), a trigger's or a grade's
+ *  (its feedback round is no turn of the job's: withoutFeedbackRounds); every text cut of `refuse` and every secret's
+ *  shape. */
 export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
-  const rows = timeline.filter((row) => row.agent_label !== LEARNING_LABEL);
+  const rows = withoutFeedbackRounds(timeline).filter((row) => row.agent_label !== LEARNING_LABEL);
   const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
   const messages = rows.filter(isMessageRow);
   const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));
-  const calls = rows.filter((row) => row.kind === "tool_use" && !row.parent_tool_use_id).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
+  const models = modelsOwn(rows);
+  const calls = rows.filter((row) => row.kind === "tool_use" && models(row)).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
   const answer = rows.findLast((row) => row.kind === "final_answer")?.text;
   const first = messages[0];
   return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(row.text ?? row.summary)) };
@@ -350,7 +403,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const entries = await runEntries(deps.store, input.runId, BACKGROUND_CONTEXT).catch(() => []);
   const served = servedOf(entries);
   const stopped = reviseOf(entries);
-  let revising = served?.outcome === "handed_back" ? served.workflow : stopped?.workflow;
+  // A wrong grade of the answer its workflow gave alone (a `revise` feedback round this end closes): that workflow.
+  const fed = pendingFeedbackOf(entries);
+  const gradedOf = fed?.round === "revise" && fed.workflow ? fed.workflow : undefined;
+  let revising = served?.outcome === "handed_back" ? served.workflow : (stopped?.workflow ?? gradedOf);
   // The workflows whose newest revision other than their champion (learn/promote.ts championOf: it serves while that one
   // is held) is held: the run's own may be one (its champion served it, or it went by hand).
   const records: PromotionRecord[] = revising ? [] : await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
@@ -386,7 +442,8 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
   const leftOut = { workflows: new Set<string>(), notes: 0, traces: 0, input: false };
   const folder = deps.learningFolder(input.agentId);
-  let read: { notes: { file: string; text: string }[]; workflows: number; current?: string; held?: PromotionRecord };
+  // `main`: the commit the snapshot read is main's at, which `current` was read from.
+  let read: { notes: { file: string; text: string }[]; workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {
     read = await readLearning(folder.workspace, async ({ snapshot, body }) => {
       const workflows = (snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
@@ -416,7 +473,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
         if (holds(note.file) || holds(text)) leftOut.notes += 1;
         else notes.push({ file: note.file, text });
       }
-      return { notes, workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}) };
+      return { notes, workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}), ...(snapshot?.main ? { main: snapshot.main } : {}) };
     });
   } catch {
     return undefined;
@@ -439,7 +496,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
     const { workflow, digest, source, reason, replay } = read.held;
-    held = { workflow, digest, source, reason, ...(replay ? { replay: { n: replay.n, agree: replay.agree, agent_acc: replay.agent_acc, wf_acc: replay.wf_acc, delta: replay.delta, handed_back: replay.handed_back } } : {}) };
+    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}) };
     revising = workflow;
   }
   if (!revising && !dueWith(read.notes.length, read.workflows)) return sayLeftOut(), undefined;
@@ -451,17 +508,22 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     leftOut.traces += 1;
     return false;
   });
-  const { tools, decisions, outputSchema } = await draftTools(deps, input.runId);
+  const { tools, decisions, outputSchema, workflowAdapters, described: sdkCatalog } = await draftTools(deps, input.runId);
   const allowed = draftDecisionProviders(decisions);
-  const judges = allowed.length > 0;
+  const judges = workflowAdapters !== undefined ? workflowAdapters.includes("runJudge") : allowed.length > 0;
   // Jev by default: a run that can call Jev (a decision provider its gate does not deny) asks every step for a guard it reads.
-  const jev = allowed.includes("jev");
-  const described = await describedOf(tools, deps.store);
+  const jev = workflowAdapters === undefined && allowed.includes("jev");
+  const described = sdkCatalog ?? await describedOf(tools, deps.store);
   const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
   leftOut.input = object && holds(input.input);
   const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
-  const base = { reference: compileReference(dsl, { tools, judges, jev }), notes: read.notes, traces, tools, described, judges, jev, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
-  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : held ? { held } : {}), ...base };
+  const bridge = workflowAdapters !== undefined ? { workflowAdapters } : {};
+  const base = { ...bridge, reference: compileReference(dsl, { tools, judges, jev, ...bridge }), notes: read.notes, traces, tools, described, judges, jev, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
+  // A wrong grade of the answer its workflow gave alone: that answer and the grade's words, cut of the runner's secrets.
+  const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
+  const graded: GradedAsk | undefined = revising && gradedOf && fed ? { answer: cut(servedAnswerOf(entries)?.answer ?? ""), words: cut(fed.text) } : undefined;
+  // A revision is of main's text as read here, whatever the run started from: that commit is its conflict base (`base`).
+  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(read.main ? { base: read.main } : {}), ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
   sayLeftOut();
   // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
   // still holds a secret asks nothing.
@@ -474,29 +536,32 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them
  *  with the server's settings (from the store) and the agent's; none for a workflow revision. */
-async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; asked: string[]; decisions?: DraftDecisions; outputSchema?: unknown }> {
+async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools: string[]; gated: Record<string, string>; deniedBy: Record<string, "agent" | "server" | "default">; decisions?: DraftDecisions; outputSchema?: unknown; workflowAdapters?: readonly ("runNode" | "runJudge")[]; described?: { name: string; does: string }[] }> {
   const run = await deps.store.runs.get(runId);
+  const launch = run ? readLaunchBody((await deps.store.runs.launch(runId)).body) : undefined;
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-  if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {}, asked: [] };
+  if (revision?.kind !== "agentic") return { tools: [], gated: {}, deniedBy: {} };
   const body = revision.body as { tools?: string[]; toolSettings?: unknown; approvals?: string; outputSchema?: unknown };
   // The agent's output schema, which a learned workflow's answer is served shaped to (answer-json.ts answerAsServed): the
   // compile turn is told it and a draft's dry run holds its answer to it.
   const shaped = body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {};
-  const [{ learnedDraftTools, mcpGrantsListed }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
+  if (launch?.sdk?.workflow_tools) {
+    const catalog = sdkDraftTools(launch.sdk.workflow_tools);
+    return { ...catalog, ...shaped, workflowAdapters: launch.sdk.workflow_adapters ?? [], described: sdkDescribed(launch.sdk.workflow_tools.filter(tool => catalog.tools.includes(tool.name))) };
+  }
+  const [{ learnedDraftTools }, { permissionFrom }, { loadToolSettings }] = await Promise.all([import("../tools.js"), import("../tool-gate.js"), import("../tool-plane.js")]);
   // The server's settings from the one store, as the run's gate reads them: a stored row that does not read carries
   // SETTINGS_UNREAD, which permissionFrom honours (no ask is lifted over a deny the row may hold).
   const server = (await loadToolSettings(deps.store)).settings;
   const agent = (body.toolSettings ?? {}) as never;
   const approvals = body.approvals === "never" ? "never" : "ask";
-  // A server's wildcard grant read as the tools its server lists now (tools.ts mcpGrantsListed, LS-07).
-  const granted = (body.tools ?? []).some(isMcpWildcard) ? mcpGrantsListed(body.tools ?? [], await mcpListedOf(deps.store)) : (body.tools ?? []);
   // `deniedBy`: where each deny was set (the agent's tool settings, the server's, a default), which a left-out draft's
   // words name.
-  const { tools, gated, deniedBy, asked } = learnedDraftTools(granted, (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
+  const { tools, gated, deniedBy } = learnedDraftTools(body.tools ?? [], (name) => permissionFrom(name, server as never, agent, approvals).permission, undefined, (name) => permissionFrom(name, server as never, agent, approvals).from, { mcp: true, approvers: await readApprovers(deps.store.settings) });
   // A draft's decision nodes (LS-07): the host's decision providers, each held to the gate by its bare id as the run's
   // gate holds it (tool-plane.ts DECISION_PROVIDER_KEYS); deny alone refuses one.
   const providers = await deps.decisionProviders?.();
-  if (!providers) return { tools, gated, deniedBy, asked, ...shaped };
+  if (!providers) return { tools, gated, deniedBy, ...shaped };
   const decided: Record<string, string> = {};
   const decisionDeniedBy: Record<string, "agent" | "server" | "default"> = {};
   for (const id of DECISION_PROVIDER_KEYS) {
@@ -505,7 +570,7 @@ async function draftTools(deps: LearningEndDeps, runId: string): Promise<{ tools
     decided[id] = permission;
     if (permission === "deny") decisionDeniedBy[id] = from as "agent" | "server" | "default";
   }
-  return { tools, gated, deniedBy, asked, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy }, ...shaped };
+  return { tools, gated, deniedBy, decisions: { providers: providers.providers, default: providers.default, gated: decided, deniedBy: decisionDeniedBy }, ...shaped };
 }
 
 /** The commit main of the agent's learning folder is at now; none for a folder with no main yet. */
@@ -518,19 +583,19 @@ async function mainOf(deps: LearningEndDeps, agentId: string): Promise<string | 
   }
 }
 
-/** proposeRun's checks over the turn, against seed `seed`, in a directory of the step's own: the proposal it keeps there
- *  is read back for the hook to store with the run's end, and the directory is removed. */
-async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
+/** proposeRun's checks over the turn, against seed `seed` (a revised workflow's files against the commit its compile ask
+ *  read it at: `revised`), in a directory of the step's own: the proposal it keeps there is read back for the hook to
+ *  store with the run's end, and the directory is removed. */
+async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId: string; seed: string; notesSeed?: string; revised?: { workflow: string; base: string }; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; workflows?: false }): Promise<Checked> {
   const runDir = await mkdtemp(join(tmpdir(), "agentrun-learning-end-"));
   try {
-    const { tools, gated, deniedBy, asked, decisions, outputSchema } = await draftTools(deps, input.runId);
-    // #2424's card rule (learnedAskFits): a draft whose ask-set MCP tools would not all show on its approval card is refused.
-    const { learnedAskFits } = await import("../learned-workflow.js");
+    const { tools, gated, deniedBy, decisions, outputSchema } = await draftTools(deps, input.runId);
+    const sdk = readLaunchBody((await deps.store.runs.launch(input.runId)).body)?.sdk;
     const turn = { answer: input.turn.answer, asked: [...input.turn.asked], ...(input.turn.triggered?.length ? { triggered: input.turn.triggered.map((one) => ({ ...one })) } : {}) };
     const folder = deps.learningFolder(input.agentId);
     let proposed;
     try {
-      proposed = await proposeRun({ folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ask: { asked, fits: learnedAskFits }, ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
+      proposed = await proposeRun({ ...(sdk?.workflow_tools ? { workflowAdapters: sdk.workflow_adapters ?? [] } : {}), folder: folder.workspace, runDir, seed: input.seed, ...(input.notesSeed ? { notesSeed: input.notesSeed } : {}), ...(input.revised ? { revised: input.revised } : {}), turn, refuse: input.refuse, outcome: input.outcome, tools, ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ...(decisions ? { decisions } : {}), ...(input.workflows === false ? { workflows: false as const } : {}), ...(outputSchema !== undefined ? { outputSchema } : {}) });
     } finally {
       await folder.end();
     }
@@ -538,7 +603,7 @@ async function checkedOf(deps: LearningEndDeps, input: { runId: string; agentId:
     const proposal: unknown = JSON.parse(await readFile(join(runDir, PROPOSAL), "utf8"));
     // A draft calling an MCP tool with no declared price waits for its owner's OK whatever the grade (LS-07): held here,
     // from the prices the store keeps now, and said to the grader.
-    const held = await heldOf(deps.store, proposal);
+    const held = await heldOf(deps.store, proposal, sdk?.workflow_tools);
     return { ...proposed, proposal: Object.keys(held).length ? { ...(proposal as object), held } : proposal };
   } finally {
     await rm(runDir, { recursive: true, force: true });

@@ -2,9 +2,10 @@
 // `/authorize` that approves at once (it redirects back with a code, as a person who said yes would), and `/token` for
 // the code (PKCE S256 checked) and refresh grants. Refresh tokens rotate: a used one is spent. `revoke()` spends every
 // one, as a person who signs the app out does. A fake MCP server takes its access tokens with `accepts`. Every request is
-// logged with its form fields, never a token's value.
+// logged with its form fields, never a token's value (a stranger's bare `GET /` is not: fixtures/stranger.mjs).
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { stranger } from "./stranger.mjs";
 
 const made = (prefix) => `${prefix}-${randomBytes(16).toString("hex")}`;
 
@@ -34,6 +35,7 @@ export async function startFakeOAuth({ cimd = false, clients = {}, expiresIn = 3
   const revokedTokens = [];
   let revoking = 200;
   const http = createServer(async (req, res) => {
+    if (stranger(req, res)) return;
     const url = new URL(req.url, issuer());
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);

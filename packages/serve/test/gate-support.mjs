@@ -18,11 +18,12 @@ export function liveSettings(value) {
   return { read: () => read, set: (next) => void (read = storedSettings(next)), readAs: (given) => void (read = given) };
 }
 
-/** A run's gate: the server's stored `settings` (a value, or a reader), the revision's own `overrides`, `harness`, the MCP
- *  servers it pins, `approvers` and `approvals`, and its folder `root`. */
-export function runnerGate({ settings, overrides = {}, harness = "pi", mcpServers, approvers = true, approvals = "ask", root = "/nonexistent/run", work } = {}) {
+/** A run's gate: the server's stored `settings` (a value, or a reader), the revision's own `overrides`, `harness`,
+ *  `approvers` and `approvals`, its folder `root`, and `argumentsOf`, the arguments its pinned listing
+ *  declares of each MCP tool (ClaimMcp.argumentsOf). */
+export function runnerGate({ settings, overrides = {}, harness = "pi", approvers = true, approvals = "ask", root = "/nonexistent/run", work, argumentsOf } = {}) {
   const read = typeof settings === "function" ? settings : () => storedSettings(settings);
-  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(mcpServers ? { mcpServers } : {}) }, read, overrides, approvers, approvals);
+  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(argumentsOf ? { argumentsOf } : {}) }, read, overrides, approvers, approvals);
 }
 
 /** The words a call the gate refuses is answered with, or its verdict ("allow" or "ask"). */

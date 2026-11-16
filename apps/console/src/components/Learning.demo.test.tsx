@@ -82,7 +82,7 @@ describe("demo: a person and an agent's notes, on a faux server's recorded answe
     // What learning changed: the runs before its first note against the runs that started from one, as the server said.
     const impact = recorded<{ impact: { before: { runs: number }; after: { runs: number } } }>("learning.view").body.impact;
     expect(impact.before.runs).toBe(2);
-    const since = page.host.querySelector('section[aria-label^="Since it learned (on 4 runs): answers in "]')!;
+    const since = page.host.querySelector('section[aria-label^="Since it learned (medians of 4 runs started from what it learned): answers in"]')!;
     // The time to the answer, the job's own cost and what learning itself costs a run, each as the server measured it.
     expect(since.getAttribute("aria-label")).toMatch(/ · learning itself \$[0-9.]+ est\. a run$/);
     // What it learned: two notes in use, where each came from, how many runs used each, and the note the second replaced.

@@ -1,5 +1,5 @@
 // E2B for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider e2b [--image <template>]`.
-// It makes real sandboxes, so it runs only with AGENTRUN_COMPUTER_LIVE_E2B=1 and a key the lead has OKed, under
+// It makes real sandboxes, so it runs only with AGENTRUN_COMPUTER_LIVE_E2B=1 and a key for an account you can bill, under
 // COMPUTER_E2B_API_KEY. The provider reads no environment: this module reads its own COMPUTER_E2B_* names (never
 // E2B_API_KEY, which may hold another team's key) and passes each to create() as its option; the provider gives the SDK
 // the key, domain and API URL explicitly, and refuses an ambient E2B_SANDBOX_URL (see create in ../e2b.ts). The live
@@ -15,7 +15,6 @@
 // disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
-import { E2B_BASE_TEMPLATE, E2B_DESKTOP_TEMPLATE } from "../descriptors/e2b.js";
 import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
 import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
@@ -96,13 +95,20 @@ export interface E2BModuleOptions extends Pick<E2BOptions, "Sandbox" | "daemonPa
 
 function live(env: Record<string, string | undefined>): void {
 	if (env[E2B_ENV.live] !== "1") {
-		throw new Error(`the E2B conformance module makes real sandboxes: set ${E2B_ENV.live}=1, with a key the lead has OKed, to run it`);
+		throw new Error(`the E2B conformance module makes real sandboxes: set ${E2B_ENV.live}=1, with a key for an account you can bill, to run it`);
 	}
 }
 
+/**
+ * The conformance run's own default templates, E2B's stock ones: E2B Desktop's, and its plain one for kind linux. A server
+ * starts from the box template (the provider's prepareImage); a run on it names it with --image.
+ */
+const DESKTOP_TEMPLATE = "desktop";
+const BASE_TEMPLATE = "base";
+
 /** The template every computer of the run starts from: COMPUTER_E2B_TEMPLATE, or E2B Desktop's (the plain one for kind linux). */
 export function conformanceImage({ env = process.env }: Pick<E2BModuleOptions, "env"> = {}): string {
-	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? E2B_BASE_TEMPLATE : E2B_DESKTOP_TEMPLATE);
+	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? BASE_TEMPLATE : DESKTOP_TEMPLATE);
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */

@@ -175,6 +175,9 @@ export interface ClaudeCodeHarnessOptions {
    * none.
    */
   tools?: HostTool[];
+  /** The host's verdict on whether the catalog tools are deferred (SessionSpec.deferCatalog), which turns the CLI's own
+   *  tool search on or off; absent, the tools' names decide (claudeToolSearch). */
+  deferCatalog?: boolean;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -259,10 +262,12 @@ export interface ClaudeCodeHarnessOptions {
   gate?: (call: GateCall) => Promise<GateAnswer>;
   /** The clock a user turn's day is read from (dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone the day is read in (dateLine). Default UTC. */
+  zone?: string;
 }
 
 /**
- * The line a user turn starts with when the session's model was not yet told its day: today's date, in UTC.
+ * The line a user turn starts with when the session's model was not yet told its day: today's date, in `zone` (UTC by default).
  *
  * The CLI records a session's system prompt at its first request and every resume sends that record, so a date the
  * host put there (serve's environment line) stays the first day's. Re-rendering it (`snapshot: false`) records nothing
@@ -270,11 +275,13 @@ export interface ClaudeCodeHarnessOptions {
  * not been told carries this line, in the CLI's transcript only (the host's log keeps the person's words). The
  * session's first launch sends no line on its first day: its fresh system prompt is the one recorded.
  */
-export function dateLine(now: Date): string {
-  return `Today is ${dayOf(now)} (UTC).`;
+export function dateLine(now: Date, zone = 'UTC'): string {
+  return `Today is ${dayOf(now, zone)}.`;
 }
 
-const dayOf = (now: Date) => now.toISOString().slice(0, 10);
+/** `now`'s day as a person in `zone` reads it, the zone's name after it ("Sunday 15 November 2026 (America/Los_Angeles)"). */
+const dayOf = (now: Date, zone = 'UTC') =>
+  `${new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(now).replace(',', '')} (${zone})`;
 
 /** The effect a user message that told its model the day is recorded under (`date:<message uuid>`, input `{ day }`). */
 const DATE_EFFECT = 'date';
@@ -287,6 +294,13 @@ export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER
 
 /** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
 export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
+
+/**
+ * What follows the tools note when the session has skills. The notes above say the app's tools are the model's only ones,
+ * and Skill is not one of those: a model that reads them has no reason to reach for it. This names Skill as its tool and
+ * says when to use it, as the on-demand listing does for a harness that reads its skills' files (serve's ON_DEMAND).
+ */
+export const SKILLS_NOTE = `The Skill tool is also yours: it loads one of this app's skills, listed to you as agentrun:<name> with what each is for. When a skill fits the step you are on, or your instructions name one, load it with Skill before you act on that step, and follow it; read its other files with read_skill_file.`;
 
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
@@ -353,7 +367,7 @@ export const CLAUDE_SAFE_BUILTINS = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead
  * practice); set either way, so a CLI that changes that default changes nothing here. The session's proxy admits what the
  * CLI sends with it on (anthropicPolicy `toolSearch`).
  */
-export const claudeToolSearch = (toolNames: readonly string[]): 'true' | 'false' => (defersCatalog(toolNames) ? 'true' : 'false');
+export const claudeToolSearch = (toolNames: readonly string[], deferCatalog?: boolean): 'true' | 'false' => ((deferCatalog ?? defersCatalog(toolNames)) ? 'true' : 'false');
 /** The CLI's own tool that finds a deferred tool: it only reads the CLI's list of the session's tools. */
 export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
 
@@ -441,7 +455,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
   /** The CLI's own tool search is on: a run's MCP servers' tools deferred behind its ToolSearch (claudeToolSearch). */
-  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name)) === 'true';
+  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name), options.deferCatalog) === 'true';
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -755,7 +769,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
         // never recorded: every other day reaches the model in its turn (dateLine).
         const now = options.now ?? (() => new Date());
-        const recordedDay = !store.hasSession ? dayOf(now()) : undefined;
+        const recordedDay = !store.hasSession ? dayOf(now(), options.zone) : undefined;
         /** A message the CLI's transcript holds told the model `day`. */
         const told = (day: string) =>
           ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
@@ -785,7 +799,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, skills ? SKILLS_NOTE : undefined, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
@@ -833,9 +847,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // The first message on a day the model was not told carries that day (dateLine), the session's recorded first
           // day aside. Recorded under the message's uuid: the day counts as told once the transcript holds the message.
           const at = now();
-          const day = dayOf(at);
+          const day = dayOf(at, options.zone);
           if (!told(day)) {
-            if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
+            if (day !== recordedDay) text = `${dateLine(at, options.zone)}\n\n${text}`;
             await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
           }
           outstanding.add(uuid);

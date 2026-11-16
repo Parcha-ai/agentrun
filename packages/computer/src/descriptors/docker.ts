@@ -10,7 +10,9 @@ export const DOCKER = defineProvider({
 	mounts: ["bind"],
 	// None, open, or an allowlist through the server's egress proxy.
 	network: ["none", "open", "allow"],
-	capabilities: [SANDBOX, LINUX_DESKTOP],
+	// Each configuration built by its own create() options: the desktop's start the X server (desktop: {}); without them
+	// the provider makes a linux computer, with no screen and no apps.
+	capabilities: [SANDBOX, { ...LINUX_DESKTOP, options: { desktop: {} } }],
 	// No default image: the server makes one from the provider's recipe (prepareImage) before the first create.
 	prepareImage: true,
 	local: true,

@@ -277,8 +277,8 @@ func TestInitRefusesAnEgressSocketThatIsNotOneAbsolutePath(t *testing.T) {
 }
 
 // --own-network takes no value, once, and only with --user (init must start as root to make the namespace) and with no
-// --egress (a remote computer's network is none). That it then leaves init and its programs their own loopback alone is
-// internal/isolate's tests and the Docker live tests'.
+// --egress (a remote computer's way out is the proxy --network starts). That it then leaves init and its programs their
+// own loopback alone is internal/isolate's tests and the Docker live tests'.
 func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, args := range [][]string{
@@ -293,6 +293,63 @@ func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "--own-network") {
 			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
+// --network names the form of the proxy init starts: open, or allow: and a list the Docker computer's would take; once,
+// and only with --own-network, whose programs reach the proxy through init's relay. That the proxy serves it is
+// internal/egress's tests and the hosted live checks'.
+func TestInitRefusesANetworkThatIsNotAFormOrWithoutOwnNetworkOrTwice(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, test := range []struct {
+		args  []string
+		words string
+	}{
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--network", "open"}, "with --own-network"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "none"}, "--network takes open"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:"}, "no entry"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:10.0.0.0/8"}, "refused range 10.0.0.0/8"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:localhost"}, "two labels"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--network", "open"}, "given once"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network"}, "--network takes open"},
+		{[]string{"init", "--deadline", deadline, "--user", "65534:2510", "--own-network", "--network", "open"}, "--user may be neither"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:65534", "--own-network", "--network", "open"}, "--user may be neither"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, test.args...)
+		if code != 2 {
+			t.Errorf("computerd %q: exit %d; want 2, a refusal", test.args, code)
+		}
+		if !strings.Contains(stderr, test.words) {
+			t.Errorf("computerd %q: stderr does not say %q: %q", test.args, test.words, stderr)
+		}
+	}
+}
+
+func TestInitWithANetworkMustStartAsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: init would start a proxy and drop this test's privileges; the start is a live case")
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	code, stderr := computerd(t, 30*time.Second, "init", "--own-network", "--network", "open", "--user", "2510:2510", "--deadline", deadline)
+	if code != 1 || !strings.Contains(stderr, "root") {
+		t.Fatalf("init --own-network --network open as uid %d: exit %d, stderr %q; want a refusal that says init must start as root", os.Geteuid(), code, stderr)
+	}
+}
+
+// The proxy init starts runs only as another user than root, and only as init starts it.
+func TestEgressProxyRefusesArgumentsInitDoesNotGive(t *testing.T) {
+	until := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"egress-proxy"},
+		{"egress-proxy", "--network", "open", "--until", until},
+		{"egress-proxy", "--network", "none", "--until", until, "--parent", "1"},
+		{"egress-proxy", "--network", "open", "--until", "soon", "--parent", "1"},
+		{"egress-proxy", "--network", "open", "--until", until, "--parent", "0"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 || !strings.Contains(stderr, "egress-proxy takes") {
+			t.Errorf("computerd %q: exit %d, stderr %q; want 2 and the words egress-proxy takes", args, code, stderr)
 		}
 	}
 }

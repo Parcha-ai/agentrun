@@ -24,7 +24,7 @@ const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
 
 /** One process's adapter on the fake SDK, reading the day from `clock.now`, with what it sent: each user message the CLI
  *  consumed, and each launch's system prompt by the CLI's snapshot rule. */
-async function processOn(t, clock, sessionsDir) {
+async function processOn(t, clock, sessionsDir, zone) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const users = [];
@@ -36,6 +36,7 @@ async function processOn(t, clock, sessionsDir) {
     sessionsDir,
     standIn: { command: process.execPath },
     now: () => clock.now,
+    ...(zone ? { zone } : {}),
     sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 10, onSystem: (s) => systems.push(s), onMessage: (m) => users.push(m.text) }),
   });
   return { adapter, users, systems };
@@ -66,7 +67,7 @@ test('a session resumed on a later day is told that day once, in its first messa
   const next = await processOn(t, clock, dir);
   await turns(next, store, ['third', 'fourth']);
   assert.ok(next.systems.every((s) => s.resumed && s.snapshot && s.sent.includes(SYSTEM)), `the resume sends the recorded prompt: ${JSON.stringify(next.systems.map((s) => [s.resumed, s.snapshot]))}`);
-  assert.deepEqual(next.users, ['Today is 2026-11-12 (UTC).\n\nthird', 'fourth'], 'the first message on the new day carries it, the next does not');
+  assert.deepEqual(next.users, ['Today is Thursday 12 November 2026 (UTC).\n\nthird', 'fourth'], 'the first message on the new day carries it, the next does not');
 
   // Later the same day, another process: the day was told, in a message the CLI's transcript holds. No line again.
   clock.now = new Date('2026-11-12T23:59:00Z');
@@ -77,4 +78,27 @@ test('a session resumed on a later day is told that day once, in its first messa
   // The host's log keeps the person's words: the line is in the CLI's transcript only.
   const said = foldSession(spec.key, await store.read(spec.key)).submissions.map((s) => s.text);
   assert.deepEqual(said, ['first', 'second', 'third', 'fourth', 'fifth']);
+});
+
+test('in America/Los_Angeles the day changes at local midnight, not at UTC midnight, and its line names the zone', async (t) => {
+  const zone = 'America/Los_Angeles';
+  const store = memorySessionStore();
+  const dir = mkdtempSync(join(ROOT, 'la-'));
+  // Thursday 12 November, noon in Los Angeles: the session's first launch records its prompt.
+  const clock = { now: new Date('2026-11-12T20:00:00Z') };
+  const first = await processOn(t, clock, dir, zone);
+  await turns(first, store, ['first']);
+  assert.deepEqual(first.users, ['first'], 'on the recorded day no message carries the date');
+
+  // UTC midnight has passed (it is 17:00 Thursday in Los Angeles): the local day is the same, so no line.
+  clock.now = new Date('2026-11-13T01:00:00Z');
+  const evening = await processOn(t, clock, dir, zone);
+  await turns(evening, store, ['second']);
+  assert.deepEqual(evening.users, ['second'], 'crossing UTC midnight without changing the local day adds no date line');
+
+  // Local midnight has passed (00:30 Friday in Los Angeles): the new local day's line appears once, naming the zone.
+  clock.now = new Date('2026-11-13T08:30:00Z');
+  const morning = await processOn(t, clock, dir, zone);
+  await turns(morning, store, ['third', 'fourth']);
+  assert.deepEqual(morning.users, ['Today is Friday 13 November 2026 (America/Los_Angeles).\n\nthird', 'fourth'], 'the first message of the new local day carries its line once');
 });

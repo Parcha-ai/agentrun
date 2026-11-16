@@ -14,6 +14,10 @@
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
+import { linksOf } from "./text-urls.js";
+
+/** A page's text read for its links (text-urls.ts): web_fetch's Parallel read takes it from here. */
+export { linksOf };
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
@@ -168,7 +172,7 @@ export async function readDirect(url: unknown, options: Omit<PublicFetchOptions,
     if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
     // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
     const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
-    const page = read ?? { title: "", text: answer.body, links: [] };
+    const page = read ?? { title: "", text: answer.body, links: linksOf(answer.body) };
     return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...textOf(page.text, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), ...linksWithin(page.links) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });

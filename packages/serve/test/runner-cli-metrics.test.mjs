@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 const MODEL = "claude-haiku-5-5";
 
@@ -48,7 +49,7 @@ test("a codex run's metrics are its booking's: its one request at the gateway's 
   // The gateway: each Responses request streamed back as one answer with its usage.
   const seen = [];
   const gateway = createServer(async (req, res) => {
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     for await (const _ of req);
     seen.push(req.url);
     const events = [{ type: "response.output_text.delta", delta: "Codex answered." }, { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 100 } } }];

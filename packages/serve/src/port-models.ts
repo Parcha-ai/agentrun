@@ -27,9 +27,16 @@ export const tierProvider = (tier: string): string => `${PORT_PROVIDER}-${tier}`
  *  adapters/pi.ts). */
 export const sessionBaseUrl = (api: SessionPort["api"], url: string): string => (api === "anthropic-messages" ? url : `${url}/v1`);
 
+/** The effort a model asks for at each thinking level, as pi-ai's catalog says (null: no effort sent). */
+export type ThinkingLevelMap = NonNullable<Model<Api>["thinkingLevelMap"]>;
+
 /** The catalog's entry for a session's model, as its route carries it (model-route.ts `like`): its reasoning, price,
- *  window and ceiling, and what it takes as input with its input limits. */
-export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown };
+ *  window and ceiling, the effort each thinking level asks for, and what it takes as input with its input limits. */
+/** `developerRole`: on Responses, the instructions go as a developer message, not a system one (a ChatGPT plan's route,
+ *  which takes no system message). `adaptiveThinking`: on Messages, the session asks its thinking level as an adaptive
+ *  effort (pi-ai's `forceAdaptiveThinking`), never a token budget: the route's own translation reads that level back
+ *  (model-route.ts LEVELS_BY_NAME). */
+export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens" | "thinkingLevelMap">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean };
 
 /** The one model of a session's route as pi-ai lists it, for the port's requests and for pi's own (runner adapters/pi.ts):
  *  `model` in `api` at the proxy `url` (sessionBaseUrl), under `provider`, with `headers` (the session key as the proxy
@@ -44,11 +51,15 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
     // What the model takes as input and its input limits, as the catalog says (the route's `like`): a model that takes no
     // images is sent pi-ai's placeholder in place of one, and pi's read holds an image to its limits. Unsaid, text and
     // images within pi's defaults.
-    reasoning: like?.reasoning ?? options.reasoning, input: like?.input ? [...like.input] : ["text", "image"],
+    // The effort each thinking level asks for, as the catalog says: a level it maps to null sends none, so pi's thinking
+    // off sends no "none" to a model that refuses it (gpt-6.1-sol). Unsaid, pi-ai's defaults.
+    reasoning: like?.reasoning ?? options.reasoning, ...(like?.thinkingLevelMap ? { thinkingLevelMap: like.thinkingLevelMap } : {}),
+    input: like?.input ? [...like.input] : ["text", "image"],
     ...(like?.inputLimits ? { inputLimits: like.inputLimits } : {}),
     cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
-    ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: false } } : {}),
+    ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: like?.developerRole === true } } : {}),
+    ...(api === "anthropic-messages" && like?.adaptiveThinking ? { compat: { forceAdaptiveThinking: true } } : {}),
   } as unknown as Model<Api>;
 }
 

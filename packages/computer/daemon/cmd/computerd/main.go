@@ -1,6 +1,6 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
@@ -11,14 +11,20 @@
 //	                    capability in any set and no_new_privs set, or refuses to start.
 //	                    With --own-network (and --user), for a remote computer whose vendor runs its own agent in it,
 //	                    init, still root, refuses to start while another process holds uid, moves itself into a network
-//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock, io_uring and
-//	                    setns to every thread: its programs reach their own loopback and nothing else (internal/isolate)
+//	                    namespace of its own whose loopback alone is up, and once dropped refuses vsock and io_uring to
+//	                    every thread: its programs reach their own loopback and nothing else (internal/isolate)
 //	                    Where root may not make the network namespace itself (EPERM: no CAP_SYS_ADMIN, as on gVisor),
 //	                    init makes it inside a user namespace instead: it starts itself again as `computerd userns-init`
 //	                    in a user namespace that maps every id to itself and a network namespace, both its own; that init
 //	                    does all of the above but make the namespace, and this one keeps no capability, passes SIGTERM
 //	                    and SIGINT on, and ends with it (daemon.InitInUserNamespace). If neither can be made, init
 //	                    refuses to start, in words that name both. hello says which fence holds: "netns" or "userns-netns"
+//	                    With --network (and --own-network), for a remote computer whose network is open or a host list,
+//	                    init, still root and in the machine's network, first starts the egress proxy (internal/egress):
+//	                    it listens on /opt/agentrun/egress/egress.sock (root's and the user's group's), writes the form
+//	                    to /opt/agentrun/egress/policy and serves as `computerd egress-proxy`, nobody, in a session of
+//	                    its own, to the public internet only (and with a list, its hosts alone), until the latest
+//	                    deadline or init is gone. Init then relays as --egress does, to that socket
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
@@ -85,10 +91,12 @@ var version = "0.0.0-dev"
 
 func main() {
 	logger := log.New(os.Stderr, "computerd: ", log.LstdFlags)
-	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && os.Args[1] != "archil-relay" && os.Args[1] != archilRelayRun && len(os.Args) != 2) {
+	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && os.Args[1] != "archil-relay" && os.Args[1] != archilRelayRun && os.Args[1] != egress.ProxyRun && len(os.Args) != 2) {
 		usage()
 	}
 	switch os.Args[1] {
+	case egress.ProxyRun:
+		os.Exit(egressProxy(logger, os.Args[2:]))
 	case "sync-serve":
 		os.Exit(syncServe(logger, os.Args[2:]))
 	case syncServeRun:
@@ -174,10 +182,33 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 			return 1
 		}
 	}
+	// A computer with a network of its own whose form is open or a host list gets its egress proxy now, from root in the
+	// machine's own network, before init leaves it; an init started again in a user namespace finds the one its first
+	// start left, which is that init's child and not this one's. An init that is not root starts none: Become refuses it.
+	var relay daemon.Egress
+	if opts.network != nil {
+		relay = daemon.Egress{Listen: egress.Address, Socket: egress.ProxySocket}
+		if isolation.StartedIn == "" && os.Geteuid() == 0 {
+			self, err := os.Executable()
+			if err == nil {
+				relay.Proxy, err = egress.StartProxy(self, *opts.network, opts.latest, opts.user.gid)
+			}
+			if err != nil {
+				logger.Printf("init refuses to start: its egress proxy (the network %s): %v", opts.network, err)
+				return 1
+			}
+			logger.Printf("init: the egress proxy (the network %s) listens on %s as uid %d, pid %d", opts.network, egress.ProxySocket, egress.ProxyUser, relay.Proxy)
+		}
+	} else if opts.egress != "" {
+		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+	}
 	if opts.user != nil {
 		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
 	} else {
 		dropped = daemon.Unprivileged()
+	}
+	if dropped != nil && !errors.Is(dropped, isolate.ErrNoNetworkNamespace) && relay.Proxy != 0 {
+		_ = syscall.Kill(relay.Proxy, syscall.SIGKILL)
 	}
 	if errors.Is(dropped, isolate.ErrNoNetworkNamespace) && isolation.StartedIn == "" {
 		self, err := os.Executable()
@@ -191,10 +222,6 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 	if dropped != nil {
 		logger.Printf("init refuses to start: %v", dropped)
 		return 1
-	}
-	var relay daemon.Egress
-	if opts.egress != "" {
-		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
 	}
 	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), logger)
 }
@@ -363,8 +390,33 @@ func archilRelayRunning(logger *log.Logger, args []string) int {
 	return 0
 }
 
+// egressProxy is the egress proxy init starts (egress.StartProxy): the listener on fd 3, as nobody, until the
+// computer's latest end or init is gone.
+func egressProxy(logger *log.Logger, args []string) int {
+	config, err := egress.ProxyConfigOf(args)
+	if err != nil {
+		logger.Printf("%v", err)
+		return 2
+	}
+	if os.Geteuid() == 0 {
+		logger.Printf("egress-proxy: refuses to run as root; init starts it as uid %d", egress.ProxyUser)
+		return 2
+	}
+	l, err := net.FileListener(os.NewFile(3, egress.ProxySocket))
+	if err != nil {
+		logger.Printf("egress-proxy: %v", err)
+		return 4
+	}
+	logger.Printf("egress-proxy: serving the network %s until %s", config.Network, config.Until.UTC().Format(time.RFC3339))
+	if err := egress.RunProxy(l, config, func(line string) { logger.Print(line) }); err != nil {
+		logger.Printf("egress-proxy: %v", err)
+		return 1
+	}
+	return 0
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
 	os.Exit(2)
 }
 
@@ -374,21 +426,27 @@ type initOptions struct {
 	// deadline is the computer's end, which deadline.extend moves up to --max-deadline, and not at all without it.
 	deadline *lifetime.Deadline
 	user     *account
+	// latest is the computer's latest end: the maximum, else the deadline.
+	latest time.Time
 	// egress is the egress proxy's socket init relays to; empty is none.
 	egress string
 	// ownNetwork: init, as root, gives itself and its programs a network of their own (daemon.Isolation), made inside a
 	// user namespace where root may not make it directly.
 	ownNetwork bool
+	// network is the form the egress proxy init starts serves (with ownNetwork); nil is none: no proxy, no way out.
+	network *egress.Network
 }
 
-const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid> and --egress <socket> may follow, each once"
+const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid>, --egress <socket> and --network <form> may follow, each once"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
-const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (such a computer's network is none)"
+const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (their way out, if any, is the proxy --network has init start)"
+const networkWords = "--network is given once, with --own-network: init, still root, starts the egress proxy that form names, and relays its programs' loopback port 3128 to it"
 
-// initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>` and `--egress <socket>`,
-// in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum before the deadline, it
-// says why and init refuses to start, so no computer lives forever or past what its provider allows.
+// initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>`, `--egress <socket>` and
+// `--network <form>`, in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum
+// before the deadline, it says why and init refuses to start, so no computer lives forever or past what its provider
+// allows.
 func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	var opts initOptions
 	var deadline, most time.Time
@@ -410,6 +468,8 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 				logger.Printf("init: %s", userWords)
 			case "--egress":
 				logger.Printf("init: %s", egressWords)
+			case "--network":
+				logger.Printf("init: %s", egress.NetworkWords)
 			default:
 				logger.Printf("init: %s", deadlineWords)
 			}
@@ -454,6 +514,16 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		case flag == "--egress":
 			logger.Printf("init: %s", egressWords)
 			return opts, false
+		case flag == "--network" && opts.network == nil:
+			network, err := egress.NetworkOf(value)
+			if err != nil {
+				logger.Printf("init: %v, not %q", err, value)
+				return opts, false
+			}
+			opts.network = &network
+		case flag == "--network":
+			logger.Printf("init: %s", networkWords)
+			return opts, false
 		default:
 			logger.Printf("init: %s; %q is none of them", deadlineWords, flag)
 			return opts, false
@@ -467,11 +537,24 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		logger.Printf("init: %s", ownNetworkWords)
 		return opts, false
 	}
+	if opts.network != nil && !opts.ownNetwork {
+		logger.Printf("init: %s", networkWords)
+		return opts, false
+	}
+	// The proxy runs as ProxyUser so its programs' user can't signal it: a user who is that uid, or in that group, could.
+	if opts.network != nil && (opts.user.uid == egress.ProxyUser || opts.user.gid == egress.ProxyUser) {
+		logger.Printf("init: --network starts its egress proxy as uid and gid %d, so --user may be neither", egress.ProxyUser)
+		return opts, false
+	}
 	if sawMost && most.Before(deadline) {
 		logger.Printf("init: --max-deadline %s is before --deadline %s", most.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 		return opts, false
 	}
 	opts.deadline = lifetime.New(deadline, most)
+	opts.latest = deadline
+	if sawMost {
+		opts.latest = most
+	}
 	return opts, true
 }
 

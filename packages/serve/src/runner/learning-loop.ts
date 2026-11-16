@@ -48,6 +48,9 @@ export interface KeptProposal {
   readonly triggered?: readonly { readonly source: string; readonly text: string }[];
   /** The commit of the learning folder's main the run started from (its pin's seed). */
   readonly seed?: string;
+  /** A file whose conflict base is not the seed, by its path (learning.ts Proposal): a revised workflow's, the commit of
+   *  main its compile ask read it at. */
+  readonly bases?: Readonly<Record<string, string>>;
   /** The draft the run's compile turn wrote (learn/compile.ts), by its name, and the notes it does the work of: marked
    *  `compiled_into` when the draft merges. */
   readonly compiled?: { readonly workflow: string; readonly from_notes: readonly string[] };
@@ -106,6 +109,9 @@ export interface MergeChange {
   readonly graded: Readonly<Record<string, string>>;
   /** The run's seed: a skill's or a draft's file not on main as it was on it is a conflict, never written over. */
   readonly seed?: string;
+  /** A file checked against another commit than the seed, by its path: a revised workflow's, the commit its compile ask
+   *  read it at. */
+  readonly bases?: Readonly<Record<string, string>>;
   /** New notes written over main's note of the same name, each superseding it by name (takenOnMain). */
   readonly replace?: readonly string[];
   /** Each skill re-filed as a note, retired on main in the same write (its SKILL.md, and the note that replaces it). */
@@ -130,7 +136,7 @@ export interface GraderRun {
 export interface LearningLoopDeps {
   /** The run that learned, from the learning run's launch row (its input's runId), and the round of its looks back the
    *  learning run grades (its input's round; absent, the first). */
-  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly round?: number; readonly agentId: string; readonly instructions?: string } | undefined>;
+  sourceOf(learningRunId: string): Promise<{ readonly runId: string; readonly round?: number; readonly agentId: string; readonly instructions?: string; readonly policyError?: string; readonly nativeInstructions?: true } | undefined>;
   /** Its kept proposal of that round (store.learning.proposal). */
   proposal(runId: string, round: number): Promise<LearningProposal | undefined>;
   /** The agent's learning folder (learn/folder.ts learningWorkspace): its Workspace, and its end, called once the run is
@@ -291,7 +297,8 @@ const itemsByFile = (verdict: Verdict): Map<string, Verdict["items"][number]> =>
 /** The merge of `merging` (what the verdict kept), the one rule learningCommit's merge is made by: each note with
  *  the origin its item gives (`you` for the user's own words, else the run's) and held for its owner's OK when its item
  *  is pending; a skill's SKILL.md or a draft's README.md held when its item is (a draft's workflow.json is held by its
- *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict. */
+ *  README); and the seed the source run started from, so a skill's or draft's file changed on main since is a conflict
+ *  (a revised workflow's file: changed since the commit its compile ask read it at, `bases`). */
 export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Verdict, graded: Readonly<Record<string, string>>, round = 1): MergeChange {
   const judged = itemsByFile(verdict);
   const notes = merging.notes.map(({ file, text }) => ({ path: file, text: mergedNote(text, { origin: judged.get(file)?.origin ?? "run" }) }));
@@ -307,7 +314,7 @@ export function mergeChangeOf(runId: string, merging: KeptProposal, verdict: Ver
   const compiled = merging.compiled && files.some(({ path }) => path === `workflows/${merging.compiled!.workflow}/workflow.json`) && merging.compiled.from_notes.length ? { workflow: merging.compiled.workflow, notes: [...merging.compiled.from_notes] } : undefined;
   return {
     kind: "merge", runId, ...(round > 1 ? { round } : {}), reason: verdict.reason || "The grader kept every new note.", files: [...notes, ...files],
-    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(retire.length ? { retire } : {}), ...(compiled ? { compiled } : {}),
+    ...(held.length ? { held } : {}), graded, ...(merging.seed ? { seed: merging.seed } : {}), ...(merging.bases && Object.keys(merging.bases).length ? { bases: { ...merging.bases } } : {}), ...(retire.length ? { retire } : {}), ...(compiled ? { compiled } : {}),
   };
 }
 
@@ -438,6 +445,10 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
         if (!source) {
           await append(KINDS.learningDropped, { source: "", reason: "no_source", detail: said.stopped(STOPPED.notChecked) } satisfies DroppedData, "failed");
           return { state: "failed", error: { code: "learning_no_source", message: "the learning run names no run that learned" } };
+        }
+        if (source.policyError) {
+          await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: source.policyError } satisfies DroppedData, "ended");
+          return { state: "ended" };
         }
         const round = source.round ?? 1;
         const kept = await learning.proposal(source.runId, round);
@@ -574,10 +585,18 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               return { state: "ended" };
             }
             const items = gradedItems(grading as NoteText[], (proposal.files ?? []) as NoteText[]);
-            const prompt = gradePrompt({
+            let prompt: string;
+            try { prompt = gradePrompt({
               run: source.runId, ...(source.instructions ? { instructions: source.instructions } : {}), active: main.active, superseded, proposed: grading,
+              ...(source.nativeInstructions?{nativeInstructions:true}:{}),
               ...(proposal.files?.length ? { files: proposal.files } : {}), ...(proposal.dryRuns ? { dryRuns: proposal.dryRuns } : {}), ...(proposal.drafted?.length ? { drafted: proposal.drafted } : {}), ...(proposal.asked ? { asked: proposal.asked } : {}), ...(proposal.triggered ? { triggered: proposal.triggered } : {}), ...(proposal.held ? { held: proposal.held } : {}),
-            });
+            }); } catch (error) {
+              // A full native policy can fill the remaining prompt budget. Refuse the whole proposal visibly;
+              // no grader was called and no standing instruction or proposal is silently omitted.
+              // Keep what the generality pre-check already spent.
+              await append(KINDS.learningDropped, { source: source.runId, reason: "checker", detail: error instanceof Error ? error.message : "The grading evidence exceeds the supported prompt budget.", usd: spent(), tokens, ...(unchecked !== undefined ? { unchecked } : {}) } satisfies DroppedData, "ended");
+              return { state: "ended" };
+            }
             /** The asks of this attempt that answered: the records holding more requests than these is an earlier attempt's. */
             let answered = 0;
             // Once an ask read the grade's records (`booked`), its dollars are theirs: an earlier attempt's requests counted too.

@@ -121,6 +121,27 @@ test("a child gets exactly the tools the call names, an MCP tool among them, on 
   assert.equal(lines().filter((line) => line.child).length, before, "no child started");
 });
 
+test("past the deferral threshold, a child is offered the catalog tools it was given: the parent's deferral does not hide them from a child with no tools_search", { timeout: 240_000 }, async (t) => {
+  const { run, fake } = await setup(t, { mcp: true });
+  // 21 catalog tools: past DEFER_CATALOG_OVER (20), so the parent's are deferred and found with tools_search.
+  const extra = Array.from({ length: 20 }, (_, i) => `t${i + 1}`);
+  for (const name of extra) fake().tools[name] = { description: `Tool ${name}.`, input: { type: "object", properties: {} }, run: () => ({ content: [{ type: "text", text: name }] }) };
+  const tools = ["read", "mcp:fake/add", ...extra.map((name) => `mcp:fake/${name}`), "subagent"];
+  const offered = await run("subset-deferred", { tools }, delegate([{ prompt: "Tools?", tools: ["mcp:fake/add"], model: "strong" }]));
+  assert.equal(offered.last.status, "completed", JSON.stringify(offered.view));
+  assert.equal(offered.answer, "Results: Offered: mcp__fake__add", "the child is offered the tool it was given");
+});
+
+test("an MCP server's wildcard is no grant: the save refuses mcp:<server>/*, so no subagent is ever handed one", async (t) => {
+  const { api } = await setup(t, { mcp: true, runner: false });
+  const refused = await api("POST", "/agents", agent("wildcard", { tools: ["read", "mcp:fake/*", "subagent"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "input_invalid");
+  assert.deepEqual(refused.body.error.fields.map(({ field, reason }) => [field, reason]), [["definition.tools[1]", "not_an_option"]]);
+  assert.match(refused.body.error.fields[0].message, /^mcp:fake\/\* is not an MCP tool's name: mcp:<server>\/<tool>/);
+  assert.equal((await api("GET", "/agents/wildcard")).status, 404, "nothing saved");
+});
+
 test("a session name gives the child that one tool alone; its catalog name gives every tool of it", () => {
   const BROWSER = ["browser_read", "browser_click", "browser_upload", "run"];
   const options = { granted: ["read", "browser", "mcp:fake/add"], sessionNames: (catalog) => (catalog === "browser" ? BROWSER : [catalog === "mcp:fake/add" ? "mcp__fake__add" : catalog]) };

@@ -4,24 +4,18 @@
 // stdin sent as the command's input. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
 // Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
-import { PassThrough } from "node:stream";
-import { fileURLToPath } from "node:url";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./descriptors/daytona.js";
-import { COMPUTER_LABEL, DEADLINE_LABEL } from "./drift.js";
-import type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, IMAGE_LABEL } from "./hosted/provider.js";
-import { boundOf, pause as sleep } from "./hosted/process.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_NO_ARCHIL, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
+import { COMPUTER_LABEL } from "./drift.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
+import { boundOf, orThrow, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, driftOf, isWhole, show, sizeOf } from "./hosted/values.js";
-import type { KindCapabilities } from "./kinds.js";
-import type { MountKind } from "./mount.js";
+import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
-import { type ComputerSpec, checkGpu, type NetworkPolicy, type Refusal } from "./provider.js";
-import { type ComputerError, type ComputerErrorCode, errorOf, failFor, ok, type Result, vendorFail } from "./result.js";
-
-/** This module's failures: one with code vendor names Daytona. */
-const fail = failFor("daytona");
+import { type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
+import { type ComputerError, type ComputerErrorCode, ok, type Result, vendorFail } from "./result.js";
 
 /** The parts of a WebSocket the host uses: Node's global WebSocket, or a stand-in in tests. */
 export interface WebSocketLike {
@@ -36,7 +30,7 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs" | "timeouts" | "archilEgress"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -76,43 +70,18 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "label" | "k
 /** What Daytona reports of a sandbox, as far as this provider reads it (api.json Sandbox and SandboxListItem). */
 interface Sandbox {
 	id: string;
-	name?: string;
-	snapshot?: string;
 	state?: string;
 	desiredState?: string;
 	errorReason?: string;
 	labels?: Record<string, string>;
-	public?: boolean;
-	networkBlockAll?: boolean;
-	networkAllowList?: unknown;
-	domainAllowList?: unknown;
-	outboundProxyUrl?: string;
-	kvm?: boolean;
-	cpu?: number;
 	gpu?: number;
 	/** The GPU type Daytona assigned (its GpuType enum), when the sandbox has GPUs. */
 	gpuType?: string;
-	memory?: number;
-	disk?: number;
-	autoStopInterval?: number;
-	autoDeleteInterval?: number;
 	autoDestroyAt?: string;
 	/** When Daytona made the sandbox, by its clock: the adapter keeps the oldest of two machines one request made. */
 	createdAt?: string;
-	volumes?: unknown[];
-	linkedSandboxId?: string;
-	sandboxClass?: string;
 	toolboxProxyUrl?: string;
 }
-
-/**
- * The mount kinds a Daytona computer takes: none. Archil's client hangs on Daytona's sandboxes, so an Archil mount is
- * refused in the descriptor's words (DAYTONA_NO_ARCHIL) before any request.
- */
-export const MOUNT: readonly MountKind[] = DAYTONA.mounts;
-
-/** The machine kind, groups and GPUs of its one configuration (its descriptor's): a linux computer, with GPUs when asked. */
-export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
 
 /**
  * A DaytonaProvider from its options alone; it reads no environment, so the key, the API URL (default Daytona's own) and
@@ -120,8 +89,6 @@ export const CAPABILITIES: readonly KindCapabilities[] = DAYTONA.capabilities;
  * module the settings it reads. Throws in words when an option is missing or wrong, never echoing the key.
  */
 export function create(options: DaytonaProviderOptions): DaytonaProvider {
-	const { apiKey } = options ?? ({} as DaytonaProviderOptions);
-	if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 	return new DaytonaProvider(options);
 }
 
@@ -131,29 +98,18 @@ export const conformance = () => import("./conformance/daytona.js");
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 /** autoDeleteInterval when autoDeleteMinutes is unset: negative is disabled. */
 const NO_AUTO_DELETE = -1;
-const DEFAULT_REQUEST_MS = 30_000;
 const DEFAULT_RETRY_MS = 500;
-const DEFAULT_POLL_MS = 1_000;
 const RETRY_ATTEMPTS = 3;
 const DELETE_ATTEMPTS = 4;
 /** How long a command's log stream may trail its exit code before the host stops reading it. */
 const LOG_GRACE_MS = 5_000;
 const MAX_PAGES = 1000;
 const MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-/** Daytona's TTL is whole minutes, and its clock is not ours: the vendor's end may come this long after the deadline. */
-const LIFETIME_SLACK_MS = 60_000 + 120_000;
 /** The toolbox's port, on every interface of the sandbox (daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/config/config.go:6). */
 const TOOLBOX_PORT = 2280;
-/**
- * Daytona's own path sockets outside /run: its D-Bus session bus, /tmp/dbus-<10 characters> (the live baseline's
- * isolation.vendor-agent connected to /tmp/dbus-Y8OW6E3FDx as the tool user). Create closes them to the tool user.
- */
-export const DAYTONA_SOCKETS: readonly string[] = ["/tmp/dbus-*"];
 const QUOTA = /quota|capacity|limit exceeded|too many/i;
 const STARTING = new Set(["creating", "restoring", "starting", "pending_build", "building_snapshot", "pulling_snapshot", "resizing", "snapshotting", "forking", "resuming", "unknown"]);
 const GONE = new Set(["destroyed", "destroying"]);
-/** On the way from started to stopped or paused. */
-const LEAVING = new Set(["stopping", "pausing"]);
 const FAILED = new Set(["error", "build_failed"]);
 const OUT = Buffer.from([1, 1, 1]);
 const ERR = Buffer.from([2, 2, 2]);
@@ -162,41 +118,16 @@ const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
 
 const decoder = new TextDecoder();
 
-/** The entries of a comma-separated list Daytona keeps, trimmed; none when it is unset; undefined for a shape it never sends. */
-function entriesOf(list: unknown): string[] | undefined {
-	if (list === undefined || list === null) return [];
-	if (typeof list !== "string") return undefined;
-	return list
-		.split(",")
-		.map((entry) => entry.trim())
-		.filter((entry) => entry !== "");
-}
-
 /**
- * A sandbox's network as Daytona keeps it: none is block-all with no list, open is neither, an allowlist is one list.
- * An outbound proxy, both lists, or a shape not read here is reported in words, never as a policy it might widen to.
+ * A sandbox's state as the adapter reads a machine's: failed, destroying and asked to destroy are gone (none of them
+ * starts again); stopping and pausing are stopped. A destroyed one get and list leave out, and the wait after a delete
+ * waits for that.
  */
-function networkOf(sb: Sandbox): NetworkPolicy {
-	if (typeof sb.outboundProxyUrl === "string" && sb.outboundProxyUrl !== "") return { other: "an outbound proxy is set on it" };
-	const cidrs = entriesOf(sb.networkAllowList);
-	const domains = entriesOf(sb.domainAllowList);
-	if (cidrs === undefined || domains === undefined) return { other: "an allow list in a shape this provider does not read" };
-	if (sb.networkBlockAll === true) return cidrs.length + domains.length === 0 ? "none" : { other: "block-all with an allow list" };
-	if (sb.networkBlockAll !== false) return { other: "Daytona did not report networkBlockAll" };
-	if (cidrs.length > 0 && domains.length > 0) return { other: "both a CIDR and a domain allow list" };
-	if (cidrs.length > 0) return { allow: cidrs };
-	if (domains.length > 0) return { allow: domains };
-	return "open";
-}
-
-/** A sandbox's state as the adapter reads a machine's: stopping and pausing are on the way to stopped. */
 function stateOf(sb: Sandbox): Machine["state"] {
 	const state = sb.state ?? "";
-	if (GONE.has(state) || sb.desiredState === "destroyed") return "going";
+	if (GONE.has(state) || sb.desiredState === "destroyed" || FAILED.has(state)) return "gone";
 	if (state === "started") return "running";
-	if (STARTING.has(state)) return "starting";
-	if (FAILED.has(state)) return "failed";
-	return LEAVING.has(state) ? "stopping" : "stopped";
+	return STARTING.has(state) ? "starting" : "stopped";
 }
 
 /** Daytona's own words for a refusal about quota or capacity; every other status is the shared table's. */
@@ -213,93 +144,28 @@ function internalRefusal(status: number, bytes: Uint8Array): boolean {
 	return status === 500 && (jsonOf(bytes) as { statusCode?: unknown } | null)?.statusCode === 500;
 }
 
-/** Daytona's REST API: the control plane, and the toolbox of one sandbox. */
-class DaytonaRest {
-	readonly #base: string;
-	readonly #key: string;
-	readonly call: Rest["call"];
-	readonly json: Rest["json"];
+/** The headers of every call to Daytona's REST API and of every log stream; split output keeps a session's stdout and stderr apart. */
+const headersOf = (key: string): Record<string, string> => ({ Authorization: `Bearer ${key}`, "X-Daytona-Source": "agentrun-computer", "X-Daytona-Split-Output": "true" });
 
-	constructor(base: string, key: string, fetcher: typeof fetch, requestMs: number, retryMs: number, pause: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined) {
-		this.#base = base.replace(/\/+$/, "");
-		this.#key = key;
-		const client = rest({ base, headers: () => this.headers(), vendor: "daytona", fetch: fetcher, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain });
-		this.call = client.call;
-		this.json = client.json;
-	}
+/** A sandbox's URL on the control plane, by id or name, and the sandboxes' own with neither. */
+const sandboxUrl = (api: Rest, idOrName = "", tail = ""): string => api.url(`/sandbox${idOrName === "" ? "" : `/${encodeURIComponent(idOrName)}`}${tail}`);
 
-	/** The headers of every call and log stream; split output keeps a session's stdout and stderr apart. */
-	headers(): Record<string, string> {
-		return { Authorization: `Bearer ${this.#key}`, "X-Daytona-Source": "agentrun-computer", "X-Daytona-Split-Output": "true" };
-	}
-
-	sandbox(idOrName = "", tail = ""): string {
-		return `${this.#base}/sandbox${idOrName === "" ? "" : `/${encodeURIComponent(idOrName)}`}${tail}`;
-	}
-
-	/** A sandbox by id or name; undefined when Daytona has none. */
-	async get(idOrName: string, signal?: AbortSignal): Promise<Result<Sandbox | undefined>> {
-		const found = await this.json("GET", this.sandbox(idOrName), { retry: true }, signal);
-		if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
-		const sb = found.value as Sandbox | null;
-		return typeof sb?.id === "string" ? ok(sb) : vendorFail("daytona", `GET /sandbox/${idOrName}: no sandbox in the answer`);
-	}
+/** A sandbox by id or name; undefined when Daytona has none. */
+async function sandboxOf(api: Rest, idOrName: string, signal?: AbortSignal): Promise<Result<Sandbox | undefined>> {
+	const found = await api.json("GET", sandboxUrl(api, idOrName), { retry: true }, signal);
+	if (!found.ok) return found.error.code === "not_found" ? ok(undefined) : found;
+	const sb = found.value as Sandbox | null;
+	return typeof sb?.id === "string" ? ok(sb) : vendorFail("daytona", `GET /sandbox/${idOrName}: no sandbox in the answer`);
 }
-
-/** What create asked Daytona for, held against what it reads back. */
-interface SandboxExpected {
-	sandboxClass: string;
-	autoStopInterval: number;
-	autoDeleteInterval: number;
-	/** The GPU snapshot a GPU computer is made from, and its GPU; undefined for a computer with none. */
-	gpu: DaytonaGpuSnapshot | undefined;
-}
-
-/**
- * Every way a sandbox, as Daytona reads it back, differs from the create options this host gave it that the adapter does
- * not read itself (it reads labels, the network and the state). Pure: no call.
- */
-function sandboxDrift(sb: Sandbox, expected: SandboxExpected): string[] {
-	const { found, mismatch } = driftOf();
-	const labels = sb.labels ?? {};
-	// A GPU computer is made from the provider's GPU snapshot, whatever image named it. Daytona's default snapshot is
-	// whichever it names: a computer made from it is not held to a name.
-	const image = labels[IMAGE_LABEL];
-	if (expected.gpu !== undefined) {
-		if (sb.snapshot !== expected.gpu.snapshot) mismatch("snapshot", expected.gpu.snapshot, sb.snapshot);
-	} else if (image !== undefined && image !== DAYTONA_DEFAULT_SNAPSHOT && sb.snapshot !== image) mismatch("snapshot", image, sb.snapshot);
-	if (sb.autoStopInterval !== expected.autoStopInterval) mismatch("autoStopInterval", expected.autoStopInterval, sb.autoStopInterval);
-	if (sb.autoDeleteInterval !== expected.autoDeleteInterval) mismatch("autoDeleteInterval", expected.autoDeleteInterval, sb.autoDeleteInterval);
-	const deadline = labels[DEADLINE_LABEL];
-	const ends = typeof sb.autoDestroyAt === "string" ? Date.parse(sb.autoDestroyAt) : Number.NaN;
-	if (deadline !== undefined) {
-		if (Number.isNaN(ends)) found.push(`autoDestroyAt: declared a TTL ending by ${deadline}, read back ${show(sb.autoDestroyAt)}: Daytona would not end the computer`);
-		else if (ends > Date.parse(deadline) + LIFETIME_SLACK_MS) found.push(`autoDestroyAt: ${sb.autoDestroyAt} is past the deadline ${deadline} by more than the TTL's minute and ${(LIFETIME_SLACK_MS - 60_000) / 60_000} minutes of clock skew`);
-	}
-	if (sb.sandboxClass !== expected.sandboxClass) mismatch("sandboxClass", expected.sandboxClass, sb.sandboxClass);
-	if (sb.public !== false) mismatch("public", false, sb.public);
-	if (sb.kvm === true) mismatch("kvm", false, sb.kvm);
-	// The GPUs read back, held to the GPU snapshot's own (a create sends none) for a GPU computer, none else.
-	const gpus = expected.gpu === undefined ? 0 : expected.gpu.count;
-	if ((sb.gpu ?? 0) !== gpus) mismatch("gpu", gpus, sb.gpu);
-	if (expected.gpu !== undefined && sb.gpuType !== expected.gpu.type) mismatch("gpuType", expected.gpu.type, sb.gpuType);
-	if (Array.isArray(sb.volumes) ? sb.volumes.length > 0 : sb.volumes !== undefined && sb.volumes !== null) mismatch("volumes", [], sb.volumes);
-	if (typeof sb.linkedSandboxId === "string" && sb.linkedSandboxId !== "") mismatch("linkedSandboxId", "none", sb.linkedSandboxId);
-	return found;
-}
-
-/** The log stream's output for one channel: a failure ends the stream with it, and one nobody reads is not an uncaught error. */
-const channel = () => new PassThrough().on("error", () => {});
-const push = (stream: PassThrough, bytes: Uint8Array) => void (stream.writableEnded || stream.destroyed || stream.write(bytes));
-const finish = (stream: PassThrough, error?: Error) => void (error ? stream.destroy(error) : stream.end());
 
 /** Daytona's sandboxes as a MachineHost (../host.ts). */
 class DaytonaHost implements MachineHost {
-	readonly id = "daytona";
+	readonly descriptor = DAYTONA;
 	readonly facts: HostFacts;
-	readonly #rest: DaytonaRest;
+	/** Daytona's REST API: the control plane, and the toolbox of each sandbox. */
+	readonly #rest: Rest;
+	readonly #headers: Record<string, string>;
 	readonly #webSocket: WebSocketFactory;
-	readonly #class: "container" | "linux-vm";
 	readonly #target: string | undefined;
 	/** The snapshot its GPU computers are made from, and their GPU. */
 	readonly #gpu: DaytonaGpuSnapshot;
@@ -308,13 +174,11 @@ class DaytonaHost implements MachineHost {
 	readonly #pollMs: number;
 	/** Each sandbox's toolbox URL, by id, once read: let go of at its delete. */
 	readonly #toolboxes = new Map<string, string>();
-	/** Whether each sandbox this host made was asked for a GPU, by id: what its read-back is held to. */
-	readonly #made = new Map<string, boolean>();
 
-	constructor(options: { rest: DaytonaRest; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+	constructor(options: { rest: Rest; headers: Record<string, string>; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
 		this.#rest = options.rest;
+		this.#headers = options.headers;
 		this.#webSocket = options.webSocket;
-		this.#class = options.sandboxClass;
 		this.#target = options.target;
 		this.#gpu = options.gpu;
 		this.#autoStop = options.autoStop;
@@ -323,8 +187,8 @@ class DaytonaHost implements MachineHost {
 		// daemon child: Daytona's toolbox daemon is the sandbox's first process, and init a command started through it.
 		// maxLifetimeMs is the 30 days check() has always given; Daytona's TTL is in whole minutes and documents no cap of
 		// its own. The toolbox listens on 2280 on every interface and runs commands for whoever reaches it, so init starts
-		// with --own-network, and network none is all a computer takes. Its D-Bus session bus in /tmp, which no network
-		// namespace cuts, is closed to the tool user before init starts (vendorSockets).
+		// with --own-network, and network none is all a computer takes. Its D-Bus session bus in /tmp (/tmp/dbus-*), which
+		// no network namespace cuts, is closed to the tool user before init starts, as on every child host.
 		this.facts = {
 			daemon: "child",
 			isolation: options.sandboxClass === "linux-vm" ? "vm" : "container",
@@ -332,32 +196,21 @@ class DaytonaHost implements MachineHost {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			arch: options.arch,
 			vendorAgentPorts: [TOOLBOX_PORT],
-			vendorSockets: [...DAYTONA_SOCKETS],
-			networkReadBack: true,
-			// get reads sb.gpu and sb.gpuType back: a sandbox with none reads none.
-			gpuReadBack: true,
-			network: [...DAYTONA.network],
-			mounts: [...MOUNT],
-			unmounted: { ...DAYTONA.unmounted },
-			release: ["stop", "delete"],
-			// autoDeleteInterval 0: Daytona deletes a sandbox as soon as it stops, so a stop keeps no computer.
-			stopDeletes: options.autoDelete === 0,
-			// A GPU sandbox's limits are stated in gpu: its stop deletes it, it runs in region earth, its size is per GPU.
-			gpu: daytonaGpu(options.gpu.snapshot === DAYTONA_GPU_SNAPSHOT ? undefined : options.gpu.snapshot),
 		};
 	}
 
 	/**
-	 * A snapshot name has no control characters; a GPU computer is made from the provider's GPU snapshot, which a spec
-	 * names, or Daytona's default, never another. No call.
+	 * A snapshot name has no control characters, and its size is the snapshot's; a GPU computer is made from the
+	 * provider's GPU snapshot, which a spec names, or Daytona's default, never another. No call.
 	 */
 	check(given: Partial<ComputerSpec>): Refusal[] {
 		const { image } = given;
-		const refusals: Refusal[] = [];
+		const refusals = sizeRefusals(given, "a Daytona computer", "snapshot");
 		if (typeof image === "string" && image !== "" && image.trim() === "") refusals.push({ field: "image", message: `an image is the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot` });
 		else if (typeof image === "string" && /[\x01-\x1f]/.test(image)) refusals.push({ field: "image", message: "a snapshot name has no control characters" });
 		const gpuSnapshot = this.#gpu.snapshot;
-		if (given.gpu !== undefined && checkGpu(given.gpu, this.facts, given.mount).length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== gpuSnapshot) {
+		const offered = { gpu: { ...DAYTONA_GPU, types: [this.#gpu.type], max: this.#gpu.count } };
+		if (given.gpu !== undefined && checkGpu(given.gpu, offered, given.mount).length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== gpuSnapshot) {
 			refusals.push({
 				field: "image",
 				message: `a Daytona GPU computer here is made from the GPU snapshot ${gpuSnapshot} alone, not ${JSON.stringify(image)}: give "${gpuSnapshot}" or "${DAYTONA_DEFAULT_SNAPSHOT}"; no other snapshot is proven to give a GPU computer`,
@@ -366,31 +219,18 @@ class DaytonaHost implements MachineHost {
 		return refusals;
 	}
 
-	/** The autoDeleteInterval a sandbox is made and read back with: 0 for a GPU sandbox, which a stop deletes; else the option's. */
-	#autoDeleteFor(gpu: boolean): number {
-		return gpu ? 0 : this.#autoDelete;
-	}
-
-	/** A sandbox as the adapter reads a machine, its create options held to what this host asked for. */
+	/** A sandbox as the adapter reads a machine: its state, labels, start, end, and Daytona's words for a failure. */
 	#machineOf(sb: Sandbox): Machine {
-		// A sandbox this host made is held to what it asked; another (attach) to the GPU it reports.
-		const gpu = this.#made.get(sb.id) ?? (isWhole(sb.gpu) && sb.gpu > 0);
-		const drift = sandboxDrift(sb, { sandboxClass: this.#class, autoStopInterval: this.#autoStop, autoDeleteInterval: this.#autoDeleteFor(gpu), gpu: gpu ? this.#gpu : undefined });
 		const endsAt = dateOf(sb.autoDestroyAt);
 		const made = dateOf(sb.createdAt);
-		const size = sizeOf(sb.cpu, sb.memory);
 		return {
 			id: sb.id,
 			labels: { ...(sb.labels ?? {}) },
 			state: stateOf(sb),
-			network: networkOf(sb),
-			...(typeof sb.snapshot === "string" ? { image: { resolved: sb.snapshot } } : {}),
 			...(made ? { createdAt: made } : {}),
 			...(endsAt ? { endsAt } : {}),
-			...(drift.length > 0 ? { drift } : {}),
-			...(size ? { size } : {}),
-			...(isWhole(sb.gpu) && sb.gpu > 0 ? { gpu: { type: String(sb.gpuType), count: sb.gpu } } : {}),
-			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : {}),
+			// A failed sandbox always carries a why, Daytona's or ours, so create stops on it as vendor, never as gone.
+			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : FAILED.has(sb.state ?? "") ? { why: `Daytona reads the sandbox ${sb.state}, with no reason given` } : {}),
 		};
 	}
 
@@ -398,9 +238,11 @@ class DaytonaHost implements MachineHost {
 	 * POST /sandbox: its native name and labels, the lifetime as a TTL in whole minutes, the idle stop and auto-delete,
 	 * no public port, and network none (block-all), the one network check() takes. A GPU
 	 * computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
-	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists.
+	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists,
+	 * and the adapter adopts the sandbox the name lists, as a retry does. req.backstopAt is left: the TTL is Daytona's own
+	 * timer at the deadline (lifetime "vendor"), and autoDeleteInterval counts from a stop, not from create.
 	 */
-	async create(req: MachineRequest, ctx: HostCall): Promise<Result<{ id: string }>> {
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const gpu = req.gpu !== undefined;
 		const body = {
 			name: req.name,
@@ -411,32 +253,26 @@ class DaytonaHost implements MachineHost {
 			public: false,
 			// A GPU sandbox runs in region earth alone, whatever the provider's target.
 			...(gpu ? { target: DAYTONA_GPU_REGION } : this.#target === undefined ? {} : { target: this.#target }),
-			ttlMinutes: Math.max(1, Math.ceil((req.lifetimeMs ?? 0) / 60_000)),
+			ttlMinutes: Math.max(1, Math.ceil(req.lifetimeMs / 60_000)),
 			autoStopInterval: this.#autoStop,
-			// A GPU sandbox's stop deletes it (no pause, no snapshot), so it is asked for and read back as deleted at stop:
-			// autoDeleteInterval 0 is Daytona's ephemeral (its SDK's ephemeral sets it; CreateSandbox has no ephemeral field).
-			autoDeleteInterval: this.#autoDeleteFor(gpu),
-			networkBlockAll: req.network === "none",
+			// A GPU sandbox's stop deletes it (no pause, no snapshot): autoDeleteInterval 0 is Daytona's ephemeral (its SDK's
+			// ephemeral sets it; CreateSandbox has no ephemeral field).
+			autoDeleteInterval: gpu ? 0 : this.#autoDelete,
+			networkBlockAll: !req.egress,
 			// No resource field (cpu, gpu, gpuType, memory, disk): a snapshot carries its own, and Daytona refuses a create that
 			// names a snapshot and sends any (400 "Cannot specify Sandbox resources when using a snapshot"). A GPU computer's
-			// GPU is the snapshot's, held in the read-back.
+			// GPU is the snapshot's, held by the adapter's GPU label.
 		};
-		const posted = await this.#rest.json("POST", this.#rest.sandbox(), { json: body, timeoutMs: ctx.timeoutMs });
-		if (!posted.ok) {
-			if (/: 409 /.test(posted.error.message)) return fail("exists", `Daytona already has a sandbox named ${req.name}: ${posted.error.message}`);
-			return posted;
-		}
-		const id = (posted.value as Sandbox | null)?.id;
-		if (typeof id !== "string" || id === "") return vendorFail("daytona", "POST /sandbox: no sandbox id in the answer");
-		this.#made.set(id, gpu);
-		return ok({ id });
+		const posted = await this.#rest.json("POST", sandboxUrl(this.#rest), { json: body, timeoutMs: ctx.timeoutMs, named: true });
+		const id = (orThrow(posted) as Sandbox | null)?.id;
+		if (typeof id !== "string" || id === "") throw new Error("POST /sandbox: no sandbox id in the answer");
+		return { id };
 	}
 
 	/** GET /sandbox/{id}; one Daytona answers 404 for, or reads destroyed, is none. */
-	async get(id: string, ctx: HostCall): Promise<Result<Machine | undefined>> {
-		const found = await this.#rest.get(id, ctx.signal);
-		if (!found.ok) return found;
-		return ok(found.value === undefined || found.value.state === "destroyed" ? undefined : this.#machineOf(found.value));
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
+		const found = orThrow(await sandboxOf(this.#rest, id, ctx.signal));
+		return found === undefined || found.state === "destroyed" ? undefined : this.#machineOf(found);
 	}
 
 	/** Every sandbox with the adapter's label, all pages: one label query, filtered here by the rest of the labels. */
@@ -445,7 +281,7 @@ class DaytonaHost implements MachineHost {
 			async (cursor) => {
 				const query = new URLSearchParams({ labels: JSON.stringify({ [COMPUTER_LABEL]: "1" }), limit: "100" });
 				if (cursor !== undefined) query.set("cursor", cursor);
-				const answer = await this.#rest.json("GET", `${this.#rest.sandbox()}?${query}`, { retry: true }, signal);
+				const answer = await this.#rest.json("GET", `${sandboxUrl(this.#rest)}?${query}`, { retry: true }, signal);
 				if (!answer.ok) return answer;
 				const value = answer.value as { items?: unknown; nextCursor?: unknown } | Sandbox[] | null;
 				const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? (value.items as Sandbox[]) : undefined;
@@ -461,21 +297,12 @@ class DaytonaHost implements MachineHost {
 
 	/**
 	 * Every sandbox the listing shows with the adapter's label (destroyed ones are gone): Daytona's listing is asked for
-	 * that label alone, as it always was, and the adapter keeps those with the rest. One whose listing leaves the network
-	 * out has none, and the adapter reads it back.
+	 * that label alone, as it always was, and the adapter keeps those with the rest.
 	 */
-	async list(labels: Record<string, string>, ctx: HostCall): Promise<Result<Machine[]>> {
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		void labels;
-		const listed = await this.#listOwn(ctx.signal);
-		if (!listed.ok) return listed;
-		return ok(
-			listed.value
-				.filter((sb) => sb.state !== "destroyed")
-				.map((sb) => {
-					const { network, ...machine } = this.#machineOf(sb);
-					return sb.networkBlockAll === undefined ? machine : { ...machine, network };
-				}),
-		);
+		const listed = orThrow(await this.#listOwn(ctx.signal));
+		return listed.filter((sb) => sb.state !== "destroyed").map((sb) => this.#machineOf(sb));
 	}
 
 	/**
@@ -483,45 +310,42 @@ class DaytonaHost implements MachineHost {
 	 * being destroyed; a forced stop comes before the last attempt. Never signalled: a delete that cleans up after an abort
 	 * must outlive it.
 	 */
-	async delete(id: string, ctx: HostCall): Promise<Result<void>> {
+	async delete(id: string, ctx: HostCall): Promise<void> {
 		this.#toolboxes.delete(id);
-		this.#made.delete(id);
 		let failure: ComputerError | undefined;
 		for (let attempt = 1; attempt <= DELETE_ATTEMPTS; attempt++) {
-			const removed = await this.#rest.call("DELETE", this.#rest.sandbox(id), { retry: true, timeoutMs: ctx.timeoutMs });
-			if (removed.ok || removed.error.code === "not_found") return ok(undefined);
+			const removed = await this.#rest.call("DELETE", sandboxUrl(this.#rest, id), { retry: true, timeoutMs: ctx.timeoutMs });
+			if (removed.ok || removed.error.code === "not_found") return;
 			failure = removed.error;
-			const found = await this.#rest.get(id);
-			if (found.ok && (found.value === undefined || GONE.has(found.value.state ?? ""))) return ok(undefined);
-			if (attempt === DELETE_ATTEMPTS - 1) await this.#rest.call("POST", this.#rest.sandbox(id, "/stop?force=true"), { timeoutMs: ctx.timeoutMs });
+			const found = await sandboxOf(this.#rest, id);
+			if (found.ok && (found.value === undefined || GONE.has(found.value.state ?? ""))) return;
+			if (attempt === DELETE_ATTEMPTS - 1) await this.#rest.call("POST", sandboxUrl(this.#rest, id, "/stop?force=true"), { timeoutMs: ctx.timeoutMs });
 			if (attempt < DELETE_ATTEMPTS) await sleep(DEFAULT_RETRY_MS);
 		}
-		return { ok: false, error: failure ?? { code: "vendor", vendor: "daytona", message: `could not delete ${id}` } };
+		throw new HostError(failure?.code ?? "vendor", failure?.message ?? `could not delete ${id}`);
 	}
 
 	/** The sandbox's toolbox, as an https URL: never another scheme, so the key is never sent in the clear. */
-	async #toolbox(id: string, signal?: AbortSignal): Promise<Result<string>> {
+	async #toolbox(id: string, signal?: AbortSignal): Promise<string> {
 		const known = this.#toolboxes.get(id);
-		if (known !== undefined) return ok(known);
-		const found = await this.#rest.get(id, signal);
-		if (!found.ok) return found;
-		if (found.value === undefined) return fail("not_found", `Daytona has no sandbox ${id}`);
-		let proxy = found.value.toolboxProxyUrl;
+		if (known !== undefined) return known;
+		const found = orThrow(await sandboxOf(this.#rest, id, signal));
+		if (found === undefined) throw new HostError("not_found", `Daytona has no sandbox ${id}`);
+		let proxy = found.toolboxProxyUrl;
 		if (typeof proxy !== "string" || proxy === "") {
-			const asked = await this.#rest.json("GET", this.#rest.sandbox(id, "/toolbox-proxy-url"), { retry: true }, signal);
-			if (!asked.ok) return asked;
-			proxy = (asked.value as { url?: unknown } | null)?.url as string | undefined;
+			const asked = orThrow(await this.#rest.json("GET", sandboxUrl(this.#rest, id, "/toolbox-proxy-url"), { retry: true }, signal));
+			proxy = (asked as { url?: unknown } | null)?.url as string | undefined;
 		}
 		let url: URL;
 		try {
 			url = new URL(proxy ?? "");
 		} catch {
-			return vendorFail("daytona", `Daytona gave no toolbox URL for ${id}`);
+			throw new Error(`Daytona gave no toolbox URL for ${id}`);
 		}
-		if (url.protocol !== "https:") return vendorFail("daytona", `the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
+		if (url.protocol !== "https:") throw new Error(`the toolbox URL Daytona gave is not https (${url.protocol}), so the key is not sent to it`);
 		const toolbox = `${url.href.replace(/\/+$/, "")}/${encodeURIComponent(id)}`;
 		this.#toolboxes.set(id, toolbox);
-		return ok(toolbox);
+		return toolbox;
 	}
 
 	/**
@@ -530,56 +354,86 @@ class DaytonaHost implements MachineHost {
 	 * has no files/upload-v2 and answers it 404; its files/upload takes the same form (a path query, the bytes as
 	 * "file"). A 404 alone moves to the older route, so a refusal of any other kind is never sent twice.
 	 */
-	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<Result<void>> {
+	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
 		const toolbox = await this.#toolbox(id, ctx.signal);
-		if (!toolbox.ok) return toolbox;
 		const query = new URLSearchParams({ path });
 		const send = (route: string, answerStatus?: number) => {
 			const form = new FormData();
 			form.append("file", new Blob([new Uint8Array(bytes)]), "computerd");
-			return this.#rest.call("POST", `${toolbox.value}/${route}?${query}`, { form, retry: true, timeoutMs: ctx.timeoutMs, ...(answerStatus === undefined ? {} : { accept: (status: number) => status === answerStatus || (status >= 200 && status < 300) }) }, ctx.signal);
+			return this.#rest.call("POST", `${toolbox}/${route}?${query}`, { form, retry: true, timeoutMs: ctx.timeoutMs, ...(answerStatus === undefined ? {} : { accept: (status: number) => status === answerStatus || (status >= 200 && status < 300) }) }, ctx.signal);
 		};
-		const current = await send("files/upload-v2", 404);
-		if (!current.ok) return current;
-		if (current.value.status !== 404) return ok(undefined);
-		const missing = `POST ${new URL(`${toolbox.value}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.value.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
+		const current = orThrow(await send("files/upload-v2", 404));
+		if (current.status !== 404) return;
+		const missing = `POST ${new URL(`${toolbox}/files/upload-v2`).pathname}: 404 ${decoder.decode(current.bytes).replace(/\s+/g, " ").trim().slice(0, 300)}`;
 		const older = await send("files/upload");
-		return older.ok ? ok(undefined) : fail(older.error.code, `${missing}, then ${older.error.message}`);
+		if (!older.ok) throw new HostError(older.error.code, `${missing}, then ${older.error.message}`);
 	}
 
 	/**
-	 * A session command of its own: argv as one shell line, run async with no input echo, as the toolbox's user (root, or
-	 * one with passwordless sudo, which the adapter's scripts use). Its output comes from the command's log stream, where
-	 * Daytona prefixes each stdout line with 01 01 01 and each stderr line with 02 02 02; an echo of a request the client
-	 * wrote is dropped. Writes go to the command's input, whole lines, one call after another. Its exit code is read from
-	 * the session; once it has one, the log stream is read to its end (it closes as the command ends) and the session
-	 * removed. kill closes the stream and removes the session, which ends the command.
+	 * A session command of its own (#commands), on framedExec: argv as one shell line, run async with no input echo, as
+	 * the toolbox's user (root, or one with passwordless sudo, which the adapter's scripts use).
 	 */
-	async exec(id: string, argv: readonly string[], { stdin }: { stdin: boolean }, ctx: HostCall): Promise<Result<MachineProcess>> {
-		const toolbox = await this.#toolbox(id, ctx.signal);
-		if (!toolbox.ok) return toolbox;
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+		return framedExec(this.#commands(await this.#toolbox(id, ctx.signal)), argv, ctx);
+	}
+
+	/**
+	 * Daytona's session commands in the toolbox as exec's pieces (./hosted/framed-exec.ts). start makes a session, runs
+	 * the command in it and opens its log stream, where Daytona prefixes each stdout line with 01 01 01 and each stderr
+	 * line with 02 02 02; an echo of a request the client wrote is dropped. The stream ends once the command's exit code
+	 * is written (the toolbox reads the log until its exit code file holds one, daytonaio/daytona@b5a5d9e7
+	 * apps/daemon/internal/util/log_reader.go), so the events read the exit code from the session then, never while it
+	 * runs, within a grace for a read that lags; then the session is removed. write sends whole lines, since Daytona's
+	 * input call ends what it is given with a newline (apps/daemon/pkg/session/input.go): the rest of a line waits for its
+	 * end, or end(). kill closes the stream and removes the session, which ends the command.
+	 */
+	#commands(toolbox: string): ExecPieces<Command> {
+		return {
+			start: (argv, ctx) => this.#startCommand(toolbox, argv, ctx),
+			events: (command) => this.#events(command),
+			write: async (command, text) => {
+				command.held += text;
+				const at = command.held.lastIndexOf("\n");
+				if (at < 0) return;
+				const data = command.held.slice(0, at + 1);
+				command.held = command.held.slice(at + 1);
+				await this.#input(command, data);
+			},
+			end: async (command) => {
+				const data = command.held;
+				command.held = "";
+				if (data !== "") await this.#input(command, data);
+			},
+			kill: async (command) => {
+				command.killed = true;
+				await this.#letGo(command);
+			},
+		};
+	}
+
+	async #startCommand(toolbox: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
 		const sessionId = `agentrun-${randomBytes(8).toString("hex")}`;
-		const session = `${toolbox.value}/process/session/${sessionId}`;
-		const made = await this.#rest.call("POST", `${toolbox.value}/process/session`, { json: { sessionId }, timeoutMs: ctx.timeoutMs }, ctx.signal);
-		if (!made.ok) return made;
-		let removed: Promise<void> | undefined;
-		const removeSession = () => (removed ??= this.#rest.call("DELETE", session, {}).then(() => {}));
+		const session = `${toolbox}/process/session/${sessionId}`;
+		orThrow(await this.#rest.call("POST", `${toolbox}/process/session`, { json: { sessionId }, timeoutMs: ctx.timeoutMs }, ctx.signal));
 		const ran = await this.#rest.json("POST", `${session}/exec`, { json: { command: shellLine(argv), runAsync: true, suppressInputEcho: true }, timeoutMs: ctx.timeoutMs }, ctx.signal);
 		const commandId = ran.ok ? (ran.value as { cmdId?: unknown } | null)?.cmdId : undefined;
 		if (!ran.ok || typeof commandId !== "string") {
-			await removeSession();
-			return ran.ok ? vendorFail("daytona", "POST exec: no command id in the answer") : ran;
+			await this.#rest.call("DELETE", session, {});
+			throw ran.ok ? new Error("POST exec: no command id in the answer") : new HostError(ran.error.code, ran.error.message);
 		}
-		const command = `${session}/command/${encodeURIComponent(commandId)}`;
 		let socket: WebSocketLike;
 		try {
-			socket = this.#webSocket(`${command.replace(/^https:/, "wss:")}/logs?follow=true`, { headers: this.#rest.headers(), protocols: [] });
+			socket = this.#webSocket(`${session.replace(/^https:/, "wss:")}/command/${encodeURIComponent(commandId)}/logs?follow=true`, { headers: this.#headers, protocols: [] });
 		} catch (error) {
-			await removeSession();
-			return vendorFail("daytona", `opening the log stream: ${(error as Error).message}`);
+			await this.#rest.call("DELETE", session, {});
+			throw new Error(`opening the log stream: ${(error as Error).message}`);
 		}
-		const out = channel();
-		const err = channel();
+		const command: Command = { session, commandId, socket, output: [], ended: false, wake: () => {}, held: "", killed: false };
+		const ended = (failure?: Error) => {
+			command.failure ??= failure;
+			command.ended = true;
+			command.wake();
+		};
 		let rest: Buffer = Buffer.alloc(0);
 		const lines = (bytes: Buffer, last: boolean) => {
 			rest = rest.length === 0 ? bytes : Buffer.concat([rest, bytes]);
@@ -588,121 +442,112 @@ class DaytonaHost implements MachineHost {
 				const end = at >= 0 ? at + 1 : rest.length;
 				const line = rest.subarray(0, end);
 				rest = rest.subarray(end);
-				if (line.subarray(0, 3).equals(ERR)) push(err, line.subarray(3));
+				if (line.subarray(0, 3).equals(ERR)) command.output.push({ stream: "stderr", text: line.subarray(3).toString("utf8") });
 				else {
-					const text = line.subarray(0, 3).equals(OUT) ? line.subarray(3) : line;
-					if (!ECHO.test(text.subarray(0, 64).toString("utf8"))) push(out, text);
+					const text = (line.subarray(0, 3).equals(OUT) ? line.subarray(3) : line).toString("utf8");
+					if (!ECHO.test(text.slice(0, 64))) command.output.push({ stream: "stdout", text });
 				}
 			}
+			command.wake();
 			if (rest.length > MAX_LINE_BYTES + 8) {
-				const over = new Error("the process sent a line over the 1 MiB limit");
-				finish(out, over);
-				finish(err, over);
+				ended(new Error("the process sent a line over the 1 MiB limit"));
 				socket.close(1000);
 			}
 		};
-		let closed!: () => void;
-		const streamEnded = new Promise<void>((done) => (closed = done));
-		let opened!: (result: Result<void>) => void;
-		const open = new Promise<Result<void>>((done) => (opened = done));
+		let opened!: (failure?: string) => void;
+		const open = new Promise<string | undefined>((done) => (opened = done));
 		socket.binaryType = "arraybuffer";
-		socket.addEventListener("open", () => opened(ok(undefined)));
+		socket.addEventListener("open", () => opened());
 		socket.addEventListener("message", ({ data }) => {
 			if (data instanceof ArrayBuffer) lines(Buffer.from(data), false);
 			else if (ArrayBuffer.isView(data)) lines(Buffer.from(data.buffer, data.byteOffset, data.byteLength), false);
 			else if (typeof data === "string") lines(Buffer.from(data), false);
 		});
 		socket.addEventListener("error", (event) => {
-			opened(vendorFail("daytona", `the log stream failed: ${event.message ?? "no reason given"}`));
-			const failed = new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`);
-			finish(out, failed);
-			finish(err, failed);
-			closed();
+			opened(`the log stream failed: ${event.message ?? "no reason given"}`);
+			ended(new Error(`the log stream failed${event.message ? `: ${event.message}` : ""}`));
 		});
 		socket.addEventListener("close", ({ code }) => {
-			opened(vendorFail("daytona", `the log stream closed before it opened (code ${code ?? "none"})`));
+			opened(`the log stream closed before it opened (code ${code ?? "none"})`);
 			lines(Buffer.alloc(0), true);
-			finish(out);
-			finish(err);
-			closed();
+			ended();
 		});
 		// The stream opens within the call's bound, or the command is let go of: its output would be lost.
 		const bound = boundOf(ctx.timeoutMs, ctx.signal, "opening the log stream");
-		const started = await Promise.race([open, bound.promise]).then(
-			(opened) => opened,
-			(error: Error) => fail(error.name === "AbortError" ? "aborted" : "timeout", error.message),
-		);
-		bound.clear();
-		const kill = async () => {
-			socket.close(1000);
-			finish(out);
-			finish(err);
-			await removeSession();
-		};
-		if (!started.ok) {
-			await kill();
-			return started;
+		try {
+			const failed = await Promise.race([open, bound.promise]);
+			if (failed !== undefined) throw new Error(failed);
+		} catch (error) {
+			await this.#letGo(command);
+			throw error;
+		} finally {
+			bound.clear();
 		}
-		// Input: whole lines, one call after another; the rest of a line waits for its end (or end()).
-		const utf8 = new TextDecoder();
-		let queued = "";
-		let sending: Promise<void> = Promise.resolve();
-		const send = (data: string) => {
-			sending = sending.then(async () => {
-				// Daytona's own 500 alone is sent again: the line reached no reader (internalRefusal), so it is never read
-				// twice; a line read twice would be a JSON-RPC request run twice.
-				const sent = await this.#rest.call("POST", `${command}/input`, { json: { data }, retry: internalRefusal });
-				// Its words never hold what was written: it may be a disk's token.
-				if (!sent.ok) throw new Error(`writing to the command failed (${sent.error.code}): ${sent.error.message}`);
-			});
-			return sending;
-		};
-		let exited: Promise<number> | undefined;
-		const exitCode = async (): Promise<number> => {
-			for (;;) {
-				const read = await this.#rest.json("GET", session, { retry: true });
-				if (!read.ok) {
-					// The command may run on, its stream open: let go of both, and fail with the read's own words.
-					await kill();
-					throw new Error(`reading the command's exit code failed (${read.error.code}): ${read.error.message}`);
-				}
-				const found = ((read.value as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === commandId);
-				if (typeof found?.exitCode === "number") {
-					// The stream closes as the command ends; one that trails is let go of after a grace.
-					await Promise.race([streamEnded, sleep(LOG_GRACE_MS)]);
-					await kill();
-					return found.exitCode;
-				}
-				await sleep(this.#pollMs);
-			}
-		};
-		return ok({
-			stdout: out,
-			stderr: err,
-			write: (bytes) => {
-				queued += utf8.decode(bytes, { stream: true });
-				const at = queued.lastIndexOf("\n");
-				if (at < 0) return sending;
-				const data = queued.slice(0, at + 1);
-				queued = queued.slice(at + 1);
-				return send(data);
-			},
-			end: () => {
-				queued += utf8.decode();
-				const data = queued;
-				queued = "";
-				return data === "" ? sending : send(data);
-			},
-			wait: () => (exited ??= exitCode()),
-			kill,
-		});
+		return command;
 	}
 
-	/** POST stop. One Daytona refuses (invalid: not in a state it stops from) or no longer has is no failure: the adapter reads where it went. */
-	async stop(id: string, ctx: HostCall): Promise<Result<void>> {
-		const stopped = await this.#rest.call("POST", this.#rest.sandbox(id, "/stop"), {}, ctx.signal);
-		return stopped.ok || stopped.error.code === "invalid" || stopped.error.code === "not_found" ? ok(undefined) : stopped;
+	/** The command's output as its log stream gives it, then its exit code; the session is removed once they end. */
+	async *#events(command: Command): AsyncGenerator<FramedEvent> {
+		try {
+			for (;;) {
+				const next = command.output.shift();
+				if (next !== undefined) yield next;
+				else if (command.ended) break;
+				else await new Promise<void>((done) => (command.wake = done));
+			}
+			if (command.failure) throw command.failure;
+			if (command.killed) return;
+			const until = Date.now() + LOG_GRACE_MS;
+			for (;;) {
+				const read = await this.#rest.json("GET", command.session, { retry: true });
+				if (!read.ok) throw new Error(`reading the command's exit code failed (${read.error.code}): ${read.error.message}`);
+				const found = ((read.value as { commands?: Array<{ id?: unknown; exitCode?: unknown }> } | null)?.commands ?? []).find((one) => one.id === command.commandId);
+				if (typeof found?.exitCode === "number") {
+					yield { exit: found.exitCode };
+					return;
+				}
+				// A stream that closed with the command still running (none written within the grace) is an exit never read.
+				if (Date.now() >= until) return;
+				await sleep(this.#pollMs);
+			}
+		} finally {
+			await this.#letGo(command);
+		}
 	}
+
+	/**
+	 * Text to the command's input, one call. Daytona's own 500 alone is sent again: the line reached no reader
+	 * (internalRefusal), so it is never read twice; a line read twice would be a JSON-RPC request run twice.
+	 */
+	async #input(command: Command, data: string): Promise<void> {
+		const sent = await this.#rest.call("POST", `${command.session}/command/${encodeURIComponent(command.commandId)}/input`, { json: { data }, retry: internalRefusal });
+		// Its words never hold what was written: it may be a disk's token.
+		if (!sent.ok) throw new Error(`writing to the command failed (${sent.error.code}): ${sent.error.message}`);
+	}
+
+	/** Closes the command's log stream and removes its session, once. */
+	#letGo(command: Command): Promise<void> {
+		command.socket.close(1000);
+		return (command.removed ??= this.#rest.call("DELETE", command.session, {}).then(() => {}));
+	}
+}
+
+/** One session command (DaytonaHost.#commands): its session, its log stream, and what the stream has given. */
+interface Command {
+	session: string;
+	commandId: string;
+	socket: WebSocketLike;
+	/** The stream's output not read yet. */
+	output: FramedEvent[];
+	/** The stream closed, or failed (failure). */
+	ended: boolean;
+	failure?: Error;
+	/** Wakes the events waiting for more. */
+	wake: () => void;
+	/** Input not sent yet: the start of a line. */
+	held: string;
+	killed: boolean;
+	removed?: Promise<void>;
 }
 
 /**
@@ -725,11 +570,10 @@ export class DaytonaProvider extends HostedProvider {
 			webSocket,
 			pause,
 			timeouts = {},
-			daemonPath,
-			...rest
+			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
-		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a Daytona API key is required");
-		if ((rest as { archilEgress?: unknown }).archilEgress !== undefined) throw new Error(`${DAYTONA_NO_ARCHIL}, so it takes no archilEgress`);
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
+		if ((hosted as { archilEgress?: unknown }).archilEgress !== undefined) throw new Error(`${DAYTONA_NO_ARCHIL}, so it takes no archilEgress`);
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
@@ -741,9 +585,11 @@ export class DaytonaProvider extends HostedProvider {
 		if (autoDeleteMinutes !== undefined) minutes("autoDeleteMinutes", autoDeleteMinutes);
 		const { retryMs = DEFAULT_RETRY_MS, ...hostedTimeouts } = timeouts;
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
-		const requestMs = hostedTimeouts.requestMs ?? DEFAULT_REQUEST_MS;
+		const { requestMs, pollMs } = timeoutsOf(hostedTimeouts);
+		const headers = headersOf(apiKey);
 		const host = new DaytonaHost({
-			rest: new DaytonaRest(apiUrl, apiKey, fetcher ?? fetch, requestMs, retryMs, pause),
+			rest: rest({ base: apiUrl, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
+			headers,
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,
 			sandboxClass,
@@ -751,8 +597,8 @@ export class DaytonaProvider extends HostedProvider {
 			gpu: daytonaGpuSnapshot(gpuSnapshot),
 			autoStop: autoStopMinutes,
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,
-			pollMs: hostedTimeouts.pollMs ?? DEFAULT_POLL_MS,
+			pollMs,
 		});
-		super(host, { ...rest, label: "Daytona", kind: "linux", timeouts: hostedTimeouts, daemonPath: daemonPath || fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url)) });
+		super(host, { ...hosted, kind: "linux", timeouts: hostedTimeouts });
 	}
 }

@@ -8,10 +8,10 @@ teardown use the bench's own channel (`exec.run`, `process.start`, `files.read`)
 
 | id | app | split | what the checks read |
 |---|---|---|---|
-| linux.editor.new-note | Mousepad, its Save As dialog | dev | the saved file's text |
+| linux.editor.new-note | Mousepad, its Save As dialog | dev | the saved file's text, and a Mousepad window titled with its name |
 | linux.editor.edit-config | Mousepad | heldout | the saved config's five lines (two changed, three kept) |
 | linux.editor.replace-word | Mousepad | heldout | the saved memo's four lines (all three uses replaced) |
-| linux.terminal.count-errors | xfce4-terminal | dev | the count file's text (lower-case "error" WARN lines are decoys) |
+| linux.terminal.count-errors | xfce4-terminal | dev | the count file's text (the log is gzip-compressed; lower-case "error" WARN lines are decoys) |
 | linux.terminal.git-email | xfce4-terminal, git | heldout | `git config --local --get user.email` of the run's repository, and the global `user.email` unchanged |
 | linux.files.rename | Thunar | dev | `ls -1` of the run's folder, and the renamed file's text |
 | linux.files.move | Thunar | heldout | every file under the run's folder with its text, in byte order |
@@ -21,6 +21,12 @@ teardown use the bench's own channel (`exec.run`, `process.start`, `files.read`)
 
 The terminal tasks are `exec: "deny"` too: the agent types into the terminal window like a person; it gets no
 `exec.run` of its own.
+
+`exec: "deny"` takes programs away, not files: the agent keeps the files group (`files.read`, `files.write`), as the
+same user as the apps. A task whose checks read only a file the agent could write, or a file it could read and work
+out, passes without its app. Two tasks close that: count-errors gzips its log, so counting it takes a program and the
+terminal is the agent's only one; new-note also checks that a Mousepad window is titled with the saved file's name. The
+other eight still check only files, which the files group reaches too.
 
 A task's capability probe asks for its apps and xdotool (`command -v`); a desktop without them refuses the task.
 

@@ -9,6 +9,7 @@
 // a read-back or an error. Whatever a computer prints is scrubbed of it before it reaches an error's words.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { unanswered } from "./client.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL, runProblem } from "./labels.js";
 import { type MountReadBack, type MountSpec, readBackOf, WORKSPACE } from "./mount.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods } from "./protocol.js";
@@ -61,17 +62,17 @@ const FOLDER = /^agents\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/runs\/([A-Za-z0-9][A
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 /**
- * The Archil rule every provider's check() adds to checkMount's, with no vendor call: network "none" (the tools have no
- * network: init's own namespace, loopback alone), the run's agentrun.run and agentrun.epoch labels (the claim the mount is made
- * under), a disk, region and folder of the helper's shapes, the folder of the labelled run, and a token of a disk
- * token's shape. No word holds a value of the mount but the folder's run, and only once the folder has the folder's shape.
+ * The Archil rule every provider's check() adds to checkMount's, with no vendor call: the run's agentrun.run and
+ * agentrun.epoch labels (the claim the mount is made under), a disk, region and folder of the helper's shapes, the folder
+ * of the labelled run, and a token of a disk token's shape. No word holds a value of the mount but the folder's run, and
+ * only once the folder has the folder's shape. The tools' network is the provider's descriptor's to take (none, or open
+ * and a list through init's egress proxy): the mount is root's, outside their network either way.
  */
 export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	const mount = spec.mount as Record<string, unknown> | undefined;
 	if (mount?.kind !== "archil") return [];
 	const found: Refusal[] = [];
 	const refuse = (field: string, message: string) => found.push({ field, message });
-	if (spec.network !== "none") refuse("network", 'a computer with an Archil mount takes network "none": its tools have no network, only loopback in init\'s own namespace');
 	const labels = spec.labels ?? {};
 	const run = labels[RUN_LABEL];
 	const runWrong = runProblem(run);
@@ -305,7 +306,8 @@ const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remo
  * process.start, which makes its log and the folders above it; process.write and signal; a process seen
  * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
  * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
- * failed still syncs, and answers its own error. A caller whose signal fires stops waiting, answered "aborted" in words
+ * failed still syncs, and answers its own error (one the client timed out with no answer from the daemon does so at
+ * once, not waiting for the sync, which rides the same transport; a timeout the daemon answered waits). A caller whose signal fires stops waiting, answered "aborted" in words
  * (or its own error), while the shared sync goes on for every other caller. A tar.push.begin answered with such an error
  * instead of its id first ends the push it began, so no push slot is held by a push its caller cannot name.
  */
@@ -367,6 +369,10 @@ export function syncingClient(client: ComputerClient): ComputerClient {
 				return fail("aborted", `${method} ran, but its caller stopped waiting for the sync that makes the run's folder durable; the sync goes on`);
 			};
 			if (signal?.aborted) return result.ok ? stopped() : result;
+			// A call the client gave up on at its own timeoutMs got no answer over the transport, and a sync rides that same
+			// transport: the caller gets its timeout now, and the sync it asked for goes on for the others. A timeout the
+			// daemon answered came over a live transport, after the call may have run in part: that one waits for the sync.
+			if (!result.ok && unanswered(result.error)) return result;
 			const synced = signal === undefined ? await shared : await new Promise<Result<void> | "stopped">((resolve) => {
 				const onAbort = () => resolve("stopped");
 				signal.addEventListener("abort", onAbort, { once: true });

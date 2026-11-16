@@ -1,17 +1,21 @@
 // A program the computer's user runs reaches none of the vendor's own agent, whose ports each provider declares
 // (capabilities().vendorAgentPorts), and no outside address, sees its own loopback alone, and finds nothing listening in
-// its own network but computerd: computerd init --own-network at work.
+// its own network but computerd: computerd init --own-network at work. And it can write nothing root runs, nor read the
+// labels a provider keeps in the machine.
 import { DAEMON_IN_COMPUTER, SOCKET_DIR } from "../../drift.js";
-import { ARCHIL_SYNC_SOCKET } from "../../mount-archil.js";
+import { EGRESS_PROXY_SOCKET } from "../../hosted/network.js";
+import { LABEL_FILE } from "../../hosted/scripts.js";
+import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET } from "../../mount-archil.js";
 import type { ComputerClient } from "../../protocol.js";
 import type { Case, CaseContext } from "../types.js";
 
 /**
- * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's and the Archil sync
- * socket (which only syncs). A network namespace does not cut a path socket, and every program in the namespace reaches
- * an abstract name (@...), so any other socket is a door out.
+ * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's, the Archil sync
+ * socket (which only syncs) and, under network open or a list, the egress proxy's (which reaches the public internet
+ * alone, as the spec's network asked). A network namespace does not cut a path socket, and every program in the
+ * namespace reaches an abstract name (@...), so any other socket is a door out.
  */
-export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET];
+export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET, EGRESS_PROXY_SOCKET];
 
 /**
  * The outside the case also probes: a public IP literal on 443, and a DNS name on 443, which a program could reach only
@@ -127,6 +131,50 @@ async function displaySocket(client: ComputerClient): Promise<string | undefined
 	return number === undefined ? undefined : `/tmp/.X11-unix/X${number}`;
 }
 
+/**
+ * What root runs or reads in a computer: the directories of root's PATH (the one init gets, hosted/scripts.ts, and
+ * Debian's), computerd, the root helpers an Archil image ships (the helper and the archil client it runs), and, where an
+ * image has them, the vendor's agent (E2B's envd) and init's table.
+ */
+export const ROOT_RUNS: readonly string[] = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", DAEMON_IN_COMPUTER, ARCHIL_HELPER, "/usr/bin/archil", "/usr/bin/envd", "/etc/inittab"];
+
+/** Each path given that is there, then every directory above it, each as `writable <path>` or `closed <path>`: `test -w`
+ *  as the computer's user, and nothing written. A path on a read-only mount is closed: BusyBox's `test -w` reads the
+ *  mode bits alone, so the mount's options are read from /proc/self/mountinfo (the longest mount point above the path,
+ *  its own options and its superblock's). */
+const ROOT_RUNS_SCRIPT = [
+	"# agentrun-conformance: root-runs",
+	"ro() { r=$(readlink -f \"$1\" 2>/dev/null); awk -v p=\"${r:-$1}\" '{ m = $5; gsub(/\\\\040/, \" \", m); if ((p == m || m == \"/\" || index(p, m \"/\") == 1) && length(m) >= n) { n = length(m); o = $6; for (i = 7; i < NF; i++) if ($i == \"-\") { o = o \",\" $(i + 3); break } } } END { exit !(o ~ /(^|,)ro(,|$)/) }' /proc/self/mountinfo 2>/dev/null; }",
+	'for p in "$@"; do',
+	'\t[ -e "$p" ] || [ -L "$p" ] || continue',
+	"\tx=$p",
+	"\twhile :; do",
+	'\t\tif [ -w "$x" ] && ! ro "$x"; then echo "writable $x"; else echo "closed $x"; fi',
+	'\t\t[ "$x" = / ] && break',
+	"\t\tx=${x%/*}; x=${x:-/}",
+	"\tdone",
+	"done",
+].join("\n");
+
+/** The check's argv, for the paths given (default ROOT_RUNS). */
+export const rootRunsArgv = (paths: readonly string[] = ROOT_RUNS): string[] => ["sh", "-c", ROOT_RUNS_SCRIPT, "sh", ...paths];
+
+/**
+ * The computer's user can write nothing root runs (ROOT_RUNS), nor any directory above it: a program of its could
+ * otherwise change what root runs next. Checked as that user with `test -w`, on the computer `client` reaches (the case's
+ * own by default); every path read is recorded, and one it reads none of fails.
+ */
+export async function assertRootRunsClosed(t: CaseContext, client?: ComputerClient): Promise<void> {
+	const ran = await t.exec(rootRunsArgv(), { timeoutMs: t.patience }, client);
+	t.equal(ran.exitCode, 0, `the check's exit code (stderr: ${ran.err.trim()})`);
+	const said = (word: string) => [...new Set(ran.out.split("\n").flatMap((line) => (line.startsWith(`${word} `) ? [line.slice(word.length + 1)] : [])))];
+	const closed = said("closed");
+	const writable = said("writable");
+	t.observe(`what root runs, and the directories above it, as the computer's user: ${closed.length} closed (${closed.sort().join(", ")})${writable.length > 0 ? `; writable: ${writable.sort().join(", ")}` : ""}`);
+	t.assert(closed.length + writable.length > 0, `the check read no path: ${ran.out.slice(0, 200)}`);
+	t.assert(writable.length === 0, `the computer's user can write what root runs: ${writable.join(", ")}`);
+}
+
 export const isolationCases: Case[] = [
 	{
 		id: "isolation.vendor-agent",
@@ -135,6 +183,28 @@ export const isolationCases: Case[] = [
 		needs: ["vendor-agent", "exec"],
 		async run(t) {
 			await assertIsolated(t);
+		},
+	},
+	{
+		id: "isolation.root-runs",
+		level: "core",
+		group: "isolation",
+		needs: ["exec"],
+		async run(t) {
+			await assertRootRunsClosed(t);
+		},
+	},
+	{
+		// The label file of a host that keeps no labels is root's alone: absent or unreadable passes, readable fails.
+		id: "isolation.label-file",
+		level: "core",
+		group: "isolation",
+		needs: ["files"],
+		async run(t) {
+			const read = await t.client.call("files.read", { path: LABEL_FILE });
+			if (read.ok) return t.assert(false, `the computer's user reads ${LABEL_FILE}, the labels the provider keeps in the machine`);
+			t.observe(`${LABEL_FILE}, as the computer's user: ${read.error.code}`);
+			t.refused(read, `files.read of ${LABEL_FILE} as the computer's user`, ["not_found", "denied"]);
 		},
 	},
 ];

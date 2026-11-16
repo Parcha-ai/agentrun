@@ -48,6 +48,10 @@ inductive Pred where
   `boolean`, `array`, `object` or `null`). A model number is a rational, so always finite: the
   TypeScript side's NaN and infinities, which no JSON document carries, are of no type there. -/
   | fieldType (path : Path) (ty : String)
+  /-- `{predicate: "quote_missing"}`: a quote at `path` (a string or a list of them; with `field`, records holding
+  their quote at `field`) is in none of the page text under `pages`, compared after `quoteNorm`, then as letters and
+  digits alone (`Semantics.lean`, `quoteMissing`). -/
+  | quoteMissing (path : Path) (field : Option Path) (pages : List Path)
   /-- `{predicate: "not"}`: `of` does not hold. The validator takes only a mechanical `of`. -/
   | not (of : Pred)
   /-- `{predicate: "ask"}`: a yes/no question answered by `runJudge`; holds when

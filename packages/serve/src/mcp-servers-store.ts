@@ -12,19 +12,21 @@ import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
   type McpTool, nameOf, notFound, oauthValueValid, pricesListed, pricesOf, scopesValid, urlOf,
 } from "./mcp-probe.js";
-import { listMcpServers, openServerCredential, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn } from "./mcp-store.js";
+import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
+import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
+import { toolEffect } from "./tool-gate.js";
 import { HARNESSES } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { mcpDroppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
+import { droppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
 import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 
@@ -45,6 +47,20 @@ type McpServersStore = { readonly mcp: Mcp; readonly mcpOauth: McpOauth; readonl
 function changedMeanwhile(name: string, saved: McpServerRow | undefined): McpServerRow {
   if (!saved) throw new ApiError("precondition_failed", `The MCP server ${name}'s credential changed while this save ran (another save, a sign-in or a removal): read it again, then save again.`);
   return saved;
+}
+
+/** What a deleted Composio preset server leaves to remove on Composio: the MCP server it made (its id, from the removed
+ *  row's own address) and the key it was made with (the removed row's sealed x-api-key, held for the one call), or
+ *  `unusable` when either can't be had (a key that does not open here, an address that names no server): the delete of
+ *  our row still stands, and the answer says to remove it in Composio by hand. Taken from the row actually removed, never
+ *  a row read before it, so a server saved again under the name meanwhile is not the one deleted on Composio. */
+export type ComposioHandle = { id: string; key: string } | { unusable: true };
+function composioHandleOf(removed: RemovedMcpServer | undefined): ComposioHandle {
+  const id = removed ? composioServerId(removed.url) : undefined;
+  const open = removed?.opened;
+  const headers = open && "credential" in open && open.credential.type === "headers" ? (open.credential.headers as HeaderMap) : undefined;
+  const key = headers ? Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1] : undefined;
+  return id && key ? { id, key } : { unusable: true };
 }
 
 /** The sign-ins in flight over the store (store.mcpOauth): the sign-in's secret parts (the PKCE verifier and the OAuth
@@ -193,6 +209,29 @@ export class McpServersOverStore {
     return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop), stop));
   }
 
+  /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them
+   *  now (listed once, with its saved credential, as a preview by name lists them; nothing stored), each marked grantable
+   *  or not (mcp-meta.ts), and its owner's prices for those still listed. Undefined when no server of that name is saved.
+   *  A server whose credential is not this server's to send (per_run, each run hands its own) or whose access token only a
+   *  run refreshes (oauth) and that refuses the listing for its credential is pinned as its owner's last save or refresh
+   *  listed it, with the credential it had then. Any other failure is the ApiError the listing threw, in its words. */
+  async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices } | undefined> {
+    const row = await this.store.mcp.server(name);
+    if (!row) return undefined;
+    const url = new URL(row.url);
+    const pinned = (tools: McpTool[]) => {
+      const listed = marked(row.url, { tools });
+      return { url: row.url, tools: listed.tools, prices: pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) };
+    };
+    const send = await this.reached(row.auth, url, stop);
+    try {
+      return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop)).tools);
+    } catch (error) {
+      if ((row.auth === "per_run" || row.auth === "oauth") && error instanceof ApiError && error.code === "auth_required") return pinned((row.tools as McpTool[]) ?? []);
+      throw error;
+    }
+  }
+
   /** `listing`, and when it is refused as a server that signs in with OAuth (auth_required, `auth: oauth`), whether that
    *  sign-in can start with no Client ID entered (`details.oauth.registration`, McpSignIns.registration), so the console
    *  asks for one up front. `stop`: the preview's, which cuts that discovery too. */
@@ -220,7 +259,13 @@ export class McpServersOverStore {
     // What the server is (its source and toolkit, mcp-sources.ts): from what made it and the owner's toolkit, over what it
     // is now, checked before anything is listed; written once the server is, for the row it wrote.
     const sourceIssues: InputIssue[] = [];
-    const source = sourceToWrite(made ?? standIn, toolkit,await this.sourceOf({ name, auth: auth.type, createdAt: was?.createdAt }), auth.type, sourceIssues);
+    const wasSource = await this.sourceOf({ name, auth: auth.type, createdAt: was?.createdAt });
+    // An ordinary save that moves a Composio preset row to another address makes it another service's server: it stops being
+    // Composio's, whatever its path looks like, so its delete never sends the key it holds to Composio. It is url's, with the
+    // toolkit the same save names, else none.
+    const moved = !made && !standIn && was !== undefined && wasSource.source === "composio" && was.url !== url.href;
+    const written = sourceToWrite(made ?? standIn, toolkit, moved ? { source: "url", toolkit: null } : wasSource, auth.type, sourceIssues);
+    const source = moved ? (written ?? { source: "url" as const, toolkit: null }) : written;
     if (sourceIssues.length) throw invalid(sourceIssues);
     const send = await this.reached(auth.type, url, stop);
     // The credential this save may write over: the one the secret-write gate let it through against (`checkedAgainst`,
@@ -324,8 +369,10 @@ export class McpServersOverStore {
    *  credential saved meanwhile is never dropped by it. An OAuth one's sign-in is then let go at its authorization server
    *  (its refresh token revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort,
    *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check). */
-  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<void> {
+  async remove(name: string, checkedAgainst?: McpCredentialMark): Promise<{ composio?: ComposioHandle }> {
     const row = await this.need(name);
+    // Whether it is a Composio preset server: from its record (source composio), read before the row goes.
+    const preset = row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
     // The credential revoked is the one the deleting statement saw (RETURNING): a run's refresh landing before it is in it,
     // one landing after finds no row to keep. A sign-in kept as expired has no refresh token left to revoke.
     const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
@@ -338,6 +385,7 @@ export class McpServersOverStore {
     const open = removed?.opened;
     const credential = open && "credential" in open && open.credential.type === "oauth" && !(open.credential as { expired?: true }).expired ? open.credential : undefined;
     if (credential && removed) void this.track(this.signIns.revoke(credential.set as TokenSet, removed.url, this.stopped.signal));
+    return preset ? { composio: composioHandleOf(removed) } : {};
   }
 
   /** POST .../{name}/oauth/start: `{url, scopes?, client_id?, client_secret?, toolkit?}`; answers the URL the owner opens.
@@ -359,7 +407,7 @@ export class McpServersOverStore {
     await this.reached("oauth", url!);
     const was = await this.store.mcp.server(name);
     // A body with no client_id signs in again with the client kept in the sealed token set, for the same origin only.
-    const kept = typeof client_id !== "string" && was?.auth === "oauth" && new URL(was.url).origin === url!.origin ? await this.openedSet(name, was) : undefined;
+    const kept = typeof client_id !== "string" && was?.auth === "oauth" && new URL(was.url).origin === url!.origin ? this.openedSet(was) : undefined;
     // The kept client goes with the authorization server it was registered at (keptFor): another one gets a new client.
     const keptFor = kept ? issuerOf(kept.discovery) : undefined;
     const client = typeof client_id === "string" ? { client: { client_id, ...(typeof client_secret === "string" ? { client_secret } : {}) }, kind: "pre-registered" as const } : kept && keptFor ? { client: kept.client, kind: kept.kind, keptFor } : {};
@@ -451,13 +499,15 @@ export class McpServersOverStore {
     return row;
   }
 
-  /** The saved credential opened, or the refusal that asks for it again. */
+  /** The saved credential of `row` opened, or the refusal that asks for it again. The credential of the row the caller
+   *  read and checked, never the one saved now: a save at another address with a new credential while the caller waited
+   *  (its address check, a listing) must never have that credential sent to the old address. */
   private async opened(name: string, row: McpServerRow, field: string): Promise<Opened> {
     // No credential kept: none for a server that takes none, nor for a github_app server with no static headers, nor for a
     // per_run server (each run hands its own).
     if (row.auth === "none" || row.sealed === null) return { headers: {}, credential: { type: "headers", headers: {}, origin: new URL(row.url).origin } };
-    const open = await openServerCredential(this.store, this.sealKey, name);
-    if (!open || !("credential" in open)) throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
+    const open = openMcpRow(this.sealKey, row);
+    if (!("credential" in open)) throw invalid([{ field, reason: "missing", message: `The saved credential of ${name} does not open here (sealed under another seal key, or damaged): send it again.` }]);
     const credential = open.credential;
     if (credential.type === "oauth") {
       if ((credential as { expired?: true }).expired) throw invalid([{ field, reason: "expired", message: `The sign-in to ${name} expired or was revoked: ${SIGN_IN_AGAIN}.` }]);
@@ -466,11 +516,29 @@ export class McpServersOverStore {
     return { headers: credential.headers as HeaderMap, credential };
   }
 
-  /** The saved OAuth token set, for a sign-in again that reuses the kept client. */
-  private async openedSet(name: string, row: McpServerRow): Promise<TokenSet | undefined> {
+  /** The saved OAuth token set of `row` (the row read and checked, as opened), for a sign-in again that reuses the kept
+   *  client. */
+  private openedSet(row: McpServerRow): TokenSet | undefined {
     if (row.auth !== "oauth") return undefined;
-    const open = await openServerCredential(this.store, this.sealKey, name);
-    return open && "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
+    const open = openMcpRow(this.sealKey, row);
+    return "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
+  }
+
+  /** A saved Composio preset server's key (its sealed x-api-key), the Composio user its address names (`user_id`, the
+   *  preset's default when none) and its toolkit: what its Composio triggers are made with (composio-triggers.ts). Refused
+   *  when `name` is no such server: on the trigger's `source.server` at its create (`field`), as a 404 on the server's own
+   *  routes (`route`). The key goes only to Composio. */
+  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string }> {
+    const refuse = (message: string) => (refusal === "route" ? new ApiError("not_found", message) : invalid([{ field: "source.server", reason: "not_an_option", message }]));
+    const row = await this.store.mcp.server(name);
+    if (!row) throw refusal === "route" ? notFound(name) : refuse(`No MCP server ${name}: save a Composio server in Settings → MCP servers first.`);
+    const { source, toolkit } = await this.sourceOf(row);
+    if (source !== "composio" || row.auth !== "headers") throw refuse(`${name} is not a Composio server: only one saved with Settings → MCP servers → Composio makes Composio triggers.`);
+    if (!toolkit) throw refuse(`${name} is a Composio server of no toolkit this server can name: save it again with its toolkit's slug.`);
+    const { headers } = await this.opened(name, row, refusal === "field" ? "source.server" : "api_key");
+    const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
+    if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
+    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit };
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's
@@ -487,7 +555,7 @@ export class McpServersOverStore {
     const prices = (row.prices ?? undefined) as McpPrices | undefined;
     const listed = marked(row.url, { protocol: row.protocol ?? "unknown", server_info: row.serverInfo ?? null, ...(typeof row.instructions === "string" ? { instructions: row.instructions } : {}), tools });
     const unmetered = tools.filter((tool) => !(prices && Object.hasOwn(prices, tool.name))).map((tool) => tool.name);
-    const opened = row.auth === "none" || row.auth === "per_run" || (row.auth === "github_app" && row.sealed === null) ? null : await openServerCredential(this.store, this.sealKey, name);
+    const opened = row.auth === "none" || row.auth === "per_run" || (row.auth === "github_app" && row.sealed === null) ? null : openMcpRow(this.sealKey, row);
     const cred = opened && "credential" in opened ? opened.credential : undefined;
     const set = cred?.type === "oauth" ? (cred.set as TokenSet) : undefined;
     const expired = cred?.type === "oauth" && (cred as { expired?: true }).expired === true;
@@ -506,7 +574,12 @@ export class McpServersOverStore {
       ...listed,
       // Each priced tool's price in USD a call, as the owner saved them, on every read.
       ...(prices && Object.keys(prices).length ? { prices } : {}),
-      tools: listed.tools.map((tool) => ({ ...tool, ...serverGate(mcpToolName(name, tool.name), settings), ...grantProblemsOf(this.env, name, tool) })),
+      // Each tool's effect by its annotations as listed now (toolEffect), and its permission under them: what a run pinned
+      // from this listing gets. A run already going keeps the marks its own pin holds.
+      tools: listed.tools.map((tool) => {
+        const effect = toolEffect(tool.annotations);
+        return { ...tool, effect, ...serverGate(mcpToolName(name, tool.name), settings, effect), ...grantProblemsOf(this.env, name, tool) };
+      }),
       ...(unmetered.length ? { not_metered: unmetered } : {}),
       auth: { type: row.auth, ...(row.auth === "headers" || row.auth === "github_app" ? { headers: Object.keys((cred?.type === "headers" ? cred.headers : {}) as HeaderMap) } : {}) },
       credential: opened === null ? null : !cred ? ("unreadable" as const) : expired ? ("expired" as const) : ("sealed" as const),
@@ -554,7 +627,7 @@ function grantProblemsOf(env: NodeJS.ProcessEnv, server: string, tool: McpTool):
   if (!named && isObject(schema)) {
     for (const harness of HARNESSES) {
       const dropped = harnessOf(env, harness)?.facts?.schemaProblems?.(`mcp__${server}__${tool.name}`, schema)[0];
-      if (dropped) problems[harness] = mcpDroppedWords(server, tool.name, harness, dropped);
+      if (dropped) problems[harness] = droppedWords(mcpToolName(server, tool.name), harness, dropped);
     }
   }
   return Object.keys(problems).length ? { grant_problems: problems } : {};

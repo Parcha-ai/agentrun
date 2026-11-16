@@ -65,20 +65,23 @@ export function grown(k, { miss = false } = {}) {
 /** Request `k` of a conversation shaped as Codex sends it: its input bound the body's bytes (4 a token, no provider count),
  *  a 10,000-token prompt that grows 1,100 tokens a request, each request reading the previous one's whole prompt from the
  *  cache; each asks 32,000 output tokens and needs 3,072 at least (1,024 for the answer and low effort's 2,048 for its
- *  reasoning), and costs under a cent at Sonnet 5.5's prices (faux-sonnet55.mjs). */
-export function codexGrown(k) {
+ *  reasoning), and costs under a cent at Sonnet 5.5's prices (faux-sonnet55.mjs). `miss`: it finds no cache and is billed
+ *  the most a request of its bound can be: every byte of its body a token, all of it written to the cache. */
+export function codexGrown(k, { miss = false } = {}) {
   const prompt = (n) => 10_000 + 1_100 * n;
-  const cacheRead = k === 0 ? 0 : prompt(k - 1);
-  const tokens = { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
+  const cacheRead = k === 0 || miss ? 0 : prompt(k - 1);
+  const tokens = miss ? { input: 0, output: 300, cacheRead: 0, cacheWrite: prompt(k) * 4 } : { input: 3, output: 300, cacheRead, cacheWrite: prompt(k) - cacheRead - 3 };
   const usd = (tokens.input * 2 + tokens.output * 10 + tokens.cacheRead * 0.1 + tokens.cacheWrite * 2.5) / 1e6;
-  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens, usd };
+  return { call: "read", args: { path: "a.txt" }, inputTokensMax: prompt(k) * 4, outputTokensAsked: 32_000, outputTokensLeast: 3_072, effort: "low", tokens, usd };
 }
 
 export function script(spec, session = {}) {
   const text = spec.system.join("\n");
   // The learned_workflow tool as the harness is given it (its description and input schema), when it is.
   const given = spec.tools.find((tool) => tool.name === "learned_workflow");
-  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
+  // And the tools it is handed for a script's nested calls alone (deferred: never listed to the model), when there are any.
+  const deferred = spec.tools.filter((tool) => tool.deferred).map((tool) => tool.name);
+  if (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED) appendFileSync(process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED, `${JSON.stringify({ tools: spec.tools.map((tool) => tool.name), ...(deferred.length ? { deferred } : {}), ...(given ? { learned: { description: given.description, inputSchema: given.inputSchema } } : {}) })}\n`);
   // The spend cap's wrap-up due once a $0.40 request whose answer runs the learned workflow <name> on <question> is booked:
   // the workflow's node request comes next on the session's model, then the harness's own closing answer.
   const wrapAround = /Wrap up around the learned workflow (\S+) on (.+?)\./.exec(text);
@@ -196,6 +199,17 @@ export function script(spec, session = {}) {
   // answer (<how>: an error status, our stop after it streamed, a lost connection); the client sends it again, answered.
   const carrierUnanswered = /Wrap up with the carrier unanswered \((status|stopped|lost)\)\./.exec(text)?.[1];
   if (carrierUnanswered) return [{ unanswered: carrierUnanswered, inputTokensMax: 1_000 }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
+  // Two requests in flight at once, each of 1,000 input tokens asking 1,024 output tokens: the first, due at step 0 under
+  // a small cap so it carries the note, answered with its cost booked only once <a> exists; the second sent meanwhile and
+  // held unanswered until <b> exists.
+  const twoInFlight = /Carry the note with a second request in flight \(the first booked when (\S+), the second answered when (\S+)\)\./.exec(text);
+  if (twoInFlight) {
+    const [, first, second] = twoInFlight;
+    return [{ say: "First.", inputTokensMax: 1_000, outputTokensAsked: 1_024, usd: 0.001, bookWhen: first }, { say: "Second.", inputTokensMax: 1_000, outputTokensAsked: 1_024, usd: 0.001, until: second }];
+  }
+  // A request lost once it left (no cost came back), one our side stopped part way, then an answer reported at $0 (a
+  // free model's, whose every token is $0).
+  if (/Answer at \$0 after a lost and a stopped request\./.test(text)) return [{ unanswered: "lost" }, { unanswered: "stopped" }, { say: "Answered.", usd: 0 }];
   // A request of 1,000 input tokens, due at step 0 under a small cap so it carries the note, that its host refuses (its
   // start mark fails, under the tests' START_MARK_FAIL_ENV); the client sends another, answered.
   if (/Wrap up with the carrier refused\./.test(text)) return [{ say: "First.", inputTokensMax: 1_000, usd: 0.01, onRefused: "next" }, { say: "Answered.", inputTokensMax: 1_000, usd: 0.01 }];
@@ -255,15 +269,21 @@ export function script(spec, session = {}) {
   // monid's run called, then the turn holds with no request open (writing the signal) until it is stopped; the next
   // turn's request answers. A hold keeps its place in the script, so it holds once, and that place is the answer after.
   const holdSignal = /Run monid's \/person\/enrich, then hold the turn \(signal (\S+)\)\./.exec(text)?.[1];
-  if (holdSignal) return [{ call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
+  if (holdSignal) return [{ call: "monid__faux__person__enrich", args: { body: { name: "Ada" } }, usd: 0.001 }, hangOnceSignalled(holdSignal, { say: "Ran.", usd: 0.001 })];
   // monid's run called, then called again (once a raised cap's follow-up opens the next turn), then the answer.
-  if (/Run monid's \/person\/enrich, called again after a raise\./.test(text)) {
-    const call = { call: "monid_run", args: { provider: "faux", endpoint: "/person/enrich", input: { name: "Ada" } }, usd: 0.001 };
+  const again = /Run monid's \/(\S+), called again after a raise\./.exec(text)?.[1];
+  if (again) {
+    const call = { call: `monid__faux__${again.replaceAll("/", "__")}`, args: { body: { name: "Ada" } }, usd: 0.001 };
     return [call, call, { say: "Ran.", usd: 0.001 }];
   }
-  // monid's run, called as a harness calls it: by its wire name.
-  const endpoint = /Run monid's (\S+) on Ada\./.exec(text)?.[1];
-  if (endpoint) return [{ call: "monid_run", args: { provider: "faux", endpoint, input: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
+  // monid's run called by an answer whose cost is booked only after its calls, as Claude Code's is: the answer held at
+  // $0.33 to $0.62 at Sonnet 5.5's prices (120,000 input tokens at the cache write's price, 3,072 to 32,000 out) is still
+  // out while the call is asked. Then a closing answer.
+  if (/Run monid's \/person\/lookup while the answer asking for it is booked after it\./.test(text)) return [{ calls: [{ call: "monid__faux__person__lookup", args: { body: { name: "Ada" } } }], bookAfter: true, inputTokensMax: 120_000, outputTokensAsked: 32_000, outputTokensLeast: 3_072, tokens: { input: 3, output: 300 }, usd: 0.01 }, { say: "Ran.", usd: 0.001 }];
+  // A faux endpoint of monid's, called as a harness calls it: by its wire name (monid:faux/person/enrich is
+  // monid__faux__person__enrich).
+  const endpoint = /Run monid's \/(\S+) on Ada\./.exec(text)?.[1];
+  if (endpoint) return [{ call: `monid__faux__${endpoint.replaceAll("/", "__")}`, args: { body: { name: "Ada" } }, usd: 0.001 }, { say: "Ran.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A first request that costs the amount the line names, then an answer: a cap that leaves too little after the first
@@ -353,6 +373,52 @@ export function script(spec, session = {}) {
     const answer = grown(4);
     const least = { outputTokensLeast: 10_240 };
     return [{ ...grown(0), outputTokensAsked: 1_024 }, ...[1, 2, 3].map((k) => ({ ...grown(k), ...least })), { say: "Done growing.", inputTokensMax: answer.inputTokensMax, tokens: answer.tokens, usd: answer.usd, ...least }];
+  }
+  // "Grow a Codex-shaped context for <n> requests, with a smaller request after request <k>.": n requests of codexGrown,
+  // and after request k (its read running) one more of the session's own on its model with request 0's body, none of it
+  // read from the cache: as Codex sends a smaller request of its own while a tool runs. Then its answer.
+  const smallerAfter = /Grow a Codex-shaped context for (\d+) requests, with a smaller request after request (\d+)\./.exec(text);
+  if (smallerAfter) {
+    const [n, at] = [Number(smallerAfter[1]), Number(smallerAfter[2])];
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    const first = codexGrown(0);
+    const smaller = { say: "Checking.", inputTokensMax: first.inputTokensMax, outputTokensAsked, outputTokensLeast, tokens: { input: 3, output: 31, cacheRead: 0, cacheWrite: first.tokens.cacheWrite }, usd: (3 * 2 + 31 * 10 + first.tokens.cacheWrite * 2.5) / 1e6 };
+    const steps = Array.from({ length: n }, (_, k) => codexGrown(k));
+    return [...steps.slice(0, at + 1), smaller, ...steps.slice(at + 1), { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
+  }
+  // "Grow a Codex-shaped context for <n> requests, each calling read while it streams.": n requests of codexGrown, each
+  // running its read with the request still open (its cost booked after the call, as Codex starts a call before its
+  // response ends), then its answer.
+  const midStream = /Grow a Codex-shaped context for (\d+) requests, each calling read while it streams\./.exec(text)?.[1];
+  if (midStream) {
+    const n = Number(midStream);
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    const streaming = (k) => {
+      const { call, args, ...figures } = codexGrown(k);
+      return { calls: [{ call, args }], bookAfter: true, ...figures };
+    };
+    return [...Array.from({ length: n }, (_, k) => streaming(k)), { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
+  }
+  // "Grow a Codex-shaped context for <n> requests, missing the cache at request <k>.": n requests of codexGrown, request k
+  // a miss billed at the most its bound allows, then its answer. "..., cut at request <k> until <file>.": request k is
+  // admitted and never answered until the file exists (a crash cuts it), then the answer.
+  const missOrCut = /Grow a Codex-shaped context for (\d+) requests, (?:missing the cache at request (\d+)|cut at request (\d+) until (\S+))\./.exec(text);
+  if (missOrCut) {
+    const [, count, missAt, cutAt, cutUntil] = missOrCut;
+    const n = Number(count);
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    const steps = Array.from({ length: n }, (_, k) => codexGrown(k, { miss: missAt !== undefined && k === Number(missAt) }));
+    const cut = cutAt === undefined ? steps : [...steps.slice(0, Number(cutAt)), ...(existsSync(cutUntil) ? [] : [{ ...steps[Number(cutAt)], cut: true }]), ...steps.slice(Number(cutAt) + 1)];
+    return [...cut, { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
+  }
+  // "Grow a Codex-shaped context for <n> requests, writing note.md at request <k>.": n requests of codexGrown, request k
+  // calling write (a tool a test sets to ask) in place of its read, then its answer.
+  const writingAt = /Grow a Codex-shaped context for (\d+) requests, writing note\.md at request (\d+)\./.exec(text);
+  if (writingAt) {
+    const [n, at] = [Number(writingAt[1]), Number(writingAt[2])];
+    const { inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd } = codexGrown(n);
+    const step = (k) => (k === at ? { ...codexGrown(k), call: "write", args: { path: "note.md", content: "noted" } } : codexGrown(k));
+    return [...Array.from({ length: n }, (_, k) => step(k)), { say: "Grown, Codex-shaped.", inputTokensMax, outputTokensAsked, outputTokensLeast, tokens, usd }];
   }
   // "Grow a Codex-shaped context for <n> requests.": n requests of codexGrown, each calling read, then its answer.
   const codexShaped = /Grow a Codex-shaped context for (\d+) requests\./.exec(text)?.[1];

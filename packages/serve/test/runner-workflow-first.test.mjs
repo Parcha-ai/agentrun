@@ -52,6 +52,8 @@ const { mergedNote } = await import("../dist/learn/notes.js");
 const { seedOf } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
+const { mergeChangeOf } = await import("../dist/runner/learning-loop.js");
+const { readSnapshot } = await import("../dist/learn/folder.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -69,7 +71,7 @@ const answerFlow = {
   },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
   root: { node: "chain", steps: [
-    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer", tier: "fast" },
+    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer" },
     { node: "escalate", label: "unsure", when: { predicate: "field_equals", path: "answer.sure", value: false }, kind: "unsure", stage: "answer", summary: "not sure of {answer.answer}" },
   ] },
 };
@@ -110,18 +112,19 @@ async function landNotes(data, agentId, notes) {
   }
 }
 
-/** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back);
- *  the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
+/** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back),
+ *  or `submitted` when given; the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions = [], keptBefore: earlier = [], followUp, flows = FLOWS, notes = [], saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastGrades = {}, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  // `agentCall`: the agent's first answer is this tool call (its next, once a tool result is in, its text).
+  // `agentCall`: the agent's first answer is this tool call (its next, once a tool result is in, its text). `agentText`:
+  // the agent's text for a request, by its body (undefined: AGENT_SAYS).
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
-    text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
+    call: ({ body }) => (offers(body, "submit") ? (!hasResult(body) ? { name: "submit", input: { value: submitted ?? { answer: answer ?? (sure ? 42 : 41), sure } } } : undefined) : agentCall && !hasResult(body) ? agentCall : undefined),
+    text: ({ body }) => (offers(body, "submit") ? "submitted" : (agentText?.(body) ?? AGENT_SAYS)),
   });
   let runner;
   let reader;
@@ -141,6 +144,8 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   for (const record of promotions) await recordPromotion(server.settings, "agent-1", record, () => true);
   // `saved`: keys saved on the server after the learning landed (a value in a workflow or a note that became a secret).
   for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
+  // `beforeRun(dir)`: what changes on the agent's main after the run's seed was pinned, before the run starts.
+  await beforeRun?.(dir);
   const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -174,8 +179,17 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: upstream };
   const logs = [];
   const crashingJournal = (journal) => new Proxy(journal, { get: (target, key) => (key === "commit" ? async (...args) => {
+    // `crashBeforeEnd`: the first runner is closed as its run's end is about to land, and that end never does (its commit
+    // fails once the close has cut the claim, so the claim returns interrupted); `crashBeforeEnd(dir)` runs first, then a
+    // second runner takes the run.
+    if (!crashed && crashBeforeEnd && JSON.stringify(args[0]).includes('"agentrun.end"')) {
+      await crashBeforeEnd(dir);
+      crash();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      throw new Error("the runner died before its run's end landed");
+    }
     const result = await target.commit(...args);
-    if (!crashed && JSON.stringify(args[0]).includes("agentrun.workflow_first")) crash();
+    if (!crashed && crashOnHandback && JSON.stringify(args[0]).includes("agentrun.workflow_first")) crash();
     return result;
   } : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
   // `past`: earlier runs of the agent, newest first, as its store lists them (the money rule's read): laid before the
@@ -215,7 +229,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // run, and the money rule (past runs, `pastFromSecondClaim`) now stops the workflow.
   let crashed = false;
   // The store the runners hold: its journals tell the crash when the workflow's end is committed.
-  const runnerStore = crashOnHandback ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const runnerStore = crashOnHandback || crashBeforeEnd ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const crash = () => {
     crashed = true;
     void runner.close();
@@ -257,7 +271,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const entries = await runEntries(server, RUN, ctx);
   const kept = await server.learning.proposal(RUN);
   const reflect = await runReflect(server, RUN, ctx);
-  return { row, first, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims, server, held };
+  return { dir, row, first, requests, turns, timeline, entries, kept, reflect, gateway: gw, seed, parked, logs, claims, server, held };
 }
 
 test("workflow alone: the run answers on its learned workflow with no agent-model request, path workflow, its node $ its cost", async (t) => {
@@ -309,12 +323,139 @@ test("handed back: the guard holds, the same run goes on to the agent with the w
   assert.ok((row.costUsd ?? 0) > 0, `the run's cost: ${row.costUsd}`);
 });
 
+// The quote check is code (the DSL's quote_missing): an answer quoting text the run's page does not hold hands the job
+// back to the agent, as any escalate does; the trace says how many quotes were checked and missed, never their text.
+// The page is the run's own input here; on a compiled workflow it is what its call steps fetched.
+const PAGE = "Acme Leather: hand-made wallets and belts, shipped worldwide. Our workshop has been in Lisbon since 1987.";
+const citedFlow = {
+  v: 2, name: "answer",
+  schemas: {
+    In: { type: "object", required: ["question", "page"], properties: { question: { type: "string" }, page: { type: "string" } } },
+    Answer: { type: "object", required: ["answer", "evidence"], properties: { answer: { type: "string" }, evidence: { type: "array", items: { type: "object", required: ["quote"], properties: { quote: { type: "string" } } } } } },
+  },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [
+    { node: "extract", label: "answer", instructions: "Answer the question from {page}, quoting it.", out: "Answer", as: "answer" },
+    { node: "escalate", label: "quotes", when: { predicate: "quote_missing", path: "answer.evidence", field: "quote", pages: ["page"] }, kind: "quote_missing", stage: "answer", summary: "a quote of {answer.answer} is in no page" },
+  ] },
+};
+const cited = (quote) => ({ input: { content: "Where is the workshop?", question: "Where is the workshop?", page: PAGE }, flows: [{ name: "answer", description: "Answers from a page, quoting it", workflow: citedFlow }], submitted: { answer: "Lisbon", evidence: [{ quote }] } });
+
+test("a quote in no page: the workflow's quote_missing escalate hands the run back to the agent, whose answer ends it; a quote the page holds answers alone", async (t) => {
+  const { row, entries, gateway, timeline } = await piRun(t, cited("Our workshop opened in Porto in 1990"));
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  assert.deepEqual(entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  const firstAgent = gateway.requests.findIndex((request) => !isNode(request));
+  assert.ok(firstAgent > 0, "the agent took the run after the node");
+  assert.match(textOf(gateway.requests[firstAgent].body), /handed the job back at its step "quotes": a quote of Lisbon is in no page/);
+  assert.equal(timeline.findLast((one) => ["assistant", "final_answer"].includes(one.kind))?.text, AGENT_SAYS);
+  assert.equal(row.metrics?.path, "handed_back", JSON.stringify(row.metrics));
+  const alone = await piRun(t, cited("has been in Lisbon since 1987"));
+  assert.deepEqual(alone.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(alone.row.metrics?.path, "workflow", JSON.stringify(alone.row.metrics));
+});
+
 test("handed back: the compile turn asks for the workflow's next revision by its name, with the workflow as it is", async (t) => {
   const { gateway } = await piRun(t, { sure: false });
   const ask = gateway.requests.find((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` ran first on this run and handed it back to you\./.test(textOf(request.body)));
   assert.ok(ask, `the compile turn asked about \`answer\`: ${gateway.requests.map((request) => textOf(request.body).slice(0, 300)).join("\n---\n")}`);
   assert.match(textOf(ask.body), /Give `answer` again whole under its name/);
   assert.match(textOf(ask.body), /`answer` as it is now:/);
+});
+
+// #2648 review (Paid revisions cannot merge): the compile turn revises a workflow from main's text as it reads it, so
+// that read is the revised workflow's conflict base, not the seed the run started from. A run started at S with `answer`;
+// main then changed `answer` (another run's revision); the run is handed back and its compile turn revises main's text:
+// the revision merges. A change to `answer` on main after the compile read is still a conflict.
+const MAINS_INSTRUCTIONS = "Answer the question as a whole number; say whether you are sure.";
+const REVISED_INSTRUCTIONS = "Answer the question as a whole number, checking the product twice; say whether you are sure.";
+const answerWith = (instructions) => ({ ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions }, answerFlow.root.steps[1]] } });
+/** Merges `answer` with `instructions` on agent-1's main under `data`, as another run's graded revision lands. */
+async function answerOnMain(data, instructions, runId) {
+  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
+  try {
+    const merged = await learningCommit(folder.workspace, { kind: "merge", runId, reason: "revised", graded: {}, files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerWith(instructions)) }] });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
+    return merged.main;
+  } finally {
+    await folder.end();
+  }
+}
+const revisedBlock = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify(answerWith(REVISED_INSTRUCTIONS))}\n\`\`\`\``;
+
+test("a handed-back run's compile revises main's text of its workflow, changed since the run's seed: the revision merges; a change on main after that read is still a conflict (#2648 review)", { timeout: 120_000 }, async (t) => {
+  for (const raced of [false, true]) {
+    let changed;
+    const { dir, seed, kept, gateway } = await piRun(t, {
+      sure: false,
+      beforeRun: async (data) => (changed = await answerOnMain(data, MAINS_INSTRUCTIONS, "run-other")),
+      agentText: (body) => (/^One more turn: revise your learned workflow `answer`\./m.test(textOf({ messages: (body?.messages ?? []).slice(-1) })) ? revisedBlock : undefined),
+    });
+    assert.notEqual(changed, seed, "main moved past the run's seed");
+    const ask = gateway.requests.find((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+    assert.ok(ask, "the compile turn asked for the revision");
+    assert.ok(textOf(ask.body).includes(MAINS_INSTRUCTIONS), "it revises main's text, not the seed's");
+    assert.equal(kept?.proposal?.state, "proposed", `the revision was proposed: ${JSON.stringify(kept?.proposal)}`);
+    const proposal = kept.proposal.proposal;
+    assert.equal(proposal.seed, seed, "the proposal's seed stays the run's");
+    assert.ok(proposal.files.some(({ file, text }) => file === "workflows/answer/workflow.json" && text.includes(REVISED_INSTRUCTIONS)), JSON.stringify(proposal.files));
+    // `raced`: another change to `answer` lands on main after the compile read it.
+    if (raced) await answerOnMain(dir, "Answer the question; say whether you are sure, then stop.", "run-racer");
+    // The learning run's merge of the kept revision (mergeChangeOf, the one rule learningCommit's merge is made by).
+    const change = mergeChangeOf(RUN, proposal, { merge: true, reason: "kept the revision", items: [] }, {});
+    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+    try {
+      const merged = await learningCommit(folder.workspace, change);
+      if (raced) {
+        assert.equal(merged.ok, false, `a change after the compile read is refused: ${JSON.stringify(merged)}`);
+        assert.equal(merged.reason, "conflict");
+        assert.ok(merged.problems.some((problem) => problem.path === "workflows/answer/workflow.json"), JSON.stringify(merged.problems));
+      } else {
+        assert.equal(merged.ok, true, `the revision of main's text merges: ${JSON.stringify(merged)}`);
+        const snapshot = await readSnapshot(folder.workspace);
+        assert.equal(snapshot.main, merged.main);
+      }
+    } finally {
+      await folder.end();
+    }
+  }
+});
+
+// #2648 review (Restart overwrites newer workflow changes): the commit of main the compile turn read its workflow at is
+// kept with its ask, so a restart that replays the saved answer reads that commit, never main again. A run handed back
+// revises `answer` at main A and dies after its compile answer is saved, before its end; another run's revision of
+// `answer` lands (main B); the next claim replays the saved answer: written over A, its merge conflicts on `answer`.
+test("a restart after the compile answer is saved replays it against the main it was asked at: a change to the workflow since conflicts, never overwritten (#2648 review)", { timeout: 120_000 }, async (t) => {
+  const OTHERS = "Answer the question as a whole number, then say whether you are sure.";
+  let moved;
+  const { dir, seed, kept, gateway, claims, row } = await piRun(t, {
+    sure: false,
+    crashBeforeEnd: async (data) => (moved = await answerOnMain(data, OTHERS, "run-other")),
+    agentText: (body) => (/^One more turn: revise your learned workflow `answer`\./m.test(textOf({ messages: (body?.messages ?? []).slice(-1) })) ? revisedBlock : undefined),
+  });
+  // A claim after the crash ended the run. How many claims the restart took races its timing (3, not 2, in a merge-queue
+  // run), so only "past the first" is asserted; the asks below pin that the saved compile answer was replayed, not re-asked.
+  assert.ok(claims >= 2, `a claim after the crash ended the run: ${claims} claims`);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(moved && moved !== seed, "main moved past the compile read before the restart");
+  const asks = gateway.requests.filter((request) => !isNode(request) && /One more turn: revise your learned workflow `answer`/.test(textOf({ messages: (request.body?.messages ?? []).slice(-1) })));
+  assert.equal(asks.length, 1, "the restart replays the saved compile answer, never asks it again");
+  assert.ok(!textOf(asks[0].body).includes(OTHERS), "it was asked of main's text before the other run's change");
+  assert.equal(kept?.proposal?.state, "proposed", `the revision was proposed: ${JSON.stringify(kept?.proposal)}`);
+  const proposal = kept.proposal.proposal;
+  assert.ok(proposal.files.some(({ file, text }) => file === "workflows/answer/workflow.json" && text.includes(REVISED_INSTRUCTIONS)), JSON.stringify(proposal.files));
+  const change = mergeChangeOf(RUN, proposal, { merge: true, reason: "kept the revision", items: [] }, {});
+  const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
+  try {
+    const merged = await learningCommit(folder.workspace, change);
+    assert.equal(merged.ok, false, `the replayed revision never overwrites the change since its ask: ${JSON.stringify(merged)}`);
+    assert.equal(merged.reason, "conflict");
+    assert.ok(merged.problems.some((problem) => problem.path === "workflows/answer/workflow.json"), JSON.stringify(merged.problems));
+    const snapshot = await readSnapshot(folder.workspace);
+    assert.equal(snapshot.main, moved, "main keeps the other run's change");
+  } finally {
+    await folder.end();
+  }
 });
 
 test("a learned workflow named as only a workflow may be (sort_invoice): handed back or stopped, the end-of-run turn still asks for its revision", async (t) => {
@@ -656,7 +797,7 @@ test("costLineOf: the newest 10 served runs at the digest against the agent's by
 const textFlow = {
   ...answerFlow,
   schemas: { ...answerFlow.schemas, Answer: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } } },
-  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question in words.", out: "Answer", as: "answer", tier: "fast" }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question in words.", out: "Answer", as: "answer" }] },
 };
 const TEXT_FLOWS = [{ name: "answer", description: "Answers a question in words", workflow: textFlow }];
 

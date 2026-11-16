@@ -29,9 +29,11 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  An agentic agent's Spend cap box caps this run alone (`max_cost_usd`); empty sends none, so the agent's default cap
  *  applies (its definition's `max_cost_usd`, shown as the placeholder). A workflow run takes no cap (the server refuses
  *  one), so it has no box. A cap the server refuses (a 422 naming max_cost_usd) is said at the box, in the server's words.
+ *  `freeNote`, for a free model (each request $0 in the catalog), is said under the box: the
+ *  server's limit on those requests, which no dollar cap reaches (lib/models.ts freeRequestsNote).
  *  An agentic agent with an input_schema takes its typed fields under the message (lib/inputForm.ts), and a refusal's
  *  issue at one is said at that field. */
-export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; upload?: Upload }) {
+export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; freeNote?: string | null; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
   // An agentic agent's input_schema: its fields under the message box (the message optional when the schema requires
   // another field), or, for one the fields can't show, the whole input as JSON in the box, as a workflow's is.
@@ -115,6 +117,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, upload = sendU
                   <Input id="runbar-cap" value={cap} onChange={(e) => { setCap(e.target.value); if (problem?.fields?.some((f) => f.field === "max_cost_usd")) setProblem(null); }} inputMode="decimal" aria-label="Spend cap"
                     aria-invalid={capIssue ? true : undefined} placeholder={agentCap !== null ? capWords(agentCap) : "none"} className="w-24" />
                 </div>
+                {freeNote && <p className="mt-1 text-label text-muted-foreground" data-note="free-requests" title="Each request costs $0, so no dollar cap stops this model: the server ends the run at this many requests.">{freeNote}</p>}
                 {capIssue && <p className="mt-1 max-w-[16rem] font-mono text-label text-destructive-text" role="alert" data-issue="max_cost_usd">{capIssue}</p>}
               </div>
             )}

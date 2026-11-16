@@ -3,12 +3,12 @@
 // the attempt, so its gate can tell a replay (whose first attempt may have been sent) from a first call.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { kernelTool } from "../dist/adapter.js";
+import { bridgeTool } from "@parcha/agentrun-kernel/process";
 
 test("a host tool hears the call id and the kernel's attempt from the effect's step", async () => {
   const heard = [];
   const tool = { name: "web_fetch", description: "fetch", inputSchema: { type: "object" }, replay: "safe", call: async (_input, context) => (heard.push({ callId: context.callId, attempt: context.attempt }), { text: "ok" }) };
-  const kernel = kernelTool(tool);
+  const kernel = bridgeTool(tool);
   const signal = new AbortController().signal;
   await kernel.execute({}, { signal, progress: () => undefined, ctx: {}, stepId: "tool:call_9#0" });
   await kernel.execute({}, { signal, progress: () => undefined, ctx: {}, stepId: "tool:call_9#1" });

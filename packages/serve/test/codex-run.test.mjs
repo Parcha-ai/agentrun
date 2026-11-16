@@ -12,6 +12,7 @@ import { processAlive } from "@parcha/agentrun-kernel/host";
 import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, scratchDir, serve, serverLog } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 /** The gateway's key in these tests: no real one. */
 const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
@@ -25,8 +26,8 @@ async function gateway(t) {
   // A failing test still lets the turn finish, so the run's process and the server can stop.
   t.after(() => release());
   const server = createServer(async (req, res) => {
-    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    // Only the API's own paths count (fixtures/stranger.mjs).
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push({ path: req.url, authorization: req.headers.authorization, body: JSON.parse(body || "{}") });
@@ -97,7 +98,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   const gw = await gateway(t);
   const { api, standIn, data } = await codexServe(t, gw);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  const { max_concurrent_runs, models: _models, free_models: _free, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.deepEqual(offer, { id: "codex", available: true, steer: false, default_model: "agent-model/gpt-test", run_memory_mib: 192 });
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -137,7 +138,7 @@ test("through a gateway, codex sends the model id the revision names whole, as p
 test("behind a gateway, a codex agent naming no model runs on AGENT_MODEL as the gateway's own string, a namespaced one (team/model) included", { timeout: 90_000 }, async (t) => {
   const gw = await gateway(t);
   const { api } = await codexServe(t, gw, "team/model");
-  const { max_concurrent_runs, models: _models, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
+  const { max_concurrent_runs, models: _models, free_models: _free, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "codex");
   assert.equal(offer.available, true, JSON.stringify(offer));
   assert.equal(offer.default_model, "agent-model/team/model");
   const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
