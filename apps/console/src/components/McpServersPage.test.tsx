@@ -1009,7 +1009,7 @@ describe("Settings → MCP servers, URL presets", () => {
   // The five servers the free templates use: each fills the add form's name, address, credential and toolkit, and says
   // one line about it. Preview and Save are the form's own: the server checks the address as it checks any.
   const PRESETS = [
-    { label: "Parallel Search", name: "parallel", url: "https://search.parallel.ai/mcp", auth: "none", note: /no key/i },
+    { label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: /no key/i },
     { label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: /without a key/i },
     { label: "GitHub (token)", name: "github", url: "https://api.githubcopilot.com/mcp/", auth: "bearer", note: /fine-grained/i },
     { label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: /sign in/i },
