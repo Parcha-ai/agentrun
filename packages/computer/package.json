@@ -50,6 +50,10 @@
       "types": "./dist/agent37.d.ts",
       "default": "./dist/agent37.js"
     },
+    "./morph": {
+      "types": "./dist/morph.d.ts",
+      "default": "./dist/morph.js"
+    },
     "./orgo": {
       "types": "./dist/orgo.d.ts",
       "default": "./dist/orgo.js"

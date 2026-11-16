@@ -28,6 +28,7 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { MorphProvider } from "../dist/morph.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -109,6 +110,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.modal.prepareImage, extra.modal.local], [true, undefined]);
 	// E2B starts its sandboxes and desktops from the box image's public template; its computers are remote.
 	assert.deepEqual([extra.e2b.prepareImage, extra.e2b.local], [true, undefined]);
+	// Morph starts its instances from the box image as a snapshot it builds in the key's account; its computers are remote.
+	assert.deepEqual([extra.morph.prepareImage, extra.morph.local], [true, undefined]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
 	// other provider declares one.
 	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
@@ -126,7 +129,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["docker", "agent37", "modal", "e2b", "morph"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
@@ -138,7 +141,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["morph", "orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -160,6 +163,7 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		modal: undefined,
 		e2b: undefined,
 		agent37: undefined,
+		morph: undefined,
 		orgo: { desktop: orgo.ORGO_BASE_IMAGE },
 		"phone-harness": { phone: phone.PHONE_IMAGE },
 		browserbase: { browser: browser.BROWSER_IMAGE },
@@ -174,9 +178,9 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		[daytona.DAYTONA_DEFAULT_SNAPSHOT, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
 		["default", "agent37-base", "linux", "android", "chromium"],
 	);
-	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal and E2B have none: each
+	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal, E2B and Morph have none: each
 	// prepares the box image (prepareImage).
-	for (const id of ["docker", "agent37", "modal", "e2b"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
+	for (const id of ["docker", "agent37", "modal", "e2b", "morph"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -264,7 +268,7 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
-/** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
+/** ssh2's Client slice for Agent37 and Morph, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
 		constructor() {
@@ -299,6 +303,7 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	morph: [() => new MorphProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

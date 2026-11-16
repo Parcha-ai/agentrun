@@ -1,0 +1,427 @@
+// The Morph host: Morph Cloud instances, each a VM started from a snapshot (kind linux). The control plane is Morph's
+// REST API over fetch (https://cloud.morph.so/api, a Bearer key; OpenAPI https://cloud.morph.so/api/openapi.json). Every
+// command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH through the shared SshExec
+// (./hosted/ssh-exec.ts), to Morph's gateway ssh.cloud.morph.so:22 as the user "<instance id>:<API key>" with any key,
+// as both SDKs log in (morph-python-sdk morphcloud/api.py ssh_connect, a throwaway key from _dummy_key(); morph-typescript-sdk
+// src/api.ts:12-13, 704-711). Morph's REST exec (POST /instance/{id}/exec) answers once the command ends, with no stdin,
+// so it is not used. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
+//
+// Facts the docs do not settle are marked **unverified**; d7/morph-branch-1 (the lane's live kit) settles most of them.
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { isIP, connect as tcp } from "node:net";
+import { boxRecipeHash } from "./box-image.js";
+import { MORPH } from "./descriptors/morph.js";
+import { DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { orThrow, pause, runToExit, uploadThroughExec } from "./hosted/process.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
+import { jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
+import { DOMAIN, dateOf, sizeRefusals } from "./hosted/values.js";
+import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
+import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
+
+/** One instance as Morph answers it (OpenAPI InstanceModel), as far as this provider reads it. */
+export interface MorphInstance {
+	id: string;
+	/** pending, ready, paused, saving or error (OpenAPI InstanceStatus). */
+	status: string;
+	/** Unix seconds. */
+	created?: number;
+	metadata?: Record<string, string> | null;
+	/** ttl_expire_at in Unix seconds; null fields when the instance has no TTL (OpenAPI InstanceTTL). */
+	ttl?: { ttl_seconds?: number | null; ttl_expire_at?: number | null; ttl_action?: string | null } | null;
+}
+
+/** One snapshot as Morph answers it (OpenAPI SnapshotModel): pending, ready, failed, deleting or deleted. */
+interface MorphSnapshot {
+	id: string;
+	status: string;
+	created?: number;
+	digest?: string | null;
+}
+
+/** The Morph provider's options: the key and ssh2, then the shared adapter's (HostedOptions). */
+export interface MorphProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs"> {
+	/** The account's API key. The caller passes it; this provider never reads it from the environment. */
+	apiKey: string;
+	/** The ssh2 package: the host's own, or anything with the same slice. */
+	ssh2: Ssh2Module;
+	/** The fetch every REST call goes through; default the global one. */
+	fetch?: typeof fetch;
+	/** Morph's REST API; default https://cloud.morph.so/api. */
+	apiUrl?: string;
+	/** Morph's SSH gateway; default ssh.cloud.morph.so, port 22. */
+	sshHost?: string;
+	sshPort?: number;
+	/** The longest lifetime check takes: 24 h by default, an assumed cap (Morph states none: unverified). */
+	maxLifetimeMs?: number;
+	timeouts?: Partial<HostedTimeouts>;
+}
+
+/** What create() takes: the provider's options, ssh2 optional (default the host's ssh2 package). */
+export interface MorphOptions extends Omit<MorphProviderOptions, "ssh2"> {
+	ssh2?: Ssh2Module;
+}
+
+/** Not a literal, so no type checker or bundler resolves ssh2 from this package. */
+const SSH2_PACKAGE: string = "ssh2";
+/** The SDKs' base (api.ts:11 MORPH_BASE_URL) and SSH gateway (api.ts:12-13). */
+const DEFAULT_API_URL = "https://cloud.morph.so/api";
+const DEFAULT_SSH_HOST = "ssh.cloud.morph.so";
+const DEFAULT_SSH_PORT = 22;
+/** An instance id as it reaches a URL and the SSH username, whose ":" ends it. Morph's form, morphvm_<...>, is unverified. */
+const INSTANCE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** A snapshot id, "like snapshot_xxxx" (OpenAPI SnapshotModel.id). */
+const SNAPSHOT_ID = /^snapshot_[A-Za-z0-9_-]{1,120}$/;
+const DAY_MS = 24 * 60 * 60_000;
+/** The image every box snapshot starts from: the default of CreateSnapshotRequest.image_id (OpenAPI). */
+const BASE_IMAGE = "morphvm-minimal";
+/** The box snapshot's size, which is every computer's (a start takes no size): the adapter's default, and 16 GiB of disk. */
+const BOX_SIZE = { vcpus: DEFAULT_CPUS, memory: DEFAULT_MEMORY_MB, disk_size: 16_384 };
+/** The label of a build's own instance and base snapshot, its value the box image's name. */
+const BUILD_LABEL = "agentrun-box-build";
+/** A build (boot, install.sh, snapshot), all of it; and the TTL of its instance, so a build left by a crash ends. */
+const BUILD_MS = 45 * 60_000;
+const BUILD_TTL_S = 2 * 60 * 60;
+/** One REST call of the build, and the pause between two reads of something Morph is making. */
+const BUILD_CALL_MS = 60_000;
+const POLL_MS = 1_000;
+/** How far /ttl's read-back end may sit from the call's now plus its seconds, Morph's rounding and the call's transit aside. */
+const TTL_SLACK_MS = 2_000;
+const RECIPE_FILES = ["install.sh", "agentrun-archil"] as const;
+
+/** An id held to the form above before it reaches a URL or the SSH username: not_found else. */
+function instanceId(id: string): string {
+	if (!INSTANCE_ID.test(id)) throw new HostError("not_found", `${JSON.stringify(id)} is not a Morph instance id`);
+	return id;
+}
+
+/** Morph's error body, FastAPI's: { detail: "<words>" } or { detail: [{ msg }] }, with error_code on snapshot routes (OpenAPI SnapshotWriterError). */
+function detailOf(body: unknown): string {
+	const { detail, error_code: code } = (body ?? {}) as { detail?: unknown; error_code?: unknown };
+	const said = typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((one) => (one as { msg?: unknown })?.msg).filter((msg) => typeof msg === "string").join("; ") : "";
+	return [typeof code === "string" ? code : "", said].filter(Boolean).join(": ");
+}
+
+function codeOf(error: unknown): ComputerErrorCode {
+	if (error instanceof HostError) return error.code;
+	// ssh2 names the stage that failed (lib/client.js): the gateway refused the login, or the handshake timed out.
+	const { level } = (error ?? {}) as { level?: unknown };
+	if (level === "client-authentication") return "denied";
+	if (level === "client-timeout") return "timeout";
+	return "vendor";
+}
+
+/** Morph's statuses (OpenAPI InstanceStatus) as the adapter's states: saving is a snapshot in progress, error is gone. */
+function stateOf(status: string): Machine["state"] | undefined {
+	if (status === "ready") return "running";
+	if (status === "pending" || status === "saving") return "starting";
+	if (status === "paused") return "stopped";
+	if (status === "error") return "gone";
+	return undefined;
+}
+
+/** An instance as the adapter reads a machine: its state (one this provider does not know is gone, in words), labels, start and TTL's end. */
+function machineOf(instance: MorphInstance): Machine {
+	const state = stateOf(instance.status);
+	const why = state === undefined ? `Morph reads the status ${show(instance.status)}, which this provider does not know` : instance.status === "error" ? "Morph reads the instance in error, with no reason given" : undefined;
+	const created = dateOf(instance.created, "s");
+	const ends = dateOf(instance.ttl?.ttl_expire_at ?? undefined, "s");
+	return {
+		id: instance.id,
+		labels: { ...(instance.metadata ?? {}) },
+		state: state ?? "gone",
+		...(created ? { createdAt: created } : {}),
+		...(ends ? { endsAt: ends } : {}),
+		...(why === undefined ? {} : { why }),
+	};
+}
+
+/** Morph's instances as a MachineHost (../host.ts). */
+class MorphHost implements MachineHost {
+	readonly descriptor = MORPH;
+	readonly facts: HostFacts = {
+		daemon: "child",
+		// A VM (docs: concepts/mental-model); the hypervisor is not named.
+		isolation: "vm",
+		// ttl_seconds with ttl_action stop at create, moved by POST /instance/{id}/ttl (docs: documentation/instances/ttl).
+		lifetime: "vendor",
+		// Morph states no cap: the janitor's, unverified.
+		maxLifetimeMs: DAY_MS,
+		// Unverified: no arch in the OpenAPI.
+		arch: "amd64",
+		// The guest's sshd behind the gateway, unverified: the docs name no port inside the VM.
+		vendorAgentPorts: [22],
+	};
+	readonly #client: Rest;
+	readonly #ssh: SshExec;
+	readonly #sshHost: string;
+	readonly #sshPort: number;
+
+	constructor(options: { apiKey: string; ssh2: Ssh2Module; fetch: typeof fetch; apiUrl: string; sshHost: string; sshPort: number }) {
+		const { apiKey } = options;
+		this.#sshHost = options.sshHost;
+		this.#sshPort = options.sshPort;
+		// The gateway takes the key in the username and any public key (the SDKs send a throwaway one): made at first use.
+		let key: string | undefined;
+		const throwaway = () => (key ??= generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs1", format: "pem" } }).privateKey);
+		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: (id) => ({ username: `${id}:${apiKey}`, privateKey: throwaway(), secrets: [apiKey] }), tunnelOf: () => this.#tunnel() });
+		this.#client = rest({
+			base: options.apiUrl,
+			headers: () => ({ Authorization: `Bearer ${apiKey}`, Accept: "application/json" }),
+			vendor: "morph",
+			fetch: options.fetch,
+			timeoutMs: 30_000, // every call gives its own: ctx.timeoutMs
+			explain: ({ status, bytes, what }) => {
+				const said = detailOf(jsonOf(bytes));
+				// 503 is an admission refusal before dispatch (OpenAPI: "Snapshot admission busy", Retry-After: 1).
+				return { ...(status === 503 ? { code: "limit" as const } : {}), message: `${what} answered ${status}${said ? `: ${said}` : ""}` };
+			},
+		});
+	}
+
+	errorCode(error: unknown): ComputerErrorCode {
+		return codeOf(error);
+	}
+
+	/**
+	 * A TCP connection to the gateway. No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's
+	 * AutoAddPolicy); the login is the key in the username either way.
+	 */
+	#tunnel(): SshTunnel {
+		const host = `${this.#sshHost}:${this.#sshPort}`;
+		const socket = tcp(this.#sshPort, this.#sshHost);
+		// ssh2 reads the socket's errors once it has it; this keeps one before then from being thrown.
+		socket.on("error", () => {});
+		const opened = new Promise<void>((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", (error) => reject(new SshTunnelError(`the SSH connection to ${host} failed to open: ${error.message}`)));
+		});
+		opened.catch(() => {});
+		return { duplex: socket, opened, host };
+	}
+
+	/** argv over SSH through the gateway (hosted/ssh-exec.ts), as the user it lands as: root, unverified. */
+	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+		return this.#ssh.exec(instanceId(id), argv, ctx);
+	}
+
+	/** One REST call, bounded by ctx: its JSON answer; a failure throws a HostError in Morph's words. */
+	async #rest<T>(method: "GET" | "POST" | "DELETE", path: string, body: object | undefined, ctx: HostCall): Promise<T> {
+		const answer = orThrow(await this.#client.call(method, this.#client.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: ctx.timeoutMs }, ctx.signal));
+		const parsed = jsonOf(answer.bytes);
+		if (parsed === null && method !== "DELETE") throw new HostError("vendor", `${method} ${path} answered ${answer.status} with no JSON body`);
+		return parsed as T;
+	}
+
+	/** A Morph image is a snapshot id in the key's account; a size is the snapshot's, so cpus and memoryMb are refused. */
+	check(given: Partial<ComputerSpec>): Refusal[] {
+		const refusals = sizeRefusals(given, "a Morph computer", "snapshot");
+		if (typeof given.image === "string" && given.image !== "" && !SNAPSHOT_ID.test(given.image)) {
+			refusals.push({ field: "image", message: "an image is the id of a Morph snapshot in the key's account, such as snapshot_abc123: the box snapshot prepareImage() builds, or one of your own" });
+		}
+		return refusals;
+	}
+
+	/**
+	 * POST /instance (OpenAPI StartInstanceRequest): the snapshot, the labels as metadata, which carry the request's name
+	 * (Morph has no name field and no idempotency key), and the lifetime as a TTL whose action is stop, which releases
+	 * the instance (docs: documentation/instances/ttl). req.egress is left: Morph has no egress control, so the fence and
+	 * the egress proxy are ours. The answer comes before the instance is ready; the adapter polls get.
+	 */
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
+		const made = await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: req.image, metadata: req.labels, ttl_seconds: Math.ceil(req.lifetimeMs / 1000), ttl_action: "stop" }, ctx);
+		if (typeof made?.id !== "string" || !INSTANCE_ID.test(made.id)) throw new HostError("vendor", `POST /instance answered no instance id: ${show(made?.id)}`);
+		return { id: made.id };
+	}
+
+	/** GET /instance/{id}; a 404 is not_found, which the adapter reads as none. What Morph answers for a deleted one is unverified. */
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
+		return machineOf(await this.#rest<MorphInstance>("GET", `/instance/${instanceId(id)}`, undefined, ctx));
+	}
+
+	/**
+	 * GET /instance, the account's every instance in one answer (OpenAPI InstanceModelCollection, no page fields): the
+	 * adapter matches the labels. Its metadata[...] filter is not used: whether a dotted key like agentrun.computer
+	 * survives its deepObject query is unverified, and a filter misread would hide machines.
+	 */
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
+		void labels;
+		const listed = await this.#rest<{ data?: unknown }>("GET", "/instance", undefined, ctx);
+		if (!Array.isArray(listed?.data)) throw new HostError("vendor", "GET /instance answered no data list");
+		return (listed.data as MorphInstance[]).filter((instance) => typeof instance?.id === "string").map(machineOf);
+	}
+
+	/** DELETE /instance/{id}, "Stop and delete" (OpenAPI); a 404 is done. Then this host's SSH connections to it end. */
+	async delete(id: string, ctx: HostCall): Promise<void> {
+		try {
+			await this.#rest("DELETE", `/instance/${instanceId(id)}`, undefined, { timeoutMs: ctx.timeoutMs });
+		} finally {
+			this.#ssh.closeAll(id);
+		}
+	}
+
+	/**
+	 * The TTL moved to endsAt, rounded up to the second and never past the max-deadline label (POST /instance/{id}/ttl),
+	 * then the deadline label to endsAt with the rest of the metadata as it was (POST /instance/{id}/metadata, whose
+	 * merge-or-replace is unverified: the whole map is sent). Whether ttl_seconds counts from now is unverified, so the
+	 * end /ttl answers is held to now plus the seconds: an end elsewhere throws, and the label is not moved.
+	 */
+	async extend(id: string, endsAt: Date, ctx: HostCall): Promise<void> {
+		const path = `/instance/${instanceId(id)}`;
+		const { metadata } = await this.#rest<MorphInstance>("GET", path, undefined, ctx);
+		const labels = { ...(metadata ?? {}) };
+		const most = isoOf(labels[MAX_LABEL]);
+		if (most === undefined) throw new HostError("refused", `${id}'s label ${MAX_LABEL} reads ${show(labels[MAX_LABEL])}, so the most it may live is unknown; nothing moved`);
+		const before = Date.now();
+		const seconds = Math.min(Math.ceil((endsAt.getTime() - before) / 1000), Math.floor((most.getTime() - before) / 1000));
+		if (seconds < 1) throw new HostError("limit", `no whole number of seconds Morph takes moves ${id}'s end to ${endsAt.toISOString()} without passing ${most.toISOString()}; nothing moved`);
+		const moved = await this.#rest<MorphInstance>("POST", `${path}/ttl`, { ttl_seconds: seconds, ttl_action: "stop" }, ctx);
+		const at = (moved?.ttl?.ttl_expire_at ?? Number.NaN) * 1000;
+		if (!(at >= before + seconds * 1000 - TTL_SLACK_MS && at <= Date.now() + seconds * 1000 + TTL_SLACK_MS)) {
+			throw new HostError("vendor", `Morph was asked for a TTL of ${seconds} s on ${id} and reads its end back as ${show(moved?.ttl?.ttl_expire_at)}, not about ${Math.round(before / 1000) + seconds} (Unix s): its TTL does not count from the call, as this provider takes it to`);
+		}
+		await this.#rest("POST", `${path}/metadata`, { ...labels, [DEADLINE_LABEL]: endsAt.toISOString() }, ctx);
+	}
+
+	/** Reads until done answers a value, a pause between reads, until end or signal: a timeout or an abort in words. */
+	async #until<T>(what: string, end: number, signal: AbortSignal | undefined, done: () => Promise<T | undefined>): Promise<T> {
+		for (;;) {
+			const value = await done();
+			if (value !== undefined) return value;
+			if (signal?.aborted) throw new HostError("aborted", `the wait for ${what} was aborted`);
+			if (Date.now() > end) throw new HostError("timeout", `${what} was not ready within ${BUILD_MS / 60_000} minutes`);
+			await pause(POLL_MS, signal);
+		}
+	}
+
+	/** Snapshot id once Morph reads it ready; failed or gone throws in words. */
+	#snapshotReady(id: string, end: number, signal: AbortSignal | undefined): Promise<string> {
+		return this.#until(`the Morph snapshot ${id}`, end, signal, async () => {
+			const { status } = await this.#rest<MorphSnapshot>("GET", `/snapshot/${id}`, undefined, { timeoutMs: BUILD_CALL_MS, ...(signal ? { signal } : {}) });
+			if (status === "ready") return id;
+			if (status !== "pending") throw new HostError("vendor", `the Morph snapshot ${id} is ${show(status)}, not ready`);
+			return undefined;
+		});
+	}
+
+	/**
+	 * The box snapshot of this name (its digest), oldest first: a ready one, or one being made, waited for. One that
+	 * failed, with none other, throws in words. undefined when the account has none.
+	 */
+	async #boxOf(name: string, end: number, signal: AbortSignal | undefined): Promise<string | undefined> {
+		const listed = await this.#rest<{ data?: unknown }>("GET", `/snapshot?digest=${encodeURIComponent(name)}`, undefined, { timeoutMs: BUILD_CALL_MS, ...(signal ? { signal } : {}) });
+		const snapshots = (Array.isArray(listed?.data) ? (listed.data as MorphSnapshot[]) : []).filter((one) => one?.digest === name && SNAPSHOT_ID.test(one.id)).sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
+		const usable = snapshots.find((one) => one.status === "ready") ?? snapshots.find((one) => one.status === "pending");
+		if (usable !== undefined) return this.#snapshotReady(usable.id, end, signal);
+		const failed = snapshots.find((one) => one.status === "failed");
+		if (failed !== undefined) throw new HostError("vendor", `the Morph snapshot ${failed.id} of ${name} failed: delete it in the account, then call again`);
+		return undefined;
+	}
+
+	/**
+	 * The box image as a Morph snapshot in the key's account, its digest the name (agentrun-box-<recipe hash>): found, or
+	 * built once (`building` told first), as PROVIDERS.md's account-built image says. A build makes a base snapshot of
+	 * morphvm-minimal at BOX_SIZE (POST /snapshot), starts an instance from it (POST /instance), runs box/install.sh as
+	 * root over SSH, and snapshots the instance with the digest (POST /instance/{id}/snapshot, synchronous by default),
+	 * with no TTL, so it never expires (OpenAPI SnapshotModel.ttl). The instance is deleted after, and has a TTL of its
+	 * own besides. The base snapshot is kept, with no TTL: whether a snapshot still needs the one its instance started from
+	 * is unverified. install.sh needs apt (morphvm-minimal's distro is unverified) and root.
+	 */
+	async boxSnapshot(name: string, building: () => void, signal: AbortSignal | undefined): Promise<string> {
+		const end = Date.now() + BUILD_MS;
+		const call = { timeoutMs: BUILD_CALL_MS, ...(signal ? { signal } : {}) };
+		const found = await this.#boxOf(name, end, signal);
+		if (found !== undefined) return found;
+		building();
+		const marked = { [BUILD_LABEL]: name };
+		const base = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: marked }, call);
+		await this.#snapshotReady(base.id, end, signal);
+		const vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base.id, metadata: marked, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, call)).id);
+		try {
+			await this.#until(`the build instance ${vm}`, end, signal, async () => {
+				const { state, why } = machineOf(await this.#rest<MorphInstance>("GET", `/instance/${vm}`, undefined, call));
+				if (state === "gone") throw new HostError("vendor", `the build instance ${vm} is gone: ${why ?? "no reason given"}`);
+				return state === "running" ? true : undefined;
+			});
+			const run = async (argv: string[], what: string) => {
+				const ran = orThrow(await runToExit(this, vm, argv, { ms: Math.max(1, end - Date.now()), ...(signal ? { signal } : {}), what }));
+				if (ran.exitCode !== 0) throw new HostError("vendor", `${what} exited with ${ran.exitCode}: ${`${ran.stderr} ${ran.stdout}`.trim().slice(-300)}`);
+			};
+			await run(["mkdir", "-p", "/tmp/agentrun-box"], "the build folder's mkdir");
+			for (const file of RECIPE_FILES) orThrow(await uploadThroughExec(this, vm, `/tmp/agentrun-box/${file}`, await readFile(new URL(`../box/${file}`, import.meta.url)), BUILD_CALL_MS, signal));
+			await run(["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], "box/install.sh");
+			const made = await this.#rest<MorphSnapshot>("POST", `/instance/${vm}/snapshot`, { digest: name, metadata: { "agentrun-box": name } }, { ...call, timeoutMs: Math.max(1, end - Date.now()) });
+			await this.#snapshotReady(made.id, end, signal);
+		} finally {
+			// Its own bound, not the caller's signal: a cancelled build still deletes its instance (its TTL backs this).
+			await this.delete(vm, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
+		}
+		// Another server's build of the same recipe may have finished first: every caller answers the oldest.
+		const box = await this.#boxOf(name, end, signal);
+		if (box === undefined) throw new HostError("vendor", `the box snapshot ${name} was made, then not listed by its digest`);
+		return box;
+	}
+}
+
+/**
+ * A MorphProvider from its options alone; it reads no environment. The key is options.apiKey, nowhere else (serve passes
+ * its MORPH_API_KEY, the conformance module what it reads), and ssh2 is the host's package unless given. Throws in words
+ * when an option is missing or wrong, never echoing a key.
+ */
+export async function create(options: MorphOptions): Promise<MorphProvider> {
+	const { ssh2: given, ...rest } = options ?? ({} as MorphOptions);
+	// ssh2 is CommonJS: its Client is a named export of the module, and of its default.
+	const loaded = given ?? ((await import(SSH2_PACKAGE)) as Partial<Ssh2Module> & { default?: Ssh2Module });
+	const ssh2 = typeof loaded.Client === "function" ? (loaded as Ssh2Module) : (loaded as { default?: Ssh2Module }).default;
+	return new MorphProvider({ ...rest, ssh2: ssh2 as Ssh2Module });
+}
+
+/** The conformance CLI's module for Morph: its live switch, the run's cap, its snapshot and the drifted twin. */
+export const conformance = () => import("./conformance/morph.js");
+
+const fail = failFor(MORPH.id);
+
+/**
+ * Computers that are Morph instances, on the shared adapter. A spec's image is a Morph snapshot id. A server starts
+ * every one from the snapshot prepareImage() answers: our box image, built once in the key's own account.
+ */
+export class MorphProvider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it): the box image as a snapshot of the key's
+	 * account, its digest agentrun-box-<recipe hash>, found or built (MorphHost.boxSnapshot), so a new recipe is a new
+	 * snapshot. ok with the snapshot's id; onWait is told "build" once, before a build, never when the account has one.
+	 */
+	async prepareImage(context: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
+		const name = `agentrun-box-${boxRecipeHash()}`;
+		try {
+			return ok(await (this.host as MorphHost).boxSnapshot(name, () => context.onWait?.("build", name), context.signal));
+		} catch (error) {
+			return fail(codeOf(error), `the box image ${name} as a Morph snapshot: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	constructor(options: MorphProviderOptions) {
+		const { apiKey, ssh2, fetch: fetcher = globalThis.fetch, apiUrl = DEFAULT_API_URL, sshHost = DEFAULT_SSH_HOST, sshPort = DEFAULT_SSH_PORT, timeouts = {}, ...rest } = options ?? ({} as MorphProviderOptions);
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Morph API key, is required: the provider reads no environment, so the caller passes it");
+		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does for Agent37");
+		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
+		let api: URL;
+		try {
+			api = new URL(apiUrl);
+		} catch {
+			throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		}
+		if (api.protocol !== "https:" || api.search !== "" || api.hash !== "") throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		if (typeof sshHost !== "string" || !(DOMAIN.test(sshHost) || isIP(sshHost) !== 0)) throw new Error(`sshHost must be a host name such as ${DEFAULT_SSH_HOST}, not ${JSON.stringify(sshHost)}`);
+		if (!Number.isSafeInteger(sshPort) || sshPort < 1 || sshPort > 65_535) throw new Error(`sshPort must be a TCP port, not ${JSON.stringify(sshPort)}`);
+		super(new MorphHost({ apiKey, ssh2, fetch: fetcher, apiUrl: api.href.replace(/\/+$/, ""), sshHost, sshPort }), { ...rest, timeouts });
+	}
+}
+
+/** The account a key reaches, in words, for the sweep's scope: the key's sha256 prefix, never the key. */
+export function accountOf(apiKey: string, apiUrl: string = DEFAULT_API_URL): string {
+	return `the Morph account of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${apiUrl.replace(/\/+$/, "")}`;
+}
