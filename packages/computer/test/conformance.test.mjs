@@ -394,6 +394,34 @@ test("--concurrency N caps the computers alive at once: a vendor that keeps two 
 	assert.match(one.text, /core FAIL 2\/3/);
 });
 
+test("--concurrency 1: retries of one request share its computer's room, and a computer whose delete failed is never counted gone", async () => {
+	const cases = [
+		pass("health.ping"),
+		pass("provider.retried", {
+			computer: "none",
+			run: async (t) => {
+				const spec = t.spec();
+				const [first, early] = await Promise.all([t.attempt(spec, t.provider, "retried"), t.attempt(spec, t.provider, "retried")]);
+				const late = await t.attempt(spec, t.provider, "retried");
+				assert.deepEqual([first, early, late].map((created) => created.ok && created.value.name), Array(3).fill(first.ok && first.value.name));
+			},
+		}),
+		pass("provider.stuck", { computer: "none", run: async (t) => void (await t.create({ labels: { stuck: "1" } })) }),
+		pass("provider.after", { computer: "none", run: async (t) => void (await t.create()) }),
+		pass("exec.after"),
+	];
+	const out = sink();
+	const code = await main(["--provider", "./fixtures/retried-provider.mjs", "--concurrency", "1"], { stdout: out, cwd: HERE, cases });
+	const text = out.text();
+	assert.equal(code, 1, text);
+	assert.doesNotMatch(text, /✗ provider\.(retried|stuck)/);
+	assert.match(text, /core FAIL 3\/5/);
+	// The stuck computer may still be there: no case makes another past it.
+	assert.match(text, /✗ provider\.after: --concurrency 1 is full: 1 of the run's computers could not be deleted, so no other is made/);
+	assert.match(text, /✗ exec\.after: .*--concurrency 1 is full: 1 of the run's computers could not be deleted, so no other is made/);
+	assert.match(text, /^computers alive at once: 1 at most \(--concurrency 1\)$/m);
+});
+
 test("the CLI as a process: a usage error exits 2; a provider that cannot make a computer fails Core and exits 1", async () => {
 	const run = (args) =>
 		new Promise((resolve) => {

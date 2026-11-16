@@ -158,44 +158,62 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		labels: { ...extra.labels, ...runLabels },
 	});
 	/**
-	 * The computers alive now, each by its role, held from its create's call until its release (or its create made none):
-	 * a create past the cap waits for one to go. `slots` frees each computer's by name at its release.
+	 * The computers alive now, by the request that makes each (its retries share it), with its role: held from the
+	 * request's first create until its computer is deleted, or until its creates settle with none made. One whose delete
+	 * failed is `lost`: it may still be there, so it is never freed. A create past the cap waits for one to go.
 	 */
-	const alive = new Map<symbol, ComputerRole>();
-	const slots = new Map<string, () => void>();
+	const alive = new Map<string, { role: ComputerRole; lost?: true }>();
+	/** Each computer the run made, by name: the request that made it. */
+	const madeBy = new Map<string, string>();
+	/** The creates of each request still unanswered. */
+	const flying = new Map<string, number>();
 	const waiting: Array<() => void> = [];
-	const free = (slot: symbol) => {
-		if (alive.delete(slot)) for (const wake of waiting.splice(0)) wake();
+	const free = (request: string) => {
+		if (alive.delete(request)) for (const wake of waiting.splice(0)) wake();
 	};
-	const release = async (ref: ComputerRef, by: ComputerProvider = provider) => {
+	/** Deletes the computer, its errors in the report; true once it is deleted. */
+	const release = async (ref: ComputerRef, by: ComputerProvider = provider): Promise<boolean> => {
+		let gone = false;
 		try {
 			const released = await within(by.release(ref, "delete"), cleanupTimeoutMs, `release ${ref.name}`);
 			if (released.ok) deleted.add(ref.name);
 			else report.cleanup.errors.push(`release ${ref.name}: ${released.error.code}: ${released.error.message}`);
+			gone = released.ok;
 		} catch (error) {
 			report.cleanup.errors.push(words(error).startsWith(`release ${ref.name}`) ? words(error) : `release ${ref.name} threw: ${words(error)}`);
-		} finally {
-			slots.get(ref.name)?.();
-			slots.delete(ref.name);
 		}
+		const request = madeBy.get(ref.name);
+		if (request !== undefined) {
+			madeBy.delete(ref.name);
+			if (gone) free(request);
+			else if (alive.has(request)) alive.get(request)!.lost = true;
+		}
+		return gone;
 	};
 	/** Whether the case running now uses the run's computer: while it does, the run's computer is not deleted for room. */
 	let usingShared = false;
 	/**
-	 * A slot for one more computer of `role`, under the cap: while none is free, the run's computer makes way when the
-	 * case running doesn't use it, and a case whose own computers (and the run's, which it uses) fill the cap fails in
-	 * words; else the create waits for a computer to be released, or for `signal`.
+	 * Room for `request`'s computer, of `role`, under the cap; a retry of a request that holds room already has it. While
+	 * there is none, the run's computer makes way when the case running doesn't use it (and nothing more is made when it
+	 * can't be deleted); a case whose own computers, the run's computer it uses and those that could not be deleted fill
+	 * the cap fails in words; else the create waits for a computer to be deleted, or for `signal`.
 	 */
-	const hold = async (role: ComputerRole, signal?: AbortSignal): Promise<symbol> => {
-		while (alive.size >= cap) {
+	const hold = async (request: string, role: ComputerRole, signal?: AbortSignal): Promise<void> => {
+		while (!alive.has(request) && alive.size >= cap) {
 			if (sharedRef !== undefined && !usingShared) {
 				const ref = sharedRef;
 				[shared, sharedRef] = [undefined, undefined];
-				await release(ref);
+				if (!(await release(ref))) throw new Error(`the run's computer ${ref.name} could not be deleted to make room, so --concurrency ${cap} lets no other be made`);
 				continue;
 			}
-			if ([...alive.values()].every((held) => held === role || (held === "shared" && usingShared))) {
-				throw new Error(`this case needs more than ${cap} ${cap === 1 ? "computer" : "computers"} alive at once, and --concurrency ${cap} caps them`);
+			const held = [...alive.values()];
+			if (held.every((one) => one.lost || one.role === role || (one.role === "shared" && usingShared))) {
+				const lost = held.filter((one) => one.lost).length;
+				throw new Error(
+					lost > 0
+						? `--concurrency ${cap} is full: ${lost} of the run's computers could not be deleted, so no other is made`
+						: `this case needs more than ${cap} ${cap === 1 ? "computer" : "computers"} alive at once, and --concurrency ${cap} caps them`,
+				);
 			}
 			signal?.throwIfAborted();
 			await new Promise<void>((resolve) => {
@@ -208,22 +226,28 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			});
 			signal?.throwIfAborted();
 		}
-		const slot = Symbol(role);
-		alive.set(slot, role);
+		if (alive.has(request)) return;
+		alive.set(request, { role });
 		report.computers.peak = Math.max(report.computers.peak, alive.size);
-		return slot;
 	};
-	/** create's answer, its slot kept by the computer it made until that computer's release, else freed at once. */
-	const holding = async (slot: symbol, creating: Promise<Result<CreatedComputer>>): Promise<Result<CreatedComputer>> => {
+	/**
+	 * A create of `request`, under the cap (hold): the room it holds is the computer's it made until that computer's
+	 * delete, or is freed once every create of the request has answered with none made.
+	 */
+	const capped = async (request: string, role: ComputerRole, signal: AbortSignal | undefined, create: () => Promise<Result<CreatedComputer>>): Promise<Result<CreatedComputer>> => {
+		flying.set(request, (flying.get(request) ?? 0) + 1);
 		try {
-			const created = await creating;
-			// A retry of one request answers the computer the first attempt made, whose slot it is already.
-			if (created.ok && !slots.has(created.value.name)) slots.set(created.value.name, () => free(slot));
-			else free(slot);
+			await hold(request, role, signal);
+			const created = await create();
+			if (created.ok && !madeBy.has(created.value.name)) madeBy.set(created.value.name, request);
 			return created;
-		} catch (error) {
-			free(slot);
-			throw error;
+		} finally {
+			const left = flying.get(request)! - 1;
+			if (left > 0) flying.set(request, left);
+			else {
+				flying.delete(request);
+				if (![...madeBy.values()].includes(request)) free(request);
+			}
 		}
 	};
 	/** Each computer the run made, by name: its role, "shared" or the id of the case that made it. */
@@ -275,7 +299,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			const stop = new AbortController();
 			const both = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
 			const requestId = `${run}/shared${++made > 1 ? `/${made}` : ""}`;
-			const creating = hold("shared", both).then((slot) => holding(slot, provider.create(spec(), { signal: both, requestId })));
+			const creating = capped(requestId, "shared", both, () => provider.create(spec(), { signal: both, requestId }));
 			let created: Result<CreatedComputer>;
 			try {
 				created = await within(creating, caseTimeoutMs, "create", signal);
@@ -414,7 +438,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		let creates = 0;
 		/** create through by, kept: what it gives is deleted when the case ends, or as it comes after that. */
 		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${run}/${c.id}/${++creates}`) => {
-			const creating = hold(c.id, caseSignal).then((slot) => holding(slot, by.create(whole, { signal: caseSignal, requestId }))).then((created) => {
+			const creating = capped(requestId, c.id, caseSignal, () => by.create(whole, { signal: caseSignal, requestId })).then((created) => {
 				noteCreated(created, c.id);
 				// A retry of one request answers the computer the first attempt made: it is tracked once.
 				if (created.ok && !refs.some((one) => one.ref.id === created.value.id)) track(created.value, by);
