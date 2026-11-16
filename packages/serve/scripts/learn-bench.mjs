@@ -54,9 +54,12 @@ const { parseDocument } = await import(pathToFileURL(createRequire(join(serveDir
 export const SCHEMA = "learning-bench/2";
 const KINDS = ["teach", "repeat", "change", "plant"];
 const JOB_FIELDS = ["template", "parameters", "grants", "fakes", "deny", "harnesses", "steps", "reuse"];
+/** When a learning agent of the bench compiles its job: its definition's `learning.compile_after`, completed runs. A job
+ *  runs about ten steps, so the bench sets it under the default (20) to see a workflow at all. */
+export const COMPILE_AFTER = 5;
 /** How many steps a job that measures workflow reuse (job.yaml `reuse: true`) runs after the step a workflow is compiled
- *  by: the compile turn writes the job as a learned workflow once the agent keeps enough notes or has completed enough
- *  runs (learn/compile.ts COMPILE_AFTER_NOTES, COMPILE_AFTER_RUNS), kept at that step's end and callable from the next. */
+ *  by: the compile turn writes the job as a learned workflow once the agent has COMPILE_AFTER completed runs, kept at
+ *  that step's end and callable from the next. */
 export const REUSE_STEPS = 3;
 const DEFAULT_MODELS = { pi: null, "claude-agent": "anthropic/claude-haiku-5-5" };
 
@@ -228,7 +231,7 @@ async function agentFor(ctx, job, harness, learns) {
   const agent = ok(`reading ${agentId}`, await api("GET", `/agents/${q(agentId)}`));
   const settings = { ...(agent.definition.tool_settings ?? {}) };
   for (const tool of job.deny) settings[tool] = { ...(settings[tool] ?? {}), permission: "deny" };
-  const definition = { ...agent.definition, harness, learning: learns, place: { mode: "runner" }, ...(job.deny.length ? { tool_settings: settings } : {}), ...(model ? { model } : {}) };
+  const definition = { ...agent.definition, harness, learning: learns ? { compile_after: COMPILE_AFTER } : false, place: { mode: "runner" }, ...(job.deny.length ? { tool_settings: settings } : {}), ...(model ? { model } : {}) };
   delete definition.version;
   // `place` and `computer` say one setting two ways: the runner place alone.
   delete definition.computer;

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Banner, Button, Chip, Dialog, Switch } from "@/components/ui";
-import { type Agent, editBody } from "@/lib/agentForm";
+import { type Agent, editBody, learningOn } from "@/lib/agentForm";
 import { type Client, problemOf } from "@/lib/client";
 import { type NativeBinding, nativeReadinessOf, nativeRemoteSource, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
@@ -56,7 +56,7 @@ export function NativeMutationProvider({ children, native }: { children: ReactNo
 export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: Agent; v2: Client; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void }) {
   const native = useContext(NativeReadinessContext) ?? agent.definition.native!;
   const mutations = useNativeMutations();
-  const on = agent.definition.learning === true || agent.definition.learning === "notes";
+  const on = learningOn(agent.definition.learning);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

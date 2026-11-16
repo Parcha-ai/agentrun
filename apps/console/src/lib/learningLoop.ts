@@ -4,10 +4,14 @@
 // .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
 import type { CostRun, LearningCost, LearningLoop, LoopGuard, Promotion, Serving } from "./v2";
 
-/** When a job compiles into a workflow (serve learn/compile.ts COMPILE_AFTER_NOTES, COMPILE_AFTER_RUNS): at this many
- *  active notes, or this many completed runs, with no workflow yet. */
-export const COMPILE_AT_NOTES = 3;
-export const COMPILE_AT_RUNS = 5;
+/** When a job compiles into a workflow (serve learning-setting.ts COMPILE_AFTER_DEFAULT): at this many completed runs
+ *  with no workflow yet, unless the agent's definition sets `learning.compile_after`. */
+export const COMPILE_AFTER_DEFAULT = 20;
+/** The completed runs an agent's job compiles at: its definition's `learning.compile_after`, else the default. */
+export const compileAfterOf = (learning: unknown): number => {
+  const set = typeof learning === "object" && learning !== null ? (learning as { compile_after?: unknown }).compile_after : undefined;
+  return typeof set === "number" && Number.isInteger(set) && set >= 1 ? set : COMPILE_AFTER_DEFAULT;
+};
 /** A takeover's "N times cheaper" needs this many runs after it (serve learning-cost.ts CHEAPER_AFTER_RUNS). */
 export const CHEAPER_AFTER = 20;
 
@@ -193,8 +197,10 @@ export function storyOf(input: {
   mode?: "full" | "notes";
   /** Native runs learn notes/skills; SDK workflows run only through their backend-owned bridge. */
   execution?: "hosted" | "native" | "sdk";
+  /** The completed runs its job compiles at (compileAfterOf the definition's `learning`). */
+  compileAfter?: number;
 }): Stage[] {
-  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full", execution = "hosted" } = input;
+  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full", execution = "hosted", compileAfter = COMPILE_AFTER_DEFAULT } = input;
   const notesOnly = mode === "notes";
   const active = workflows.filter((w) => w.status === "active");
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
@@ -227,9 +233,9 @@ export function storyOf(input: {
   } else if (failedCompile) {
     stages.push({ key: "compiled", title: "Compile", value: "Draft failed", detail: `${failedCompile.attempts.length} ${failedCompile.attempts.length === 1 ? "attempt" : "attempts"}, the checks refused it: it tries again on a later run`, state: "warn" });
   } else if (notesOnly) {
-    stages.push({ key: "compiled", title: "Compile", value: "Notes only", detail: `this agent learns notes only: no workflow compiles from them. Full learning compiles one at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: "later" });
+    stages.push({ key: "compiled", title: "Compile", value: "Notes only", detail: `this agent learns notes only: no workflow compiles from them. Full learning compiles one at ${compileAfter} completed runs`, state: "later" });
   } else {
-    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: execution === "sdk" ? `With workflow learning and backend tool bindings, compilation starts at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs` : `${notes} of ${COMPILE_AT_NOTES} notes, ${Math.min(runs, COMPILE_AT_RUNS)} of ${COMPILE_AT_RUNS} runs: a workflow compiles at ${COMPILE_AT_NOTES} notes or ${COMPILE_AT_RUNS} runs`, state: notes || runs ? "now" : "later" });
+    stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: execution === "sdk" ? `With workflow learning and backend tool bindings, compilation starts at ${compileAfter} completed runs` : `${Math.min(runs, compileAfter)} of ${compileAfter} completed runs: a workflow compiles at ${compileAfter}, then is checked once on those runs' inputs against the agent's own answers`, state: runs ? "now" : "later" });
   }
   if (execution === "sdk") {
     if (!notesOnly) stages.push({ key: "took_over", title: "Use workflow", value: "Backend decides", detail: "Your backend keeps launching each run. The SDK can call accepted workflows through MCP with explicitly bound tools.", state: active.length ? "now" : "later" });

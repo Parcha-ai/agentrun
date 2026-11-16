@@ -12,12 +12,12 @@ import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LoopFeed } from "@/components/LoopFeed";
 import { LoopStory } from "@/components/LoopStory";
-import { compiledInto, storyOf } from "@/lib/learningLoop";
+import { compileAfterOf, compiledInto, storyOf } from "@/lib/learningLoop";
 import { LearningSwitch } from "@/components/LearningSwitch";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Banner } from "@/components/ui/banner";
 import { Input, Textarea } from "@/components/ui/field";
-import { type Agent, editBody, noteSaveError, runsWhere } from "@/lib/agentForm";
+import { type Agent, editBody, learningOn, noteSaveError, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
@@ -153,7 +153,7 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
     );
   };
 
-  const on = agent.definition.learning === true || agent.definition.learning === "notes";
+  const on = learningOn(agent.definition.learning);
   const readOnly = !!agent.archived_at;
   const all = useMemo(() => [...(view?.notes.items ?? []), ...later.items], [view, later.items]);
   const active = all.filter((x) => x.status === "active");
@@ -210,14 +210,14 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
   }, [view, unknown, olderLog.cursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
   // The loop at a glance: notes, the compile, the takeover, the money, where it is unsure; each says what comes next. Its
-  // compile counts completed runs only, as the server's trigger does (learn/compile.ts COMPILE_AFTER_RUNS): the cost
+  // compile counts completed runs only, as the server's trigger does (learn/compile.ts compileDue): the cost
   // series' total counts failed and cancelled runs too. The newest runs read hold enough: the count stops at the threshold.
   const execution = agent.definition.native ? "native" : backendSdkOf(agent.definition) ? "sdk" : "hosted";
   const story = storyOf({
     notes: active.length, compiledNotes: all.filter((x) => x.status !== "retired" && compiledInto(x.text) !== null).length,
     runs: runs.filter((r) => r.status === "completed").length, workflows, cost, promotions, serving, loop,
     mode: agent.definition.learning === "notes" ? "notes" : "full",
-    execution,
+    execution, compileAfter: compileAfterOf(agent.definition.learning),
   });
 
   const frame = (content: ReactNode) => <div className="space-y-3">
@@ -443,7 +443,7 @@ function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { a
     setShown(null); setBusy(false);
   };
   return (
-    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? (agent.definition.learning === true || agent.definition.learning === "notes")} onChange={(v) => void flip(v)}
+    <LearningSwitch id={`learns-${agent.agent_id}`} className="px-4 py-4" quiet={quiet} checked={shown ?? learningOn(agent.definition.learning)} onChange={(v) => void flip(v)}
       busy={busy} disabled={disabled} server={server}
       problem={trouble ? <ProblemCard problem={failed(trouble, "the agent", "Learning was not changed.")} className="mt-2" /> : null} />
   );

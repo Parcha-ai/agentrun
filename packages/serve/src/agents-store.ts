@@ -10,6 +10,7 @@ import { agentLink } from "./console-links.js";
 import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
 import { harnessOfBody } from "./harness.js";
+import { type LearningSetting, learningSettingIssue } from "./learning-setting.js";
 import { storedHarness } from "./harness-table.js";
 import {
   AgentBodyInvalid, type AgenticBody, RevisionMoved, type AgentRow, bodyOf, canonical, isObject, type NewRevision, type RevisionBodyInput,
@@ -128,7 +129,8 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
-  const learning = typeof definition.learning === "boolean" || definition.learning === "notes" ? { learning: definition.learning as boolean | "notes" } : {};
+  // true, false, "notes" or the loop's numbers (learning-setting.ts), checked by validate.ts and again by the body.
+  const learning = definition.learning !== undefined && learningSettingIssue(definition.learning) === undefined ? { learning: definition.learning as LearningSetting } : {};
   return {
     kind: "agentic",
     instructions: definition.instructions as string,

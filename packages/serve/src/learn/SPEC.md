@@ -128,10 +128,26 @@ Which runs are asked: a run of an agent whose learning is `"notes"` is asked its
 an agent with `learning: true` (one that compiles workflows) is asked it only when its owner gave feedback on the run (a
 grade's words, or a message after its first); without it nothing is asked and $0 is spent looking back, and a compile
 turn that is due is asked alone. An SDK task carries no owner feedback, so its runs learn through the compile turn
-alone. The compile turn asks for the first workflow when the notes and runs say it is due, and
-for a revision of one only when its promotion record holds it (a replay under the bar, or graded runs under the agent's
-accuracy), once per hold. A hand-back, a stop by the money rule and a wrong grade of a served run ask for none: each is
-one sample, and the hold reads it among the workflow's others.
+alone. The compile turn asks for the first workflow once the agent has its definition's `learning.compile_after` completed
+runs of its own (20 by default; a run its learned workflow answered alone and a check's replay run are not counted), and
+for a revision of one only when its promotion record holds it, once per hold. A hand-back, a stop by the money rule and a
+wrong grade of a served run ask for none: each is one sample, and the hold reads it among the workflow's others.
+
+Promote once: a new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first
+run that lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each,
+at workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
+own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of the inputs it ran on, `alone` is the share
+it answered with no escalate and no failed step (a replay reads guards record-only and records a judge's escalate instead
+of obeying it, so an input one of them would hand back at its serving threshold is no answer alone), and `agreement` the
+share of those that say what the agent said. A newer revision that comes while a check runs waits and records nothing;
+the claim after the running check is decided starts the newest. It is
+promoted (source `check`) when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
+(0.7). Under either bar it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on
+as data (each one's input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked
+the same way. Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or
+its owner acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that
+stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades, a refit or a queued revision. With no input it fits, it
+is promoted on its passing dry run (`n` 0).
 
 When a run ends, its end-of-run turn answers with the notes it would keep, one ` ```note <file>.md ` block each
 (`reflectPrompt`, `parseReflection`), and, only when the work repeats, one skill in a ` ````skill <name> ` block (four

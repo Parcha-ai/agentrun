@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import type { NativeBinding } from "../native/types.js";
 import { nativeBindingOf } from "../native/binding.js";
+import { type LearningSetting, learningSettingIssue, learningSettingOf } from "../learning-setting.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
 export class AgentBodyInvalid extends Error {
@@ -64,13 +65,13 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  priced by usage (held at monid's estimate). Stamped by the save (server.ts saveable), never shown in a definition. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
 export type SdkBinding = { runtime: "claude-agent-sdk" | "codex-sdk" };
-export type AgenticBody = { sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
+export type AgenticBody = { sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
+  | { kind: "agentic"; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
   | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
@@ -147,7 +148,10 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
-    if (input.learning !== undefined && typeof input.learning !== "boolean" && input.learning !== "notes") invalid("learning is not true, false or \"notes\"");
+    if (input.learning !== undefined) {
+      const wrong = learningSettingIssue(input.learning);
+      if (wrong) invalid(wrong);
+    }
     if (input.inputSchema !== undefined && !isObject(input.inputSchema)) invalid("the inputSchema is not a JSON object");
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
     if (input.checkout !== undefined && input.checkout !== "pull_request") invalid("the checkout is not pull_request");
@@ -165,7 +169,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
       ...(input.thinking !== undefined ? { thinking: input.thinking } : {}),
       ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}),
       ...host,
-      ...(input.learning !== undefined ? { learning: input.learning } : {}),
+      ...(input.learning !== undefined ? { learning: learningSettingOf(input.learning) } : {}),
       // The JSON Schema each run's input meets (definition.input_schema), checked at every start (validate.ts inputSchemaOf).
       ...(input.inputSchema !== undefined ? { inputSchema: structuredClone(input.inputSchema) } : {}),
       // The JSON Schema its final answer's structured part meets (definition.output_schema): a completed run's result.output.

@@ -8,6 +8,7 @@ import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
 import { APPROVALS } from "./approvals.js";
 import { schemaCheck } from "./answer-json.js";
+import { learningSettingIssue } from "./learning-setting.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** An inline agent's source or kind in its external reference (POST /runs): no colon, which the reference's key splits on. */
@@ -106,7 +107,11 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   }
   if (d.learning !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: only an agentic run reflects on its work.", `Remove ${at}.learning.`));
-    else if (typeof d.learning !== "boolean" && d.learning !== "notes") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true, false or "notes": true learns notes, skills and workflows, "notes" notes and skills alone`));
+    else {
+      // true learns notes, skills and workflows, "notes" notes and skills alone; an object is on, with the loop's numbers.
+      const wrong = learningSettingIssue(d.learning, `${at}.learning`);
+      if (wrong) out.push(issue(`${at}.learning`, "wrong_type", wrong));
+    }
   }
   // An agentic revision's structured answer: the JSON Schema its final answer's last fenced json block meets, read into a
   // completed run's result.output (answer-json.ts structuredAnswer). A workflow's output is its workflow's own.
