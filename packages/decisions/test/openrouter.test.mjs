@@ -312,23 +312,15 @@ test("priceOf: a catalog that answers 200 with no list of models is one that can
   assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers a list");
 });
 
-test("a request to OpenRouter's own origin carries AgentRun's app attribution (the DSL's one helper); a gateway at another baseURL gets none; AGENTRUN_OPENROUTER_ATTRIBUTION=off sends none", async () => {
-  const sent = async (over, env) => {
+test("app: its url, title and categories go as HTTP-Referer, X-OpenRouter-Title and X-OpenRouter-Categories; no app sends none, and never a visibility", async () => {
+  const sent = async (over) => {
     const { fetch, seen } = fakeFetch([answered()]);
-    const saved = process.env.AGENTRUN_OPENROUTER_ATTRIBUTION;
-    if (env !== undefined) process.env.AGENTRUN_OPENROUTER_ATTRIBUTION = env;
-    try {
-      await judgeFromProvider(openrouterProvider({ ...settings, ...over, fetch }))({ label: 'x', kind: 'judge', state: { claim: 'c' }, questions: QUESTIONS });
-    } finally {
-      if (saved === undefined) delete process.env.AGENTRUN_OPENROUTER_ATTRIBUTION; else process.env.AGENTRUN_OPENROUTER_ATTRIBUTION = saved;
-    }
+    await judgeFromProvider(openrouterProvider({ ...settings, ...over, fetch }))({ label: 'x', kind: 'judge', state: { claim: 'c' }, questions: QUESTIONS });
     const headers = seen[0].init.headers;
     return Object.fromEntries(['HTTP-Referer', 'X-OpenRouter-Title', 'X-OpenRouter-Categories', 'X-OpenRouter-App-Visibility', 'X-Title'].flatMap((name) => (name in headers ? [[name, headers[name]]] : [])));
   };
-  const attributed = { 'HTTP-Referer': 'https://github.com/Parcha-ai/agentrun', 'X-OpenRouter-Title': 'AgentRun', 'X-OpenRouter-Categories': 'cloud-agent,personal-agent' };
-  assert.deepEqual(await sent({ baseURL: undefined }), attributed);
-  assert.deepEqual(await sent({ baseURL: 'https://openrouter.ai/api' }), attributed);
-  assert.deepEqual(await sent({}), {}, 'a gateway (fake.invalid) gets none');
-  assert.deepEqual(await sent({ baseURL: undefined }, 'off'), {});
-  assert.deepEqual(await sent({ baseURL: undefined, app: { url: 'https://my-app.example', title: 'My app' } }), { 'HTTP-Referer': 'https://my-app.example', 'X-OpenRouter-Title': 'My app' }, "a caller's own app in place of AgentRun's");
+  const app = { url: 'https://github.com/Parcha-ai/agentrun', title: 'AgentRun', categories: 'cloud-agent,personal-agent' };
+  assert.deepEqual(await sent({ app }), { 'HTTP-Referer': app.url, 'X-OpenRouter-Title': 'AgentRun', 'X-OpenRouter-Categories': 'cloud-agent,personal-agent' });
+  assert.deepEqual(await sent({ app: { url: 'https://my-app.example', title: 'My app' } }), { 'HTTP-Referer': 'https://my-app.example', 'X-OpenRouter-Title': 'My app' }, 'only the parts set');
+  assert.deepEqual(await sent({}), {}, 'no app, no attribution');
 });

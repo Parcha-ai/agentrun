@@ -40,9 +40,8 @@ export interface ParallelOptions {
   /** Whether citations carry their passages (default true). */
   includeExcerpts?: boolean;
   /** Parallel's Decisions model through OpenRouter (`parallel/decisions-<mode>` on POST /api/v1/systemone) instead of
-   *  Parallel's API: the OpenRouter key (else OPENROUTER_API_KEY), its root and app attribution (absent: AgentRun's). The
-   *  same provider: the same questions and limits, the same evidence shape (OpenRouter's url_citation annotations), the
-   *  cost OpenRouter reports. */
+   *  Parallel's API: the OpenRouter key (else OPENROUTER_API_KEY), its root and app attribution. The same provider: the same
+   *  questions and limits, the same evidence shape (OpenRouter's url_citation annotations), the cost OpenRouter reports. */
   openrouter?: Pick<OpenRouterOptions, "apiKey" | "baseURL" | "app">;
 }
 

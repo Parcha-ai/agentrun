@@ -42,10 +42,6 @@
       "types": "./dist/host/index.d.ts",
       "default": "./dist/host/index.js"
     },
-    "./openrouter-app": {
-      "types": "./dist/openrouter-app.d.ts",
-      "default": "./dist/openrouter-app.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
