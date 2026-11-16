@@ -89,6 +89,35 @@ test("renewMany renews every held claim in one transaction, and answers a fenced
   assert.equal((await store.runs.get("run-2")).runner, "runner-b", "nothing written to the fenced run");
 });
 
+// SQLite bounds how deep one statement's expression may be (1,000). A renew whose statement grew with its batch failed at
+// about 1,000 claims, so a runner of that many loops could never renew: a batch at and past that renews every claim.
+test("renewMany renews every claim of a runner holding 1,000 runs, and 1,001", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const count = 1_001;
+  for (let i = 0; i < count; i++) await queued(store, `run-${String(i).padStart(4, "0")}`);
+  const claims = await store.runs.claimMany("runner-a", count, { leaseMs: 60_000 });
+  assert.equal(claims.length, count, "every queued run claimed");
+  for (const batch of [claims.slice(0, 1_000), claims]) {
+    const renewed = await store.renewMany(batch, { leaseMs: 30_000 });
+    assert.equal(renewed.length, batch.length);
+    assert.deepEqual(renewed.filter((result) => result instanceof Fenced).map((result) => result.runId), [], `none of ${batch.length} answered Fenced`);
+    assert.ok(renewed.every((result) => result.until === clock.now + 30_000), `each of ${batch.length} renewed to the new lease`);
+  }
+});
+
+// The store writes text without NUL (dialect.ts cleanText: U+FFFD in its place), a runner's name included. A renew matches
+// what the database returns to each claim as the database wrote it: a runner named with a NUL is renewed, not stopped.
+test("renewMany answers a claim whose runner's name holds a NUL renewed, never Fenced", async (t) => {
+  const { store, clock } = await storeOn(t);
+  for (const id of ["run-1", "run-2"]) await queued(store, id);
+  const claims = [await store.claim("run-1", "runner\u0000a", { leaseMs: 60_000 }), await store.claim("run-2", "runner-b", { leaseMs: 60_000 })];
+  const renewed = await store.renewMany(claims, { leaseMs: 30_000 });
+  for (const [i, result] of renewed.entries()) {
+    assert.ok(!(result instanceof Fenced), `${claims[i].runId} renewed, not answered Fenced: ${result}`);
+    assert.equal(result.until, clock.now + 30_000, `${claims[i].runId} renewed to the new lease`);
+  }
+});
+
 // A runner's claim of a full batch and its renew of everything it holds are each a few round trips to the database, never
 // one or two a run: with the database 5 ms away each way (a round trip of 10 ms or more), one a run is at least 3 s for
 // 300, and a renew's round trips add up to the runner's claim deadline (its lease less its margin) as the database slows.
