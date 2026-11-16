@@ -640,6 +640,8 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
+- **ffmpeg.** The image has Debian's `ffmpeg`, which records an agent's screen where its computer says `record: true`
+  ([A video of each run](#computers)).
 
 <a id="boxes"></a>
 
@@ -733,6 +735,28 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+**A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
+screen during each of the agent's runs. Off by default; a desktop or a phone only (another kind is 422).
+
+- **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
+  any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
+  you would be fine to keep and share.
+- **What it records.** The screen while the run holds its computer: from the claim's attach until the computer's
+  release or the run's end. A parked run's recording pauses and goes on in a new file when the run resumes. At most 10
+  frames a second, 1280 pixels on the long side, no sound, H.264 in fragmented MP4, so a file cut short still plays.
+  Each frame is stamped with the time it came, so the video plays at the screen's own pace. The recorder watches the screen on a connection of its own, so it
+  records with no viewer open, and it never holds up the live view or the agent: a frame that comes while the encoder is
+  still busy replaces the one waiting.
+- **Where it goes.** `recordings/<computer>.mp4` in the run's folder on the machine that runs it
+  (`<data>/disk/agents/<agent>/runs/<run>/recordings`, beside the run's `work/` folder, never in it, so the agent can't
+  read or change it). It is kept with the run's files. A phone whose frames change from PNG to JPEG, and a resumed run,
+  go on in `<computer>-2.mp4` and so on.
+- **Its caps.** 500 MB or 2 hours across a run's files, whichever comes first. At a cap the recording stops, and the
+  run's timeline says so. So does an encoder that stops by itself (a crash, a full disk) or a screen that stops
+  answering. The run itself never fails because of its recording.
+- **It needs ffmpeg** on the server's `PATH` (the published image has it). A server without it refuses `record: true`
+  when the agent is saved, with 422 `not_allowed` naming the fix.
 
 #### A person's own computer
 
