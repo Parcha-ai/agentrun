@@ -160,31 +160,6 @@ export function closedSocketsOf(output: string): string[] {
 const LOG_SCRIPT = ["# agentrun-computer: log", "l=$1", ROOT, '$p tail -c 2000 "$l" 2>/dev/null || true'].join("\n");
 
 /**
- * Where a machine of a host that keeps no labels (HostFacts.labels "machine") holds its label map, as JSON. Under
- * /var/lib, on the machine's disk, so it outlives a restart: /run is a tmpfs, and /run/agentrun is the daemon user's.
- * In a directory root's alone (0700), so the computer's user can neither read nor change it.
- */
-export const LABEL_FILE = "/var/lib/agentrun/labels.json";
-
-/**
- * The label file, as root. With write <bytes>, that many bytes of stdin replace it, read by length so no end of stdin
- * is needed: written to a file of its own beside it (two writers never share one) and renamed in, 0600 in a 0700
- * directory, both root's. Then it prints the file; exit 3 when there is none.
- */
-const LABELS_SCRIPT = [
-	"# agentrun-computer: labels",
-	"f=$1",
-	ROOT,
-	'if [ "${2-}" = write ]; then',
-	`\t$p sh -c 'umask 077; d=\${0%/*}; mkdir -p "$d" && chown 0:0 "$d" && chmod 700 "$d" && t=$(mktemp "$0.XXXXXX") || exit 5; head -c "$1" >"$t" && [ "$(wc -c <"$t")" -eq "$1" ] && mv -f "$t" "$0" || { rm -f "$t"; exit 5; }' "$f" "$3" || exit 5`,
-	"fi",
-	`exec $p sh -c '[ -e "$0" ] || exit 3; exec cat "$0"' "$f"`,
-].join("\n");
-
-/** The label file's read, or given the byte length of the JSON on stdin, its write and then its read. */
-export const labelsCommand = (bytes?: number): string[] => argvOf(LABELS_SCRIPT, [LABEL_FILE, ...(bytes === undefined ? [] : ["write", String(bytes)])]);
-
-/**
  * A pid1 machine's main process: waits, bounded, for the daemon this create installed to be moved into place executable
  * (the marker beside it, `<daemon>.installed`, holds this create's nonce: a daemon the image had at the path, or one an
  * earlier install left, has none, or another, and is never started), then becomes it with exec, so init is the machine's main process and the machine ends when init does. It starts init as start does a

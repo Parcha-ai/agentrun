@@ -75,23 +75,6 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   The GPUs are compared likewise: the hosted adapter records them at create in the label `agentrun.computer.gpu`
   (`<type>:<count>`), on every vendor, so a retry asking a GPU finds a computer made without one, or the other way
   round, refused `exists`.
-- A vendor that keeps no labels (the host's `facts.labels` is `"machine"`) gets the name as its machine's own name,
-  and the adapter writes the labels as JSON to a root-only file in the machine (`/var/lib/agentrun/labels.json`, 0600
-  in a 0700 directory) once it runs. Between the vendor's answer and that write, a machine of the request's name with
-  no file is the request's. Until it is older than any create could take to write it (two creates' bounds, a listing,
-  a read and the write, plus five minutes: 11.5 minutes on the default timeouts), another create of the request may
-  still be making it. A retry that lists it waits for its labels as for a computer still starting, and a sweep of the
-  name leaves it. Once it is older, a retry is refused `exists` and deletes it, as a sweep does. One whose vendor reads
-  no `createdAt` is never old enough: the vendor's timer ends it, which is why such a host must declare
-  `lifetime: "vendor"`. It has no `extend`: the most a computer may live would be read from inside it. Only a missing
-  file reads as no labels. A read that fails, or doesn't end within its own bound, leaves that machine out of that
-  listing, said in words with its id; the next listing reads it again, and the vendor's timer ends it either way. A
-  listing by the request's name is the exception: what it finds, of that name or of none, may be the request's own, so
-  a read that fails fails the listing, and a retry never makes a second. The file is read only in a machine whose
-  vendor record shows our image: the provider's `image` option, or a box image by its name (`isBoxImage`, any recipe
-  hash, so an older release's machines are still found). Another image's machine is never run in, and one that shows
-  no image is left out, in words; a spec of another image is refused. The Core case `isolation.label-file` checks that
-  the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
@@ -223,7 +206,7 @@ adapter calls `end()` at once for a command it gives no input, such as the daemo
   timeout on the stream, are off.
 - **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and
   `end()` gives stdin end of file where the vendor has one, and otherwise does nothing: nothing the adapter runs waits
-  for end of file (the upload and the label file's write read their length, a root command's input is one line, the
+  for end of file (the upload reads its length, a root command's input is one line, the
   bridge ends by `kill()`).
   `kill()` ends the process in the machine, not only the streams: a wrapper that records its pid for a second exec to
   kill is enough.
@@ -258,7 +241,7 @@ refuses to start, so the adapter doesn't fit.
 
 A host whose facts say `connect: "dial"` has no `exec` and no `upload`: descriptor, facts, `create`, `get`, `list`
 and `delete`, with `errorCode`, `extend` and `check` optional. The constructor refuses one with `exec` or `upload`,
-with `labels: "machine"` (read through exec), or for kind `desktop` (the machine's init has no display), in words.
+or for kind `desktop` (the machine's init has no display), in words.
 `HostedProvider` takes `dial: { url, tokens, hub }`: the server's public address (`AGENTRUN_PUBLIC_URL`), its
 `MachineTokens` and its `AttachHub`. Then:
 
