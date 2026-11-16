@@ -250,6 +250,22 @@ test('a question whose own images do not fit its room is refused, whatever the o
     (error) => error.requestDiagnostic?.reason === 'over_context');
 });
 
+test('a question named __proto__ and no images is sent uncut: its name reads no inherited object', async () => {
+  const sent = [];
+  const client = {
+    async systemOne(request) {
+      sent.push(request);
+      return { model: 'jev-1.14.0', answers: JSON.parse('{"__proto__": {"type": "noul", "noul": 0.9}}'), usage: { input_tokens: 10, output_tokens: 0 } };
+    },
+  };
+  const run = createJevRunner({ client, longContext: false });
+  const questions = JSON.parse('{"__proto__": {"type": "noul", "instructions": "Does it show a refund policy?"}}');
+  const state = { merchant: 'Example Outfitters' };
+  await run({ label: 'policy', state, questions });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].state, state);
+});
+
 test("a cut request that fails hands the recorder the state it was sent, so the saved request size is what was sent", async () => {
   const sent = [];
   const lost = async (_url, init) => { sent.push(JSON.parse(init.body)); return json({}, 502); };
