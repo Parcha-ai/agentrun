@@ -4,20 +4,20 @@
 // The renderer and the hearing keep their words; only where the entries come from changes.
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
-import type { EntryLike, TimelineEvent, TimelineOptions } from "../timeline/index.js";
-import { CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
+import type { EntryLike, SideSpend, TimelineEvent, TimelineOptions } from "../timeline/index.js";
+import { CALL_ENDED_WITH_RUN, CALL_REFUSED, CAPS, costLabel, endedOnTurnEndingTool, FEEDBACK_SUFFIX, isFeedbackRow, isMessageRow, timelineOf, TOOL_COST, toolCallWords } from "../timeline/index.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { Hearing } from "../heard.js";
 import { redactedAnswer } from "../key-refusal.js";
-import { LEARNED_NODES, LEARNED_NODES_MAX } from "../learned-nodes.js";
+import { LEARNED_NODES_MAX, learnedCallEntries } from "../learned-nodes.js";
 import { type ComputerCallRecord, computerCallsOf, shownName } from "../computer-calls.js";
 import { labelled, type Reflect, reflects } from "../reflect-range.js";
 import { reflectRanges } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
-import { bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
+import { bookedSpend, cliModelWorked, costIsBooked, costWordsOf } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
 import { mcpNameOf, mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
@@ -72,7 +72,7 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
     }
     // A call: shown as a model's call, never counted as a model request (the booking counts those: bookedUsage).
     if (entry.kind === KINDS.callStart) {
-      return { ...entry, kind: "pi.assistant", recordedCall: true, model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
+      return { ...entry, kind: "pi.assistant", recordedCall: true, ...(typeof data.parent === "string" ? { parentCall: data.parent } : {}), model: [{ role: "assistant", stopReason: "tool_use", content: [{ type: "toolCall", id: String(data.callId ?? ""), name: String(data.tool ?? "tool"), arguments: data.input ?? {} }], ...timestamp }] };
     }
     if (entry.kind === KINDS.callEnd) {
       // A call that did not finish done is an error result, as a failed pi tool call is; its output is the result's text. One
@@ -83,7 +83,10 @@ export function piShaped(entries: readonly EntryLike[]): EntryLike[] {
       // One refused before it ran (its gate's deny, a person's, an approval the run ended without) carries pi's refusal
       // mark, so its rows read refused, as pi's do, never as a call that ran and failed.
       const refused = data.status === "refused" ? { details: { [CALL_REFUSED]: true } } : {};
-      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...timestamp }] };
+      // One the run's end closed, nothing having ended it (`withRun`), carries that mark: it reads interrupted with no
+      // outcome, never as a call that failed.
+      const withRun = data.status === "interrupted" && data.withRun === true ? { details: { [CALL_ENDED_WITH_RUN]: true } } : {};
+      return { ...entry, kind: "pi.tool-result", model: [{ role: "tool", toolCallId: String(data.callId ?? ""), content, ...(failed ? { isError: true } : {}), ...refused, ...withRun, ...timestamp }] };
     }
     return entry;
   });
@@ -220,7 +223,11 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // settles that turn's message aborted, before the runner books what the abort cut (its request's end mark comes once the
   // session's proxy sees its upstream end). Its cost reads that turn the same way, the request it cut a charge with no
   // price, never one in flight: never the known sum as its cost while the run reads stopped.
-  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}) };
+  // A pi run's side calls join its usage row's count and cost in the renderer, by the rule its answers are counted by
+  // (sideOf); a run whose cost is its booking's (costIsBooked) has its usage row from that booking (bookedUsage).
+  const booked = costIsBooked(entries, cli);
+  const side = booked ? undefined : sideOf(entries);
+  const read = { ...options, ...(cwd ? { path: inWorkspace(cwd.cwd) } : {}), ...(!options.settled && turnCutOf(records, reflect) ? { turnCut: true } : {}), ...(side ? { side } : {}) };
   // Shaped on pi too: its own entries pass through as they are, and the calls its tools nested (on the loop's record) read
   // as a CLI's calls do. A grade's feedback round's words read as the reviewer's message (withFeedback), marked as no
   // message of the job's (feedbackMarked).
@@ -231,7 +238,7 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
   const hashed = hashedMcp(catalog?.values() ?? []);
   const rendered = hashed.size ? render(hashed) : first;
-  const rows = costIsBooked(entries, cli) ? bookedUsage(rendered, entries, options) : withSideUsage(rendered, entries);
+  const rows = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries);
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
 }
 
@@ -292,16 +299,16 @@ function withComputerCalls(rows: TimelineEvent[], entries: readonly EntryLike[],
 }
 
 /** `rows` with each learned_workflow call's result row carrying the nodes its workflow ran (`learned_nodes`), from the
- *  LEARNED_NODES entry the call kept beside itself (learned-workflow.ts), joined by the call's id: each label through
- *  `redact` when given (the run's cut), as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
+ *  LEARNED_NODES entry that counts for the call (learned-nodes.ts learnedCallEntries: a rerun refused before any node ran
+ *  leaves the attempt before it showing), joined by the call's id: each label through `redact` when given (the run's cut),
+ *  as every text a row shows; never a node's error text. Rows of a run that ran none are as they were. */
 function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], redact?: (text: string) => string): TimelineEvent[] {
   const traces = new Map<string, NonNullable<TimelineEvent["learned_nodes"]>>();
   const said = (text: string) => (redact ? redact(text) : text);
-  for (const entry of entries) {
-    if (entry.kind !== LEARNED_NODES) continue;
-    const data = (entry.data ?? {}) as { call?: unknown; nodes?: unknown };
-    if (typeof data.call !== "string" || !Array.isArray(data.nodes)) continue;
-    traces.set(data.call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
+  for (const [call, index] of learnedCallEntries(entries)) {
+    const data = (entries[index]!.data ?? {}) as { nodes?: unknown };
+    if (!Array.isArray(data.nodes)) continue;
+    traces.set(call, data.nodes.slice(0, LEARNED_NODES_MAX).flatMap((node) => {
       const one = (node ?? {}) as { label?: unknown; kind?: unknown; status?: unknown; duration_ms?: unknown; model?: unknown; tier?: unknown };
       if (typeof one.label !== "string" || typeof one.status !== "string") return [];
       // A model node's model and tier, each through the run's cut as the label is.
@@ -316,27 +323,22 @@ function withLearnedNodes(rows: TimelineEvent[], entries: readonly EntryLike[], 
 /** A usage row's cost when every model request went to a free model (its known price $0 for every token): $0, and why. */
 export const FREE_COST = "$0 · free model";
 
-/** A pi run's `rows` with its side calls in its usage row: the requests its session booked that no answer of pi's carries
- *  (a learned workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), at what they were
- *  booked at, unknown when one's price is, beside the answers the renderer counted. Their requests join its count; its
- *  words are the renderer's, figures changed. A run whose every request its booking marked free (bookedSpend's `free`)
- *  and that cost $0 says why (FREE_COST). A run with neither is as rendered. */
-function withSideUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
+/** A pi run's side calls, for its usage row: the requests its session booked that no answer of pi's carries (a learned
+ *  workflow's nodes, a request on another model: runner/metrics.ts bookedSpend "side"), their count and their cost's
+ *  parts, which the renderer joins to the answers it counts by the one rule (timeline SideSpend). None: undefined. */
+function sideOf(entries: readonly EntryLike[]): SideSpend | undefined {
   const side = bookedSpend(entries, "side");
-  const free = bookedSpend(entries, "model").free === true;
+  return side.requests ? { requests: side.requests, known: side.known, bounded: side.bounded, atMost: side.atMost, unpriced: side.unpriced } : undefined;
+}
+
+/** A pi run's `rows` whose every request its booking marked free (bookedSpend's `free`) and that cost $0: its usage row
+ *  says why (FREE_COST). Any other is as rendered. */
+function withFreeUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike[]): TimelineEvent[] {
   const at = rows.findLastIndex((row) => row.kind === "usage");
-  if ((!side.requests && !free) || at < 0) return [...rows];
-  const row = rows[at]!;
-  const own = row.usage ?? { usd: 0, requests: 0 };
-  const known = (own.usd ?? own.so_far_usd ?? 0) + side.known;
-  const unpriced = (own.usd === null ? (own.unpriced ?? 0) : 0) + side.unpriced;
-  const usd = unpriced ? null : Math.round(known * 1e6) / 1e6;
-  const requests = own.requests === null ? null : own.requests + side.requests;
-  const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
-  const spent = usd === 0 && free ? FREE_COST : usd !== null ? dollars(usd) : `${dollars(Math.round(known * 1e6) / 1e6)} known, ${unpriced} not priced,`;
-  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over \d+ model requests?/, `$1: ${spent} over ${requests === null ? "an unknown number of" : requests} model request${requests === 1 ? "" : "s"}`);
-  const usage = { usd, requests, ...(usd === null ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...(own.not_metered ? { not_metered: own.not_metered } : {}), ...(usd === 0 && free ? { free: true as const } : {}) };
-  return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
+  const row = rows[at];
+  if (!row || row.usage?.usd !== 0 || bookedSpend(entries, "model").free !== true) return [...rows];
+  const summary = (row.summary ?? "").replace(/^([^:]+): .+? over /, `$1: ${FREE_COST} over `);
+  return rows.map((each, i) => (i === at ? { ...row, summary, usage: { ...row.usage!, free: true as const } } : each));
 }
 
 /** A CLI or workflow run's `rows` with its usage row in its booking's words (runner/metrics.ts bookedSpend over every
@@ -360,12 +362,14 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
     const last = kept[kept.length - 1]!;
     return [...kept, { ...last, id: `${last.conversation_id ?? 0}:usage`, kind: "usage", summary: "no model request sent", agent_label: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, usage: { usd: 0, requests: 0 } }];
   }
-  const usd = unbooked || model.usd === null || paid.usd === null ? null : model.usd + paid.usd;
-  const unpriced = model.unpriced + paid.unpriced + (unbooked ? 1 : 0);
+  // Its model requests' and paid tool calls' parts, joined by the kernel's one rule (costWordsOf): a cut request at its
+  // hold keeps its bound on a known sum ("at most"), and joins no known part of an unknown one.
+  const cost = costWordsOf([model, paid], unbooked ? 1 : 0);
+  const usd = cost.usd;
   // Every model request on a free model, booked so, and nothing else charged: its $0 says why.
   const free = usd === 0 && model.free === true;
   const dollars = (value: number) => (value === 0 ? "$0" : `$${value.toFixed(4)}`);
-  const spent = free ? FREE_COST : usd !== null ? dollars(usd) : `${dollars(model.known + paid.known)} known, ${unpriced} not priced,`;
+  const spent = free ? FREE_COST : usd !== null ? `${cost.upper_bound ? "at most " : ""}${dollars(usd)}` : `${dollars(cost.so_far_usd ?? 0)} known, ${cost.unpriced ?? 0} not priced,`;
   // Its tool calls with no price as the renderer counted them from the journal (TOOL_UNMETERED), as on a pi run's row.
   const notMetered = at >= 0 ? (rows[at]!.usage?.not_metered ?? 0) : 0;
   const calls = toolCallWords(paid.requests, notMetered);
@@ -374,7 +378,8 @@ function bookedUsage(rows: readonly TimelineEvent[], entries: readonly EntryLike
     : unbooked
     ? `${costLabel(options.ended === true)}: unknown, its model's requests were not metered${calls}`
     : `${costLabel(options.ended === true)}: ${spent} over ${model.requests} model request${model.requests === 1 ? "" : "s"}${calls}`;
-  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(usd === null ? { so_far_usd: model.known + paid.known, unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}) };
+  // Its so-far figures whenever the words say them: while the cost is unknown, and beside a bound (its exact part and holds).
+  const usage = { usd, requests: nativeAggregate ? null : model.requests, ...(cost.so_far_usd !== undefined && cost.unpriced !== undefined ? { so_far_usd: cost.so_far_usd, unpriced: cost.unpriced } : {}), ...(notMetered ? { not_metered: notMetered } : {}), ...(free ? { free: true as const } : {}), ...(cost.upper_bound ? { upper_bound: true as const } : {}) };
   const last = rows[rows.length - 1];
   const base: TimelineEvent = at >= 0 ? rows[at]! : {
     ...last!, id: `${last?.conversation_id ?? 0}:usage`, agent_label: null, text: null,

@@ -124,8 +124,14 @@ const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;
 /** A call refused before it ran, in plain words: "Refused: " and the tool's name with what it would have acted on (the
  *  path it would have read or written, the command it would have run, the page it would have fetched), never a label's
  *  past tense ("Wrote deny.md"), which says it ran. Any tool: one with none of those reads as its name alone (an MCP
- *  server's tool as its server and name, "fake · send_message", as its label reads it). */
+ *  server's tool as its server and name, "fake · send_message", as its label reads it). A computer_op reads as its op
+ *  alone ("Refused: files.write"), never its arguments, which hold what it would have written or typed; an op the
+ *  computer has no call for, as the tool's name. */
 export function refusedLabel(tool: string, args: Obj): string {
+  if (tool === "computer_op") {
+    const op = str(args.op);
+    return `Refused: ${op !== undefined && Object.hasOwn(OP_METHODS, op) ? op : tool}`;
+  }
   const command = str(args.command);
   const subject = path(args) ?? (str(args.url) ? where(str(args.url)!) : undefined) ?? (command ? `\`${cut(scrubUrls(firstLine(command)), 60)}\`` : undefined);
   return `Refused: ${mcpLabel(tool) ?? tool}${subject ? ` ${subject}` : ""}`;
@@ -289,6 +295,23 @@ registerLabel(
   { name: "Look at the computer", saysFailure: true },
 );
 registerLabel("computer_screenshot", (_a, result) => callWords({ method: "screen.shot", started_at: "", ms: 0, ok: result?.isError !== true }), { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots of the computer", saysFailure: true });
+/** A computer_op's op as the computer's record names the call it makes (the surface's SURFACE_OPS). */
+const OP_METHODS: Readonly<Record<string, string>> = { "input.act": "input.actions", "apps.list": "apps.list", "apps.open": "apps.launch", "shell.run": "exec.run", "processes.start": "process.start", "files.read": "files.read", "files.write": "files.write", "files.list": "files.list", "files.stat": "files.stat" };
+// A script's computer op (computer.apps, .shell, .files, .input, .processes), said as the call it makes on the computer.
+registerLabel(
+  "computer_op",
+  (a, result) => {
+    const op = str(a.op);
+    const method = op !== undefined && Object.hasOwn(OP_METHODS, op) ? OP_METHODS[op]! : undefined;
+    if (!method) return result?.isError ? "Could not act on the computer" : "Acted on the computer";
+    const app = method === "apps.launch" ? str(obj(a.args)?.id) : undefined;
+    return callWords({ method, started_at: "", ms: 0, ok: result?.isError !== true, ...(app ? { app } : {}) });
+  },
+  { many: (n) => `Acted on the computer ${n} times` },
+  { name: "Use the computer's apps, shell and files", saysFailure: true },
+);
+// computer_script is no longer offered (codemode scripts the computer, each step a nested call of its own); its label
+// stays so an earlier run's stored rows still read as they did.
 registerLabel(
   "computer_script",
   (a, result) => {

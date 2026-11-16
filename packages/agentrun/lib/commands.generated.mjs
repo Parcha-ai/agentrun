@@ -558,6 +558,31 @@ export const COMMANDS = [
   {
     "command": [
       "connectors",
+      "import-remote-history"
+    ],
+    "operationId": "importRemoteHistory",
+    "method": "POST",
+    "path": "/connectors/{connector_id}/targets/{target_id}/history",
+    "pathParams": [
+      "connector_id",
+      "target_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Import explicitly selected, redacted past sessions without running or learning from them"
+  },
+  {
+    "command": [
+      "connectors",
       "import-remote-target"
     ],
     "operationId": "importRemoteTarget",
@@ -579,6 +604,12 @@ export const COMMANDS = [
       {
         "name": "name",
         "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "history_only",
+        "type": "boolean",
         "required": false,
         "description": ""
       }
@@ -1153,7 +1184,7 @@ export const COMMANDS = [
           "csv"
         ],
         "required": false,
-        "description": "`csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, learning_usd, total_usd."
+        "description": "`csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, cost_upper_bound, learning_usd, total_usd."
       }
     ],
     "headers": [],
@@ -1411,7 +1442,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "A replay of a learned workflow's revision: running, done or failed, its counts and its score"
+    "summary": "Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab)"
   },
   {
     "command": [
@@ -1963,6 +1994,39 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "List a saved MCP server's tools again, keep them, and say what changed"
+  },
+  {
+    "command": [
+      "Observations",
+      "get-observations"
+    ],
+    "operationId": "getObservations",
+    "method": "GET",
+    "path": "/observations",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "days",
+        "type": "integer",
+        "required": false,
+        "description": "UTC calendar days including today; session details remain visible for their full retention period."
+      },
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read activity and token usage reported by externally running agents"
   },
   {
     "command": [
@@ -2930,6 +2994,199 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Show the archived run in the lists again"
+  },
+  {
+    "command": [
+      "sdk-runs",
+      "complete"
+    ],
+    "operationId": "completeSdkRun",
+    "method": "POST",
+    "path": "/sdk-runs/{run_id}/complete",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "status",
+        "type": "string",
+        "enum": [
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "answer",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "error",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "session_id",
+        "type": "string",
+        "required": false,
+        "description": ""
+      },
+      {
+        "name": "evidence_complete",
+        "type": "boolean",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Complete a backend SDK task"
+  },
+  {
+    "command": [
+      "sdk-runs",
+      "events"
+    ],
+    "operationId": "sdkRunEvents",
+    "method": "POST",
+    "path": "/sdk-runs/{run_id}/events",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "sequence",
+        "type": "integer",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Record bounded SDK execution evidence"
+  },
+  {
+    "command": [
+      "sdk-runs",
+      "get"
+    ],
+    "operationId": "getSdkRun",
+    "method": "GET",
+    "path": "/sdk-runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read SDK run and learning state"
+  },
+  {
+    "command": [
+      "sdk-runs",
+      "start"
+    ],
+    "operationId": "startSdkRun",
+    "method": "POST",
+    "path": "/agents/{agent_id}/sdk-runs",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [
+      {
+        "name": "Idempotency-Key",
+        "type": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "bodyFlags": [
+      {
+        "name": "runtime",
+        "type": "string",
+        "enum": [
+          "claude-agent-sdk",
+          "codex-sdk"
+        ],
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "input",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "instructions",
+        "type": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": ""
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Register a task executed by an existing backend SDK"
   },
   {
     "command": [

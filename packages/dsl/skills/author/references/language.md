@@ -103,7 +103,7 @@ A `guard` on a step (agent, decide, extract, code, call, workflow, judge, pick, 
 
 ## Predicates
 
-`loop.until` and `escalate.when` take one of these; `poll` takes only the first 10. Each path or key reads a state value an input or an earlier node produced.
+`loop.until` and `escalate.when` take one of these; `poll` takes only the first 11. Each path or key reads a state value an input or an earlier node produced.
 A predicate is one JSON object that names itself in its `predicate` field beside its own fields, for example `{"predicate": "field_true", "path": "review.approved"}`.
 - `field_equals` {path, value}: holds when the value at `path` equals `value` (a string, number or boolean)
 - `field_true` {path}: holds when the value at `path` is `true`
@@ -114,6 +114,7 @@ A predicate is one JSON object that names itself in its `predicate` field beside
 - `empty` {path}: holds when the value at `path` is an empty array, an empty string, null or absent
 - `no_new_items` {key}: takes `key`, not `path`; holds when that state key is an empty array or falsy
 - `field_type` {path, type}: holds when the value at `path` is of `type`, one of number, string, boolean, array, object, null; a number only when finite, and an absent value is of no type
+- `quote_missing` {path, field, pages}: the quote check, in code: holds when a quote at `path` (a string, or a list of them; with `field`, a list of records each holding its quote at `field`) is in none of the pages at `pages` (state paths holding what this run's call steps fetched; every string under each is page text). Both sides are compared lowercased, with curly quotes straight, dashes as "-" and whitespace runs as one space, then once more as their letters and digits alone; a quote under 8 characters is not checked. `{"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}` on an escalate hands back an answer quoting text no fetched page holds. Check quotes with it, never with a judge or an `ask`
 - `not` {of}: holds when `of`, one mechanical predicate (never `ask`), does not; `{"predicate": "not", "of": {"predicate": "field_type", "path": "score", "type": "number"}}` holds when score is absent or not a finite number
 - `ask` {instructions, state, criteria, gte, provider, model, evidence, timeoutMs, images}: a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)
 

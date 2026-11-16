@@ -15,7 +15,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { hostToolNames } from "../dist/tool-list.js";
+import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
 import { liveSettings, runnerGate } from "./gate-support.mjs";
@@ -190,7 +190,7 @@ test("a run's gate reads the server's settings at each call: a change reaches th
   assert.equal(await gate.decide("write", { path: ".learning/notes.md", content: "x" }), "ask", "its permission, never a file's word");
 });
 
-test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
+test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default, and so does email_send; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const { api } = await serve(t);
   const doc = (await api("GET", "/openapi.json")).body;
@@ -199,7 +199,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const byName = (tools) => Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   const view = byName(caps.tools);
   for (const name of Object.keys(TOOLS)) {
-    assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [isCatalog(name) ? "ask" : "allow", isCatalog(name) ? "ask" : "allow", [...permissionsOf(name)]], name);
+    const asks = isCatalog(name) || asksByDefault(name) ? "ask" : "allow";
+    assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [asks, asks, [...permissionsOf(name)]], name);
   }
   const put = await api("PUT", "/settings/tools", { [ENRICH]: { permission: "allow" }, "monid:faux/*": { permission: "deny" }, web_fetch: { permission: "ask" }, read: { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } });
   assert.equal(put.status, 200, JSON.stringify(put.body));
@@ -754,14 +755,14 @@ test("once a parked call with a held key in its arguments is approved, the resum
 /** The call id of a parked run's web_fetch call (parked's rows), read from its call's row. */
 const callOf = ({ rows }) => rows.find((row) => row.kind === "tool_use" && row.tool_name === "web_fetch")?.tool_use_id;
 
-/** Run `runId` once its runner has applied a stop: no call waits, nothing works. A stop is a command row the runner applies
- *  (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
+/** Run `runId` once its runner has applied a stop: no call waits, nothing works, and it reads pending kind stopped. A stop
+ *  is a command row the runner applies (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
 async function stoppedView(api, runId, deadlineMs = 30_000) {
   const end = Date.now() + deadlineMs;
   for (;;) {
     const view = (await api("GET", `/runs/${runId}`)).body;
-    if (view.pending === null && view.state === "idle") return view;
-    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${view.pending?.id}`);
+    if (view.pending?.kind === "stopped" && view.state === "idle") return view;
+    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${JSON.stringify(view.pending)}`);
     await sleep(250);
   }
 }
@@ -781,8 +782,8 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  // A person's stop ends the turn, not the run: input_required and idle with nothing pending, as main's stop leaves one.
-  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+  // A person's stop ends the turn, not the run: input_required and idle, pending kind stopped (no approval waits).
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
   // On the runner a parked call has its call's row and no result row of its own (the park writes none).
@@ -805,12 +806,12 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const again = await serve(t, { ...GATE, data: first.data, openSetup: false });
   const answerAgain = await ownerAgain(again);
   assert.equal((await answerAgain(stopRun, stopId, { decision: "allow" })).status, 409, "after a restart too");
-  assert.equal((await again.api("GET", `/runs/${stopRun}`)).body.pending, null);
+  assert.deepEqual((await again.api("GET", `/runs/${stopRun}`)).body.pending, { kind: "stopped" }, "still stopped after a restart, no approval pending");
   await sleep(3_000);
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, pending kind stopped, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
@@ -832,7 +833,7 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
       assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
       await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
       const view = (await api("GET", `/runs/${runId}`)).body;
-      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
       // Past the turn's 8 s: a turn the stop did not cut would have answered by now.
       await sleep(10_000);
       const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
@@ -980,7 +981,7 @@ test.skip("a stop or a cancel that lands after an answer, before the run's proce
   }
   for (const name of ["allow-stop", "decline-stop"]) {
     const view = (await api("GET", `/runs/${runs[name].runId}`)).body;
-    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], `${name}: stopped`);
+    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], `${name}: stopped`);
   }
   assert.deepEqual(await dialled(), [], "no call ran");
 });

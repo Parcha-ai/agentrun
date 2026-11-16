@@ -1,3 +1,4 @@
+import type { SdkWorkflowTool, SdkWorkflowAdapter } from "./sdk/workflows.js";
 import type { NativeBinding } from "./native/types.js";
 import { nativeOf } from "./native/binding.js";
 // A run's launch record: the one JSON body the server writes when it starts a run (start = INSERT run, design 2.1), and
@@ -21,6 +22,7 @@ import type { Place } from "./workspace/place.js";
  *  names (a learning run's `{ runId }`). `model`, `plane`, `approvers`, `documents` and `boxAllow` are the per-run choices
  *  the old path recomputed; here they are pinned at start, and optional (a built-in run may name none). */
 export interface RunLaunch {
+  readonly sdk?: {runtime: "claude-agent-sdk" | "codex-sdk"; instructions: string; model?: string; workflow_tools?: SdkWorkflowTool[]; workflow_adapters?: SdkWorkflowAdapter[]};
   readonly native?: NativeBinding;
   /** The start request's body, as the person or trigger gave it, or an object a built-in run names. */
   readonly input: unknown;
@@ -109,9 +111,12 @@ const readDisk = (value: unknown): LaunchDisk | undefined =>
 const readReplay = (value: unknown): Replay | undefined =>
   isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
 
-/** The trigger a launch body names, as read back: `{ id, firing_key }`, or null (triggerOf of the old serve.json). */
+/** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
+ *  kept them, or null (triggerOf of the old serve.json). */
 function readTrigger(value: unknown): RunTrigger | null {
-  return isObject(value) && typeof value.id === "string" && typeof value.firing_key === "string" ? { id: value.id, firing_key: value.firing_key } : null;
+  if (!(isObject(value) && typeof value.id === "string" && typeof value.firing_key === "string")) return null;
+  const attrs = isObject(value.attrs) ? Object.fromEntries(Object.entries(value.attrs).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  return { id: value.id, firing_key: value.firing_key, ...(Object.keys(attrs).length ? { attrs } : {}) };
 }
 
 /** Where a run runs, as read back from a launch body, or undefined when it names none. */
@@ -146,6 +151,7 @@ export function keepInputOrigin(stored: unknown, trigger: RunTrigger | null): Me
 export function launchBody(launch: RunLaunch): Json {
   return {
     input: launch.input,
+    ...(launch.sdk ? {sdk:launch.sdk as unknown as Json}:{}),
     ...(launch.native ? {native:launch.native}:{}),
     title: launch.title,
     ...(launch.repo !== undefined ? { repo: launch.repo } : {}),
@@ -198,6 +204,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const archilDisk = readDisk(stored.archil_disk);
   return {
     input: stored.input,
+    ...(isObject(stored.sdk) && (stored.sdk.runtime === "claude-agent-sdk" || stored.sdk.runtime === "codex-sdk") && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
     ...(nativeOf(stored) ? {native:nativeOf(stored)}:{}),
     title: typeof stored.title === "string" ? stored.title : "",
     ...(typeof stored.repo === "string" ? { repo: stored.repo } : {}),

@@ -35,3 +35,24 @@ export async function consumer(): Promise<void> {
   }
   void [first, bytes, response, note];
 }
+
+// The backend explicitly supplies its interpreter; host adapter request types are inferred without casts.
+import * as workflowEngine from "@parcha/agentrun-dsl";
+import { createWorkflowMcpBridge } from "@parcha/agentrun-client/workflows";
+export async function workflowHost(): Promise<void> {
+  const bridge = await createWorkflowMcpBridge({
+    engine: workflowEngine, tools: [], policy: () => "allow",
+    runNode: async request => {
+      const kind: "agent" | "decide" | "extract" | "report" = request.kind;
+      const system: string[] = request.system;
+      void [kind, system, request.signal];
+      return {};
+    },
+    runJudge: async request => {
+      const kind: "judge" | "pick" | "sift" | "route" | "ask" = request.kind;
+      void [kind, request.questions, request.signal];
+      return { answers: {} };
+    },
+  });
+  await bridge.close();
+}

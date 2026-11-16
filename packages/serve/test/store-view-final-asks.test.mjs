@@ -125,7 +125,8 @@ test("a call the stop's end withdrew reads as it did", { timeout: 60_000 }, asyn
   await server.command("run-1", { kind: "stop" });
   await stoppedRowOnly(server);
   const seen = await readers(server);
-  assert.equal(seen.pending, null);
+  // A person's stop the journal holds: the run stands at it (input_required, pending kind stopped), no call waiting.
+  assert.deepEqual([seen.status, seen.pending], ["input_required", "stopped"]);
   assert.match(seen.row, /^Withdrawn when the run was stopped: add /);
   assert.match(seen.served, /^Withdrawn when the run was stopped: add /);
   assert.equal(seen.waiting, null);

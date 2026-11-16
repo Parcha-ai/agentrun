@@ -57,7 +57,8 @@ export type TemplateApplied = Answer<"applyTemplate">;
 /** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
 
-/** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
+/** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
+ *  part and held count); `usd` is said first whenever it is known (format.ts chargeWords, soFar). */
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
@@ -120,6 +121,9 @@ export type RunPath = CostRun["path"];
  *  workflow.json, oldest first, each with the text it had then. */
 export type WorkflowRevisions = Answer<"listLearnedWorkflowRevisions">;
 export type WorkflowRevision = WorkflowRevisions["revisions"][number];
+/** POST .../revisions/{digest}/replays' answer (a replay started), and GET .../replays/{replay_id}'s (it as it stands). */
+export type ReplayStarted = Answer<"startLearnedWorkflowReplay">;
+export type ReplayRead = Answer<"getLearnedWorkflowReplay">;
 /** GET /v2/agents/{id}/learning/promotions: each learned workflow revision's promotion records, oldest first. */
 export type Promotions = Answer<"listLearningPromotions">;
 export type Promotion = Promotions["promotions"][number];

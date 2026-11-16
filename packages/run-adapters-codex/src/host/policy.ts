@@ -27,13 +27,12 @@
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`. The
 // searches a response ran are read from the same event, its `tool_usage.web_search.num_requests`.
 //
-// A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`);
-// on a route straight to OpenAI, also OpenAI's own count of it when that is lower (`OPENAI_INPUT_COUNTER`); on a route
-// OpenAI does not count (a gateway), the kernel's local o200k_base count with its margin when that is lower
-// (`responsesLocalInputTokens`).
+// A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`),
+// or the kernel's local o200k_base count with its margin when that is lower (`responsesLocalInputTokens`), on every
+// route: nothing is asked of OpenAI before a request.
 import type { IncomingHttpHeaders } from "node:http";
 import { PLAN_LIMIT_CODE, PLAN_LIMIT_WORDS } from "@parcha/agentrun-kernel";
-import { lastObjectOf, NATIVE_SEARCH_USD, OPENAI_INPUT_COUNTER, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -112,9 +111,9 @@ export interface CodexPolicyOptions {
    *  `tool_choice` naming the search is then refused. Absent: the live search is offered whenever `webSearch` is on. */
   searchAllowed?: () => Promise<boolean>;
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
-   *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
-   *  latest answer, which is known here before Codex can run anything of it. */
-  announce?: { response(): void; exec(callId: string): void; failed(): void; end(): void };
+   *  `exec(callId, input)` for each code-mode `exec` call it holds, with its script. The session ties a script's nested
+   *  calls to the `exec` of the latest answer, which is known here before Codex can run anything of it. */
+  announce?: { response(): void; exec(callId: string, input?: string): void; failed(): void; end(): void };
   /** The route is a person's ChatGPT plan (its access token the credential), whose Responses API keeps rules of its own:
    *  no `max_output_tokens` is sent (none is clamped or added: the proxy limits no output and counts no input on it), the
    *  keys it does not take are dropped (PLAN_DROPPED_KEYS), a system-role message is refused in words, each request names
@@ -458,7 +457,7 @@ function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): {
       return;
     }
     const item = isPlain(event) && event.type === "response.output_item.done" && isPlain(event.item) ? event.item : undefined;
-    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id, typeof item.input === "string" ? item.input : "");
   };
   const endLine = () => {
     const done = line;
@@ -512,8 +511,13 @@ export function responsesOutputAsked(body: Record<string, unknown>): number | un
 /** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
  *  allowance when it reasons. */
 export function responsesOutputLeast(body: Record<string, unknown>): number {
-  const effort = isPlain(body.reasoning) && typeof body.reasoning.effort === "string" ? body.reasoning.effort : undefined;
+  const effort = responsesEffort(body);
   return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
+}
+
+/** The reasoning effort a Responses body asks its model at (`reasoning.effort`), when it names one. */
+export function responsesEffort(body: Record<string, unknown>): string | undefined {
+  return isPlain(body.reasoning) && typeof body.reasoning.effort === "string" && body.reasoning.effort.length > 0 ? body.reasoning.effort : undefined;
 }
 
 /** The reasoning tokens a Responses request may bill that its stream never shows (only a summary of its reasoning
@@ -629,6 +633,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
     outputAsked: responsesOutputAsked,
     outputLeast: responsesOutputLeast,
+    effortOf: responsesEffort,
     reasoningHidden: (body) => responsesReasoningHidden(body, maxOutputTokens),
     reasoningBytesOf: responsesReasoningBytes,
     contentBytesOf: responsesContentBytes,
@@ -636,7 +641,6 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     // (below), and is never counted into one.
     ...(plan ? {} : {
       limitOutput: limitResponsesOutput,
-      countInput: OPENAI_INPUT_COUNTER,
       countInputLocally: (body: Record<string, unknown>) => (search && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search") ? undefined : responsesLocalInputTokens(body)),
     }),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a

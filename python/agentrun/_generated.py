@@ -68,6 +68,9 @@ __all__ = [
     "CommitSha",
     "CompleteRemoteCommandBody",
     "CompleteRemoteCommandResponse",
+    "CompleteSdkRunBody",
+    "CompleteSdkRunBodyUsage",
+    "CompleteSdkRunResponse",
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "ConnectNativeBody",
@@ -116,6 +119,11 @@ __all__ = [
     "CreateTriggerBodySource6AcceptItemWhereItem1",
     "CreateTriggerBodySource6AcceptItemWhereItem2",
     "CreateTriggerBodySource6AcceptItemWhereItem3",
+    "CreateTriggerBodySource7",
+    "CreateTriggerBodySource7AcceptItem",
+    "CreateTriggerBodySource7AcceptItemWhereItem1",
+    "CreateTriggerBodySource7AcceptItemWhereItem2",
+    "CreateTriggerBodySource7AcceptItemWhereItem3",
     "CreateTriggerBodyTarget1",
     "CreateTriggerBodyTarget2",
     "CreateTriggerBodyTarget2Input",
@@ -124,6 +132,8 @@ __all__ = [
     "CreateTriggerResponseDisabled2",
     "CreateTriggerResponseDisabled3",
     "CreateTriggerResponseDisabled4",
+    "CreateTriggerResponseDisabled5",
+    "CreateTriggerResponseLastCheck",
     "CreateTriggerResponseLastFiring",
     "CreateTriggerResponseLastFiringError",
     "CreateTriggerResponseSource1",
@@ -144,6 +154,11 @@ __all__ = [
     "CreateTriggerResponseSource6AcceptItemWhereItem1",
     "CreateTriggerResponseSource6AcceptItemWhereItem2",
     "CreateTriggerResponseSource6AcceptItemWhereItem3",
+    "CreateTriggerResponseSource7",
+    "CreateTriggerResponseSource7AcceptItem",
+    "CreateTriggerResponseSource7AcceptItemWhereItem1",
+    "CreateTriggerResponseSource7AcceptItemWhereItem2",
+    "CreateTriggerResponseSource7AcceptItemWhereItem3",
     "CreateTriggerResponseTarget1",
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
@@ -161,12 +176,18 @@ __all__ = [
     "DefinitionInputNativeSelector",
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
+    "DefinitionInputSdk",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
     "DefinitionInputToolSettingsBrowser",
     "DefinitionInputToolSettingsDesktop",
     "DefinitionInputToolSettingsEdit",
+    "DefinitionInputToolSettingsEmailDraft",
+    "DefinitionInputToolSettingsEmailFile",
+    "DefinitionInputToolSettingsEmailRead",
+    "DefinitionInputToolSettingsEmailSearch",
+    "DefinitionInputToolSettingsEmailSend",
     "DefinitionInputToolSettingsJev",
     "DefinitionInputToolSettingsLlm",
     "DefinitionInputToolSettingsOpenrouter",
@@ -186,12 +207,18 @@ __all__ = [
     "DefinitionNativeSelector",
     "DefinitionPlace1",
     "DefinitionPlace2",
+    "DefinitionSdk",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
     "DefinitionToolSettingsBrowser",
     "DefinitionToolSettingsDesktop",
     "DefinitionToolSettingsEdit",
+    "DefinitionToolSettingsEmailDraft",
+    "DefinitionToolSettingsEmailFile",
+    "DefinitionToolSettingsEmailRead",
+    "DefinitionToolSettingsEmailSearch",
+    "DefinitionToolSettingsEmailSend",
     "DefinitionToolSettingsJev",
     "DefinitionToolSettingsLlm",
     "DefinitionToolSettingsOpenrouter",
@@ -297,6 +324,9 @@ __all__ = [
     "GetAgentResponseToolsItem",
     "GetCapabilitiesResponse",
     "GetChatGPTSignInResponse",
+    "GetEmailAccountResponse",
+    "GetEmailAccountResponseImap",
+    "GetEmailAccountResponseSmtp",
     "GetFileResponse",
     "GetGitHubConnectionResponse",
     "GetGitHubConnectionResponseObject1",
@@ -319,7 +349,9 @@ __all__ = [
     "GetLearningCostResponseSummaryAfter",
     "GetLearningCostResponseSummaryBefore",
     "GetLearningCostResponseSummaryHandBacks",
+    "GetLearningCostResponseSummaryReplay",
     "GetLearningCostResponseSummaryTakeover",
+    "GetLearningCostResponseSummaryWithheld",
     "GetLearningCostResponseWorkflowsItem",
     "GetLearningCostResponseWorkflowsItemByHand",
     "GetLearningCostResponseWorkflowsItemServed",
@@ -339,6 +371,14 @@ __all__ = [
     "GetNativeResponseNativeConfigurationItem",
     "GetNativeResponseNativeRemote",
     "GetNativeResponseNativeSelector",
+    "GetObservationsResponse",
+    "GetObservationsResponseConnectorsItem",
+    "GetObservationsResponseLimits",
+    "GetObservationsResponseSessionsItem",
+    "GetObservationsResponseSessionsItemUsage",
+    "GetObservationsResponseUsage",
+    "GetObservationsResponseUsageDailyItem",
+    "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
@@ -371,6 +411,7 @@ __all__ = [
     "GetRunLearningResponseObjectVerdictItemsItem",
     "GetRunLearningResponseObjectWorkflowsItem",
     "GetRunResponse",
+    "GetSdkRunResponse",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
     "GetStatsResponseAnalyticsByDayItem",
@@ -395,6 +436,8 @@ __all__ = [
     "GetTriggerResponseDisabled2",
     "GetTriggerResponseDisabled3",
     "GetTriggerResponseDisabled4",
+    "GetTriggerResponseDisabled5",
+    "GetTriggerResponseLastCheck",
     "GetTriggerResponseLastFiring",
     "GetTriggerResponseLastFiringError",
     "GetTriggerResponseSource1",
@@ -415,6 +458,11 @@ __all__ = [
     "GetTriggerResponseSource6AcceptItemWhereItem1",
     "GetTriggerResponseSource6AcceptItemWhereItem2",
     "GetTriggerResponseSource6AcceptItemWhereItem3",
+    "GetTriggerResponseSource7",
+    "GetTriggerResponseSource7AcceptItem",
+    "GetTriggerResponseSource7AcceptItemWhereItem1",
+    "GetTriggerResponseSource7AcceptItemWhereItem2",
+    "GetTriggerResponseSource7AcceptItemWhereItem3",
     "GetTriggerResponseTarget1",
     "GetTriggerResponseTarget2",
     "GetTriggerResponseTarget2Input",
@@ -431,6 +479,9 @@ __all__ = [
     "HandBackRunComputerResponse",
     "HomeResource",
     "Id",
+    "ImportRemoteHistoryBody",
+    "ImportRemoteHistoryResponse",
+    "ImportRemoteHistoryResponseRunsItem",
     "ImportRemoteTargetBody",
     "ImportRemoteTargetBodyTarget",
     "ImportRemoteTargetBodyTargetCapabilities",
@@ -563,6 +614,8 @@ __all__ = [
     "ListTriggersResponseTriggersItemDisabled2",
     "ListTriggersResponseTriggersItemDisabled3",
     "ListTriggersResponseTriggersItemDisabled4",
+    "ListTriggersResponseTriggersItemDisabled5",
+    "ListTriggersResponseTriggersItemLastCheck",
     "ListTriggersResponseTriggersItemLastFiring",
     "ListTriggersResponseTriggersItemLastFiringError",
     "ListTriggersResponseTriggersItemSource1",
@@ -583,6 +636,11 @@ __all__ = [
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource7",
+    "ListTriggersResponseTriggersItemSource7AcceptItem",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3",
     "ListTriggersResponseTriggersItemTarget1",
     "ListTriggersResponseTriggersItemTarget2",
     "ListTriggersResponseTriggersItemTarget2Input",
@@ -597,6 +655,7 @@ __all__ = [
     "Meter",
     "NextAction",
     "OPERATIONS",
+    "ObservationsResource",
     "PauseRunResponse",
     "PersonAction",
     "PollRemoteConnectorBody",
@@ -614,6 +673,11 @@ __all__ = [
     "PutToolSettingsBodyBrowser",
     "PutToolSettingsBodyDesktop",
     "PutToolSettingsBodyEdit",
+    "PutToolSettingsBodyEmailDraft",
+    "PutToolSettingsBodyEmailFile",
+    "PutToolSettingsBodyEmailRead",
+    "PutToolSettingsBodyEmailSearch",
+    "PutToolSettingsBodyEmailSend",
     "PutToolSettingsBodyJev",
     "PutToolSettingsBodyLlm",
     "PutToolSettingsBodyOpenrouter",
@@ -708,10 +772,13 @@ __all__ = [
     "RunPending3",
     "RunPending4",
     "RunPending5",
+    "RunPending6",
     "RunPlace1",
     "RunPlace2",
     "RunResult",
     "RunReview",
+    "RunSdk",
+    "RunSdkUsage",
     "RunState",
     "RunStatus",
     "RunSummary",
@@ -733,7 +800,10 @@ __all__ = [
     "RunSummaryPending3",
     "RunSummaryPending4",
     "RunSummaryPending5",
+    "RunSummaryPending6",
     "RunSummaryReview",
+    "RunSummarySdk",
+    "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunTrigger",
     "RunsResource",
@@ -749,6 +819,12 @@ __all__ = [
     "SaveComputerKeysResponseGpuPerGpu",
     "SaveComputerKeysResponsePersistent",
     "SaveComputerKeysResponseSecretsItem",
+    "SaveEmailAccountBody",
+    "SaveEmailAccountBodyImap",
+    "SaveEmailAccountBodySmtp",
+    "SaveEmailAccountResponse",
+    "SaveEmailAccountResponseImap",
+    "SaveEmailAccountResponseSmtp",
     "SaveMcpServerBody",
     "SaveMcpServerBodyAuth",
     "SaveMcpServerResponse",
@@ -764,6 +840,12 @@ __all__ = [
     "SaveWebhookResponseObject21Disabled",
     "SaveWebhookResponseObject22",
     "SaveWebhookResponseObject22Disabled",
+    "SdkRunEventsBody",
+    "SdkRunEventsBodyEventsItem1",
+    "SdkRunEventsBodyEventsItem2",
+    "SdkRunEventsBodyEventsItem3",
+    "SdkRunEventsResponse",
+    "SdkRunsResource",
     "SecretMeta",
     "SendMessageBody",
     "SendMessageResponse",
@@ -781,6 +863,12 @@ __all__ = [
     "StartRunBody",
     "StartRunResponse",
     "StartRunResponseHeld",
+    "StartSdkRunBody",
+    "StartSdkRunBodyWorkflowToolsItem",
+    "StartSdkRunResponse",
+    "StartSdkRunResponseLearning",
+    "StartSdkRunResponseLearningSkillsItem",
+    "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
     "TakeOverRunComputerBody",
@@ -789,6 +877,12 @@ __all__ = [
     "TestComputerResponse",
     "TestComputerResponseObject1",
     "TestComputerResponseObject2",
+    "TestEmailAccountBody",
+    "TestEmailAccountBodyImap",
+    "TestEmailAccountBodySmtp",
+    "TestEmailAccountResponse",
+    "TestEmailAccountResponseImap",
+    "TestEmailAccountResponseSmtp",
     "TestWebhookResponse",
     "TestWorkspaceArchilResponse",
     "TestWorkspaceArchilResponseObject1",
@@ -830,6 +924,11 @@ __all__ = [
     "UpdateTriggerBodySource6AcceptItemWhereItem1",
     "UpdateTriggerBodySource6AcceptItemWhereItem2",
     "UpdateTriggerBodySource6AcceptItemWhereItem3",
+    "UpdateTriggerBodySource7",
+    "UpdateTriggerBodySource7AcceptItem",
+    "UpdateTriggerBodySource7AcceptItemWhereItem1",
+    "UpdateTriggerBodySource7AcceptItemWhereItem2",
+    "UpdateTriggerBodySource7AcceptItemWhereItem3",
     "UpdateTriggerBodyTarget1",
     "UpdateTriggerBodyTarget2",
     "UpdateTriggerBodyTarget2Input",
@@ -839,6 +938,8 @@ __all__ = [
     "UpdateTriggerResponseDisabled2",
     "UpdateTriggerResponseDisabled3",
     "UpdateTriggerResponseDisabled4",
+    "UpdateTriggerResponseDisabled5",
+    "UpdateTriggerResponseLastCheck",
     "UpdateTriggerResponseLastFiring",
     "UpdateTriggerResponseLastFiringError",
     "UpdateTriggerResponseSource1",
@@ -859,6 +960,11 @@ __all__ = [
     "UpdateTriggerResponseSource6AcceptItemWhereItem1",
     "UpdateTriggerResponseSource6AcceptItemWhereItem2",
     "UpdateTriggerResponseSource6AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource7",
+    "UpdateTriggerResponseSource7AcceptItem",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem3",
     "UpdateTriggerResponseTarget1",
     "UpdateTriggerResponseTarget2",
     "UpdateTriggerResponseTarget2Input",
@@ -955,6 +1061,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    sdk: DefinitionSdk
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
@@ -969,6 +1076,10 @@ class Definition(_DefinitionRequired, total=False):
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
+
+
+class DefinitionSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1060,6 +1171,11 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    email_search: DefinitionToolSettingsEmailSearch
+    email_read: DefinitionToolSettingsEmailRead
+    email_draft: DefinitionToolSettingsEmailDraft
+    email_send: DefinitionToolSettingsEmailSend
+    email_file: DefinitionToolSettingsEmailFile
     browser: DefinitionToolSettingsBrowser
     subagent: DefinitionToolSettingsSubagent
     pdf_pages: DefinitionToolSettingsPdfPages
@@ -1100,6 +1216,29 @@ class DefinitionToolSettingsWebFetch(TypedDict, total=False):
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
 
 
 class DefinitionToolSettingsBrowser(TypedDict, total=False):
@@ -1384,6 +1523,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
+    sdk: DefinitionInputSdk
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
@@ -1395,6 +1535,10 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     approvals: Literal["ask", "never"]
     learning: Literal[True, False, "notes"]
     checkout: Literal["pull_request", "none"]
+
+
+class DefinitionInputSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -1486,6 +1630,11 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    email_search: DefinitionInputToolSettingsEmailSearch
+    email_read: DefinitionInputToolSettingsEmailRead
+    email_draft: DefinitionInputToolSettingsEmailDraft
+    email_send: DefinitionInputToolSettingsEmailSend
+    email_file: DefinitionInputToolSettingsEmailFile
     browser: DefinitionInputToolSettingsBrowser
     subagent: DefinitionInputToolSettingsSubagent
     pdf_pages: DefinitionInputToolSettingsPdfPages
@@ -1526,6 +1675,29 @@ class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
 
 
 class DefinitionInputToolSettingsBrowser(TypedDict, total=False):
@@ -2070,13 +2242,14 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    sdk: RunSummarySdk
     native: RunSummaryNative
     console_url: str
     effort: Effort
     error: RunError | None
     learning: RunSummaryLearning | None
     review: RunSummaryReview | None
-    pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | None
+    pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | RunSummaryPending6 | None
     imported_from: RunSummaryImportedFrom | None
     trigger: RunSummaryTrigger | None
 
@@ -2098,12 +2271,29 @@ class Cost(_CostRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     plan: CostPlan
 
 
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+
+
+class RunSummarySdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdkUsage | None
+
+
+class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunSummaryNative(TypedDict):
@@ -2266,6 +2456,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
+    summary: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -2279,6 +2470,7 @@ class _RunSummaryPending3Required(TypedDict):
 
 class RunSummaryPending3(_RunSummaryPending3Required, total=False):
     spent_usd: float
+    held_usd: float
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
@@ -2300,6 +2492,10 @@ class RunSummaryPending5(TypedDict):
     completion_condition: str
     asked_at: str
     expires_at: str
+
+
+class RunSummaryPending6(TypedDict):
+    kind: Literal["stopped"]
 
 
 class RunSummaryImportedFrom(TypedDict):
@@ -2394,12 +2590,30 @@ class EnrollRemoteConnectorBody(TypedDict, total=False):
 
 class EnrollRemoteConnectorBodyCapabilities(TypedDict, total=False):
     native_execution: bool
+    history_import: bool
 
 
 class EnrollRemoteConnectorResponse(TypedDict):
     enrollment_token: str
     expires_at: str
     workspace_id: Literal["local"]
+
+
+class ImportRemoteHistoryBody(TypedDict):
+    sessions: list[dict[str, Any]]
+
+
+class ImportRemoteHistoryResponse(TypedDict):
+    agent_id: str
+    runs: list[ImportRemoteHistoryResponseRunsItem]
+    imported: int
+    already: int
+
+
+class ImportRemoteHistoryResponseRunsItem(TypedDict):
+    session_id: str
+    run_id: str
+    already: bool
 
 
 class _ImportRemoteTargetBodyRequired(TypedDict):
@@ -2409,6 +2623,7 @@ class _ImportRemoteTargetBodyRequired(TypedDict):
 
 class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
     name: str
+    history_only: bool
 
 
 class _ImportRemoteTargetBodyTargetRequired(TypedDict):
@@ -2532,6 +2747,7 @@ class ListRemoteConnectorsResponseConnectorsItem(TypedDict):
 class ListRemoteConnectorsResponseConnectorsItemCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 class _PollRemoteConnectorBodyRequired(TypedDict):
@@ -2564,8 +2780,12 @@ class RegisterRemoteConnectorBody(_RegisterRemoteConnectorBodyRequired, total=Fa
     label: str
 
 
-class RegisterRemoteConnectorBodyCapabilities(TypedDict):
+class _RegisterRemoteConnectorBodyCapabilitiesRequired(TypedDict):
     native_execution: bool
+
+
+class RegisterRemoteConnectorBodyCapabilities(_RegisterRemoteConnectorBodyCapabilitiesRequired, total=False):
+    history_import: bool
 
 
 class RegisterRemoteConnectorResponse(TypedDict):
@@ -2588,6 +2808,7 @@ class RegisterRemoteConnectorResponseConnector(TypedDict):
 class RegisterRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 class RemoteCommandEventsBody(TypedDict):
@@ -2618,6 +2839,7 @@ class RevokeRemoteConnectorResponseConnector(TypedDict):
 class RevokeRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
+    history_import: bool
 
 
 CreateFileBody: TypeAlias = "FileCreate"
@@ -3020,6 +3242,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     workflow: str | None
     learned_revision: str | None
     cost_usd: float | None
+    cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
 
@@ -3049,6 +3272,8 @@ class GetLearningCostResponseSummary(TypedDict):
     after: GetLearningCostResponseSummaryAfter | None
     times_cheaper: float | None
     hand_backs: GetLearningCostResponseSummaryHandBacks | None
+    withheld: GetLearningCostResponseSummaryWithheld | None
+    replay: GetLearningCostResponseSummaryReplay | None
 
 
 class GetLearningCostResponseSummaryTakeover(TypedDict):
@@ -3069,6 +3294,18 @@ class GetLearningCostResponseSummaryAfter(TypedDict):
 class GetLearningCostResponseSummaryHandBacks(TypedDict):
     ran: int
     back: int
+
+
+class GetLearningCostResponseSummaryWithheld(TypedDict):
+    unknown: int
+    at_most: int
+
+
+class GetLearningCostResponseSummaryReplay(TypedDict):
+    n: int
+    workflow_pct: float
+    agent_pct: float
+    cleared: bool
 
 
 class ListLearningEvalsResponse(TypedDict):
@@ -3508,6 +3745,26 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     models: list[str]
 
 
+class GetEmailAccountResponse(TypedDict):
+    configured: bool
+    preset: Literal["gmail", "fastmail", "icloud", "other"] | None
+    address: str | None
+    user: str | None
+    imap: GetEmailAccountResponseImap | None
+    smtp: GetEmailAccountResponseSmtp | None
+    password_unreadable: bool
+
+
+class GetEmailAccountResponseImap(TypedDict):
+    host: str
+    port: int
+
+
+class GetEmailAccountResponseSmtp(TypedDict):
+    host: str
+    port: int
+
+
 GetGitHubConnectionResponse: TypeAlias = "GetGitHubConnectionResponseObject1 | GetGitHubConnectionResponseObject2"
 
 
@@ -3780,7 +4037,7 @@ class ReceiveHookComposioResponseObject11(TypedDict):
 
 class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -3815,7 +4072,7 @@ class ReceiveHookComposioResponseObject2(TypedDict):
 
 class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -3981,6 +4238,48 @@ class SaveComputerKeysResponsePersistent(TypedDict, total=False):
     images: list[str]
 
 
+class _SaveEmailAccountBodyRequired(TypedDict):
+    address: str
+    password: str
+
+
+class SaveEmailAccountBody(_SaveEmailAccountBodyRequired, total=False):
+    preset: Literal["gmail", "fastmail", "icloud", "other", "outlook"]
+    user: str
+    imap: SaveEmailAccountBodyImap
+    smtp: SaveEmailAccountBodySmtp
+
+
+class SaveEmailAccountBodyImap(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountBodySmtp(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountResponse(TypedDict):
+    configured: bool
+    preset: Literal["gmail", "fastmail", "icloud", "other"] | None
+    address: str | None
+    user: str | None
+    imap: SaveEmailAccountResponseImap | None
+    smtp: SaveEmailAccountResponseSmtp | None
+    password_unreadable: bool
+
+
+class SaveEmailAccountResponseImap(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountResponseSmtp(TypedDict):
+    host: str
+    port: int
+
+
 class _SignOutChatGPTResponseRequired(TypedDict):
     revoked: bool
 
@@ -4020,6 +4319,41 @@ class TestComputerResponseObject1(TypedDict):
 class TestComputerResponseObject2(TypedDict):
     ok: Literal[False]
     why: str
+
+
+class TestEmailAccountBody(TypedDict, total=False):
+    preset: Literal["gmail", "fastmail", "icloud", "other", "outlook"]
+    address: str
+    user: str
+    password: str
+    imap: TestEmailAccountBodyImap
+    smtp: TestEmailAccountBodySmtp
+
+
+class TestEmailAccountBodyImap(TypedDict):
+    host: str
+    port: int
+
+
+class TestEmailAccountBodySmtp(TypedDict):
+    host: str
+    port: int
+
+
+class TestEmailAccountResponse(TypedDict):
+    ok: bool
+    imap: TestEmailAccountResponseImap
+    smtp: TestEmailAccountResponseSmtp
+
+
+class TestEmailAccountResponseImap(TypedDict):
+    ok: bool
+    message: str
+
+
+class TestEmailAccountResponseSmtp(TypedDict):
+    ok: bool
+    message: str
 
 
 TestWorkspaceArchilResponse: TypeAlias = "TestWorkspaceArchilResponseObject1 | TestWorkspaceArchilResponseObject2"
@@ -4382,6 +4716,94 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class GetObservationsResponse(TypedDict):
+    connectors: list[GetObservationsResponseConnectorsItem]
+    sessions: list[GetObservationsResponseSessionsItem]
+    usage: GetObservationsResponseUsage
+    limits: GetObservationsResponseLimits
+
+
+class GetObservationsResponseConnectorsItem(TypedDict):
+    id: str
+    display_name: str
+    connection_state: Literal["online", "offline", "disconnected"]
+    ingestion_mode: Literal["polling", "otlp"]
+    last_heartbeat_at: str | None
+    receipt_count: int
+    receipt_capacity: int
+    storage_full: bool
+
+
+class GetObservationsResponseSessionsItem(TypedDict):
+    id: str
+    connector_id: str
+    source_id: str
+    external_session_id: str
+    harness: Literal["claude", "codex"]
+    activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    reported_activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    connection_state: Literal["online", "offline", "disconnected"]
+    selection_active: bool
+    occurred_at: str
+    received_at: str
+    created_at: str
+    updated_at: str
+    sequence: int
+    display_name: str
+    models: list[str]
+    usage: GetObservationsResponseSessionsItemUsage
+    observation_only: Literal[True]
+
+
+class GetObservationsResponseSessionsItemUsage(TypedDict):
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["reported", "unavailable"]
+
+
+class GetObservationsResponseUsage(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["partial", "unavailable"]
+    models: list[GetObservationsResponseUsageModelsItem]
+    daily: list[GetObservationsResponseUsageDailyItem]
+
+
+class GetObservationsResponseUsageModelsItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    model: str
+
+
+class GetObservationsResponseUsageDailyItem(TypedDict):
+    date: str
+    total_tokens: int | None
+
+
+class GetObservationsResponseLimits(TypedDict):
+    max_receipts_per_connector: int
+    max_sessions_per_connector: int
+    receipt_retention: str
+    receipt_window_seconds: int
+    session_retention_days: int
+    usage_retention_days: int
+
+
 class ListRevisionsResponse(TypedDict):
     revisions: list[ListRevisionsResponseRevisionsItem]
     next_cursor: str | None
@@ -4544,6 +4966,7 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
+    sdk: RunSdk
     native: RunNative
     console_url: str
     approvals: Literal["ask", "never"]
@@ -4554,7 +4977,7 @@ class Run(_RunRequired, total=False):
     computer: RunComputer
     learning: RunLearning | None
     review: RunReview | None
-    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | None
+    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
 
@@ -4566,6 +4989,22 @@ class _RunResultRequired(TypedDict):
 
 class RunResult(_RunResultRequired, total=False):
     output_error: str
+
+
+class RunSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdkUsage | None
+
+
+class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
 
 
 class RunNative(TypedDict):
@@ -4724,6 +5163,7 @@ class _RunPending2Required(TypedDict):
 
 
 class RunPending2(_RunPending2Required, total=False):
+    summary: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -4737,6 +5177,7 @@ class _RunPending3Required(TypedDict):
 
 class RunPending3(_RunPending3Required, total=False):
     spent_usd: float
+    held_usd: float
     needs_usd: float
     least_cap_usd: float
     suggested_cap_usd: float
@@ -4758,6 +5199,10 @@ class RunPending5(TypedDict):
     completion_condition: str
     asked_at: str
     expires_at: str
+
+
+class RunPending6(TypedDict):
+    kind: Literal["stopped"]
 
 
 class RunImportedFrom(TypedDict):
@@ -5285,12 +5730,13 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     not_metered: int
 
 
 class _TimelineRowTriggerRequired(TypedDict):
     id: str
-    source: Literal["schedule", "webhook", "slack", "github", "composio"]
+    source: Literal["schedule", "webhook", "slack", "github", "composio", "email"]
     owner: bool
 
 
@@ -5352,6 +5798,124 @@ class TimelineRowLearning(TypedDict):
 
 
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
+
+
+class _CompleteSdkRunBodyRequired(TypedDict):
+    status: Literal["completed", "failed", "cancelled"]
+    answer: str
+
+
+class CompleteSdkRunBody(_CompleteSdkRunBodyRequired, total=False):
+    error: str
+    model: str
+    session_id: str
+    usage: CompleteSdkRunBodyUsage
+    evidence_complete: bool
+
+
+class CompleteSdkRunBodyUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class CompleteSdkRunResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class SdkRunEventsBody(TypedDict):
+    sequence: int
+    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3]
+
+
+class SdkRunEventsBodyEventsItem1(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class SdkRunEventsBodyEventsItem2(TypedDict):
+    type: Literal["session"]
+    session_id: str
+
+
+class _SdkRunEventsBodyEventsItem3Required(TypedDict):
+    type: Literal["tool"]
+    id: str
+    name: str
+    status: Literal["started", "completed", "failed"]
+
+
+class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+    input: Any
+    output: Any
+    parent_tool_use_id: str
+
+
+class SdkRunEventsResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _GetSdkRunResponseRequired(TypedDict):
+    run_id: str
+    state: Literal["running", "processing", "completed", "failed", "cancelled"]
+    learning: Any
+
+
+class GetSdkRunResponse(_GetSdkRunResponseRequired, total=False):
+    learning_run_id: str
+
+
+class _StartSdkRunBodyRequired(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody(_StartSdkRunBodyRequired, total=False):
+    model: str
+    workflow_tools: list[StartSdkRunBodyWorkflowToolsItem]
+    workflow_adapters: list[Literal["runNode", "runJudge"]]
+
+
+class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired, total=False):
+    output_schema: dict[str, Any]
+    price_usd: float
+
+
+class StartSdkRunResponse(TypedDict):
+    run_id: str
+    agent_id: str
+    console_url: str
+    token: str
+    learning: StartSdkRunResponseLearning
+
+
+class StartSdkRunResponseLearning(TypedDict):
+    enabled: bool
+    revision: str | None
+    context: str
+    skills: list[StartSdkRunResponseLearningSkillsItem]
+    workflows: list[StartSdkRunResponseLearningWorkflowsItem]
+
+
+class StartSdkRunResponseLearningSkillsItem(TypedDict):
+    name: str
+    files: dict[str, str]
+
+
+class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
 
 
 GetCapabilitiesResponse: TypeAlias = "Capabilities"
@@ -5520,7 +6084,7 @@ class FeaturesWebhooks(TypedDict):
 
 class _FeaturesTriggersRequired(TypedDict):
     routes: bool
-    sources: list[Literal["schedule", "webhook", "github", "composio"]]
+    sources: list[Literal["schedule", "webhook", "github", "composio", "email"]]
     targets: list[Literal["start_run", "message_run"]]
     min_every_s: int
     history_kept: int
@@ -6261,6 +6825,11 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    email_search: PutToolSettingsBodyEmailSearch
+    email_read: PutToolSettingsBodyEmailRead
+    email_draft: PutToolSettingsBodyEmailDraft
+    email_send: PutToolSettingsBodyEmailSend
+    email_file: PutToolSettingsBodyEmailFile
     browser: PutToolSettingsBodyBrowser
     subagent: PutToolSettingsBodySubagent
     pdf_pages: PutToolSettingsBodyPdfPages
@@ -6299,6 +6868,26 @@ class PutToolSettingsBodyWebFetch(TypedDict, total=False):
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailFile(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -6370,7 +6959,7 @@ class PutToolSettingsResponseBrowser(_PutToolSettingsResponseBrowserRequired, to
 
 
 class _CreateTriggerBodyRequired(TypedDict):
-    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6
+    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6 | CreateTriggerBodySource7
     target: CreateTriggerBodyTarget1 | CreateTriggerBodyTarget2
 
 
@@ -6498,6 +7087,39 @@ class CreateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class CreateTriggerBodySource7(_CreateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[CreateTriggerBodySource7AcceptItem]
+
+
+class _CreateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource7AcceptItem(_CreateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource7AcceptItemWhereItem1 | CreateTriggerBodySource7AcceptItemWhereItem2 | CreateTriggerBodySource7AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -6523,12 +7145,12 @@ class _CreateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6
+    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6 | CreateTriggerResponseSource7
     target: CreateTriggerResponseTarget1 | CreateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | None
+    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | CreateTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -6537,6 +7159,7 @@ class _CreateTriggerResponseRequired(TypedDict):
 
 
 class CreateTriggerResponse(_CreateTriggerResponseRequired, total=False):
+    last_check: CreateTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     signing_secret: str
@@ -6655,6 +7278,39 @@ class CreateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class CreateTriggerResponseSource7(_CreateTriggerResponseSource7Required, total=False):
+    accept: list[CreateTriggerResponseSource7AcceptItem]
+
+
+class _CreateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource7AcceptItem(_CreateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource7AcceptItemWhereItem1 | CreateTriggerResponseSource7AcceptItemWhereItem2 | CreateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -6699,9 +7355,15 @@ class CreateTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class CreateTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6722,6 +7384,12 @@ class CreateTriggerResponseLastFiringError(TypedDict):
     message: str
 
 
+class CreateTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
 class DeleteTriggerResponse(TypedDict):
     deleted: Literal[True]
     composio: DeleteTriggerResponseComposio
@@ -6734,7 +7402,7 @@ class DeleteTriggerResponseComposio(TypedDict):
 
 class _FireTriggerResponseRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6761,7 +7429,7 @@ class ListTriggerFiringsResponse(TypedDict):
 
 class _ListTriggerFiringsResponseFiringsItemRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6786,12 +7454,12 @@ class _GetTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6
+    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6 | GetTriggerResponseSource7
     target: GetTriggerResponseTarget1 | GetTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | None
+    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | GetTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -6800,6 +7468,7 @@ class _GetTriggerResponseRequired(TypedDict):
 
 
 class GetTriggerResponse(_GetTriggerResponseRequired, total=False):
+    last_check: GetTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -6916,6 +7585,39 @@ class GetTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _GetTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class GetTriggerResponseSource7(_GetTriggerResponseSource7Required, total=False):
+    accept: list[GetTriggerResponseSource7AcceptItem]
+
+
+class _GetTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource7AcceptItem(_GetTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource7AcceptItemWhereItem1 | GetTriggerResponseSource7AcceptItemWhereItem2 | GetTriggerResponseSource7AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _GetTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -6960,9 +7662,15 @@ class GetTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class GetTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -6983,6 +7691,12 @@ class GetTriggerResponseLastFiringError(TypedDict):
     message: str
 
 
+class GetTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
 class ListTriggersResponse(TypedDict):
     triggers: list[ListTriggersResponseTriggersItem]
 
@@ -6991,12 +7705,12 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6
+    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6 | ListTriggersResponseTriggersItemSource7
     target: ListTriggersResponseTriggersItemTarget1 | ListTriggersResponseTriggersItemTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | None
+    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | ListTriggersResponseTriggersItemDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7005,6 +7719,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
 
 
 class ListTriggersResponseTriggersItem(_ListTriggersResponseTriggersItemRequired, total=False):
+    last_check: ListTriggersResponseTriggersItemLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7121,6 +7836,39 @@ class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _ListTriggersResponseTriggersItemSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class ListTriggersResponseTriggersItemSource7(_ListTriggersResponseTriggersItemSource7Required, total=False):
+    accept: list[ListTriggersResponseTriggersItemSource7AcceptItem]
+
+
+class _ListTriggersResponseTriggersItemSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItem(_ListTriggersResponseTriggersItemSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _ListTriggersResponseTriggersItemTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7165,9 +7913,15 @@ class ListTriggersResponseTriggersItemDisabled4(TypedDict):
     detail: str
 
 
+class ListTriggersResponseTriggersItemDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _ListTriggersResponseTriggersItemLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7188,6 +7942,12 @@ class ListTriggersResponseTriggersItemLastFiringError(TypedDict):
     message: str
 
 
+class ListTriggersResponseTriggersItemLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
 class _RotateTriggerSecretResponseRequired(TypedDict):
     secret: SecretMeta
 
@@ -7199,7 +7959,7 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
-    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6
+    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6 | UpdateTriggerBodySource7
     target: UpdateTriggerBodyTarget1 | UpdateTriggerBodyTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -7322,6 +8082,39 @@ class UpdateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class UpdateTriggerBodySource7(_UpdateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[UpdateTriggerBodySource7AcceptItem]
+
+
+class _UpdateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource7AcceptItem(_UpdateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource7AcceptItemWhereItem1 | UpdateTriggerBodySource7AcceptItemWhereItem2 | UpdateTriggerBodySource7AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7347,12 +8140,12 @@ class _UpdateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6
+    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6 | UpdateTriggerResponseSource7
     target: UpdateTriggerResponseTarget1 | UpdateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | None
+    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | UpdateTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7361,6 +8154,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
 
 
 class UpdateTriggerResponse(_UpdateTriggerResponseRequired, total=False):
+    last_check: UpdateTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7478,6 +8272,39 @@ class UpdateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class UpdateTriggerResponseSource7(_UpdateTriggerResponseSource7Required, total=False):
+    accept: list[UpdateTriggerResponseSource7AcceptItem]
+
+
+class _UpdateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource7AcceptItem(_UpdateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource7AcceptItemWhereItem1 | UpdateTriggerResponseSource7AcceptItemWhereItem2 | UpdateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7522,9 +8349,15 @@ class UpdateTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class UpdateTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _UpdateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7542,6 +8375,12 @@ class UpdateTriggerResponseLastFiring(_UpdateTriggerResponseLastFiringRequired, 
 
 class UpdateTriggerResponseLastFiringError(TypedDict):
     code: str
+    message: str
+
+
+class UpdateTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
     message: str
 
 
@@ -7732,6 +8571,7 @@ OPERATIONS: dict[str, Operation] = {
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteTarget": Operation(method="POST", path="/connectors/{connector_id}/import", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "listRemoteConnectors": Operation(method="GET", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "pollRemoteConnector": Operation(method="POST", path="/connectors/{connector_id}/poll", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -7766,10 +8606,12 @@ OPERATIONS: dict[str, Operation] = {
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -7784,10 +8626,12 @@ OPERATIONS: dict[str, Operation] = {
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getMcpServer": Operation(method="GET", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -7797,6 +8641,7 @@ OPERATIONS: dict[str, Operation] = {
     "getMcpPrivateHosts": Operation(method="GET", path="/settings/mcp-servers/oauth/private-hosts", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "refreshMcpServer": Operation(method="POST", path="/settings/mcp-servers/{name}/refresh", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveMcpServer": Operation(method="PUT", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "auth.type"), tagged=False),
+    "getObservations": Operation(method="GET", path="/observations", path_params=(), multi_segment=(), query=("days", "session_id"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRevisions": Operation(method="GET", path="/agents/{agent_id}/revisions", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setCurrent": Operation(method="POST", path="/agents/{agent_id}/current", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "archiveRun": Operation(method="POST", path="/runs/{run_id}/archive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -7823,6 +8668,10 @@ OPERATIONS: dict[str, Operation] = {
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getSdkRun": Operation(method="GET", path="/sdk-runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startSdkRun": Operation(method="POST", path="/agents/{agent_id}/sdk-runs", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getCapabilities": Operation(method="GET", path="/capabilities", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callMcp": Operation(method="POST", path="/mcp", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -7938,6 +8787,10 @@ class ConnectorsResource(Group):
     def enroll_remote_connector(self, body: EnrollRemoteConnectorBody, *, timeout: float | None = None) -> EnrollRemoteConnectorResponse:
         """Create a ten-minute one-use connection code (POST /connectors/enrollment)."""
         return self._call("enrollRemoteConnector", (), body, None, timeout=timeout)
+
+    def import_remote_history(self, connector_id: str, target_id: str, body: ImportRemoteHistoryBody, *, timeout: float | None = None) -> ImportRemoteHistoryResponse:
+        """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
+        return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
 
     def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse:
         """Import an explicitly selected source-native agent reference (POST /connectors/{connector_id}/import)."""
@@ -8060,7 +8913,7 @@ class LearningResource(Group):
         return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
-        """A replay of a learned workflow's revision: running, done or failed, its counts and its score (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
+        """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
@@ -8091,6 +8944,10 @@ class LocalResource(Group):
         """Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id})."""
         return self._call("deleteComputer", (computer_id,), None, None, timeout=timeout)
 
+    def delete_email_account(self, *, timeout: float | None = None) -> None:
+        """Forget this server's email account (DELETE /settings/email)."""
+        return self._call("deleteEmailAccount", (), None, None, timeout=timeout)
+
     def delete_workspace_archil(self, *, timeout: float | None = None) -> DeleteWorkspaceArchilResponse:
         """Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil)."""
         return self._call("deleteWorkspaceArchil", (), None, None, timeout=timeout)
@@ -8106,6 +8963,10 @@ class LocalResource(Group):
     def get_chat_gptsign_in(self, *, timeout: float | None = None) -> GetChatGPTSignInResponse:
         """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
         return self._call("getChatGPTSignIn", (), None, None, timeout=timeout)
+
+    def get_email_account(self, *, timeout: float | None = None) -> GetEmailAccountResponse:
+        """This server's email account: its address, servers and who signs in, never its password (GET /settings/email)."""
+        return self._call("getEmailAccount", (), None, None, timeout=timeout)
 
     def get_git_hub_connection(self, *, timeout: float | None = None) -> GetGitHubConnectionResponse:
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
@@ -8155,6 +9016,10 @@ class LocalResource(Group):
         """Save a computer provider's keys, sealed (PUT /computers/{provider}/keys)."""
         return self._call("saveComputerKeys", (provider,), body, None, timeout=timeout)
 
+    def save_email_account(self, body: SaveEmailAccountBody, *, timeout: float | None = None) -> SaveEmailAccountResponse:
+        """Save this server's email account, its password sealed (PUT /settings/email)."""
+        return self._call("saveEmailAccount", (), body, None, timeout=timeout)
+
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
@@ -8166,6 +9031,10 @@ class LocalResource(Group):
     def test_computer(self, provider: str, *, timeout: float | None = None) -> TestComputerResponse:
         """Test a computer provider's account with its saved keys (POST /computers/{provider}/test)."""
         return self._call("testComputer", (provider,), None, None, timeout=timeout)
+
+    def test_email_account(self, body: TestEmailAccountBody | None = None, *, timeout: float | None = None) -> TestEmailAccountResponse:
+        """Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test)."""
+        return self._call("testEmailAccount", (), body, None, timeout=timeout)
 
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""
@@ -8206,6 +9075,14 @@ class McpServersResource(Group):
     def save(self, name: str, body: SaveMcpServerBody, *, timeout: float | None = None) -> SaveMcpServerResponse:
         """Preview a remote MCP server, then save it with the tools listed and its credential sealed (PUT /settings/mcp-servers/{name}). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("saveMcpServer", (name,), body, None, timeout=timeout)
+
+
+class ObservationsResource(Group):
+    """client.observations: one method per operation."""
+
+    def get_observations(self, *, days: int | None = None, session_id: str | None = None, timeout: float | None = None) -> GetObservationsResponse:
+        """Read activity and token usage reported by externally running agents (GET /observations)."""
+        return self._call("getObservations", (), None, {"days": days, "session_id": session_id}, timeout=timeout)
 
 
 class RevisionsResource(Group):
@@ -8322,6 +9199,26 @@ class RunsResource(Group):
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
+
+
+class SdkRunsResource(Group):
+    """client.sdk_runs: one method per operation."""
+
+    def complete(self, run_id: str, body: CompleteSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CompleteSdkRunResponse:
+        """Complete a backend SDK task (POST /sdk-runs/{run_id}/complete)."""
+        return self._call("completeSdkRun", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def events(self, run_id: str, body: SdkRunEventsBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SdkRunEventsResponse:
+        """Record bounded SDK execution evidence (POST /sdk-runs/{run_id}/events)."""
+        return self._call("sdkRunEvents", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def get(self, run_id: str, *, timeout: float | None = None) -> GetSdkRunResponse:
+        """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
+        return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
+
+    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+        """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
+        return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
 
 class ServerResource(Group):
@@ -8474,7 +9371,9 @@ class Resources:
     learning: LearningResource
     local: LocalResource
     mcp_servers: McpServersResource
+    observations: ObservationsResource
     revisions: RevisionsResource
+    sdk_runs: SdkRunsResource
     server: ServerResource
     template: TemplateResource
     tool_keys: ToolKeysResource
@@ -8492,7 +9391,9 @@ class Resources:
         self.learning = LearningResource(call)
         self.local = LocalResource(call)
         self.mcp_servers = McpServersResource(call)
+        self.observations = ObservationsResource(call)
         self.revisions = RevisionsResource(call)
+        self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
         self.template = TemplateResource(call)
         self.tool_keys = ToolKeysResource(call)

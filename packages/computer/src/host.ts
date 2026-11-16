@@ -24,7 +24,9 @@ export interface MachineHost {
 	readonly facts: HostFacts;
 	/**
 	 * Makes one machine, by its options, and answers its id once the vendor has one. It does not wait for the machine to
-	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too). The machine
+	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too), except where the
+	 * vendor applies a machine's settings only once it is ready: there it may wait for ready within ctx.timeoutMs, set
+	 * them, and answer then (PROVIDERS.md, create). The machine
 	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. An answer that
 	 * never comes is not a machine the adapter forgets: it lists by req.labels and deletes what it finds.
 	 */
@@ -120,8 +122,9 @@ export interface MachineRequest {
 	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
 	lifetimeMs: number;
 	/**
-	 * Whether the machine reaches out: true only for an Archil computer's root, which reaches Archil. Its tools'
-	 * network is init's own, none, read from inside, either way.
+	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
+	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
+	 * is init's, loopback alone, read from inside, either way.
 	 */
 	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */

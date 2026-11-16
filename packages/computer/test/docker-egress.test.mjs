@@ -114,20 +114,63 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	assert.deepEqual(attached.value.spec.network, { allow: ALLOW });
 });
 
-test("create() with none or open makes no volume, no proxy, no proxy variables and no relay: the computer is as it was", async () => {
-	for (const network of ["none", "open"]) {
-		// The image is not on the host: docker run pulls it, as before, with no image inspect or pull of its own.
-		const { provider, calls, volumeNames } = fakeDocker({ images: [] });
-		const made = await provider.create({ ...SPEC, network }, req());
-		assert.equal(made.ok, true, JSON.stringify(made));
-		assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec"], network);
-		const run = computerRunOf(calls());
-		assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
-		assert.equal(run.includes("--pull"), false, network);
-		assert.equal(run.includes("--egress"), false);
-		assert.equal(valuesOf(run, "--mount").some((mount) => mount.includes("egress")), false);
-		assert.deepEqual(volumeNames(), []);
-	}
+test("create() with none makes no volume, no proxy, no proxy variables and no relay: the computer is as it was", async () => {
+	// The image is not on the host: docker run pulls it, as before, with no image inspect or pull of its own.
+	const { provider, calls, volumeNames } = fakeDocker({ images: [] });
+	const made = await provider.create({ ...SPEC, network: "none" }, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(calls().map((args) => args[0]), ["info", "run", "inspect", "exec"]);
+	const run = computerRunOf(calls());
+	assert.deepEqual(valuesOf(run, "--network"), ["none"]);
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
+	assert.equal(run.includes("--pull"), false);
+	assert.equal(run.includes("--egress"), false);
+	assert.equal(valuesOf(run, "--mount").some((mount) => mount.includes("egress")), false);
+	assert.deepEqual(volumeNames(), []);
+});
+
+test("create() with open runs the computer on no network of Docker's, through an egress proxy that serves every public host (--open public, no list), and reads it back as open", async () => {
+	const { provider, calls, names, volumeNames } = fakeDocker();
+	const made = await provider.create({ ...SPEC, network: "open", labels: { team: "a" } }, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	const { name } = made.value;
+	const volume = `${name}-egress`;
+	const proxy = proxyRunOf(calls());
+	assert.ok(proxy, "open starts an egress proxy");
+	assert.deepEqual(valuesOf(proxy, "--open"), ["public"]);
+	assert.equal(proxy.includes("--allow"), false, "open is never a list");
+	assert.deepEqual(valuesOf(proxy, "--network"), ["bridge"], "the proxy alone is on Docker's network");
+	const computer = computerRunOf(calls());
+	assert.deepEqual(valuesOf(computer, "--network"), ["none"], "the computer itself has no network: no bridge");
+	assert.deepEqual(valuesOf(computer, "--mount").at(-1), `type=volume,src=${volume},dst=/opt/agentrun/egress,readonly`);
+	assert.deepEqual(computer.slice(-2), ["--egress", "/opt/agentrun/egress/egress.sock"], "init relays to the proxy's socket");
+	assert.deepEqual(names().sort(), [name, volume].sort());
+	assert.deepEqual(volumeNames(), [volume]);
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: "open" });
+	assert.deepEqual(await provider.network(made.value, "open"), { ok: true, value: "open" });
+	const listed = await provider.list({ team: "a" });
+	assert.deepEqual(listed.ok && listed.value.map((info) => [info.ref.name, info.network]), [[name, "open"]], "the proxy is never listed as a computer");
+	const attached = await provider.attach({ id: name });
+	assert.equal(attached.ok, true, JSON.stringify(attached));
+	assert.equal(attached.value.spec.network, "open");
+});
+
+test("a hint that reads \"--open\" is a hint: an allowlist whose proxy carries it is made and reads back as its list, never open", async () => {
+	const { provider, calls } = fakeDocker({ egressOptions: { hint: "--open" } });
+	const made = await provider.create(SPEC, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(valuesOf(proxyRunOf(calls()), "--hint"), ["--open"]);
+	assert.deepEqual(await provider.network(made.value), { ok: true, value: { allow: ALLOW } });
+});
+
+test("a computer on a network of Docker's (the bridge) reads back as one this provider never makes: open is only through the egress proxy", async () => {
+	const { provider } = fakeDocker({ containers: [container({ name: A, network: "bridge" })] });
+	const read = await provider.network(ref(A));
+	assert.equal(read.ok, true, JSON.stringify(read));
+	assert.equal(typeof read.value === "object" && "other" in read.value, true, JSON.stringify(read.value));
+	const attached = await provider.attach({ id: A });
+	assert.equal(attached.ok, false, "attach finds it drifted");
+	assert.match(attached.error.message, /network: .*which this provider never makes/);
 });
 
 test("create() with an allowlist pulls an image the host lacks before it makes anything, and both runs take --pull never: no pull happens between the egress volume and the computer", async () => {
@@ -219,13 +262,17 @@ test("an allowlist on a host that remaps user ids is refused in words before any
 		const result = await provider.create(SPEC, req());
 		assert.equal(result.ok, false, `${remap}: ${JSON.stringify(result)}`);
 		assert.equal(result.error.code, "refused");
-		assert.match(result.error.message, new RegExp(`^network: this Docker host remaps user ids \\(${words}\\), so .*an allowlist.* ask for network none or open, or use a Docker host that does not remap ids$`), remap);
+		assert.match(result.error.message, new RegExp(`^network: this Docker host remaps user ids \\(${words}\\), so .*open or an allowlist.* ask for network none, or use a Docker host that does not remap ids$`), remap);
 		assert.deepEqual(calls().map((args) => args[0]), ["info"], `${remap}: nothing is made`);
 		assert.deepEqual([names(), volumeNames()], [[], []]);
-		// Once the host is read, check() says so too, for an allowlist alone.
+		// Once the host is read, check() says so too, for open and an allowlist, each through the proxy.
 		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], remap);
+		assert.deepEqual(provider.check({ ...SPEC, network: "open" }).map((r) => r.field), ["network"], `${remap}: network open`);
 		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), [], `${remap}: network none`);
-		assert.equal((await provider.create({ ...SPEC, network: "open" }, req())).ok, true, `${remap}: network open is made as before`);
+		const open = await provider.create({ ...SPEC, network: "open" }, req());
+		assert.equal(open.ok, false, `${remap}: network open is refused too`);
+		assert.deepEqual([names(), volumeNames()], [[], []]);
+		assert.equal((await provider.create({ ...SPEC, network: "none" }, req())).ok, true, `${remap}: network none is made`);
 	}
 });
 
@@ -236,13 +283,15 @@ test("an allowlist whose Docker host is not where this provider runs (a daemon t
 		assert.equal(refused.ok, false, `${endpoint}: ${JSON.stringify(refused)}`);
 		assert.equal(refused.error.code, "refused");
 		assert.match(refused.error.message, said, String(endpoint));
-		assert.match(refused.error.message, /^network: .*so this provider's own interfaces are not the Docker host's, and the egress proxy could not refuse the host's own addresses: pass them as egress\.hostAddresses, or ask for network none or open$/, String(endpoint));
+		assert.match(refused.error.message, /^network: .*so this provider's own interfaces are not the Docker host's, and the egress proxy could not refuse the host's own addresses: pass them as egress\.hostAddresses, or ask for network none$/, String(endpoint));
 		assert.deepEqual(calls().map((args) => args[0]), ["info", "context"], `${endpoint}: nothing is made`);
 		assert.deepEqual([names(), volumeNames()], [[], []]);
-		// Once it is known, check() says so too, for an allowlist alone; none and open are made as before.
+		// Once it is known, check() says so too, for open and an allowlist, each through the proxy; none is made as before.
 		assert.deepEqual(provider.check(SPEC).map((r) => r.field), ["network"], String(endpoint));
+		assert.deepEqual(provider.check({ ...SPEC, network: "open" }).map((r) => r.field), ["network"], `${endpoint}: network open`);
 		assert.deepEqual(provider.check({ ...SPEC, network: "none" }), []);
-		assert.equal((await provider.create({ ...SPEC, network: "open" }, req())).ok, true, `${endpoint}: network open`);
+		assert.equal((await provider.create({ ...SPEC, network: "open" }, req())).ok, false, `${endpoint}: network open is refused too`);
+		assert.equal((await provider.create({ ...SPEC, network: "none" }, req())).ok, true, `${endpoint}: network none`);
 	}
 	const HOST = ["93.184.215.20", "2606:4700::20"];
 	const given = fakeDocker({ endpoint: "tcp://docker.example.com:2376", egressOptions: { hostAddresses: HOST } });

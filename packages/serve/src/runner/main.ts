@@ -34,6 +34,7 @@ import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { startJanitor } from "../workspace/computer-janitor.js";
+import { runEndComputers } from "../workspace/run-end-computers.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -243,6 +244,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
+    const runEnded = typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined;
     runner = startRunner({
       store,
       createLoop,
@@ -251,6 +254,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+      ...(runEnded ? { runEnded } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {

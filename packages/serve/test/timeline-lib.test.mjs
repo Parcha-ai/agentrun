@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { callWords, CAPS, foldLabel, groupTimeline, HOST_PHASE, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer, TOOL_COST, TOOL_STARTED } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-lib-support.mjs";
+import { piShaped } from "../dist/store-reads/journal.js";
+import { KINDS as JOURNAL } from "../dist/runner/journal-kinds.js";
 
 /** The root conversation of a Codex run in QA run 3 (F22: "Write a file called hello.md…", then "Now add a second line
  *  saying goodbye"), as serve wrote it from the adapter's events: the first turn's commentary came in a request whose
@@ -237,6 +239,36 @@ test("a nested call sits under its parent, and its result closes it", () => {
     "  Read 2 files: a.md, b.md 1 ok, 1 failed",
     "    Read b.md failed: no such file",
   ]);
+});
+
+for (const [label, id, parent, expected] of [
+  ["explicit SDK parent", "callback", "workflow", "workflow"],
+  ["derived managed parent", "script/1", undefined, "script"],
+  ["managed nesting precedence", "script/1", "other", "script"],
+]) test(`recorded call projection preserves ${label} on its call and result`, () => {
+  const shaped = piShaped([
+    { kind: JOURNAL.callStart, data: { callId: id, tool: "read", input: {}, ...(parent ? { parentCallId: parent } : {}) } },
+    { kind: JOURNAL.callEnd, data: { callId: id, tool: "read", status: "done", output: "read" } },
+  ]);
+  assert.equal(shaped[0].recordedCall, true, "SDK and managed journal calls share this projection");
+  assert.equal(shaped[0].data.parentCallId, parent);
+  const rows = timelineOf(shaped).filter(row => row.tool_use_id === id);
+  assert.deepEqual(rows.map(row => [row.kind, row.parent_tool_use_id]), [["tool_use", expected], ["tool_result", expected]]);
+});
+
+test("a recorded call the run's end closed (withRun) reads interrupted with no status, never failed; one a crash cut keeps reading failed", () => {
+  const shaped = piShaped([
+    { kind: JOURNAL.callStart, data: { callId: "exec", tool: "exec", input: {}, nests: true } },
+    { kind: JOURNAL.callEnd, data: { callId: "exec", status: "interrupted", withRun: true } },
+    { kind: JOURNAL.callStart, data: { callId: "cut", tool: "read", input: { path: "x" } } },
+    { kind: JOURNAL.callEnd, data: { callId: "cut", status: "interrupted" } },
+  ]);
+  const rows = timelineOf(shaped);
+  const end = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "exec");
+  assert.deepEqual([end.tool_status, end.summary, end.refused], [null, "Using tool: exec interrupted", undefined]);
+  assert.match(end.tool_result_preview, /^interrupted: /);
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "cut").tool_status, "failed");
+  assert.match(text(rows), /Using tool: exec +interrupted\n.*Read x +failed/);
 });
 
 test("a subagent's rows sit under the call that spawned it", () => {

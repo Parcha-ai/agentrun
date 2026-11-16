@@ -62,17 +62,17 @@ const FOLDER = /^agents\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/runs\/([A-Za-z0-9][A
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 /**
- * The Archil rule every provider's check() adds to checkMount's, with no vendor call: network "none" (the tools have no
- * network: init's own namespace, loopback alone), the run's agentrun.run and agentrun.epoch labels (the claim the mount is made
- * under), a disk, region and folder of the helper's shapes, the folder of the labelled run, and a token of a disk
- * token's shape. No word holds a value of the mount but the folder's run, and only once the folder has the folder's shape.
+ * The Archil rule every provider's check() adds to checkMount's, with no vendor call: the run's agentrun.run and
+ * agentrun.epoch labels (the claim the mount is made under), a disk, region and folder of the helper's shapes, the folder
+ * of the labelled run, and a token of a disk token's shape. No word holds a value of the mount but the folder's run, and
+ * only once the folder has the folder's shape. The tools' network is the provider's descriptor's to take (none, or open
+ * and a list through init's egress proxy): the mount is root's, outside their network either way.
  */
 export function archilRefusals(spec: ComputerSpec): Refusal[] {
 	const mount = spec.mount as Record<string, unknown> | undefined;
 	if (mount?.kind !== "archil") return [];
 	const found: Refusal[] = [];
 	const refuse = (field: string, message: string) => found.push({ field, message });
-	if (spec.network !== "none") refuse("network", 'a computer with an Archil mount takes network "none": its tools have no network, only loopback in init\'s own namespace');
 	const labels = spec.labels ?? {};
 	const run = labels[RUN_LABEL];
 	const runWrong = runProblem(run);

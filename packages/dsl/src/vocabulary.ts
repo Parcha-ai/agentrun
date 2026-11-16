@@ -64,7 +64,7 @@ export const IGNORED_NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]?: readon
 };
 
 /** Predicates that read a state value. `poll` accepts only these, and `not` holds only one of these. */
-export const MECHANICAL_PREDICATES = ["field_equals", "field_true", "in", "count_gte", "gte", "lt", "empty", "no_new_items", "field_type", "not"] as const;
+export const MECHANICAL_PREDICATES = ["field_equals", "field_true", "in", "count_gte", "gte", "lt", "empty", "no_new_items", "field_type", "quote_missing", "not"] as const;
 /** Every predicate `loop.until` and `escalate.when` accept: the mechanical set plus `ask`, a yes/no judge question. */
 export const WORKFLOW_PREDICATES = [...MECHANICAL_PREDICATES, "ask"] as const;
 export type WorkflowPredicateName = typeof WORKFLOW_PREDICATES[number];
@@ -80,6 +80,7 @@ export const PREDICATE_FIELDS: { readonly [Name in WorkflowPredicateName]: reado
   empty: ["path"],
   no_new_items: ["key"],
   field_type: ["path", "type"],
+  quote_missing: ["path", "field", "pages"],
   not: ["of"],
   ask: ["instructions", "state", "criteria", "gte", ...DECISION_NODE_FIELDS],
 };

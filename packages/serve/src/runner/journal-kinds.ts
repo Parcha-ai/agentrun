@@ -94,6 +94,11 @@ export const KINDS = {
    *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
    *  what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
+  /** The claim made the run a computer of its own (`computer`: its kind, desktop, sandbox or phone; computer-for-claim.ts
+   *  ClaimComputer.made): written on the root at the claim's first pass. A later claim's computer is a new one, and this
+   *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
+   *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
+  computerMade: "agentrun.computer.made",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
@@ -181,10 +186,11 @@ export function capNowOf(launchCapUsd: number | undefined, entries: readonly { r
   return raised ? (raised.data as RaiseData).capUsd : launchCapUsd;
 }
 
-/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what the cap counted as taken, the least the
- *  refused request needs, the least cap that sends it and the raise offered, in the run's money units (dollars). */
+/** What a run parked at its cap waits on (the kernel cap's parkOf): its cap, what it had spent, what it held for steps
+ *  still running, the least the refused request needs, the least cap that sends it and the raise offered, in the run's
+ *  money units (dollars). */
 export interface BudgetData {
-  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
+  readonly pending: { readonly kind: "budget"; readonly cap_usd: number; readonly spent_usd: number; readonly held_usd: number; readonly needs_usd: number; readonly least_cap_usd: number; readonly suggested_cap_usd: number };
   /** The cap's words, as the run row's summary says them. */
   readonly words: string;
   /** A workflow run's: the label of the node whose step waits at the cap, null when it is not known. Absent on an agentic
@@ -194,6 +200,8 @@ export interface BudgetData {
 
 export interface CallStartData {
   readonly callId: string;
+  /** A checked SDK workflow callback's owning learned_workflow invocation. */
+  readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
@@ -203,8 +211,13 @@ export interface CallStartData {
    *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
   /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
-   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
+   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). A call of
+   *  a harness's own that calls nest in (Codex's code-mode `exec`, SessionIO.ownCalls) is marked so too: its harness ends
+   *  it after the resume, from its CLI's answer to it. */
   readonly nests?: true;
+  /** The call of the harness's own this one runs inside (Codex's code-mode `exec`, SessionIO.ownCalls): its rows sit under
+   *  that call's, as a call a host tool that `nests` made sits under it by its id (`<callId>/<key>`). */
+  readonly parent?: string;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;
@@ -218,6 +231,9 @@ export interface CallEndData {
   readonly callId: string;
   readonly status: CallStatus;
   readonly output?: unknown;
+  /** On an `interrupted` end the run's own end wrote (a call that only nests calls, still open: adapter-loop.ts openNests):
+   *  nothing ended it, so it has no outcome. Its row reads interrupted, never failed (CALL_ENDED_WITH_RUN). */
+  readonly withRun?: true;
   /** When it was written (ms, the loop's clock): the Timeline dates the result's row by it. */
   readonly at?: number;
 }
@@ -336,6 +352,10 @@ export interface EndData {
   /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
    *  follow-up's end). Absent: the stored cost is left as it is. */
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost, not its cost (RunPatch.costUpperBound; the row reads it back
+   *  as RunRow.costAtMostUsd, its costUsd then null): it counts a
+   *  request cut with no answer at what its cap held for it. Written with the cost; absent, false. */
+  readonly costUpperBound?: boolean;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it

@@ -25,6 +25,7 @@
 
 <p align="center">
   <a href="#get-started">Quickstart</a> ·
+  <a href="#connect-your-existing-agent">Connect your agent</a> ·
   <a href="#case-studies">Case studies</a> ·
   <a href="#take-the-tour">Tour</a> ·
   <a href="#templates">Templates</a> ·
@@ -89,6 +90,10 @@ The [getting-started guide](docs/getting-started.md) explains the three options.
 
 You need Node 24.22.3 or newer, on macOS or Linux.
 
+Already use Claude Code or Codex? [Connect your existing agent](#connect-your-existing-agent) with its current
+configuration and sign-in. You do not need to add a model key to AgentRun for that connection. The steps below
+start a new agent from a template.
+
 1. **Start it.**
 
    ```sh
@@ -108,7 +113,10 @@ You need Node 24.22.3 or newer, on macOS or Linux.
    a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
    kept for next time.
 
-Rather have your coding agent do the local setup? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
+Rather have your coding agent do it? For the published quickstart, tell it:
+`Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
+For this development checkout, point it to [the matching onboarding skill](docs/SKILL.md), which guides either
+starting a new agent or bringing an existing one. The public website's skill is released separately.
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>
@@ -120,6 +128,53 @@ but get no shell.
 Want your own server with a URL? [Self-host on Render](#deploy-it).
 
 </details>
+
+## Connect your existing agent
+
+Already have agents running in a backend, Docker deployment or terminal? **Connect agent** can observe them
+through the same CLI and OpenTelemetry Collector used by hosted AgentRun. The OSS console shows their reported
+activity and token usage while your application keeps starting the work. Follow
+[Observe agents that already run elsewhere](connector/README.md#observe-agents-that-already-run-elsewhere).
+Observation needs no model key and does not automatically enable learning or import transcripts.
+
+Keep the project, instructions, skills, MCP tools and sign-in you already use in Claude Code or Codex. AgentRun can
+start new jobs with that setup and show their activity and results in the console.
+
+**Development build:** remote connections currently require the server and the Python connector from the same
+reviewed checkout. The published observation-only CLI does not include this remote execution mode. Follow the
+[source connector setup](connector/README.md) for installation and the matching Node bridge.
+
+1. **Choose your coding agent.** In Mission Control or Connected agents, open the **Connect agent** dropdown and
+   select your coding agent. The button remembers your choice and provides a prompt that reads the skill from
+   this server's build.
+2. **Choose what to bring.** The skill first distinguishes **observing existing sessions** from letting AgentRun
+   **start future jobs**. For future jobs, choose **a live connection**, **past history**, or **both**,
+   then confirms the source machine, project and runtime. For a laptop, VM or container separate from the server,
+   use **Connection setup → Another machine** and create a code with the chosen scope. Enter it directly in the
+   source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
+3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
+   or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
+   start a job. Keep a remote source worker online. Optionally turn **Self-improving** On to let completed jobs
+   propose notes and skills. Inspect what passes checking and grading in Learning Dojo, then start a fresh run to
+   use it. Reflection and grading add model usage.
+
+History import brings selected completed conversations into Runs without executing them or automatically training
+the agent. A live connection starts new CLI sessions; it does not attach to a desktop conversation already in
+progress. You can connect first and import history later with an explicitly approved history scope.
+
+[Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
+
+Already run an agent inside your backend with an SDK? The development build can add checked learning around its
+existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records
+the run and supplies accepted learning to the next fresh task. Use the matching client and server from this checkout.
+
+| Backend SDK | Integration |
+| --- | --- |
+| Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
+| Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
+and a learning-Off control. Reflection and independent grading run on the server and add model usage.
 
 ## Take the tour
 
@@ -521,6 +576,7 @@ nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md)
 - [Get started](docs/getting-started.md): AgentRun Cloud, local setup or self-hosting
 - [Quickstart on agentrun.ai](https://agentrun.ai/docs/quickstart) and the [docs](https://agentrun.ai/docs)
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
+- [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)

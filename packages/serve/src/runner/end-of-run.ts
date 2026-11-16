@@ -23,6 +23,8 @@ export const REFLECT_AGAIN = ":again";
 const REFLECT_ROUND = ":round-";
 /** What a round's re-ask or step adds to its request id (reflectRequestId): the round is the id without it. */
 const REFLECT_STEP = /:(?:again|compile-\d+)$/;
+/** The round shared by its look-back, re-ask and compile attempts, for range and durable accounting reads. */
+export const reflectRoundId = (requestId: string): string => requestId.replace(REFLECT_STEP, "");
 
 /** One round of a run's end-of-run turn in its journal: `from`, the entry its input placed (the turn's first); `until`, the
  *  run's end entry that closed it, once written. Every entry between is the turn's. */
@@ -38,7 +40,7 @@ export function reflectRanges(submissions: readonly { readonly type?: string; re
   const starts = new Map<string, number>();
   const note = (requestId: string, entry: number) => {
     if (!Number.isFinite(entry)) return;
-    const round = requestId.replace(REFLECT_STEP, "");
+    const round = reflectRoundId(requestId);
     starts.set(round, Math.min(starts.get(round) ?? entry, entry));
   };
   for (const record of submissions) {

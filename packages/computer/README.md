@@ -74,7 +74,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 - `stdout` and `stderr` come back apart, in base64. Each keeps at most 360 KiB (`maxOutput`, the default and the most):
   both, in base64, fit one 1 MiB line. The rest is read and dropped, and `truncated` is true.
 - The environment is PATH (the daemon's), HOME, USER and LOGNAME for the user, then, when init relays to an egress
-  proxy (`init --egress`, [below](#an-allowlist-the-egress-proxy)), `HTTP_PROXY`, `HTTPS_PROXY`, their lowercase forms
+  proxy (`init --egress`, [below](#open-and-an-allowlist-the-egress-proxy)), `HTTP_PROXY`, `HTTPS_PROXY`, their lowercase forms
   and `NO_PROXY`, then `env` over them. Nothing else of the daemon's environment is passed on.
 - `user` is a name or `uid[:gid]`. A daemon without CAP_SETUID and CAP_SETGID cannot switch users and answers `denied`.
   Init leaves itself no capability (below), so a command runs as the daemon's own user.
@@ -121,8 +121,12 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `computerd stdio` stays outside and still reaches init's socket: a unix socket with a path is not in a network
   namespace. It needs root with CAP_SYS_ADMIN and CAP_NET_ADMIN (a VM's root, a privileged container); without them, or
   with any read-back short, init refuses to start in words and the computer fails closed. `--own-network` takes no
-  `--egress`: such a computer's network is `none` (open and allowlists wait for a proxy out of that namespace, which
-  is not built yet). The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
+  `--egress`; for a spec whose network is `open` or a list it takes `--network open|allow:<list>`, and init, still
+  root and in the machine's own network, first starts the egress proxy (`daemon/internal/egress`): as nobody, on a
+  Unix socket root's and the tool user's group's alone (`/opt/agentrun/egress/egress.sock`), to the public internet
+  only (Docker's egress table, plus the machine's own addresses), and with a list to its hosts alone, refused before
+  any lookup. Init relays its loopback port 3128 to that socket and gives its programs the proxy env; their namespace
+  stays their loopback alone. The code is `daemon/internal/isolate`; `test/docker/loopback-block.docker.test.mjs` runs each
   provider's start in a root container beside a stand-in agent on 2280 and 49983.
 - **Where root may not make the network namespace, init makes it inside a user namespace.** Root holds no
   CAP_SYS_ADMIN on gVisor (Modal's GPU runtime), so `unshare(CLONE_NEWNET)` is EPERM. It may make a user namespace with
@@ -716,21 +720,21 @@ was deleted.
   words.
 - `check(spec)` refuses in words, with no Docker call: no image, no or a bad `lifetimeMs` (`checkLifetime`: at most
   30 days), a network that is not `none`, `open` or an allowlist the egress proxy takes
-  ([below](#an-allowlist-the-egress-proxy)), a NUL byte in any string, and any field Docker does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
+  ([below](#open-and-an-allowlist-the-egress-proxy)), a NUL byte in any string, and any field Docker does not support. Once the host has been read (below), it also refuses with `field: "host"` for each enforcement
   the host lacks. `create` never throws on a spec `check` passes.
 - Before `docker run`, `create` reads the host's enforcement once per provider (`host()`, from `docker info`; see
   below), and refuses a host that lacks any of it in words, having made nothing.
 - `create` runs `docker run` as a non-root user (`--user`, below), with every capability dropped (`--cap-drop ALL`),
   `--security-opt no-new-privileges`, `--ipc private --cgroupns private` (never the daemon's defaults, which a host can
-  set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network bridge` for `open` and `--network none`
-  for `none` and an allowlist, serve's sizes unless the spec gives its own (2
+  set to `shareable` or, on cgroup v1, the host's cgroup namespace), `--network none` for every network (`open` and an
+  allowlist go through the computer's egress proxy, below), serve's sizes unless the spec gives its own (2
   CPUs as a quota, `--cpu-period 100000 --cpu-quota 200000`, so a host with fewer CPUs still runs one; 4 GiB with swap
   the same; 1024 pids), and the daemon (its copy, next) bind-mounted read-only at `/opt/agentrun/computerd` as
   the entrypoint, `computerd init --deadline <time>`, which is PID 1, holds every process and reaps orphans. The label
   `agentrun.computer.deadline` holds the time `lifetimeMs` ends, and init gets the same time: then it ends every
   process as on SIGTERM (below) and exits 0, which stops the container. Init refuses to start with no deadline.
   Deleting a stopped computer is the janitor's (`lifetime: "janitor"`). A container that is not running after its
-  start is removed. The lifetime counts from just before the proxy (for an allowlist) and `docker run`, so a Docker host
+  start is removed. The lifetime counts from just before the proxy (for open or an allowlist) and `docker run`, so a Docker host
   that holds the start eats into it: a computer whose init exited 0 because its deadline passed before `docker run`
   finished fails `create` as `timeout`, with the lifetime and how long the start took ("its lifetime of 45 s ended
   before docker run finished (it took 101.2 s)").
@@ -778,7 +782,8 @@ was deleted.
   the ISO time the provider writes), `state` (`running` or `stopped`), `network` as read back, and `mount` when
   something is mounted at `/workspace`.
 - `network(ref)` reads the network back: `none` (network mode none, on no network but Docker's own `none`), `open`
-  (the default bridge alone), `{ allow: [...] }` (below), or `{ other: "<words>" }` for anything else, which is never
+  (network mode none, and an egress proxy serving `--open public`, below), `{ allow: [...] }` (below), or
+  `{ other: "<words>" }` for anything else, Docker's bridge included, which is never
   reported as a policy. `network(ref, policy)` returns the policy when it is the computer's (an allowlist with the same
   entries, normalized, in any order); any change is refused: a Docker computer's network is fixed at create, since
   Docker cannot move a container with no network onto one, and an allowlist needs its volume mounted at create.
@@ -792,18 +797,21 @@ was deleted.
 Expected failures are results (`{ ok: false, error: { code, message } }`), not throws.
 
 What a Docker computer cannot do: run as root or in root's group unless its spec asks, switch users, gain a capability, reach any network
-when asked for `none`, reach anything but its list, through its own proxy, when asked for an allowlist, write the
-daemon, or run past its deadline.
+when asked for `none`, reach anything but its list, through its own proxy, when asked for an allowlist, reach a
+private, loopback, link-local or metadata address when asked for `open`, write the daemon, or run past its deadline.
 
-### An allowlist: the egress proxy
+### Open and an allowlist: the egress proxy
 
 ```ts
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"] } }, { requestId: "r1#3" });
 // In the computer, HTTP_PROXY and HTTPS_PROXY name port 3128 on its own loopback for every program computerd starts.
 ```
 
-A computer whose network is an allowlist stays `--network none`: its own loopback, no route, no resolver. Its one way
-out is its own egress proxy, in a second container the provider makes, reads back and removes with it. The proxy is
+A computer whose network is `open` or an allowlist stays `--network none`: its own loopback, no route, no resolver.
+Its one way out is its own egress proxy, in a second container the provider makes, reads back and removes with it.
+Under `open` the proxy runs with `--open public` and no list: every public host, and the same refusals of private,
+loopback, link-local, metadata and this host's own addresses as under a list. A Docker computer is never on Docker's
+bridge itself. The proxy is
 serve's (`src/docker/egress-proxy.ts`, with its address table in `src/docker/egress-table.ts`), moved here; it holds no
 key.
 
@@ -813,7 +821,7 @@ key.
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
   package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
   port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
-  pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list, the computer's deadline (it ends itself then), this machine's own
+  pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
@@ -826,15 +834,15 @@ key.
 - **What a list holds** (`capabilities().allow`): names, exact or `*.suffix` (two labels or more), and CIDRs, IPv4 or
   IPv6, with host bits zero and over no range the address rule refuses; both in one list, at most 256 of each, each on
   ports 80 and 443. `check` refuses anything else in words: an empty list (ask for `none`), an address with no prefix, a
-  port, a URL, a private range. On a Docker host that remaps user ids (userns-remap or rootless Docker), an allowlist
-  is refused before anything is made, as a bind is: the volume's owner and the proxy's code are host ids the computer's
+  port, a URL, a private range. On a Docker host that remaps user ids (userns-remap or rootless Docker), open and an
+  allowlist are refused before anything is made, as a bind is: the volume's owner and the proxy's code are host ids the computer's
   user does not map to, and the provider does not guess the mapping.
 - **The Docker host's own addresses.** The proxy refuses them as `this-host`, so it must know them. Docker does not
   report them; the provider passes this machine's public interface addresses, which are the Docker host's only when
   the provider runs on it. When it runs in a container (`/.dockerenv`, `/run/.containerenv`, or a container's cgroup in
   `/proc/self/cgroup`), or its docker CLI talks to a daemon that is not a local unix socket (`docker context inspect`,
-  which resolves the context and `DOCKER_HOST` as the CLI does), an allowlist is refused in words before anything is
-  made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
+  which resolves the context and `DOCKER_HOST` as the CLI does), open and an allowlist are refused in words before
+  anything is made, and `check` says so once it knows, unless `egress.hostAddresses` names the host's addresses (IP addresses),
   which then go to the proxy beside this machine's own. A plain local host is as before. `egress.hostRoot` (default
   `/`) is the root those container signs are read under, for tests and embedders. An address that is not on any
   interface is never seen: a cloud machine's NAT'd or elastic public IP. Put those in `egress.hostAddresses` too. The
@@ -862,12 +870,13 @@ key.
   sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
   take (its ready wait and two minutes), removed by what the label found. The volume carries the computer's deadline
   and the spec's labels for this. Until then the proxy stops forwarding at its deadline.
-- **Read-back.** `network`, `list` and `attach` read the allowlist from Docker: network mode none, the egress volume
+- **Read-back.** `network`, `list` and `attach` read open or the allowlist from Docker: network mode none, the egress volume
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
   IPC and cgroup namespaces, and json-file log of 1m and 2 files included) with exactly its volume and code, and whose
-  argv holds the list and refuses every one of the Docker host's own addresses the provider requires now (more is
-  fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }`. **A crashed proxy** is not
+  argv holds the list (or `--open public`) and refuses every one of the Docker host's own addresses the provider
+  requires now (more is fine). Anything less is `{ other: "network allow, but its egress proxy ... <why>" }` (or
+  `network open, ...`). **A crashed proxy** is not
   restarted: the computer then reaches nothing, its network reads back `other` ("is not running"), and `attach` refuses
   it, so a caller makes a new computer. `list` reads every listed computer's proxy in one more inspect.
 
@@ -1057,7 +1066,7 @@ From `docker inspect`, what create asks for:
 
 | Field | Must be |
 | --- | --- |
-| network (`HostConfig.NetworkMode`, `NetworkSettings.Networks`, and for an allowlist the egress volume, init's relay and the proxy container) | `none`, `open` or the allowlist as declared, read back as `network(ref)` does |
+| network (`HostConfig.NetworkMode`, `NetworkSettings.Networks`, and for open or an allowlist the egress volume, init's relay and the proxy container) | `none`, `open` or the allowlist as declared, read back as `network(ref)` does |
 | `HostConfig.CapDrop`, `CapAdd`, `Privileged` | `["ALL"]`, nothing added, false |
 | `HostConfig.SecurityOpt` | exactly `["no-new-privileges"]`: `seccomp=unconfined`, `apparmor=unconfined`, `label=disable`, `systempaths=unconfined` or any other option is drift |
 | `HostConfig.IpcMode`, `CgroupnsMode` | `private`, `private` |
@@ -1071,7 +1080,7 @@ From `docker inspect`, what create asks for:
 | `Config.User` | the uid:gid asked for: the spec's, the provider's, or the default |
 | `Config.Image`, `WorkingDir` | the spec's image; its `workdir`, or `/work` |
 | `Config.Env` | one `HOME`, `HOME=/work`; the image's other variables are its own |
-| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]`, and for an allowlist `"--egress", "/opt/agentrun/egress/egress.sock"` after it |
+| `Config.Entrypoint`, `Cmd` | `["/opt/agentrun/computerd"]`, `["init", "--deadline", <the deadline label's value>]`, and for open or an allowlist `"--egress", "/opt/agentrun/egress/egress.sock"` after it |
 | `Config.Labels` | `agentrun.computer=1`, the deadline as written, and every label the spec asked for; others are the image's |
 | `AppArmorProfile` | `docker-default` when the host has AppArmor, else empty |
 | `ProcessLabel` | of type `container_t` when the host has SELinux, else empty |
@@ -1503,7 +1512,7 @@ the TTL.
 | --- | --- | --- |
 | `kind` | `linux` | a Linux shell with computerd: exec, files and processes |
 | `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
-| `network` | `none` | `networkBlockAll` at create, and the daemon's own network namespace; open and allowlists wait for a proxy out of it (known gap) |
+| `network` | `none`, `open`, `allow` | none: `networkBlockAll` at create, and the daemon's own network namespace; open and a list: not blocked (the account's tier may still limit where it goes), and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
@@ -1805,7 +1814,7 @@ would hold an empty process table).
 | --- | --- | --- |
 | `kind` | `desktop` (default) or `linux` | `options.kind`; a desktop's X server is computerd's own |
 | `lifetime` | `vendor` | E2B kills the sandbox at its timeout, set to the lifetime; init ends every process at the deadline too |
-| `network` | `none` | `allowInternetAccess` false and `allowPublicTraffic` false at create, and the daemon's own network namespace; `open` waits for a proxy out of it (known gap) |
+| `network` | `none`, `open`, `allow` | none: `allowInternetAccess` false and `allowPublicTraffic` false at create, and the daemon's own network namespace; open and a list: `allowInternetAccess` true (`allowPublicTraffic` stays false), and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `vendorAgentPorts` | `[49983]` | envd's port; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `isolation` | `microvm` | Firecracker |
@@ -1827,9 +1836,9 @@ Modal) also tries IPv4 and IPv6 addresses from inside at create and attach, the 
 `[2606:4700:4700::1111]:53/udp`, or the `probeTargets` option), and refuses the computer if one answers within the 10 s
 window (the rule every provider shares: [Network none, read from inside](#network-none-read-from-inside-nothing-answers)).
 The probe's `exec.run` is bounded at 30 s (`timeouts.probeMs`), above its longest run, 20 s. Open and an allowlist
-are refused in words while the daemon's programs have a network of their own (known gap: a proxy out of that network
-is the next feature after this one; a computer that needs pip, npm or git from the internet cannot be made on E2B
-until then). The network is fixed at create: `network(ref, policy)` refuses a change. Since the probe runs inside the
+go through the egress proxy init starts outside the daemon's programs' network (the shared hosted adapter's, below):
+the sandbox is made with internet access, and the programs reach the public internet, or the list's hosts, through
+`127.0.0.1:3128` alone. The network is fixed at create: `network(ref, policy)` refuses a change. Since the probe runs inside the
 daemon's own network, every target reads `refused` there, whatever E2B's firewall would have done; the firewall facts
 below are what a program outside that namespace meets.
 
@@ -2035,7 +2044,7 @@ at most that late. `delete` ends every connection to the instance at once, a ret
 | `isolation` | `vm` or `gvisor` | `options.type`: `vm` (default) or `default` |
 | `lifetime` | `janitor` | Agent37 never ends an instance on its own; init's deadline and the deadline label do, and the run's sweep is the backstop |
 | `maxLifetimeMs` | 24 h | the janitor's cap; `options.maxLifetimeMs` sets less |
-| `network` | `none` | `deny-all` at create, and the daemon's own network namespace |
+| `network` | `none`, `open`, `allow` | none: `deny-all` at create, and the daemon's own network namespace; open and a list: `allow-all`, and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `vendorAgentPorts` | `[22022, 7681]` | the platform's sshd (root for whoever holds the key) and its web terminal (ttyd), both seen listening on every VM |
 | `mount` | `archil` | the run's folder on an Archil disk; `/dev/fuse` is there on both types (live), and the mount needs the box template |

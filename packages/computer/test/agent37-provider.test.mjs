@@ -79,7 +79,7 @@ async function until(check, ms = 5_000) {
 
 // --- what it declares ---
 
-test("an Agent37 computer is kind linux with daemon child, network none read from inside, the sshd's and the web terminal's ports, and a 24 h janitor", () => {
+test("an Agent37 computer is kind linux with daemon child, network none, open and a list read from inside, the sshd's and the web terminal's ports, and a 24 h janitor", () => {
 	const { provider } = restOnly();
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
@@ -87,7 +87,9 @@ test("an Agent37 computer is kind linux with daemon child, network none read fro
 	assert.equal(caps.daemon, "child");
 	assert.equal(caps.lifetime, "janitor");
 	assert.equal(caps.maxLifetimeMs, 24 * 3_600_000);
-	assert.deepEqual(caps.network, ["none"]);
+	assert.deepEqual(caps.network, ["none", "open", "allow"], "open and a list through init's egress proxy, which the adapter starts on allow-all");
+	assert.deepEqual(caps.allow?.domains?.ports, [80, 443]);
+	for (const network of ["none", "open", { allow: ["example.com"] }]) assert.deepEqual(provider.check({ image: "agent37-base", lifetimeMs: 600_000, network }), [], JSON.stringify(network));
 	assert.equal(caps.networkReadBack, false);
 	assert.deepEqual(caps.vendorAgentPorts, [22022, 7681]);
 	assert.deepEqual(caps.mount, ["archil"]);
@@ -164,7 +166,7 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 		public_ports: [],
 	});
 	await host.create({ ...request(), egress: true }, CTX);
-	assert.equal(rest.calls[1].body.network, "allow-all", "an Archil computer's root is open");
+	assert.equal(rest.calls[1].body.network, "allow-all", "egress (an Archil computer's root, or open's or a list's proxy) is allow-all");
 	assert.equal(rest.calls[1].body.resources, undefined, "no size asked, none sent");
 });
 
