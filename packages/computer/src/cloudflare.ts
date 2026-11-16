@@ -1,15 +1,9 @@
-// The Cloudflare host: a Linux sandbox in a Cloudflare Container, in the operator's own account. Cloudflare has no REST
-// call that starts a container (a Durable Object starts one, developers.cloudflare.com/containers/api/durable-object-container/),
-// so the operator deploys our relay Worker once (packages/computer/relays/cloudflare, `npx wrangler deploy`) and this host
-// calls its routes with the relay's token: create, get, list (through the relay's index), delete and health. Nothing
-// reaches into a container: it boots the box image the relay was built FROM with MachineRequest.boot.env and runs
-// agentrun-dial, which fetches the server's computerd, checks its sha256, starts init and dials the attach route
-// (facts.connect "dial"). The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
-//
-// Lifetime is the janitor's plus init's deadline, as Fly's: no extend. The relay's alarm is the backstop: every hour it
-// keeps a quiet container (a container's own traffic doesn't keep it, developers.cloudflare.com/sandbox/concepts/lifetime/),
-// and at backstopAt it destroys it. Unverified until the live run: that the alarm holds a quiet container past an hour,
-// that the container reaches a wss:// host, and that it ends once agentrun-dial exits.
+// The Cloudflare host: a Linux sandbox in a Cloudflare Container, in the operator's account. Only a Durable Object starts
+// a container, so the operator deploys our relay Worker once (relays/cloudflare) and this host calls its routes with the
+// relay's token. A container boots the box image the relay was built FROM with MachineRequest.boot.env and runs
+// agentrun-dial (facts.connect "dial"); nothing reaches into it. No extend: the janitor and init's deadline end it, and
+// the relay's alarm keeps a quiet container up hourly and destroys it at backstopAt. Unverified until the live run: the
+// alarm holding a quiet container past an hour, outbound wss://, and the container ending once agentrun-dial exits.
 import { CLOUDFLARE, CLOUDFLARE_RELAY_VERSION } from "./descriptors/cloudflare.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "./host.js";
@@ -151,8 +145,8 @@ class CloudflareHost implements MachineHost {
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		if (req.boot === undefined) throw new HostError("invalid", "a Cloudflare container dials the server, and the request has no boot env for it");
-		const instance = instanceOf(req.cpus, req.memoryMb);
-		if (instance === undefined) throw new HostError("invalid", `no Cloudflare instance holds ${req.cpus} CPUs and ${req.memoryMb} MiB`);
+		// check() refused a size past the largest, so one instance holds it.
+		const instance = instanceOf(req.cpus, req.memoryMb) ?? LARGEST;
 		const body = { name: nameOf(req.name), image: req.image, env: req.boot.env, labels: req.labels, instance: instance.name, backstopAt: req.backstopAt };
 		// Only a 429, a refusal that made nothing, is sent again: a create that got no answer may have made a container.
 		const made = (await this.#call("POST", "/v1/computers", { json: body, named: true, retry: (status) => status === 429 }, ctx)) as RelayRow | null;
