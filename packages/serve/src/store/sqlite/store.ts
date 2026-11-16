@@ -184,8 +184,8 @@ const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider:
 type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
-type MintedRecord = { request_id: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number };
-const mintedOf = (r: MintedRecord): MintedTokenRow => ({ requestId: r.request_id, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at });
+type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number };
+const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -1469,16 +1469,16 @@ class SqliteStore implements Store {
       },
     };
 
-    const MINTED = "SELECT request_id, kind, os, arch, expires_at, revoked_at, created_at FROM minted_tokens";
+    const MINTED = "SELECT machine, kind, os, arch, expires_at, revoked_at, created_at FROM minted_tokens";
     this.mintedTokens = {
-      // A mint for a request id that has one replaces it: its older token dials no more.
-      mint: async ({ requestId, tokenSha256, kind, os, arch, expiresAt }) => {
+      // A mint for a machine that has one replaces it: its older token dials no more.
+      mint: async ({ machine, tokenSha256, kind, os, arch, expiresAt }) => {
         const at = now();
         await db.write([
           { sql: "DELETE FROM minted_tokens WHERE expires_at <= ?", params: [at] },
           {
-            sql: "INSERT INTO minted_tokens (request_id, token_sha256, kind, os, arch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO UPDATE SET token_sha256 = excluded.token_sha256, kind = excluded.kind, os = excluded.os, arch = excluded.arch, expires_at = excluded.expires_at, revoked_at = NULL, created_at = excluded.created_at",
-            params: [requestId, tokenSha256, kind, os, arch, expiresAt, at],
+            sql: "INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (machine) DO UPDATE SET token_sha256 = excluded.token_sha256, kind = excluded.kind, os = excluded.os, arch = excluded.arch, expires_at = excluded.expires_at, revoked_at = NULL, created_at = excluded.created_at",
+            params: [machine, tokenSha256, kind, os, arch, expiresAt, at],
           },
         ]);
       },
@@ -1486,12 +1486,12 @@ class SqliteStore implements Store {
         const row = await db.get<MintedRecord>(`${MINTED} WHERE token_sha256 = ? AND revoked_at IS NULL AND expires_at > ?`, tokenSha256, now());
         return row === undefined ? undefined : mintedOf(row);
       },
-      get: async (requestId) => {
-        const row = await db.get<MintedRecord>(`${MINTED} WHERE request_id = ?`, requestId);
+      get: async (machine) => {
+        const row = await db.get<MintedRecord>(`${MINTED} WHERE machine = ?`, machine);
         return row === undefined ? undefined : mintedOf(row);
       },
-      revoke: async (requestId) => {
-        const [result] = await db.write([{ sql: "UPDATE minted_tokens SET revoked_at = ? WHERE request_id = ? AND revoked_at IS NULL", params: [now(), requestId] }]);
+      revoke: async (machine) => {
+        const [result] = await db.write([{ sql: "UPDATE minted_tokens SET revoked_at = ? WHERE machine = ? AND revoked_at IS NULL", params: [now(), machine] }]);
         return (result?.changes ?? 0) === 1;
       },
     };

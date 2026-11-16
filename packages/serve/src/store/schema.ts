@@ -72,12 +72,12 @@ export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates
   ) STRICT`;
 
 /** A hosted machine's minted token (a dial provider's create, spec/computer/attach.md): its computerd dials the attach
- *  socket and fetches the daemon with it. By the create's request id: the token's SHA-256 alone (hex), what the machine
- *  must say it is at hello (kind, os, arch), and when the token ends (`expires_at`, the machine's backstop) or was revoked
- *  (its delete). A row past its end goes at the next mint. In STORE_DDL, and added at a server open to a store an earlier
- *  build of this version made. */
+ *  socket and fetches the daemon with it. By the machine (its name, from its create's request id): the token's SHA-256
+ *  alone (hex), what the machine must say it is at hello (kind, os, arch), and when the token ends (`expires_at`, the
+ *  machine's backstop) or was revoked (its delete). A row past its end goes at the next mint. In STORE_DDL, and added at
+ *  a server open to a store an earlier build of this version made. */
 export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
-    request_id TEXT PRIMARY KEY,
+    machine TEXT PRIMARY KEY,
     token_sha256 TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL,
     os TEXT NOT NULL,

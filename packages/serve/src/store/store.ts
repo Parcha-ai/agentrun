@@ -1094,8 +1094,8 @@ export interface PairedComputers {
 /** A hosted machine's minted token (store schema `minted_tokens`): what the machine must say it is at hello, and the
  *  token's life. The token is not here: the store keeps its SHA-256 alone. */
 export interface MintedTokenRow {
-  /** The create's request id: the machine's id in the attach hub. */
-  readonly requestId: string;
+  /** The machine's name (from its create's request id): its id in the attach hub. */
+  readonly machine: string;
   readonly kind: string;
   readonly os: string;
   readonly arch: string;
@@ -1108,14 +1108,14 @@ export interface MintedTokenRow {
 
 /** The tokens minted for hosted machines that dial this server (a dial provider's create, spec/computer/attach.md). */
 export interface MintedTokens {
-  /** Keeps the token's SHA-256 for `requestId`, replacing one minted for it before. Rows past their end go in the same write. */
-  mint(token: Pick<MintedTokenRow, "requestId" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string }): Promise<void>;
+  /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write. */
+  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string }): Promise<void>;
   /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
   byToken(tokenSha256: string): Promise<MintedTokenRow | undefined>;
-  /** The request id's row, good or not; undefined when it has none (never minted, or gone past its end). */
-  get(requestId: string): Promise<MintedTokenRow | undefined>;
-  /** Revokes the request id's token. False when it had none good. */
-  revoke(requestId: string): Promise<boolean>;
+  /** The machine's row, good or not; undefined when it has none (never minted, or gone past its end). */
+  get(machine: string): Promise<MintedTokenRow | undefined>;
+  /** Revokes the machine's token. False when it had none good. */
+  revoke(machine: string): Promise<boolean>;
 }
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id

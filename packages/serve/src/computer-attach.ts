@@ -11,7 +11,7 @@
 //
 // A hosted machine that dials this server (a dial provider's, spec/computer/attach.md) is let in by the token its create
 // minted (machineTokens), kept as its SHA-256 until the machine's backstop or its delete: its socket goes to the hub under
-// the create's request id, and it fetches this server's computerd build with the same token (GET /v2/computers/daemon,
+// the machine's name, and it fetches this server's computerd build with the same token (GET /v2/computers/daemon,
 // DAEMON_FETCHES_PER_MINUTE a minute per machine).
 //
 // One process: the hub is this process's memory, so a run takes a paired computer only from a runner in the process
@@ -46,7 +46,7 @@ export const DAEMON_FETCHES_PER_MINUTE = 10;
 const MINUTE_MS = 60_000;
 /** The most keys a minute limit keeps at once; past it, those with no try in the window go first. */
 const LIMIT_KEYS = 10_000;
-/** The one key the keys the full table has no room for are counted under (no address's or request id's has a space). */
+/** The one key the keys the full table has no room for are counted under (no address's or machine's has a space). */
 const OVERFLOW_KEY = "every key past the table";
 /** The longest name a person gives a computer, in characters. */
 export const PAIRED_NAME_MAX = 100;
@@ -99,7 +99,7 @@ export function closeReason(reason: string): string {
 }
 
 /** A limit of `perMinute` tries a minute by key: the pair route's by source address (`keyOf` peerKey: an IPv6 one by its
- *  /64), the daemon route's by the minted token's request id. */
+ *  /64), the daemon route's by the minted token's machine. */
 export class MinuteLimit {
   readonly #tries = new Map<string, number[]>();
   constructor(
@@ -311,8 +311,8 @@ const TOKEN_REFUSED = "no paired computer or hosted machine has this token: pair
 /** The daemon route's 401: a token no hosted machine has good. */
 const MACHINE_TOKEN_REFUSED = "no hosted machine has this token: a machine's token ends at its delete or its backstop";
 
-/** A minted machine as the hub's words name it. */
-const machineName = (requestId: string): string => `the machine of request ${requestId}`;
+/** Why a minted machine's socket closed at its token's revoke. */
+const machineGone = (machine: string): string => `${machine} was deleted: its token ends`;
 
 /** The pairing routes, the attach socket and the daemon route over one store and one hub, and the tokens a dial
  *  provider mints. */
@@ -361,28 +361,28 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     log("computer_removed", { computer: id });
   }
 
-  /** A dial provider's tokens (computer package MachineTokens): a new one per create, kept as its SHA-256 by the create's
-   *  request id until `expiresAt` (the machine's backstop); a revoke (the machine's delete) ends it and closes its socket
-   *  with 4401. */
+  /** A dial provider's tokens (computer package MachineTokens): a new one per create, kept as its SHA-256 by the machine
+   *  (its name, from its create's request id) until `expiresAt` (its backstop); a revoke (its delete) ends it and closes
+   *  its socket with 4401. */
   const machineTokens = {
-    async mint(requestId: string, { kind, os, arch, expiresAt }: MintFor): Promise<string> {
+    async mint(machine: string, { kind, os, arch, expiresAt }: MintFor): Promise<string> {
       const until = new Date(expiresAt).getTime();
       if (!Number.isFinite(until)) throw new TypeError(`a machine token's expiresAt is a time, not ${JSON.stringify(expiresAt)}`);
       const token = newMintedToken();
-      await minted.mint({ requestId, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until });
-      log("machine_token_minted", { request: requestId, kind, os, arch, expires_at: new Date(until).toISOString() });
+      await minted.mint({ machine, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until });
+      log("machine_token_minted", { machine, kind, os, arch, expires_at: new Date(until).toISOString() });
       return token;
     },
-    async revoke(requestId: string): Promise<void> {
-      await minted.revoke(requestId);
-      hub.revoke(requestId, `${machineName(requestId)} was deleted: its token ends`);
-      log("machine_token_revoked", { request: requestId });
+    async revoke(machine: string): Promise<void> {
+      await minted.revoke(machine);
+      hub.revoke(machine, machineGone(machine));
+      log("machine_token_revoked", { machine });
     },
   };
 
-  /** Who dials the attach socket, as the hub takes it: a paired computer by its id, or a minted machine by its create's
-   *  request id (its hello must say the kind, os and arch it was minted for). `good` reads its row again once the hub has
-   *  the socket; `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and `<event>_refused`. */
+  /** Who dials the attach socket, as the hub takes it: a paired computer by its id, or a minted machine by its name (its
+   *  hello must say the kind, os and arch it was minted for). `good` reads its row again once the hub has the socket;
+   *  `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and `<event>_refused`. */
   type Dialer = { computer: PairedComputer; field: string; event: string; gone: string; good: () => Promise<boolean>; seen: (hello: HelloResult) => Promise<void> };
   const pairedDialer = (row: PairedComputerRow): Dialer => ({
     computer: pairedOf(row),
@@ -393,11 +393,11 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     seen: (hello) => paired.seen(row.id, hello as unknown as Record<string, unknown>),
   });
   const machineDialer = (row: MintedTokenRow): Dialer => ({
-    computer: { id: row.requestId, name: machineName(row.requestId), hello: { kind: row.kind, os: row.os, arch: row.arch } as HelloResult, labels: {} },
-    field: "request",
+    computer: { id: row.machine, name: row.machine, hello: { kind: row.kind, os: row.os, arch: row.arch } as HelloResult, labels: {} },
+    field: "machine",
     event: "machine",
-    gone: `${machineName(row.requestId)} was deleted: its token ends`,
-    good: async () => (await minted.get(row.requestId))?.revokedAt === null,
+    gone: machineGone(row.machine),
+    good: async () => (await minted.get(row.machine))?.revokedAt === null,
     seen: async () => undefined,
   });
 
@@ -413,7 +413,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   async function daemon(authorization: string | undefined, arch: string | null): Promise<string> {
     const machine = await machineBy(authorization);
     if (machine === undefined) throw new ApiError("unauthenticated", MACHINE_TOKEN_REFUSED, {}, { "www-authenticate": "Bearer" });
-    const allowed = fetches.allow(machine.requestId);
+    const allowed = fetches.allow(machine.machine);
     if (!allowed.ok) throw limited("too many daemon fetches with this machine's token", allowed.retryAfterMs);
     if (arch === null || !DAEMON_ARCHES.includes(arch)) throw invalid([{ field: "arch", reason: "invalid", message: `arch is the machine's, ${DAEMON_ARCHES.join(" or ")}` }]);
     return daemonPath(arch);
@@ -421,7 +421,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
 
   /** GET /v2/computers/attach's upgrade: the token's paired computer or minted machine, then the protocol, then the hub's
    *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 for another protocol
-   *  version). A minted machine's socket goes to the hub under its create's request id. */
+   *  version). A minted machine's socket goes to the hub under its name. */
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string, headers?: Record<string, string>) => void): void {
     void (async () => {
       if (closing) return deny("503 Service Unavailable", "this server is stopping");
