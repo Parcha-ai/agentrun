@@ -160,7 +160,9 @@ test("the server is this package's one dependency, at the exact version of the s
 
 // The command passes its arguments through: the server's CLI picks the port and opens the browser.
 // A stand-in server installed beside a copy of this package records what it was started with.
-async function throughStub(t, args, env = {}) {
+// `mode` is the stub launcher's (0o644: a launcher that can't be run). The command runs in the stub's own folder, so a
+// relative --data lands there.
+async function throughStub(t, args, env = {}, { mode = 0o755 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
   removeAtEnd(dir);
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
@@ -174,18 +176,36 @@ if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
 if (process.env.STUB_FAIL) { console.log("listen EADDRINUSE: 127.0.0.1:7340 is in use (stub)"); process.exit(1); }
-// STUB_FAIL_STDERR: say why on stderr only (as a lock refusal does) and exit before any line on stdout.
-if (process.env.STUB_FAIL_STDERR) { console.error("agentrun-serve: another server holds this data root (stub)"); process.exit(1); }
-console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
-// STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
-if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
-console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
-if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
-setInterval(() => {}, 1000);
+// STUB_FAIL_STDERR: say why on stderr only (as a lock refusal does) and exit before any line on stdout; STUB_STDERR_LINES
+// numbered lines on stderr before it.
+if (process.env.STUB_FAIL_STDERR) {
+  for (let i = 1; i <= Number(process.env.STUB_STDERR_LINES ?? 0); i++) console.error("stub stderr line " + i);
+  console.error("agentrun-serve: another server holds this data root (stub)");
+  process.exit(1);
+}
+// STUB_EXIT: print nothing at all and exit with that code.
+if (process.env.STUB_EXIT) process.exit(Number(process.env.STUB_EXIT));
+// STUB_KILLED: one line on stdout, then a SIGKILL nobody else sent (as the kernel's out-of-memory killer ends a process).
+if (process.env.STUB_KILLED) { console.log("agentrun-serve: opening the store (stub)"); process.kill(process.pid, "SIGKILL"); }
+// STUB_CLOSE: close stdout and keep running, never having printed an "Open " line.
+if (process.env.STUB_CLOSE) { require("node:fs").closeSync(1); setInterval(() => {}, 1000); }
+// STUB_HANG: one line and never an "Open " line; STUB_HANG=deaf ignores a SIGTERM too.
+else if (process.env.STUB_HANG) {
+  console.log("agentrun-serve: still getting ready (stub)");
+  if (process.env.STUB_HANG === "deaf") process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1000);
+} else {
+  console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
+  // STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
+  if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
+  console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
+  if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
+  setInterval(() => {}, 1000);
+}
 `);
-  chmodSync(join(serve, "launcher", "agentrun-serve"), 0o755);
+  chmodSync(join(serve, "launcher", "agentrun-serve"), mode);
   const { home, env: base } = bare(t);
-  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { cwd: dir, env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   // Both pipes drained: stderr comes on a pipe of its own, so it is read only once the child has closed them.
   const closed = new Promise((resolve) => child.on("close", resolve));
@@ -198,8 +218,13 @@ setInterval(() => {}, 1000);
   child.kill("SIGTERM");
   const code = await exited;
   await closed;
-  return { home, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
+  return { dir, home, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
 }
+
+/** What a start that failed says, from its first line on: the server's own stderr, as it printed it, comes before. */
+const failureOf = (err) => err.slice(err.indexOf("AgentRun did not start"));
+/** The start log of a start whose store is ~/.agentrun under `home`. */
+const startLog = (home) => join(STORE(home), "start.log");
 
 test("with AGENTRUN_PUBLIC_URL it starts and names that address; a stop it forwards ends it with 0; a server that can't start is shown with its own last lines", { timeout: 60_000 }, async (t) => {
   const pub = await throughStub(t, ["--no-open"], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com", STUB_OPEN: "https://agentrun.example.com/" });
@@ -208,14 +233,116 @@ test("with AGENTRUN_PUBLIC_URL it starts and names that address; a stop it forwa
   assert.equal(died.code, 0, `a SIGTERM this command passed on is a clean stop: ${died.err}`);
   const failed = await throughStub(t, ["--no-open"], { STUB_FAIL: "1" });
   assert.equal(failed.code, 1, failed.err);
-  assert.match(failed.err, /^AgentRun did not start\. The server's last lines:$/m, failed.err);
-  assert.match(failed.err, /listen EADDRINUSE: 127\.0\.0\.1:7340 is in use \(stub\)/, failed.err);
-  // A server that says why on stderr only: that line comes through, and this command doesn't claim it said nothing.
+  assert.match(failed.err, /^AgentRun did not start: the server exited with code 1 before it printed the address to open\.$/m, failed.err);
+  assert.match(failureOf(failed.err), /^ {2}stdout, last line:\n {4}listen EADDRINUSE: 127\.0\.0\.1:7340 is in use \(stub\)$/m, failed.err);
+  // A server that says why on stderr only: that line comes through as it prints it, and again in the failure.
   const quiet = await throughStub(t, ["--no-open"], { STUB_FAIL_STDERR: "1" });
   assert.equal(quiet.code, 1, quiet.err);
   assert.match(quiet.err, /^agentrun-serve: another server holds this data root \(stub\)$/m, quiet.err);
-  assert.doesNotMatch(quiet.err, /printed nothing/, quiet.err);
-  assert.match(quiet.err, /^AgentRun did not start; the server's own message, if it gave one, is above\.$/m, quiet.err);
+  assert.match(failureOf(quiet.err), /^ {2}stderr, last line:\n {4}agentrun-serve: another server holds this data root \(stub\)$/m, quiet.err);
+  assert.match(failureOf(quiet.err), /^ {2}stdout: nothing$/m, quiet.err);
+});
+
+test("a server that prints nothing and exits 3: the bin names the step, the exit code and the start log, kept private in the data folder", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_EXIT: "3" });
+  assert.equal(run.code, 3, run.err);
+  assert.equal(run.out, "", "stdout stays the one line a script reads on success, and empty on a failure");
+  const failure = failureOf(run.err);
+  assert.equal(failure, [
+    "AgentRun did not start: the server exited with code 3 before it printed the address to open.",
+    "  step: wait for the server to print the address to open (at most 60 s)",
+    "  exit: code 3",
+    "  stderr: nothing",
+    "  stdout: nothing",
+    `  log: ${startLog(run.home)}`,
+    "",
+  ].join("\n"), run.err);
+  // The log holds everything the server wrote in this start (here nothing) and then the failure itself.
+  assert.equal(readFileSync(startLog(run.home), "utf8"), failure);
+  assert.equal(statSync(startLog(run.home)).mode & 0o777, 0o600, "the start log is private: the server's banner names its token");
+  assert.equal(statSync(STORE(run.home)).mode & 0o777, 0o700, "the data folder is made private, as the server makes it");
+  // A start log that can't be kept is no reason not to start; a start that fails says why there is none.
+  const spot = mkdtempSync(join(tmpdir(), "agentrun-nolog-"));
+  removeAtEnd(spot);
+  writeFileSync(join(spot, "file"), "");
+  const nolog = await throughStub(t, ["--no-open", "--data", join(spot, "file")], { STUB_EXIT: "3" });
+  assert.equal(nolog.code, 3, nolog.err);
+  assert.match(failureOf(nolog.err), /^AgentRun did not start: the server exited with code 3 /, nolog.err);
+  assert.match(failureOf(nolog.err), /\n {2}log: none \([A-Z]+: [^\n]+\)\n$/, nolog.err);
+});
+
+test("a server ended by a SIGKILL nobody here sent, before its Open line: the bin names the signal, and its last stdout lines are said and logged", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_KILLED: "1" });
+  assert.equal(run.code, 1, run.err);
+  const failure = failureOf(run.err);
+  assert.match(failure, /^AgentRun did not start: the server was ended by SIGKILL before it printed the address to open\.$/m, run.err);
+  assert.match(failure, /^ {2}exit: signal SIGKILL \(not sent by this command: the system may have run out of memory\)$/m, run.err);
+  assert.match(failure, /^ {2}stdout, last line:\n {4}agentrun-serve: opening the store \(stub\)$/m, run.err);
+  assert.match(readFileSync(startLog(run.home), "utf8"), /^agentrun-serve: opening the store \(stub\)\nAgentRun did not start: /);
+});
+
+test("a server that says why on stderr and exits 1: its stderr comes through as it prints it, its last lines again in the failure, all of it in the log", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_FAIL_STDERR: "1", STUB_STDERR_LINES: "25" });
+  assert.equal(run.code, 1, run.err);
+  const failure = failureOf(run.err);
+  assert.ok(run.err.startsWith("stub stderr line 1\n"), `the server's stderr, live, first: ${run.err}`);
+  assert.match(failure, /^AgentRun did not start: the server exited with code 1 before it printed the address to open\.$/m, run.err);
+  // The last TAIL_LINES lines: 7 to 25 and the reason.
+  const tail = [...Array.from({ length: 19 }, (_, i) => `    stub stderr line ${i + 7}`), "    agentrun-serve: another server holds this data root (stub)"];
+  assert.ok(failure.includes(`\n  stderr, last 20 lines:\n${tail.join("\n")}\n  stdout: nothing\n`), run.err);
+  assert.ok(!failure.includes("stub stderr line 6\n"), run.err);
+  const log = readFileSync(startLog(run.home), "utf8");
+  for (let i = 1; i <= 25; i++) assert.ok(log.includes(`stub stderr line ${i}\n`), `line ${i} in the log: ${log}`);
+  assert.ok(log.includes("agentrun-serve: another server holds this data root (stub)\n"), log);
+});
+
+test("a server that never prints its Open line: past the bound (AGENTRUN_START_TIMEOUT_MS) the bin says it was still running and was stopped", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_HANG: "1", AGENTRUN_START_TIMEOUT_MS: "1000" });
+  assert.equal(run.code, 1, run.err);
+  const failure = failureOf(run.err);
+  assert.match(failure, /^AgentRun did not start: the server was still running after 1 s without printing the address to open, so it was stopped\.$/m, run.err);
+  assert.match(failure, /^ {2}step: wait for the server to print the address to open \(at most 1 s\)$/m, run.err);
+  assert.match(failure, /^ {2}exit: still running after 1 s; stopped with SIGTERM; then signal SIGTERM$/m, run.err);
+  assert.match(failure, /^ {2}stdout, last line:\n {4}agentrun-serve: still getting ready \(stub\)$/m, run.err);
+  assert.ok(failure.endsWith(`\n  log: ${startLog(run.home)}\n`), run.err);
+});
+
+test("a server that never prints its Open line and ignores the SIGTERM is SIGKILLed after the grace, and the bin says both", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_HANG: "deaf", AGENTRUN_START_TIMEOUT_MS: "1000" });
+  assert.equal(run.code, 1, run.err);
+  assert.match(failureOf(run.err), /^ {2}exit: still running after 1 s; stopped with SIGTERM, then SIGKILL 10 s later; then signal SIGKILL$/m, run.err);
+});
+
+test("a server that closes its stdout and keeps running, with no Open line: the bin says so and stops it", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_CLOSE: "1" });
+  assert.equal(run.code, 1, run.err);
+  const failure = failureOf(run.err);
+  assert.match(failure, /^AgentRun did not start: the server closed its output without printing the address to open, so it was stopped\.$/m, run.err);
+  assert.match(failure, /^ {2}exit: its output closed while it ran; stopped with SIGTERM; then signal SIGTERM$/m, run.err);
+});
+
+test("a server launcher that can't be run: the start and a server command each say the step and the error, with no stack trace", { timeout: 60_000 }, async (t) => {
+  const launcherIn = (dir) => join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve", "launcher", "agentrun-serve");
+  const run = await throughStub(t, ["--no-open"], {}, { mode: 0o644 });
+  assert.equal(run.code, 1, run.err);
+  const launcher = launcherIn(run.dir);
+  assert.equal(run.err, [
+    `AgentRun did not start: the server could not be started (spawn ${launcher} EACCES).`,
+    `  step: start the server (${launcher})`,
+    "  exit: it never ran",
+    "  stderr: nothing",
+    "  stdout: nothing",
+    `  log: ${startLog(run.home)}`,
+    "",
+  ].join("\n"));
+  const sub = await throughStub(t, ["import", "--dry-run"], {}, { mode: 0o644 });
+  assert.equal(sub.code, 1, sub.err);
+  assert.equal(sub.err, [
+    `The server's import command failed: it could not be started (spawn ${launcherIn(sub.dir)} EACCES).`,
+    `  step: run the server's import command (${launcherIn(sub.dir)})`,
+    "  exit: it never ran",
+    "",
+  ].join("\n"));
 });
 
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
@@ -229,16 +356,19 @@ test("the command passes its arguments through to the server, with its store (~/
   const tokened = await throughStub(t, ["--no-open"], { AGENTRUN_TOKEN: "t".repeat(40) });
   assert.match(tokened.err, /^The API token is the AGENTRUN_TOKEN this command was started with\.$/m, tokened.err);
   assert.equal(plain.code, 0, plain.err);
-  const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "/srv/agents"]);
-  assert.deepEqual(given.args, ["--data", "/srv/agents", "--port", "7400"], given.err);
+  // Relative data folders, in the stub's own folder: the command makes the folder it keeps its start log in.
+  const given = await throughStub(t, ["--no-open", "--port", "7400", "--data", "srv/agents"]);
+  assert.deepEqual(given.args, ["--data", "srv/agents", "--port", "7400"], given.err);
+  assert.ok(existsSync(join(given.dir, "srv", "agents", "start.log")), "the start log is in the folder --data names");
   // --data=<dir> is the same option, and the last --data wins, as the server reads them: the server gets one --data, and
   // the hint names the directory it uses.
-  const equals = await throughStub(t, ["--no-open", "--data=/srv/agents"]);
-  assert.deepEqual(equals.args, ["--data", "/srv/agents"], equals.err);
-  assert.match(equals.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/agents\.$/m, equals.err);
-  const twice = await throughStub(t, ["--no-open", "--data", "/srv/first", "--data=/srv/second"]);
-  assert.deepEqual(twice.args, ["--data", "/srv/second"], twice.err);
-  assert.match(twice.err, /^Press Ctrl-C to stop it\. Its data is in \/srv\/second\.$/m, twice.err);
+  const equals = await throughStub(t, ["--no-open", "--data=srv/agents"]);
+  assert.deepEqual(equals.args, ["--data", "srv/agents"], equals.err);
+  assert.match(equals.err, /^Press Ctrl-C to stop it\. Its data is in srv\/agents\.$/m, equals.err);
+  const twice = await throughStub(t, ["--no-open", "--data", "srv/first", "--data=srv/second"]);
+  assert.deepEqual(twice.args, ["--data", "srv/second"], twice.err);
+  assert.match(twice.err, /^Press Ctrl-C to stop it\. Its data is in srv\/second\.$/m, twice.err);
+  assert.equal(existsSync(join(twice.dir, "srv", "first")), false, "only the folder the server uses");
   // A directory whose name starts with a dash keeps the equals form: the server's parser reads "--data -store" as a
   // missing value.
   const dash = await throughStub(t, ["--no-open", "--data=-store"]);

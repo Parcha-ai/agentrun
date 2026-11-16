@@ -2,10 +2,11 @@
 // npx installs the two together and this command always runs the server it was released with. The server's own CLI picks
 // the port and whether to open the browser; this command passes its arguments through.
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { main as cli, NOUNS, words } from "./cli.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
@@ -31,8 +32,103 @@ export function openLineUrl(line, publicUrl) {
  *  the address this command names is the server's API, from the AGENTRUN_BASE_URL line before it. */
 export const API_ONLY_LINE = /^API only \(AGENTRUN_API_ONLY=1\)/;
 
-/** How many of the server's last output lines a start that fails shows. */
+/** How many of the server's last lines, on stdout and on stderr each, a start that fails shows. */
 export const TAIL_LINES = 20;
+
+/** How long a start waits for the server's "Open " line before it stops the server and says so. AGENTRUN_START_TIMEOUT_MS
+ *  (milliseconds) sets another bound; the launcher's tests use it. */
+export const START_TIMEOUT_MS = 60_000;
+/** How long a server that did not start has to end after its SIGTERM before it is sent a SIGKILL. */
+export const STOP_GRACE_MS = 10_000;
+/** The start log, in the data folder: everything the server wrote on stdout and stderr in the last start, until it
+ *  printed the address to open, then the failure if it did not. Each start overwrites it. */
+export const START_LOG = "start.log";
+
+const seconds = (ms) => `${Number((ms / 1000).toFixed(1))} s`;
+/** `promise`'s value, or undefined once `ms` pass; the timer goes with it, so it never holds this process up. */
+const within = (promise, ms) => {
+  let timer;
+  return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+};
+
+/** What a start, or a server command, that failed says on stderr: one line saying what happened, then the step that
+ *  failed, how the server's process ended (its exit code or signal; still running past the bound and stopped; or never
+ *  started), its last lines on stderr and on stdout, and the start log that holds all of its output, or why there is none.
+ *  `command` names a server command (import, ...), whose output went to the terminal as it ran: no lines, no log. `sent`
+ *  is the signals this command sent the server, in order; `stopped` is why it sent them unasked: "timeout" (still running
+ *  `waitedMs` after it started) or "closed" (its output closed while it ran). */
+export function failureText({ command, step, error, code = null, signal = null, stopped, waitedMs, sent = [], stderrTail, stdoutTail, logPath, logError }) {
+  const lead = command === undefined ? "AgentRun did not start" : `The server's ${command} command failed`;
+  const subject = command === undefined ? "the server" : "it";
+  const before = command === undefined ? " before it printed the address to open" : "";
+  const ended = signal !== null ? `signal ${signal}` : code !== null ? `code ${code}` : "not ended yet";
+  let why;
+  let exit;
+  if (error !== undefined) {
+    why = `${subject} could not be started (${error.message})`;
+    exit = "it never ran";
+  } else if (stopped !== undefined) {
+    const was = stopped === "closed" ? "its output closed while it ran" : `still running after ${seconds(waitedMs)}`;
+    why = stopped === "closed" ? `${subject} closed its output without printing the address to open, so it was stopped` : `${subject} was still running after ${seconds(waitedMs)} without printing the address to open, so it was stopped`;
+    exit = `${was}; stopped with ${sent.length > 1 ? `${sent[0]}, then ${sent.slice(1).join(", then ")} ${seconds(STOP_GRACE_MS)} later` : sent[0]}; then ${ended}`;
+  } else if (signal !== null) {
+    why = `${subject} was ended by ${signal}${before}`;
+    exit = `signal ${signal}${sent.includes(signal) ? " (sent by this command)" : signal === "SIGKILL" ? " (not sent by this command: the system may have run out of memory)" : ""}`;
+  } else {
+    why = `${subject} exited with code ${code}${before}`;
+    exit = `code ${code}`;
+  }
+  const lines = (name, tail) => {
+    if (tail === undefined) return [];
+    if (tail.length === 0) return [`  ${name}: nothing`];
+    return [`  ${name}, last ${tail.length === 1 ? "line" : `${tail.length} lines`}:`, ...tail.map((line) => `    ${line}`)];
+  };
+  const log = logPath !== undefined ? [`  log: ${logPath}`] : logError !== undefined ? [`  log: none (${logError.message})`] : [];
+  return [`${lead}: ${why}.`, `  step: ${step}`, `  exit: ${exit}`, ...lines("stderr", stderrTail), ...lines("stdout", stdoutTail), ...log].join("\n");
+}
+
+/** The bound on a start's wait for the "Open " line: AGENTRUN_START_TIMEOUT_MS when it is a whole number of
+ *  milliseconds above 0, else START_TIMEOUT_MS. */
+export const startTimeoutMs = (env) => (/^[1-9]\d*$/.test(env.AGENTRUN_START_TIMEOUT_MS ?? "") ? Number(env.AGENTRUN_START_TIMEOUT_MS) : START_TIMEOUT_MS);
+
+/** The start log, opened afresh in `dataDir` (made first, private, as the server makes it): private, as the server's banner
+ *  names its API token, and never through a link. `{ fd }`, or `{ error }` when it can't be kept: a start goes on
+ *  without it, and a start that fails says why there is none. */
+function openStartLog(dataDir) {
+  try {
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const fd = openSync(join(dataDir, START_LOG), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+    fchmodSync(fd, 0o600);
+    return { fd };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/** Keeps the last TAIL_LINES whole lines of a stream's chunks (bytes, a character split between two chunks kept whole) in
+ *  `tail`; `end()` keeps an unfinished last line too. */
+function tailOf(tail) {
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  const keep = (line) => {
+    tail.push(line.replace(/\r$/, ""));
+    if (tail.length > TAIL_LINES) tail.shift();
+  };
+  return {
+    add(chunk) {
+      pending += decoder.write(chunk);
+      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+        keep(pending.slice(0, end));
+        pending = pending.slice(end + 1);
+      }
+    },
+    end() {
+      pending += decoder.end();
+      if (pending !== "") keep(pending);
+      pending = "";
+    },
+  };
+}
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
  *  box, or why not), and, on a server with a public address and no password yet, the setup link with its code, which
@@ -214,32 +310,80 @@ export async function main(argv, env = process.env) {
   if (rest[0] && !rest[0].startsWith("-")) {
     // A server command (an eval among them, which spends while it runs): a stop sent to this command alone (a job
     // runner's SIGTERM, a SIGHUP) is passed on, and this waits for the command to clean up and end. A hangup is passed
-    // on as a SIGTERM, which every server command stops on.
+    // on as a SIGTERM, which every server command stops on. Its output comes to this terminal as it is; a command that
+    // could not be started, or that a signal this command did not pass on ended, is said here (failureText).
     const child = spawn(launcher, [rest[0], ...data, ...rest.slice(1)], { stdio: "inherit", env: childEnv });
     const codes = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
-    const pass = Object.fromEntries(Object.keys(codes).map((signal) => [signal, () => child.kill(signal === "SIGHUP" ? "SIGTERM" : signal)]));
+    const sent = [];
+    const pass = Object.fromEntries(Object.keys(codes).map((signal) => [signal, () => {
+      const passed = signal === "SIGHUP" ? "SIGTERM" : signal;
+      sent.push(passed);
+      child.kill(passed);
+    }]));
     for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
+    const step = `run the server's ${rest[0]} command (${launcher})`;
     return new Promise((resolve) => {
+      let over = false;
       const done = (code) => {
+        if (over) return;
+        over = true;
         for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
         resolve(code);
       };
-      child.on("error", () => done(1));
-      child.on("exit", (code, signal) => done(code ?? codes[signal] ?? 1));
+      child.on("error", (error) => {
+        if (child.pid === undefined && !over) console.error(failureText({ command: rest[0], step, error }));
+        done(1);
+      });
+      child.on("exit", (code, signal) => {
+        if (signal !== null && !sent.includes(signal)) console.error(failureText({ command: rest[0], step, code, signal, sent }));
+        done(code ?? codes[signal] ?? 1);
+      });
     });
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
-  // What it prints on stderr (why it did not start) comes through as it is.
-  const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "inherit"], env: childEnv });
+  // What it prints on stderr comes through as it is, as it prints it. Until the server prints the address, all it writes
+  // on either goes to the start log too, and the last lines of each are kept: a start that fails says them, with the step,
+  // how the server ended and the log (failureText).
+  const log = openStartLog(dataDir);
+  const logPath = log.fd === undefined ? undefined : join(dataDir, START_LOG);
+  const toLog = (chunk) => {
+    if (log.fd !== undefined) try { writeSync(log.fd, chunk); } catch {}
+  };
+  const closeLog = () => {
+    if (log.fd !== undefined) try { closeSync(log.fd); } catch {}
+    log.fd = undefined;
+  };
+  const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
+  let started = false;
+  const errTail = [];
+  const errLines = tailOf(errTail);
+  child.stderr.on("data", (chunk) => {
+    process.stderr.write(chunk);
+    if (started) return;
+    toLog(chunk);
+    errLines.add(chunk);
+  });
+  child.stdout.on("data", (chunk) => { if (!started) toLog(chunk); });
+  // A child that could not be started (the launcher missing, or not executable) says so here, and never exits.
+  let spawnError;
+  const failedToSpawn = new Promise((resolve) => child.on("error", (error) => {
+    if (child.pid === undefined) spawnError ??= error;
+    resolve();
+  }));
   // A stop this command passes on (Ctrl-C, a process manager's SIGTERM, npm gone) is a clean end, 0, even when the signal
   // itself ends the server; a server ended by a signal nobody here sent is not.
   let stopping = false;
+  const sent = [];
   const stop = (signal) => {
     stopping = true;
+    sent.push(signal);
     child.kill(signal);
   };
-  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code ?? (stopping ? 0 : 1))));
+  let ended;
+  const exit = new Promise((resolve) => child.on("exit", (code, signal) => resolve((ended = { code, signal }))));
+  const exited = exit.then(({ code }) => code ?? (stopping ? 0 : 1));
+  const closed = new Promise((resolve) => child.on("close", resolve));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop(signal));
   // A SIGHUP to this command alone (not the terminal's, which reaches the server too) asks the server to stop as a SIGTERM
   // does.
@@ -265,14 +409,46 @@ export async function main(argv, env = process.env) {
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
   // its banner): it is held and said first, in order.
   const seen = [];
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(resolve, 60_000); })]);
+  const bound = startTimeoutMs(env);
+  const TIMED_OUT = Symbol("timed out");
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), bound); })]);
   clearTimeout(timer);
-  if (url === undefined) {
-    child.kill("SIGTERM");
-    // Its stdout is kept out of this terminal, so its last lines are shown here: with its stderr above, they say why.
-    console.error(seen.length > 0 ? `AgentRun did not start. The server's last lines:\n${seen.map((line) => `  ${line}`).join("\n")}` : "AgentRun did not start; the server's own message, if it gave one, is above.");
-    return (await exited) || 1;
+  if (url === undefined || url === TIMED_OUT) {
+    // Its stdout ended (it exited, was never started, or closed it), or the bound passed with it still running. A server
+    // still running is stopped: a SIGTERM, then a SIGKILL if it has not ended within STOP_GRACE_MS.
+    if (url === undefined) await within(Promise.race([exit, failedToSpawn]), 2_000);
+    let stopped;
+    if (spawnError === undefined && ended === undefined) {
+      stopped = url === TIMED_OUT ? "timeout" : "closed";
+      stop("SIGTERM");
+      if ((await within(exit, STOP_GRACE_MS)) === undefined) {
+        stop("SIGKILL");
+        await within(exit, 5_000);
+      }
+    }
+    // Its stderr, to the end: what it wrote last comes before the failure, and is in its tail.
+    if (spawnError === undefined) await within(closed, 2_000);
+    errLines.end();
+    const failure = failureText({
+      step: spawnError !== undefined ? `start the server (${launcher})` : `wait for the server to print the address to open (at most ${seconds(bound)})`,
+      error: spawnError,
+      code: ended?.code ?? null,
+      signal: ended?.signal ?? null,
+      stopped,
+      waitedMs: bound,
+      sent,
+      stderrTail: errTail,
+      stdoutTail: seen,
+      logPath,
+      logError: log.error,
+    });
+    toLog(`${failure}\n`);
+    closeLog();
+    console.error(failure);
+    return ended?.code || 1;
   }
+  started = true;
+  closeLog();
   console.log(`AgentRun is running at ${url}`);
   // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
   // data is kept, which the next start opens again.
