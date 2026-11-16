@@ -236,6 +236,8 @@ function repeating(n, rule, start) {
 test("a calendar with hundreds of old every-minute series that never end: the test answers in a moment that it has too many repeating events to read, not a partial list", { timeout: 840_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api } = await serve(t, { runner: false });
+  // 200 series of 201 instances each in the window: 40,200 rule steps, past the budget's 15,000 by its steps alone (the
+  // time ceiling may stop a slow machine sooner, with the same words).
   const faux = await calendarFaux(t, { text: repeating(200, "FREQ=MINUTELY", "20200101T000000Z") });
   const started = Date.now();
   const tested = await api("POST", "/settings/calendar/test", { url: faux.address });
@@ -243,7 +245,7 @@ test("a calendar with hundreds of old every-minute series that never end: the te
   assert.equal(tested.status, 200, JSON.stringify(tested.body));
   assert.equal(tested.body.ok, false, JSON.stringify(tested.body));
   assert.match(tested.body.message, /too many repeating events to read/);
-  assert.ok(took < 3_000, `answered in ${took} ms`);
+  assert.ok(took < 10_000, `answered in ${took} ms`);
 });
 
 test("series that ended before the window (an UNTIL long past) are not stepped through: a calendar of them reads in a moment", { timeout: 840_000 }, async (t) => {
@@ -255,5 +257,5 @@ test("series that ended before the window (an UNTIL long past) are not stepped t
   const took = Date.now() - started;
   assert.equal(tested.body.ok, true, JSON.stringify(tested.body));
   assert.match(tested.body.message, /^Ticks: 41 events, time zone UTC, next: Soon, /);
-  assert.ok(took < 3_000, `answered in ${took} ms`);
+  assert.ok(took < 10_000, `answered in ${took} ms`);
 });

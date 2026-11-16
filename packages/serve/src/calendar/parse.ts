@@ -294,13 +294,23 @@ const inWindow = (one: { start: number; end: number }, window: Window) => (one.e
 
 /** One read's work budget: the rule steps it has left (READ_STEPS_MAX), and the moment it must be done by (READ_WORK_MS
  *  from its start). */
-type Budget = { steps: number; until: number };
-const budgetOf = (): Budget => ({ steps: READ_STEPS_MAX, until: performance.now() + READ_WORK_MS });
+type Budget = { steps: number; until: number; clock: () => number };
+/** A read's budget: READ_STEPS_MAX steps and READ_WORK_MS on the monotonic clock, or a test's own (ReadOptions.work). */
+const budgetOf = (work: ReadOptions["work"] = {}): Budget => {
+  const clock = work.clock ?? (() => performance.now());
+  return { steps: work.steps ?? READ_STEPS_MAX, until: clock() + (work.ms ?? READ_WORK_MS), clock };
+};
 /** A read stopped at its work budget: the calendar has too many repeating events to read. Its message is the words. */
-export class RepeatsError extends Error {}
+export class RepeatsError extends Error {
+  /** Which part of the budget ran out: its steps, or its time (the ceiling for rule shapes whose steps cost far more). */
+  constructor(readonly by: "steps" | "time") {
+    super(TOO_MANY_REPEATS);
+  }
+}
 const spend = (budget: Budget) => {
   budget.steps -= 1;
-  if (budget.steps < 0 || performance.now() > budget.until) throw new RepeatsError(TOO_MANY_REPEATS);
+  if (budget.steps < 0) throw new RepeatsError("steps");
+  if (budget.clock() > budget.until) throw new RepeatsError("time");
 };
 
 /** A rule's period, of the frequencies a rule is started later in by whole periods (fastForward). */
@@ -497,7 +507,12 @@ function floating(wall: number, isDate: boolean): Time {
 
 /** What a read takes besides its window: `scrub`, run on each of an event's texts before it is cut (address.ts
  *  scrubAddress: the calendar's address cut out whole, before a cut could leave part of it). */
-export type ReadOptions = { scrub?: (text: string) => string };
+export type ReadOptions = {
+  scrub?: (text: string) => string;
+  /** The work budget, for tests alone: its steps, its time and the clock it is read on (defaults READ_STEPS_MAX,
+   *  READ_WORK_MS, performance.now). The server never passes it. */
+  work?: { steps?: number; ms?: number; clock?: () => number };
+};
 type Scrub = (text: string) => string;
 const asIs: Scrub = (text) => text;
 
@@ -546,7 +561,7 @@ function eventOf(one: Instance, host: Hosted, scrub: Scrub): CalendarEvent {
 /** The calendar's events in `window`, sorted by start (then title), at most EVENTS_MAX; `truncated` when there were more.
  *  One read, under one work budget: past it, RepeatsError. */
 export function eventsIn(calendar: ParsedCalendar, window: Window, options: ReadOptions = {}): { events: CalendarEvent[]; truncated: boolean } {
-  const budget = budgetOf();
+  const budget = budgetOf(options.work);
   const all = calendar.series.flatMap((series) => instancesOf(series, window, budget).map((one) => ({ one, host: series.host })));
   all.sort((a, b) => a.one.start - b.one.start || a.one.end - b.one.end);
   const events = all.slice(0, EVENTS_MAX).map(({ one, host }) => eventOf(one, host, options.scrub ?? asIs));
@@ -557,7 +572,7 @@ export function eventsIn(calendar: ParsedCalendar, window: Window, options: Read
 /** How many events the calendar holds (its series and single events, not cancelled), and its next one from `now` within
  *  WINDOW_DAYS_MAX days: what a test of it says. One read, under one work budget: past it, RepeatsError. */
 export function summaryOf(calendar: ParsedCalendar, now: number, options: ReadOptions = {}): { count: number; next?: CalendarEvent } {
-  const budget = budgetOf();
+  const budget = budgetOf(options.work);
   const count = calendar.series.filter((series) => !cancelled(series.main) && !series.main.hasProperty("recurrence-id")).length;
   const window = { start: now, end: now + WINDOW_DAYS_MAX * DAY };
   const upcoming = calendar.series.flatMap((series) => instancesOf(series, window, budget).filter((one) => one.start >= now).map((one) => ({ one, host: series.host })));

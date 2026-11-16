@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FAUX_CALENDAR, hourlyCalendar, icsLines } from "../dist/calendar/ics-faux.js";
-import { eventsIn, parseCalendar, serverZone, summaryOf, windowOf, WindowError } from "../dist/calendar/parse.js";
+import { eventsIn, parseCalendar, RepeatsError, serverZone, summaryOf, windowOf, WindowError } from "../dist/calendar/parse.js";
 import { addressForms, addressOf, scrubAddress } from "../dist/calendar/address.js";
 import { calendarText } from "../dist/calendar/tools.js";
 import { redactedAnswer } from "../dist/key-refusal.js";
@@ -220,17 +220,36 @@ test("an RDATE;VALUE=PERIOD occurrence keeps its own end or duration, and a wind
   assert.deepEqual(read(calendar, "2026-11-05T14:00:00-05:00", "2026-11-05T16:00:00-05:00").events.map(brief), [["Workshop", "2026-11-05T13:00:00-05:00", "2026-11-05T15:00:00-05:00", false]]);
 });
 
-test("one work budget per read, across every series: a calendar of many every-minute series, or one whose rule must be stepped through, stops in a moment with words, never a partial list; the test's summary the same", () => {
+test("one work budget per read, across every series: a calendar of many every-minute series, or one whose rule must be stepped through, runs out of steps (READ_STEPS_MAX) with words, never a partial list; the test's summary the same", () => {
   const tick = (i, rule) => ["UID:tick-" + i + "@test", "DTSTAMP:20200101T000000Z", "DTSTART:20200101T000000Z", `RRULE:${rule}`, `SUMMARY:Tick ${i}`];
+  // 300 series of 201 instances each in the window: 60,300 steps, four times the budget's 15,000.
   const many = parseCalendar(calendarOf(Array.from({ length: 300 }, (_, i) => tick(i, "FREQ=MINUTELY"))), "test");
   // A COUNT, and a BYHOUR, are stepped through from the start: a rule of them that runs to 2026 is too much to read.
   const counted = parseCalendar(calendarOf([tick(0, "FREQ=MINUTELY;COUNT=100000000"), tick(1, "FREQ=MINUTELY;BYHOUR=9,10,11")]), "test");
+  // A clock that never moves: the steps alone stop each read, however slow the machine.
+  const work = { clock: () => 0 };
+  const stopped = (read) => {
+    const started = Date.now();
+    assert.throws(read, (error) => error instanceof RepeatsError && error.by === "steps" && /too many repeating events to read/.test(error.message));
+    assert.ok(Date.now() - started < 10_000, `stopped in ${Date.now() - started} ms`);
+  };
   for (const calendar of [many, counted]) {
-    let started = Date.now();
-    assert.throws(() => read(calendar, "2026-11-02", "2026-11-30"), /too many repeating events to read/);
-    assert.ok(Date.now() - started < 2_000, `stopped in ${Date.now() - started} ms`);
-    started = Date.now();
-    assert.throws(() => summaryOf(calendar, NOW), /too many repeating events to read/);
-    assert.ok(Date.now() - started < 2_000, `the summary stopped in ${Date.now() - started} ms`);
+    stopped(() => eventsIn(calendar, windowOf({ from: "2026-11-02", to: "2026-11-30" }, calendar.zone, NOW), { work }));
+    stopped(() => summaryOf(calendar, NOW, { work }));
   }
+});
+
+test("the budget's time ceiling (READ_WORK_MS) stops a read whose steps are few but slow, on its own clock: a clock that runs past it stops the read with the same words; one that doesn't lets it finish", () => {
+  const calendar = parsed();
+  const window = windowOf({ from: "2026-11-02", to: "2026-11-30" }, calendar.zone, NOW);
+  let now = 0;
+  // Each look at the clock is a second on: the ceiling (500 ms) is past at the read's first step.
+  const late = { clock: () => (now += 1_000) };
+  assert.throws(() => eventsIn(calendar, window, { work: late }), (error) => error instanceof RepeatsError && error.by === "time" && /too many repeating events to read/.test(error.message));
+  now = 0;
+  assert.throws(() => summaryOf(calendar, NOW, { work: late }), (error) => error instanceof RepeatsError && error.by === "time");
+  // A clock that stands still: the same read, whole.
+  assert.equal(eventsIn(calendar, window, { work: { clock: () => 0 } }).events.length, read(calendar, "2026-11-02", "2026-11-30").events.length);
+  // And a budget of steps too small for it stops it by its steps.
+  assert.throws(() => eventsIn(calendar, window, { work: { steps: 3, clock: () => 0 } }), (error) => error instanceof RepeatsError && error.by === "steps");
 });
