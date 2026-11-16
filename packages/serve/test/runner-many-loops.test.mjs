@@ -27,6 +27,7 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
 
   const lag = monitorEventLoopDelay({ resolution: 10 });
   lag.enable();
+  const said = { lost: 0, firstError: undefined };
   const runner = startRunner({
     store: observed(store, record),
     createLoop: faux.createLoop,
@@ -37,6 +38,11 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
     stopMarginMs: 2_000,
     pollMs: 20,
     commandPollMs: 200,
+    // What a timeout below names: the claims lost, and the first error the runner said.
+    onEvent: (event) => {
+      if (event.type === "claim-lost") said.lost += 1;
+      if (event.type === "error") said.firstError ??= `${event.step}: ${event.message}`;
+    },
   });
   t.after(() => runner.close());
 
@@ -51,7 +57,15 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   await until(async () => {
     const runs = await server.runs.list({ state: "ended" });
     return runs.length === RUNS && runs.every((run) => run.runner === null);
-  }, "every run ends and is released", 60_000);
+  }, "every run ends and is released", 60_000).catch(async (error) => {
+    // Where the runs stand at the timeout, so a slow store (claims lost, runs failed) says so by itself.
+    const states = {};
+    for (const run of await server.runs.list({})) {
+      const key = `${run.state}${run.runner === null ? "" : " held"}`;
+      states[key] = (states[key] ?? 0) + 1;
+    }
+    throw new Error(`${error.message}: runs ${JSON.stringify(states)}, ${record.claims.length} claims, ${said.lost} lost, first error ${said.firstError ?? "none"}`);
+  });
   lag.disable();
   await sleep(20);
 

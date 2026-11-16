@@ -8,14 +8,27 @@
 //
 // It calls nothing but host.exec, so a host whose other members are still stubs can run it. Each check starts its own
 // process and kills it when it is done with it, pass or fail. No check ends stdin: the adapter never needs a vendor's
-// end of file, so one with none passes.
+// end of file, so one with none passes. After the checks, one more exec reads what the machine offers the rest of the
+// host (root's network namespace, /dev/fuse, the arch, the kernel, the TCP listeners): facts, each with what it means
+// for the provider, never a pass or a fail of exec.
 import { createHash, randomBytes } from "node:crypto";
 import type { MachineHost, MachineProcess } from "../host.js";
 import { words } from "../hosted/process.js";
 
 /** The checks, in the order they run. */
-export const EXEC_STREAM_CHECKS = ["stdout-text", "stdin-text", "large", "stdout-live", "stdin-live", "stderr", "exit-code", "kill", "no-timeout"] as const;
+export const EXEC_STREAM_CHECKS = ["stdout-text", "stdin-text", "large", "stdout-live", "stdin-live", "stdout-unread", "stderr", "exit-code", "kill", "no-timeout"] as const;
 export type ExecStreamCheckId = (typeof EXEC_STREAM_CHECKS)[number];
+
+/** What the capability probe reads, in the order the report gives it. */
+export const EXEC_STREAM_FACTS = ["root", "netns", "fuse", "arch", "kernel", "listeners"] as const;
+export type ExecStreamFactId = (typeof EXEC_STREAM_FACTS)[number];
+
+/** One thing the machine offers: what was read, and what it means for the provider. */
+export interface ExecStreamFact {
+	id: ExecStreamFactId;
+	value: string;
+	means: string;
+}
 
 export interface ExecStreamCheck {
 	id: ExecStreamCheckId;
@@ -30,6 +43,9 @@ export interface ExecStreamReport {
 	machine: string;
 	checks: ExecStreamCheck[];
 	pass: boolean;
+	/** What the capability probe read; empty when it could not run, with why in factsProblem. */
+	facts: ExecStreamFact[];
+	factsProblem?: string;
 }
 
 export interface ExecStreamOptions {
@@ -41,6 +57,8 @@ export interface ExecStreamOptions {
 	largeBytes?: number;
 	/** How long the large check may take in all; default 180 s. */
 	largeMs?: number;
+	/** How long stdout-unread writes to stdin with stdout left unread, before it reads; default 10 s. */
+	unreadMs?: number;
 	signal?: AbortSignal;
 	/** Told of each check as it ends. */
 	onCheck?: (check: ExecStreamCheck) => void;
@@ -52,6 +70,10 @@ export const QUICK_LONG_MS = 5_000;
 const DEFAULT_STEP_MS = 30_000;
 const DEFAULT_LARGE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_LARGE_MS = 180_000;
+const DEFAULT_UNREAD_MS = 10_000;
+/** stdout-unread's writes: this many, of UNREAD_CHUNK bytes each, spread over unreadMs; 4 MiB, far past a 64 KiB window. */
+const UNREAD_WRITES = 64;
+const UNREAD_CHUNK = 64 * 1024;
 /** What one write gives exec's stdin, as the adapter's own upload does (runToExit). */
 const WRITE_CHUNK = 256 * 1024;
 /** How long stdout-live watches, after "early", that stdout stays open and wait() has no answer. */
@@ -157,11 +179,13 @@ class Reader {
 	error: unknown;
 	#wake: Array<() => void> = [];
 
-	constructor(stream: AsyncIterable<Uint8Array>) {
-		void this.#pump(stream);
+	/** Reads the stream as it comes; with `from`, not a byte until it settles: the stream is left unread until then. */
+	constructor(stream: AsyncIterable<Uint8Array>, from?: Promise<void>) {
+		void this.#pump(stream, from);
 	}
 
-	async #pump(stream: AsyncIterable<Uint8Array>) {
+	async #pump(stream: AsyncIterable<Uint8Array>, from?: Promise<void>) {
+		await from;
 		try {
 			for await (const chunk of stream) {
 				// A copy: a vendor's client may reuse its buffer.
@@ -243,6 +267,9 @@ function within<T, L>(promise: Promise<T>, ms: number, late: L, signal?: AbortSi
 
 const LATE = Symbol("late");
 
+/** Waits ms, or less when signal aborts. */
+const pause = (ms: number, signal?: AbortSignal) => within(new Promise<never>(() => {}), Math.max(0, ms), undefined, signal);
+
 /** The pre-check's run of host.exec on one machine. */
 class Session {
 	readonly #host: MachineHost;
@@ -268,9 +295,9 @@ class Session {
 
 	/**
 	 * exec(argv), answered within the step's bound; any failure (a throw) is a Problem naming the command. Without stdin,
-	 * end() is called at once, as the adapter does.
+	 * end() is called at once, as the adapter does. With `readFrom`, stdout is left unread until it settles.
 	 */
-	async start(argv: readonly string[], stdin: boolean): Promise<Run> {
+	async start(argv: readonly string[], stdin: boolean, readFrom?: Promise<void>): Promise<Run> {
 		const what = `exec of ${shown(argv)}`;
 		let answer: Promise<MachineProcess>;
 		try {
@@ -295,7 +322,7 @@ class Session {
 		if (proc?.stdout?.[Symbol.asyncIterator] === undefined) lacks.unshift("stdout");
 		if (proc?.stderr?.[Symbol.asyncIterator] === undefined) lacks.unshift("stderr");
 		if (lacks.length > 0) throw new Problem(`${what} answered a process that lacks ${lacks.join(", ")}: a MachineProcess (src/host.ts) has stdout, stderr, write, end, wait and kill`);
-		const run: Run = { proc, out: new Reader(proc.stdout), err: new Reader(proc.stderr), exited: Promise.resolve(0) };
+		const run: Run = { proc, out: new Reader(proc.stdout, readFrom), err: new Reader(proc.stderr), exited: Promise.resolve(0) };
 		run.exited = Promise.resolve()
 			.then(() => proc.wait())
 			.then((code) => {
@@ -376,7 +403,7 @@ class Deadline {
 	}
 }
 
-type CheckBody = (session: Session, options: Required<Pick<ExecStreamOptions, "longMs" | "largeBytes" | "largeMs">>, earlier: Map<ExecStreamCheckId, ExecStreamCheck>) => Promise<string>;
+type CheckBody = (session: Session, options: Required<Pick<ExecStreamOptions, "longMs" | "largeBytes" | "largeMs" | "unreadMs">>, earlier: Map<ExecStreamCheckId, ExecStreamCheck>) => Promise<string>;
 
 const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 	/** Text of every kind out, on stdout alone: printf in the machine writes it, the 1 MiB line a piece at a time. */
@@ -458,6 +485,56 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 		if (problem) throw new Problem(problem);
 		return "two writes came back through cat, each before the next was written, while stdin stayed open";
 	},
+	/**
+	 * stdin keeps coming while stdout is left unread for unreadMs; then stdout is read, and every byte comes back, in
+	 * order. A write may wait while nobody reads stdout, but once stdout is read it goes on: an exec whose stdin waits on
+	 * a stalled reader for good deadlocks the daemon's one stream (microsandbox holds a 64 KiB stdin window per execution).
+	 */
+	async "stdout-unread"(s, { unreadMs }) {
+		let read = () => {};
+		const run = await s.start(["cat"], true, new Promise<void>((done) => (read = done)));
+		const started = Date.now();
+		const readAt = started + unreadMs;
+		const reading = setTimeout(read, unreadMs);
+		const sent: Buffer[] = [];
+		let written = 0;
+		try {
+			// Every write, paced over unreadMs: one that waits for the reader goes on once stdout is read, and the rest follow.
+			// All of them are answered within stepMs of stdout being read: one deadline, not a step per write.
+			for (let i = 0; i < UNREAD_WRITES && !s.signal?.aborted; i++) {
+				await pause(started + (i * unreadMs) / UNREAD_WRITES - Date.now(), s.signal);
+				const chunk = Buffer.alloc(UNREAD_CHUNK, `write ${String(i + 1).padStart(2, "0")} `);
+				const madeUnread = Date.now() < readAt;
+				const answered = await within(
+					Promise.resolve().then(() => run.proc.write(chunk)),
+					Math.max(1, readAt + s.stepMs - Date.now()),
+					LATE,
+					s.signal,
+				).catch((error: unknown) => {
+					throw new Problem(`write() to cat failed while its stdout was left unread, with ${written} bytes written: ${words(error)}`);
+				});
+				if (answered === LATE && s.signal?.aborted) throw new Problem(`writing to cat was stopped, with ${written} bytes written`);
+				if (answered === LATE && !madeUnread) throw new Problem(`the ${UNREAD_WRITES} writes to cat ran past ${secondsOf(s.stepMs)} after stdout was read, with ${written} bytes written: your exec's writes are too slow`);
+				if (answered === LATE) {
+					throw new Problem(
+						`write ${i + 1} to cat, made while its stdout was left unread, still had no answer ${secondsOf(s.stepMs)} after stdout was read again (${written} bytes written): your exec's stdin waits for stdout to be read and does not go on once it is, so one stalled reader deadlocks the stream. Let stdin wait only until stdout is read`,
+					);
+				}
+				sent.push(chunk);
+				written += chunk.length;
+			}
+			await pause(readAt - Date.now(), s.signal);
+		} finally {
+			clearTimeout(reading);
+			read();
+		}
+		if (!(await run.out.until(() => run.out.length >= written, s.stepMs, s.signal))) {
+			throw new Problem(`${run.out.length} of ${written} bytes came back through cat within ${secondsOf(s.stepMs)} of stdout being read`);
+		}
+		const problem = textProblem(Buffer.concat(sent), run.out.bytes(), "through cat");
+		if (problem) throw new Problem(`${problem}; stdout was left unread ${secondsOf(unreadMs)} while stdin was written: output nobody reads yet is held until it is read, never dropped`);
+		return `${written} bytes written to cat while its stdout was left unread for ${secondsOf(unreadMs)} all came back, in order, once it was read`;
+	},
 	/** stderr comes back apart from stdout. */
 	async stderr(s) {
 		const run = await s.start(["sh", "-c", "printf to-stdout; printf to-stderr >&2"], false);
@@ -528,11 +605,132 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 };
 
 /**
+ * The capability probe, one sh script run through exec (as root, as exec runs): a tab-separated line for each thing it
+ * reads, each value on one line, and every line of the kernel's TCP tables as a "tcp" line. readFacts reads it. It needs
+ * no ss, ip or util-linux beyond unshare, and says "none" where the machine lacks unshare.
+ */
+export const CAPABILITY_SCRIPT = [
+	`line() { printf '%s\\t%s\\n' "$1" "$(printf '%s' "$2" | tr '\\n\\t' '  ')"; }`,
+	'line uid "$(id -u 2>&1)"',
+	'line arch "$(uname -m 2>&1)"',
+	'line kernel "$(uname -sr 2>&1)"',
+	`if d=$(dmesg 2>/dev/null); then line gvisor "$(printf '%s' "$d" | grep -i gvisor | head -n 1)"; else line gvisor unread; fi`,
+	'if command -v unshare >/dev/null 2>&1; then e=$(unshare -n true 2>&1); line netns "$? $e"; e=$(unshare -Urn true 2>&1); line userns "$? $e"; else line netns none; fi',
+	'if [ -e /dev/fuse ]; then e=$( (: <>/dev/fuse) 2>&1); line fuse "$? $e"; else line fuse absent; fi',
+	`for f in /proc/net/tcp /proc/net/tcp6; do if [ -r "$f" ]; then line table "$f"; while read -r l; do printf 'tcp\\t%s\\n' "$l"; done < "$f"; else line unreadable "$f"; fi; done`,
+	"true",
+].join("\n");
+
+/** A /proc/net/tcp{,6} address, hex as the kernel writes it (each 32-bit word in host order, little-endian here), as text. */
+function tcpAddress(hex: string): string {
+	const bytes = Buffer.from(hex, "hex");
+	for (let at = 0; at + 4 <= bytes.length; at += 4) bytes.subarray(at, at + 4).reverse();
+	if (bytes.length === 4) return [...bytes].join(".");
+	const groups = Array.from({ length: 8 }, (_, i) => bytes.readUInt16BE(i * 2).toString(16));
+	return new URL(`http://[${groups.join(":")}]`).hostname;
+}
+
+/** The most listeners the report names; a vendor's machine has a handful, a developer's box hundreds. */
+const MAX_LISTENERS_SHOWN = 24;
+
+/** The TCP listeners in the probe's "tcp" lines: address:port, each once, in the order the kernel lists them. */
+export function tcpListeners(lines: readonly string[]): string[] {
+	const found: string[] = [];
+	for (const line of lines) {
+		const [, local = "", , state] = line.trim().split(/\s+/);
+		const match = /^([0-9A-F]{8}|[0-9A-F]{32}):([0-9A-F]{4})$/i.exec(local);
+		if (state !== "0A" || match === null) continue;
+		const at = `${tcpAddress(match[1] as string)}:${Number.parseInt(match[2] as string, 16)}`;
+		if (!found.includes(at)) found.push(at);
+	}
+	return found;
+}
+
+/** What `<code> <words>` says of a command the probe ran: whether it worked, and its words. */
+function ranOf(text: string | undefined): { ok: boolean; said: string } | undefined {
+	const match = /^(\d+) ?(.*)$/.exec(text ?? "");
+	return match === null ? undefined : { ok: match[1] === "0", said: (match[2] as string).trim() };
+}
+
+/** The probe's output as facts, each with what it means for the provider. */
+export function readFacts(output: string): ExecStreamFact[] {
+	const values = new Map<string, string>();
+	const tcp: string[] = [];
+	/** The TCP tables read, and those that could not be. */
+	const tables = { read: [] as string[], unreadable: [] as string[] };
+	for (const line of output.split("\n")) {
+		const tab = line.indexOf("\t");
+		if (tab < 0) continue;
+		const [key, value] = [line.slice(0, tab), line.slice(tab + 1).trim()];
+		if (key === "tcp") tcp.push(value);
+		else if (key === "table") tables.read.push(value);
+		else if (key === "unreadable") tables.unreadable.push(value);
+		else if (!values.has(key)) values.set(key, value);
+	}
+	const facts: ExecStreamFact[] = [];
+	const uid = values.get("uid") ?? "";
+	facts.push(
+		uid === "0"
+			? { id: "root", value: "uid 0", means: "exec runs as root, as the adapter needs: the lines below are what root can do" }
+			: { id: "root", value: uid === "" ? "not read" : `uid ${uid}`, means: "exec does not run as root: the adapter installs its daemon as root through exec, so run it as root (or through passwordless sudo); the lines below are what this user can do" },
+	);
+	const netns = values.get("netns");
+	const own = ranOf(netns);
+	const inUser = ranOf(values.get("userns"));
+	if (netns === "none") facts.push({ id: "netns", value: "no unshare program", means: "not read: the machine has no unshare (util-linux), so whether root can make a network namespace shows only at the Core run" });
+	else if (own?.ok) facts.push({ id: "netns", value: "unshare -n works", means: "root makes a network namespace: our fence holds network none, open and allow (netns)" });
+	else if (own !== undefined && inUser?.ok) {
+		facts.push({ id: "netns", value: `unshare -n failed (${own.said || "no words"}); unshare -Urn works`, means: "root makes a network namespace only inside a user namespace, as on gVisor: our fence holds network none, open and allow there (userns-netns)" });
+	} else {
+		const why = [own && `unshare -n failed (${own.said || "no words"})`, inUser && `unshare -Urn failed (${inUser.said || "no words"})`].filter(Boolean).join("; ") || "not read";
+		facts.push({ id: "netns", value: why, means: "no netns: network none, open and allow can't be held by our fence on this vendor" });
+	}
+	const fuse = values.get("fuse");
+	const opened = ranOf(fuse);
+	if (fuse === "absent") facts.push({ id: "fuse", value: "no /dev/fuse", means: "no Archil mount (mount:archil) on this vendor: the Archil client needs /dev/fuse" });
+	else if (opened?.ok) facts.push({ id: "fuse", value: "/dev/fuse opens", means: "an Archil mount (mount:archil) can be made here" });
+	else facts.push({ id: "fuse", value: opened ? `/dev/fuse does not open (${opened.said || "no words"})` : "not read", means: "no Archil mount (mount:archil) on this vendor until root can open /dev/fuse" });
+	const arch = values.get("arch") ?? "";
+	const goArch = arch === "x86_64" || arch === "amd64" ? "amd64" : arch === "aarch64" || arch === "arm64" ? "arm64" : undefined;
+	facts.push({ id: "arch", value: arch || "not read", means: goArch ? `facts.arch "${goArch}"` : "neither amd64 nor arm64: computerd is built for those two alone" });
+	const kernel = values.get("kernel") || "not read";
+	const gvisor = values.get("gvisor") ?? "unread";
+	const isolationCases = "the isolation cases show how its fences hold";
+	if (gvisor !== "unread" && gvisor !== "") {
+		facts.push({ id: "kernel", value: `gVisor (${kernel} as it reports; dmesg: ${gvisor.slice(0, 80)})`, means: "gVisor: root has no CAP_SYS_ADMIN and the network stack is gVisor's own, so run the isolation cases here; a Docker stand-in does not show how it behaves" });
+	} else {
+		const marker = gvisor === "" ? "no gVisor marker in dmesg" : "dmesg could not be read, so gVisor is not ruled out";
+		facts.push({ id: "kernel", value: `${kernel} (${marker})`, means: `the kernel as it reports itself: ${isolationCases}` });
+	}
+	const listeners = tcpListeners(tcp);
+	const shownListeners = listeners.length > MAX_LISTENERS_SHOWN ? `${listeners.slice(0, MAX_LISTENERS_SHOWN).join(", ")} and ${listeners.length - MAX_LISTENERS_SHOWN} more` : listeners.join(", ");
+	const unread = tables.unreadable.length > 0 ? ` (${tables.unreadable.join(" and ")} could not be read)` : "";
+	if (tables.read.length === 0) {
+		facts.push({ id: "listeners", value: `not read${unread}`, means: "the listeners are unknown: find the vendor agent's ports some other way before you set facts.vendorAgentPorts" });
+	} else if (listeners.length > 0) {
+		facts.push({ id: "listeners", value: `${shownListeners}${unread}`, means: "TCP listeners before AgentRun runs anything: the vendor's agent and services. Put the agent's ports in facts.vendorAgentPorts, so isolation.vendor-agent checks the computer's programs reach none of them" });
+	} else {
+		facts.push({ id: "listeners", value: `none${unread}`, means: unread === "" ? "no TCP listener before AgentRun runs anything: facts.vendorAgentPorts may be []" : `no TCP listener in ${tables.read.join(" or ")}: check the table that could not be read before you set facts.vendorAgentPorts to []` });
+	}
+	return facts;
+}
+
+/** The capability probe through exec: its facts, or a Problem in words when exec could not run it. */
+async function probe(session: Session): Promise<ExecStreamFact[]> {
+	const run = await session.start(["sh", "-c", CAPABILITY_SCRIPT], false);
+	if (!(await run.out.end(session.stepMs, session.signal))) throw new Problem(`its stdout did not end within ${secondsOf(session.stepMs)}`);
+	// The script ends in `true`: any other exit is a shell that broke partway, whose output is not read as facts.
+	const code = await session.exit(run, session.stepMs, "the probe");
+	if (code !== 0) throw new Problem(`the probe's sh exited ${code} (stderr: ${run.err.bytes().toString("utf8").trim().slice(0, 200) || "none"})`);
+	return readFacts(run.out.bytes().toString("utf8"));
+}
+
+/**
  * The exec pre-check on one machine: each check in EXEC_STREAM_CHECKS runs in turn, and the report passes when every one
- * does. host.exec is the only member called.
+ * does; then the capability probe, which passes or fails nothing. host.exec is the only member called.
  */
 export async function checkExecStream(host: MachineHost, machine: string, options: ExecStreamOptions = {}): Promise<ExecStreamReport> {
-	const { longMs = DEFAULT_LONG_MS, stepMs = DEFAULT_STEP_MS, largeBytes = DEFAULT_LARGE_BYTES, largeMs = DEFAULT_LARGE_MS, signal, onCheck } = options;
+	const { longMs = DEFAULT_LONG_MS, stepMs = DEFAULT_STEP_MS, largeBytes = DEFAULT_LARGE_BYTES, largeMs = DEFAULT_LARGE_MS, unreadMs = DEFAULT_UNREAD_MS, signal, onCheck } = options;
 	const session = new Session(host, machine, stepMs, signal);
 	const done = new Map<ExecStreamCheckId, ExecStreamCheck>();
 	for (const id of EXEC_STREAM_CHECKS) {
@@ -541,7 +739,7 @@ export async function checkExecStream(host: MachineHost, machine: string, option
 		if (signal?.aborted) check = { id, status: "fail", words: "the run was aborted before this check", ms: 0 };
 		else {
 			try {
-				const said = await CHECKS[id](session, { longMs, largeBytes, largeMs }, done);
+				const said = await CHECKS[id](session, { longMs, largeBytes, largeMs, unreadMs }, done);
 				check = { id, status: "pass", words: said, ms: Date.now() - started };
 			} catch (error) {
 				const said = error instanceof Problem ? error.message : `the check itself failed: ${words(error)}`;
@@ -553,14 +751,27 @@ export async function checkExecStream(host: MachineHost, machine: string, option
 		onCheck?.(check);
 	}
 	const checks = [...done.values()];
-	return { host: host.descriptor.id, machine, checks, pass: checks.every((check) => check.status === "pass") };
+	const report: ExecStreamReport = { host: host.descriptor.id, machine, checks, pass: checks.every((check) => check.status === "pass"), facts: [] };
+	if (signal?.aborted) report.factsProblem = "the run was aborted before the probe";
+	else {
+		try {
+			report.facts = await probe(session);
+		} catch (error) {
+			report.factsProblem = error instanceof Problem ? error.message : `the probe itself failed: ${words(error)}`;
+		}
+		await session.killAll();
+	}
+	return report;
 }
 
-/** The report as a person reads it: one line per check, what failed in words, the verdict last. */
+/** The report as a person reads it: one line per check, what failed in words, the machine's facts, the verdict last. */
 export function formatExecStream(report: ExecStreamReport): string {
 	const width = Math.max(...EXEC_STREAM_CHECKS.map((id) => id.length));
 	const lines = [`exec pre-check · ${report.host} · machine ${report.machine}`];
 	for (const check of report.checks) lines.push(`${check.status === "pass" ? "✓" : "✗"} ${check.id.padEnd(width)}  ${check.words}`);
+	lines.push("what the machine offers (facts for the rest of your host, not checks of exec):");
+	if (report.factsProblem !== undefined) lines.push(`  not read: ${report.factsProblem}`);
+	for (const fact of report.facts) lines.push(`· ${fact.id.padEnd(width)}  ${fact.value}: ${fact.means}`);
 	const failed = report.checks.filter((check) => check.status === "fail").length;
 	lines.push(
 		report.pass
