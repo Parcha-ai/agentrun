@@ -1775,7 +1775,9 @@ another loopback address, the IPv6 loopback, or a name for this machine in its p
 loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
 its own port. What that leaves: such an authorization server can still have this server send its sign-in and refresh
 requests to other ports on that same loopback host (a port Docker publishes there, say), blind, learning only the
-endpoint and its status, never a body. That is why the allowance is for development only. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+endpoint and its status, never a body. That is why the allowance is for development only. A sign-in at Google's authorization endpoint
+(`accounts.google.com`) asks for offline access (`access_type=offline` and `prompt=consent`), the one way Google gives a
+refresh token; any other authorization server's page is opened as it was. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the

@@ -598,6 +598,36 @@ test("a request is dialled at the address checked, never at the name's next answ
   assert.ok(!net.dialled.some(([, address]) => address === privateAddress), "never at the private answer");
 });
 
+/** Google's authorization server as its metadata names it (accounts.google.com/.well-known/openid-configuration): its
+ *  authorization endpoint, the scopes it lists (no offline_access: Google asks for offline access with access_type). */
+const GOOGLE = { authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth", scopes_supported: ["openid", "email", "profile"], code_challenge_methods_supported: ["plain", "S256"] };
+
+/** The authorization URL a sign-in to the public MCP server starts on, its authorization server publishing `metadata`. */
+async function startedAt(t, metadata) {
+  const store = await storeOn(t, sealKey(), await publicNetwork(metadata));
+  return new URL((await store.oauthStart("drive", { url: "https://mcp.example.test/mcp" })).authorization_url);
+}
+
+test("a sign-in whose authorization endpoint is Google's asks for offline access (access_type=offline, prompt=consent), so Google gives a refresh token and the server stays signed in past the hour", async (t) => {
+  const google = await startedAt(t, GOOGLE);
+  assert.equal(`${google.origin}${google.pathname}`, GOOGLE.authorization_endpoint);
+  assert.equal(google.searchParams.get("access_type"), "offline");
+  assert.deepEqual(google.searchParams.getAll("prompt"), ["consent"], "consent asked once, so a sign-in again gets a refresh token too");
+  // Nothing else differs from another authorization server's start: the same parameters, these two added.
+  const other = await startedAt(t, {});
+  assert.deepEqual([...google.searchParams.keys()].filter((key) => !["access_type", "prompt"].includes(key)).sort(), [...other.searchParams.keys()].sort());
+});
+
+test("a sign-in at any other authorization server is unchanged: no access_type, no prompt", async (t) => {
+  const other = await startedAt(t, {});
+  assert.equal(`${other.origin}${other.pathname}`, "https://as.example.test/authorize");
+  assert.equal(other.searchParams.get("access_type"), null);
+  assert.equal(other.searchParams.get("prompt"), null);
+  // A Google name anywhere but the authorization endpoint's host is not Google's endpoint.
+  const lookalike = await startedAt(t, { authorization_endpoint: "https://as.example.test/accounts.google.com/o/oauth2/v2/auth" });
+  assert.equal(lookalike.searchParams.get("access_type"), null);
+});
+
 test("two tabs signing in at once each keep their own cookie, and both finish; a finished sign-in clears its cookie", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() });
   const { api } = await serve(t);

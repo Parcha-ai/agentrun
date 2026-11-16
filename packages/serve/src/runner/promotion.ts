@@ -929,6 +929,8 @@ export async function replayView(ask: ReplayAsk, name: string, digest: string, i
   const find = async () => (await promotionsOf(ask.store.settings, ask.agentId)).findLast((one) => one.workflow === name && one.digest === digest && one.replay_id === id);
   let record = await find();
   if (!record) throw new ReplayRefused("missing", `${name} at ${digest} has no replay ${id}.`);
+  // A replay a newer draft cancelled (a beta.39 `superseded` record, read as skipped, promotionsOf): decided, never run to a verdict.
+  if (record.decided === "skipped") return { replay: id, workflow: name, digest, status: "failed", inputs: record.runs?.length ?? 0, outcomes: NO_OUTCOMES, score: scoreRows([], new Map()), cost_usd: null, reason: record.reason };
   const textOf = async (one: PromotionRecord) => (one.commit ? (await workflowsAt(ask, one.commit).catch(() => [])).find((text) => text.name === name && workflowDigest(text) === digest) : undefined);
   let text = record.decided === "replaying" ? await textOf(record) : undefined;
   const ports = record.decided === "replaying" && text && record.launch ? readPorts(ask, record.launch) : undefined;

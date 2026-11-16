@@ -226,8 +226,17 @@ export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbse
   return { ...grade, ...mark };
 };
 
-/** The agent's promotion records, oldest first. */
-export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> => itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)));
+/** The agent's promotion records, oldest first. A beta.39 store may hold `decided: "superseded"` (a replay a newer draft
+ *  cancelled; beta.40 writes `skipped` for an older draft instead): read as `skipped`, `skipped_by` the draft that
+ *  superseded it, with a reason that says when. Only the read maps (readAs, also what a guarded write compares): the stored
+ *  record is never rewritten. */
+export const readAs = (one: PromotionRecord): PromotionRecord => {
+  if ((one.decided as string) !== "superseded") return one;
+  const { superseded_by: by, ...rest } = one as PromotionRecord & { superseded_by?: string };
+  return { ...rest, decided: "skipped", reason: "a newer draft arrived while it replayed (before beta.40)", ...(by ? { skipped_by: by } : {}) };
+};
+export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> =>
+  itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))).map(readAs);
 
 /** The newest record of `workflow` at `digest`, or undefined. */
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
@@ -318,8 +327,10 @@ export type Recorded = { readonly record: PromotionRecord | undefined; readonly 
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, also: readonly PromotionRecord[] = []): Promise<Recorded> {
   let out: Recorded = { record, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => {
-    const now = promotionOf(items, record.workflow, record.digest);
-    if (!still(now, items)) {
+    // `still` compares what a read shows (readAs); the write keeps the stored items as they are.
+    const read = items.map(readAs);
+    const now = promotionOf(read, record.workflow, record.digest);
+    if (!still(now, read)) {
       out = { record: now, won: false };
       return items;
     }
