@@ -68,6 +68,8 @@ function sandboxOverArchil(disk, scratch, mounts) {
   let epoch;
   const provider = {
     id: "fake", version: "0", capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }), check: () => [],
+    // E2B's descriptor says it prepares its image: the stand-in answers its template at once, as E2B's does.
+    prepareImage: async () => ({ ok: true, value: "agentrun/computer:test" }),
     list: async () => ({ ok: true, value: [] }),
     create: async (spec) => {
       assert.equal(spec.mount?.kind, "archil", "the run's folder is mounted from its Archil disk");
@@ -134,10 +136,10 @@ async function mode2Run(t, { harness, disk, learns = false }) {
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write"], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL } },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write"], skills: { "cite/SKILL.md": "0".repeat(64) }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL } },
   );
   const learning = learns ? { given: [], seed: await learningSeedIn(t, dir), section: "", seedNotes: 1 } : undefined;
-  const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}) };
+  const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
   await storeAgentDisk(server, AGENT, { diskId: ARCHIL_SETTINGS.diskId });
