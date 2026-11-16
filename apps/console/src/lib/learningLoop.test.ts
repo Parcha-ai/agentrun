@@ -204,7 +204,7 @@ describe("notes and the story", () => {
   // The after side is served runs only (never a replay): its count said with its level, and no figure when none is priced.
   it("says the after side's served runs, and in words when none is served or priced", () => {
     const few = cheaper({ after: { runs: 5, mean_usd: 0.127 }, times_cheaper: null });
-    expect([few.value, few.detail]).toEqual(["5 served runs so far", "$0.89 a run by the agent, $0.13 all-in over the 5 runs it served since; how many times cheaper shows after 20 runs"]);
+    expect([few.value, few.detail]).toEqual(["5 served runs so far", "$0.890 a run by the agent, $0.127 all-in over the 5 runs it served since; how many times cheaper shows after 20 runs"]);
     const unpriced = cheaper({ after: null, after_state: "cost_unknown", times_cheaper: null });
     expect([unpriced.value, unpriced.detail, unpriced.state]).toEqual(["No cost yet", "no served run's cost is known yet", "now"]);
     const none = storyOf({ ...base, notes: 3, runs: 80, cost: cost({ before: { runs: 18, mean_usd: 0.89 } }) }).find((s) => s.key === "cheaper")!;

@@ -1753,7 +1753,7 @@ describe("the before and after of an agent that learned only skills or workflows
       const t = await open(agent(true), { learning: async () => only(kind) });
       const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
       expect(card).not.toBeNull();
-      expect(card.textContent).toContain("on 3 runs");
+      expect(card.textContent).toContain("medians of 3 runs started from what it learned");
       const basis = card.querySelector('[title^="Medians of"]')!.getAttribute("title")!;
       expect(basis).toContain("Medians of 2 runs before it first learned and 3 runs that started from what it learned (a note, a skill or a workflow).");
       expect(basis).not.toContain("first note");
