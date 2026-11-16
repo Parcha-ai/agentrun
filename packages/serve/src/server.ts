@@ -4441,7 +4441,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
   // The same said to a runner in its own process on this data directory (runner/main.ts): a local install leaves its note
   // there (its own addresses, and where its loopback is), any other start takes an earlier one away (mcp-local-install.ts).
-  await noteLocalInstall(data, localInstall, mcpServers.own);
+  // It listens already: a note that can't be written or taken away (a full disk) stops the start and lets go of the port,
+  // as the start's other stops let go of the store and the locks.
+  await noteLocalInstall(data, localInstall, mcpServers.own).catch(async (error: unknown) => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+    throw error;
+  });
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor

@@ -28,24 +28,28 @@ export type LocalInstallNote = { readonly mark: string; readonly own: readonly s
 
 /** Where this process's loopback is. On Linux, the booted kernel (its boot id, the same in every container on a host and
  *  new at each boot) and this process's network namespace (the loopback interface is the namespace's): two processes
- *  share a loopback exactly when both match. Elsewhere (macOS has no network namespaces), the host's name. `read`: a
- *  test's stand-in for the files. */
-export function loopbackMark(read: (path: string) => string = (path) => (path.startsWith("/proc/self/ns/") ? readlinkSync(path) : readFileSync(path, "utf8"))): string {
-  if (process.platform === "linux") {
-    try {
-      return `linux boot ${read("/proc/sys/kernel/random/boot_id").trim()} ${read("/proc/self/ns/net").trim()}`;
-    } catch {
-      // A sandbox that hides /proc: the host's name, as elsewhere. The server and its runner read the same way.
-    }
+ *  share a loopback exactly when both match. Undefined on Linux when either can't be read (a sandbox that hides /proc):
+ *  the host's name is no stand-in there, as two containers may share one, so nothing is shared. Elsewhere (macOS has no
+ *  network namespaces), the host's name. `read`: a test's stand-in for the files; `platform`: a test's for the OS. */
+export function loopbackMark(read: (path: string) => string = (path) => (path.startsWith("/proc/self/ns/") ? readlinkSync(path) : readFileSync(path, "utf8")), platform: NodeJS.Platform = process.platform): string | undefined {
+  if (platform !== "linux") return `host ${hostname()}`;
+  try {
+    const boot = read("/proc/sys/kernel/random/boot_id").trim();
+    const net = read("/proc/self/ns/net").trim();
+    return boot && net ? `linux boot ${boot} ${net}` : undefined;
+  } catch {
+    return undefined;
   }
-  return `host ${hostname()}`;
 }
 
 /** The server's start (server.ts): a local install leaves its note, any other server takes one an earlier start left
- *  away, so a runner never keeps an opt-in the server no longer has. Written whole (a file beside, then renamed over), 0600. */
-export async function noteLocalInstall(data: string, local: boolean, own: readonly string[], mark: string = loopbackMark()): Promise<void> {
+ *  away, so a runner never keeps an opt-in the server no longer has. A local install whose loopback can't be told
+ *  (loopbackMark undefined) leaves none: no runner can show it shares it. Written whole (a file beside, then renamed
+ *  over), 0600. */
+export async function noteLocalInstall(data: string, local: boolean, own: readonly string[], markOf: () => string | undefined = loopbackMark): Promise<void> {
   const file = join(data, LOCAL_INSTALL_NOTE);
-  if (!local) return void (await rm(file, { force: true }));
+  const mark = local ? markOf() : undefined;
+  if (!local || mark === undefined) return void (await rm(file, { force: true }));
   const next = `${file}.${process.pid}.next`;
   await writeFile(next, `${JSON.stringify({ mark, own } satisfies LocalInstallNote)}\n`, { mode: 0o600 });
   await rename(next, file);
@@ -67,13 +71,19 @@ export function readLocalInstallNote(data: string): LocalInstallNote | undefined
 /** What a standalone runner (runner/main.ts runnerLoop) may reach on loopback, read at each claim: undefined when it may
  *  not, else the own addresses of the local-install server it shares a loopback with (AdapterSpecDeps.mcpLocal).
  *  Undefined as a whole (no read at any claim) unless its operator set AGENTRUN_MCP_ALLOW_LOOPBACK=1 for it, and when it
- *  says it is on another host than its server (AGENTRUN_RUNNER_LIVE_HOST, a host off loopback). `log`: each change of
- *  what a claim found, said once. `mark`: a test's stand-in for loopbackMark. */
-export function standaloneLoopback(env: NodeJS.ProcessEnv, data: string, log: (line: string) => void, mark: string = loopbackMark()): (() => { readonly own: readonly string[] } | undefined) | undefined {
+ *  says it is on another host than its server (AGENTRUN_RUNNER_LIVE_HOST, a host off loopback), or when it can't tell
+ *  where its own loopback is (loopbackMark undefined). `log`: each change of
+ *  what a claim found, said once. `markOf`: a test's stand-in for loopbackMark. */
+export function standaloneLoopback(env: NodeJS.ProcessEnv, data: string, log: (line: string) => void, markOf: () => string | undefined = loopbackMark): (() => { readonly own: readonly string[] } | undefined) | undefined {
   if (env[MCP_ALLOW_LOOPBACK_ENV] !== "1") return undefined;
   const live = env.AGENTRUN_RUNNER_LIVE_HOST?.trim().toLowerCase();
   if (isLiveHost(live) && live !== LOOPBACK) {
     log(`${MCP_ALLOW_LOOPBACK_ENV}=1 is not taken: this runner is on another host than its server (AGENTRUN_RUNNER_LIVE_HOST=${live}), where loopback is another machine; an MCP server on loopback stays refused`);
+    return undefined;
+  }
+  const mark = markOf();
+  if (mark === undefined) {
+    log(`${MCP_ALLOW_LOOPBACK_ENV}=1 is not taken: this runner can't read where its loopback is (/proc/sys/kernel/random/boot_id and /proc/self/ns/net), so it can't show it shares the server's; an MCP server on loopback stays refused`);
     return undefined;
   }
   let said: string | undefined;

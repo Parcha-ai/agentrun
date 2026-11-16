@@ -8,11 +8,12 @@
 // this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, retried, scratch, serve, withEnv } from "./support.mjs";
+import { agent, FAUX, follow, retried, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const { fauxEnvOf } = await import("../dist/server.js");
 const { withoutFaux } = await import("../dist/model.js");
@@ -105,23 +106,23 @@ test("the note: a local install's start leaves it, any other start takes it away
   const { LOCAL_INSTALL_NOTE, noteLocalInstall, readLocalInstallNote, standaloneLoopback } = await noted();
   const data = await scratch(t);
   const lines = [];
-  const local = standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1" }, data, (line) => lines.push(line), "mark-a");
+  const local = standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1" }, data, (line) => lines.push(line), () => "mark-a");
   assert.equal(local(), undefined, "no note yet: refused");
-  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], "mark-a");
+  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], () => "mark-a");
   assert.deepEqual(local(), { own: ["http://127.0.0.1:7340"] }, "read at the next claim, with the server's own addresses");
   assert.deepEqual(readLocalInstallNote(data), { mark: "mark-a", own: ["http://127.0.0.1:7340"] });
-  await noteLocalInstall(data, false, ["http://127.0.0.1:7340"], "mark-a");
+  await noteLocalInstall(data, false, ["http://127.0.0.1:7340"], () => "mark-a");
   assert.equal(existsSync(join(data, LOCAL_INSTALL_NOTE)), false, "a start without the opt-in takes the note away");
   assert.equal(local(), undefined, "and the runner's next claim is refused again");
   assert.equal(lines.length, 3, `each change said once: ${lines.join(" | ")}`);
-  await noteLocalInstall(data, true, [], "mark-b");
+  await noteLocalInstall(data, true, [], () => "mark-b");
   assert.equal(local(), undefined, "another loopback's note: refused");
   writeFileSync(join(data, LOCAL_INSTALL_NOTE), "{not json");
   assert.equal(local(), undefined, "a note that is no note: refused");
-  assert.equal(standaloneLoopback({}, data, () => {}, "mark-a"), undefined, "no opt-in: nothing read");
-  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "true" }, data, () => {}, "mark-a"), undefined, "only 1 is the opt-in, as on the server");
-  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "runner-b.example.test" }, data, () => {}, "mark-a"), undefined, "configured as remote: nothing read");
-  assert.equal(typeof standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.1" }, data, () => {}, "mark-a"), "function", "a live host on loopback is this machine");
+  assert.equal(standaloneLoopback({}, data, () => {}, () => "mark-a"), undefined, "no opt-in: nothing read");
+  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "true" }, data, () => {}, () => "mark-a"), undefined, "only 1 is the opt-in, as on the server");
+  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "runner-b.example.test" }, data, () => {}, () => "mark-a"), undefined, "configured as remote: nothing read");
+  assert.equal(typeof standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.1" }, data, () => {}, () => "mark-a"), "function", "a live host on loopback is this machine");
 });
 
 test("loopbackMark: on Linux, the booted kernel and the network namespace; two processes share a loopback when both match", async () => {
@@ -131,4 +132,38 @@ test("loopbackMark: on Linux, the booted kernel and the network namespace; two p
   assert.equal(loopbackMark((path) => files[path]), "linux boot b-1 net:[4026531840]");
   assert.notEqual(loopbackMark((path) => ({ ...files, "/proc/self/ns/net": "net:[4026532999]" })[path]), loopbackMark((path) => files[path]), "another container's namespace");
   assert.notEqual(loopbackMark((path) => ({ ...files, "/proc/sys/kernel/random/boot_id": "b-2\n" })[path]), loopbackMark((path) => files[path]), "another machine, the same first namespace");
+});
+
+test("loopbackMark: on Linux with /proc unreadable there is no mark, never the host's name (two containers may share one): the runner takes no opt-in and says why, and the server leaves no note", async (t) => {
+  const { LOCAL_INSTALL_NOTE, loopbackMark, noteLocalInstall, standaloneLoopback } = await noted();
+  const hidden = () => { throw Object.assign(new Error("hidden"), { code: "EACCES" }); };
+  assert.equal(loopbackMark(hidden, "linux"), undefined, "unreadable: none");
+  assert.equal(loopbackMark(() => "", "linux"), undefined, "empty: none");
+  assert.match(loopbackMark(hidden, "darwin"), /^host /, "no namespaces elsewhere: the host's name");
+  const data = await scratch(t);
+  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], () => "mark-a");
+  const lines = [];
+  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1" }, data, (line) => lines.push(line), () => undefined), undefined, "a runner that can't tell its loopback reads nothing");
+  assert.match(lines.join(" "), /can't read where its loopback is/);
+  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], () => undefined);
+  assert.equal(existsSync(join(data, LOCAL_INSTALL_NOTE)), false, "a server that can't tell its loopback leaves no note, and takes an earlier one away");
+});
+
+test("a local install whose note can't be written fails its start and lets go of its port", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { LOCAL_INSTALL_NOTE } = await noted();
+  const data = join(await scratch(t), "agents");
+  // The note's name taken by a folder with something in it: renaming the written note over it fails.
+  mkdirSync(join(data, LOCAL_INSTALL_NOTE, "held"), { recursive: true });
+  const port = await new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => { const { port: free } = probe.address(); probe.close(() => resolve(free)); });
+  });
+  await assert.rejects(startServe({ data, port, faux: FAUX, drainTimeout: "5s", mcpLoopback: true }));
+  await new Promise((resolve, reject) => {
+    const again = createServer();
+    again.once("error", reject);
+    again.listen(port, "127.0.0.1", () => again.close(resolve));
+  });
 });
