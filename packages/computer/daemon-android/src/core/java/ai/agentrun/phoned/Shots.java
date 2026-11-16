@@ -20,8 +20,11 @@ public final class Shots {
 	public static final int MIN_EDGE = 256;
 	public static final int MAX_EDGE = 2048;
 	public static final int DEFAULT_EDGE = 1568;
-	/** A watch reads the screen at most this often, across calls too. */
-	static final long WATCH_POLL_MS = 1000;
+	/**
+	 * A watch reads the screen at most this often, across calls too, and only while a screen.watch call waits: with no
+	 * viewer nothing is read. A read whose pixels are the last read's is neither scaled nor encoded.
+	 */
+	static final long WATCH_POLL_MS = 200;
 	/** The JPEG qualities an observe image steps down through until it fits one reply. */
 	static final int[] IMAGE_QUALITIES = {80, 65, 50, 35, 20};
 
@@ -74,8 +77,11 @@ public final class Shots {
 
 	/** A frame, refused as denied when a secure window blanked it. */
 	private Device.Shot take(Rect crop, int maxEdge, String format, int quality) {
-		Device.Shot s = device.screen().shot(crop, maxEdge, format, quality);
-		if (s.secure != null) {
+		return allowed(device.screen().shot(crop, maxEdge, format, quality));
+	}
+
+	private static Device.Shot allowed(Device.Shot s) {
+		if (s != null && s.secure != null) {
 			throw RpcError.denied("the screen shows a secure window (" + s.secure + " set FLAG_SECURE): Android gives the shell user a blank frame for it, so phoned sends none");
 		}
 		return s;
@@ -160,10 +166,13 @@ public final class Shots {
 				Device.Display d = device.display();
 				int frameWidth = Math.min(d.width, maxWidth);
 				int frameHeight = Math.max(1, (int) ((long) d.height * frameWidth / Math.max(1, d.width)));
-				Device.Shot s = take(null, Math.max(frameWidth, frameHeight), "jpeg", quality);
+				// When the newest frame is this size and quality's, a read whose pixels are the last read's is not
+				// encoded again (null: unchanged).
+				boolean skip = seq > 0 && key.equals(newestKey);
+				Device.Shot s = allowed(device.screen().watchShot(Math.max(frameWidth, frameHeight), quality, skip));
 				cancel.check();
 				// The size is in the digest: a phone turned to landscape may give the same bytes, the other way round.
-				byte[] now = sha256(s.width + "x" + s.height + "|" + d.width + "x" + d.height + "|" + key, s.bytes);
+				byte[] now = s == null ? digest : sha256(s.width + "x" + s.height + "|" + d.width + "x" + d.height + "|" + key, s.bytes);
 				if (seq == 0 || !Arrays.equals(now, digest)) {
 					seq++;
 					digest = now;

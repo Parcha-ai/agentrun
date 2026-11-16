@@ -81,4 +81,30 @@ final class ScreenTest {
 		eq(true, next.get("changed"));
 		refuses("invalid", () -> phone.call("screen.watch", "{\"after\":5}"));
 	}
+
+	static void testWatchReadsTheScreenFiveTimesASecondEncodingOnlyAChangeAndNothingWithNoViewer() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		eq(1L, phone.call("screen.watch", "{\"after\":0,\"maxWidth\":720}").get("seq"));
+		int reads = phone.device.screenReads;
+		int encodes = phone.device.encodes;
+		// No watch call waits: phoned reads nothing, however long.
+		phone.device.clock().sleep(10_000);
+		eq(reads, phone.device.screenReads);
+		// A second of an unchanged screen: read every 200 ms (at 0, 200, ... 1000 ms), encoded never.
+		eq(Json.obj("seq", 1L, "changed", false, "width", 1080L, "height", 2400L), phone.call("screen.watch", "{\"after\":1,\"waitMs\":1000,\"maxWidth\":720}"));
+		eq(reads + 6, phone.device.screenReads);
+		eq(encodes, phone.device.encodes);
+		// A change is read within 200 ms and encoded once.
+		phone.device.internet();
+		long before = phone.device.clock().now();
+		Map<String, Object> next = phone.call("screen.watch", "{\"after\":1,\"waitMs\":1000,\"maxWidth\":720}");
+		eq(2L, next.get("seq"));
+		yes(phone.device.clock().now() - before <= 200, "a change waits one poll at most");
+		eq(encodes + 1, phone.device.encodes);
+		// A watcher at another size gets a frame of its own size, encoded; the next unchanged read at that size is not.
+		eq(1080L, phone.call("screen.watch", "{\"after\":2,\"waitMs\":0}").get("frameWidth"));
+		int wide = phone.device.encodes;
+		eq(false, phone.call("screen.watch", "{\"after\":3,\"waitMs\":400}").get("changed"));
+		eq(wide, phone.device.encodes);
+	}
 }
