@@ -119,6 +119,11 @@ __all__ = [
     "CreateTriggerBodySource6AcceptItemWhereItem1",
     "CreateTriggerBodySource6AcceptItemWhereItem2",
     "CreateTriggerBodySource6AcceptItemWhereItem3",
+    "CreateTriggerBodySource7",
+    "CreateTriggerBodySource7AcceptItem",
+    "CreateTriggerBodySource7AcceptItemWhereItem1",
+    "CreateTriggerBodySource7AcceptItemWhereItem2",
+    "CreateTriggerBodySource7AcceptItemWhereItem3",
     "CreateTriggerBodyTarget1",
     "CreateTriggerBodyTarget2",
     "CreateTriggerBodyTarget2Input",
@@ -127,6 +132,8 @@ __all__ = [
     "CreateTriggerResponseDisabled2",
     "CreateTriggerResponseDisabled3",
     "CreateTriggerResponseDisabled4",
+    "CreateTriggerResponseDisabled5",
+    "CreateTriggerResponseLastCheck",
     "CreateTriggerResponseLastFiring",
     "CreateTriggerResponseLastFiringError",
     "CreateTriggerResponseSource1",
@@ -147,6 +154,11 @@ __all__ = [
     "CreateTriggerResponseSource6AcceptItemWhereItem1",
     "CreateTriggerResponseSource6AcceptItemWhereItem2",
     "CreateTriggerResponseSource6AcceptItemWhereItem3",
+    "CreateTriggerResponseSource7",
+    "CreateTriggerResponseSource7AcceptItem",
+    "CreateTriggerResponseSource7AcceptItemWhereItem1",
+    "CreateTriggerResponseSource7AcceptItemWhereItem2",
+    "CreateTriggerResponseSource7AcceptItemWhereItem3",
     "CreateTriggerResponseTarget1",
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
@@ -171,6 +183,11 @@ __all__ = [
     "DefinitionInputToolSettingsBrowser",
     "DefinitionInputToolSettingsDesktop",
     "DefinitionInputToolSettingsEdit",
+    "DefinitionInputToolSettingsEmailDraft",
+    "DefinitionInputToolSettingsEmailFile",
+    "DefinitionInputToolSettingsEmailRead",
+    "DefinitionInputToolSettingsEmailSearch",
+    "DefinitionInputToolSettingsEmailSend",
     "DefinitionInputToolSettingsJev",
     "DefinitionInputToolSettingsLlm",
     "DefinitionInputToolSettingsOpenrouter",
@@ -197,6 +214,11 @@ __all__ = [
     "DefinitionToolSettingsBrowser",
     "DefinitionToolSettingsDesktop",
     "DefinitionToolSettingsEdit",
+    "DefinitionToolSettingsEmailDraft",
+    "DefinitionToolSettingsEmailFile",
+    "DefinitionToolSettingsEmailRead",
+    "DefinitionToolSettingsEmailSearch",
+    "DefinitionToolSettingsEmailSend",
     "DefinitionToolSettingsJev",
     "DefinitionToolSettingsLlm",
     "DefinitionToolSettingsOpenrouter",
@@ -302,6 +324,9 @@ __all__ = [
     "GetAgentResponseToolsItem",
     "GetCapabilitiesResponse",
     "GetChatGPTSignInResponse",
+    "GetEmailAccountResponse",
+    "GetEmailAccountResponseImap",
+    "GetEmailAccountResponseSmtp",
     "GetFileResponse",
     "GetGitHubConnectionResponse",
     "GetGitHubConnectionResponseObject1",
@@ -411,6 +436,8 @@ __all__ = [
     "GetTriggerResponseDisabled2",
     "GetTriggerResponseDisabled3",
     "GetTriggerResponseDisabled4",
+    "GetTriggerResponseDisabled5",
+    "GetTriggerResponseLastCheck",
     "GetTriggerResponseLastFiring",
     "GetTriggerResponseLastFiringError",
     "GetTriggerResponseSource1",
@@ -431,6 +458,11 @@ __all__ = [
     "GetTriggerResponseSource6AcceptItemWhereItem1",
     "GetTriggerResponseSource6AcceptItemWhereItem2",
     "GetTriggerResponseSource6AcceptItemWhereItem3",
+    "GetTriggerResponseSource7",
+    "GetTriggerResponseSource7AcceptItem",
+    "GetTriggerResponseSource7AcceptItemWhereItem1",
+    "GetTriggerResponseSource7AcceptItemWhereItem2",
+    "GetTriggerResponseSource7AcceptItemWhereItem3",
     "GetTriggerResponseTarget1",
     "GetTriggerResponseTarget2",
     "GetTriggerResponseTarget2Input",
@@ -582,6 +614,8 @@ __all__ = [
     "ListTriggersResponseTriggersItemDisabled2",
     "ListTriggersResponseTriggersItemDisabled3",
     "ListTriggersResponseTriggersItemDisabled4",
+    "ListTriggersResponseTriggersItemDisabled5",
+    "ListTriggersResponseTriggersItemLastCheck",
     "ListTriggersResponseTriggersItemLastFiring",
     "ListTriggersResponseTriggersItemLastFiringError",
     "ListTriggersResponseTriggersItemSource1",
@@ -602,6 +636,11 @@ __all__ = [
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource7",
+    "ListTriggersResponseTriggersItemSource7AcceptItem",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3",
     "ListTriggersResponseTriggersItemTarget1",
     "ListTriggersResponseTriggersItemTarget2",
     "ListTriggersResponseTriggersItemTarget2Input",
@@ -634,6 +673,11 @@ __all__ = [
     "PutToolSettingsBodyBrowser",
     "PutToolSettingsBodyDesktop",
     "PutToolSettingsBodyEdit",
+    "PutToolSettingsBodyEmailDraft",
+    "PutToolSettingsBodyEmailFile",
+    "PutToolSettingsBodyEmailRead",
+    "PutToolSettingsBodyEmailSearch",
+    "PutToolSettingsBodyEmailSend",
     "PutToolSettingsBodyJev",
     "PutToolSettingsBodyLlm",
     "PutToolSettingsBodyOpenrouter",
@@ -776,6 +820,12 @@ __all__ = [
     "SaveComputerKeysResponseGpuPerGpu",
     "SaveComputerKeysResponsePersistent",
     "SaveComputerKeysResponseSecretsItem",
+    "SaveEmailAccountBody",
+    "SaveEmailAccountBodyImap",
+    "SaveEmailAccountBodySmtp",
+    "SaveEmailAccountResponse",
+    "SaveEmailAccountResponseImap",
+    "SaveEmailAccountResponseSmtp",
     "SaveMcpServerBody",
     "SaveMcpServerBodyAuth",
     "SaveMcpServerResponse",
@@ -828,6 +878,12 @@ __all__ = [
     "TestComputerResponse",
     "TestComputerResponseObject1",
     "TestComputerResponseObject2",
+    "TestEmailAccountBody",
+    "TestEmailAccountBodyImap",
+    "TestEmailAccountBodySmtp",
+    "TestEmailAccountResponse",
+    "TestEmailAccountResponseImap",
+    "TestEmailAccountResponseSmtp",
     "TestWebhookResponse",
     "TestWorkspaceArchilResponse",
     "TestWorkspaceArchilResponseObject1",
@@ -869,6 +925,11 @@ __all__ = [
     "UpdateTriggerBodySource6AcceptItemWhereItem1",
     "UpdateTriggerBodySource6AcceptItemWhereItem2",
     "UpdateTriggerBodySource6AcceptItemWhereItem3",
+    "UpdateTriggerBodySource7",
+    "UpdateTriggerBodySource7AcceptItem",
+    "UpdateTriggerBodySource7AcceptItemWhereItem1",
+    "UpdateTriggerBodySource7AcceptItemWhereItem2",
+    "UpdateTriggerBodySource7AcceptItemWhereItem3",
     "UpdateTriggerBodyTarget1",
     "UpdateTriggerBodyTarget2",
     "UpdateTriggerBodyTarget2Input",
@@ -878,6 +939,8 @@ __all__ = [
     "UpdateTriggerResponseDisabled2",
     "UpdateTriggerResponseDisabled3",
     "UpdateTriggerResponseDisabled4",
+    "UpdateTriggerResponseDisabled5",
+    "UpdateTriggerResponseLastCheck",
     "UpdateTriggerResponseLastFiring",
     "UpdateTriggerResponseLastFiringError",
     "UpdateTriggerResponseSource1",
@@ -898,6 +961,11 @@ __all__ = [
     "UpdateTriggerResponseSource6AcceptItemWhereItem1",
     "UpdateTriggerResponseSource6AcceptItemWhereItem2",
     "UpdateTriggerResponseSource6AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource7",
+    "UpdateTriggerResponseSource7AcceptItem",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem3",
     "UpdateTriggerResponseTarget1",
     "UpdateTriggerResponseTarget2",
     "UpdateTriggerResponseTarget2Input",
@@ -1104,6 +1172,11 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    email_search: DefinitionToolSettingsEmailSearch
+    email_read: DefinitionToolSettingsEmailRead
+    email_draft: DefinitionToolSettingsEmailDraft
+    email_send: DefinitionToolSettingsEmailSend
+    email_file: DefinitionToolSettingsEmailFile
     browser: DefinitionToolSettingsBrowser
     subagent: DefinitionToolSettingsSubagent
     pdf_pages: DefinitionToolSettingsPdfPages
@@ -1144,6 +1217,29 @@ class DefinitionToolSettingsWebFetch(TypedDict, total=False):
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
 
 
 class DefinitionToolSettingsBrowser(TypedDict, total=False):
@@ -1535,6 +1631,11 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    email_search: DefinitionInputToolSettingsEmailSearch
+    email_read: DefinitionInputToolSettingsEmailRead
+    email_draft: DefinitionInputToolSettingsEmailDraft
+    email_send: DefinitionInputToolSettingsEmailSend
+    email_file: DefinitionInputToolSettingsEmailFile
     browser: DefinitionInputToolSettingsBrowser
     subagent: DefinitionInputToolSettingsSubagent
     pdf_pages: DefinitionInputToolSettingsPdfPages
@@ -1575,6 +1676,29 @@ class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
 
 
 class DefinitionInputToolSettingsBrowser(TypedDict, total=False):
@@ -2333,6 +2457,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
+    summary: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -3621,6 +3746,26 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     models: list[str]
 
 
+class GetEmailAccountResponse(TypedDict):
+    configured: bool
+    preset: Literal["gmail", "fastmail", "icloud", "other"] | None
+    address: str | None
+    user: str | None
+    imap: GetEmailAccountResponseImap | None
+    smtp: GetEmailAccountResponseSmtp | None
+    password_unreadable: bool
+
+
+class GetEmailAccountResponseImap(TypedDict):
+    host: str
+    port: int
+
+
+class GetEmailAccountResponseSmtp(TypedDict):
+    host: str
+    port: int
+
+
 GetGitHubConnectionResponse: TypeAlias = "GetGitHubConnectionResponseObject1 | GetGitHubConnectionResponseObject2"
 
 
@@ -3893,7 +4038,7 @@ class ReceiveHookComposioResponseObject11(TypedDict):
 
 class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -3928,7 +4073,7 @@ class ReceiveHookComposioResponseObject2(TypedDict):
 
 class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -4094,6 +4239,48 @@ class SaveComputerKeysResponsePersistent(TypedDict, total=False):
     images: list[str]
 
 
+class _SaveEmailAccountBodyRequired(TypedDict):
+    address: str
+    password: str
+
+
+class SaveEmailAccountBody(_SaveEmailAccountBodyRequired, total=False):
+    preset: Literal["gmail", "fastmail", "icloud", "other", "outlook"]
+    user: str
+    imap: SaveEmailAccountBodyImap
+    smtp: SaveEmailAccountBodySmtp
+
+
+class SaveEmailAccountBodyImap(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountBodySmtp(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountResponse(TypedDict):
+    configured: bool
+    preset: Literal["gmail", "fastmail", "icloud", "other"] | None
+    address: str | None
+    user: str | None
+    imap: SaveEmailAccountResponseImap | None
+    smtp: SaveEmailAccountResponseSmtp | None
+    password_unreadable: bool
+
+
+class SaveEmailAccountResponseImap(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountResponseSmtp(TypedDict):
+    host: str
+    port: int
+
+
 class _SignOutChatGPTResponseRequired(TypedDict):
     revoked: bool
 
@@ -4133,6 +4320,41 @@ class TestComputerResponseObject1(TypedDict):
 class TestComputerResponseObject2(TypedDict):
     ok: Literal[False]
     why: str
+
+
+class TestEmailAccountBody(TypedDict, total=False):
+    preset: Literal["gmail", "fastmail", "icloud", "other", "outlook"]
+    address: str
+    user: str
+    password: str
+    imap: TestEmailAccountBodyImap
+    smtp: TestEmailAccountBodySmtp
+
+
+class TestEmailAccountBodyImap(TypedDict):
+    host: str
+    port: int
+
+
+class TestEmailAccountBodySmtp(TypedDict):
+    host: str
+    port: int
+
+
+class TestEmailAccountResponse(TypedDict):
+    ok: bool
+    imap: TestEmailAccountResponseImap
+    smtp: TestEmailAccountResponseSmtp
+
+
+class TestEmailAccountResponseImap(TypedDict):
+    ok: bool
+    message: str
+
+
+class TestEmailAccountResponseSmtp(TypedDict):
+    ok: bool
+    message: str
 
 
 TestWorkspaceArchilResponse: TypeAlias = "TestWorkspaceArchilResponseObject1 | TestWorkspaceArchilResponseObject2"
@@ -4942,6 +5164,7 @@ class _RunPending2Required(TypedDict):
 
 
 class RunPending2(_RunPending2Required, total=False):
+    summary: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -5514,7 +5737,7 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
 
 class _TimelineRowTriggerRequired(TypedDict):
     id: str
-    source: Literal["schedule", "webhook", "slack", "github", "composio"]
+    source: Literal["schedule", "webhook", "slack", "github", "composio", "email"]
     owner: bool
 
 
@@ -5862,7 +6085,7 @@ class FeaturesWebhooks(TypedDict):
 
 class FeaturesTriggers(TypedDict):
     routes: bool
-    sources: list[Literal["schedule", "webhook", "github", "composio"]]
+    sources: list[Literal["schedule", "webhook", "github", "composio", "email"]]
     targets: list[Literal["start_run", "message_run"]]
     min_every_s: int
     history_kept: int
@@ -6599,6 +6822,11 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    email_search: PutToolSettingsBodyEmailSearch
+    email_read: PutToolSettingsBodyEmailRead
+    email_draft: PutToolSettingsBodyEmailDraft
+    email_send: PutToolSettingsBodyEmailSend
+    email_file: PutToolSettingsBodyEmailFile
     browser: PutToolSettingsBodyBrowser
     subagent: PutToolSettingsBodySubagent
     pdf_pages: PutToolSettingsBodyPdfPages
@@ -6637,6 +6865,26 @@ class PutToolSettingsBodyWebFetch(TypedDict, total=False):
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailFile(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -6708,7 +6956,7 @@ class PutToolSettingsResponseBrowser(_PutToolSettingsResponseBrowserRequired, to
 
 
 class _CreateTriggerBodyRequired(TypedDict):
-    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6
+    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6 | CreateTriggerBodySource7
     target: CreateTriggerBodyTarget1 | CreateTriggerBodyTarget2
 
 
@@ -6836,6 +7084,39 @@ class CreateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class CreateTriggerBodySource7(_CreateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[CreateTriggerBodySource7AcceptItem]
+
+
+class _CreateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource7AcceptItem(_CreateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource7AcceptItemWhereItem1 | CreateTriggerBodySource7AcceptItemWhereItem2 | CreateTriggerBodySource7AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -6861,12 +7142,12 @@ class _CreateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6
+    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6 | CreateTriggerResponseSource7
     target: CreateTriggerResponseTarget1 | CreateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | None
+    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | CreateTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -6875,6 +7156,7 @@ class _CreateTriggerResponseRequired(TypedDict):
 
 
 class CreateTriggerResponse(_CreateTriggerResponseRequired, total=False):
+    last_check: CreateTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     signing_secret: str
@@ -6993,6 +7275,39 @@ class CreateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class CreateTriggerResponseSource7(_CreateTriggerResponseSource7Required, total=False):
+    accept: list[CreateTriggerResponseSource7AcceptItem]
+
+
+class _CreateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource7AcceptItem(_CreateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource7AcceptItemWhereItem1 | CreateTriggerResponseSource7AcceptItemWhereItem2 | CreateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7037,9 +7352,15 @@ class CreateTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class CreateTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7060,6 +7381,12 @@ class CreateTriggerResponseLastFiringError(TypedDict):
     message: str
 
 
+class CreateTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
 class DeleteTriggerResponse(TypedDict):
     deleted: Literal[True]
     composio: DeleteTriggerResponseComposio
@@ -7072,7 +7399,7 @@ class DeleteTriggerResponseComposio(TypedDict):
 
 class _FireTriggerResponseRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7099,7 +7426,7 @@ class ListTriggerFiringsResponse(TypedDict):
 
 class _ListTriggerFiringsResponseFiringsItemRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7124,12 +7451,12 @@ class _GetTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6
+    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6 | GetTriggerResponseSource7
     target: GetTriggerResponseTarget1 | GetTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | None
+    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | GetTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7138,6 +7465,7 @@ class _GetTriggerResponseRequired(TypedDict):
 
 
 class GetTriggerResponse(_GetTriggerResponseRequired, total=False):
+    last_check: GetTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7254,6 +7582,39 @@ class GetTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _GetTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class GetTriggerResponseSource7(_GetTriggerResponseSource7Required, total=False):
+    accept: list[GetTriggerResponseSource7AcceptItem]
+
+
+class _GetTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource7AcceptItem(_GetTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource7AcceptItemWhereItem1 | GetTriggerResponseSource7AcceptItemWhereItem2 | GetTriggerResponseSource7AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _GetTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7298,9 +7659,15 @@ class GetTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class GetTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7321,6 +7688,12 @@ class GetTriggerResponseLastFiringError(TypedDict):
     message: str
 
 
+class GetTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
 class ListTriggersResponse(TypedDict):
     triggers: list[ListTriggersResponseTriggersItem]
 
@@ -7329,12 +7702,12 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6
+    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6 | ListTriggersResponseTriggersItemSource7
     target: ListTriggersResponseTriggersItemTarget1 | ListTriggersResponseTriggersItemTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | None
+    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | ListTriggersResponseTriggersItemDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7343,6 +7716,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
 
 
 class ListTriggersResponseTriggersItem(_ListTriggersResponseTriggersItemRequired, total=False):
+    last_check: ListTriggersResponseTriggersItemLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7459,6 +7833,39 @@ class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _ListTriggersResponseTriggersItemSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class ListTriggersResponseTriggersItemSource7(_ListTriggersResponseTriggersItemSource7Required, total=False):
+    accept: list[ListTriggersResponseTriggersItemSource7AcceptItem]
+
+
+class _ListTriggersResponseTriggersItemSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItem(_ListTriggersResponseTriggersItemSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _ListTriggersResponseTriggersItemTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7503,9 +7910,15 @@ class ListTriggersResponseTriggersItemDisabled4(TypedDict):
     detail: str
 
 
+class ListTriggersResponseTriggersItemDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _ListTriggersResponseTriggersItemLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7526,6 +7939,12 @@ class ListTriggersResponseTriggersItemLastFiringError(TypedDict):
     message: str
 
 
+class ListTriggersResponseTriggersItemLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
 class RotateTriggerSecretBody(TypedDict, total=False):
     secret: str
 
@@ -7541,7 +7960,7 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
-    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6
+    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6 | UpdateTriggerBodySource7
     target: UpdateTriggerBodyTarget1 | UpdateTriggerBodyTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -7664,6 +8083,39 @@ class UpdateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class UpdateTriggerBodySource7(_UpdateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[UpdateTriggerBodySource7AcceptItem]
+
+
+class _UpdateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource7AcceptItem(_UpdateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource7AcceptItemWhereItem1 | UpdateTriggerBodySource7AcceptItemWhereItem2 | UpdateTriggerBodySource7AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7689,12 +8141,12 @@ class _UpdateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6
+    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6 | UpdateTriggerResponseSource7
     target: UpdateTriggerResponseTarget1 | UpdateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | None
+    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | UpdateTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7703,6 +8155,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
 
 
 class UpdateTriggerResponse(_UpdateTriggerResponseRequired, total=False):
+    last_check: UpdateTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7820,6 +8273,39 @@ class UpdateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class UpdateTriggerResponseSource7(_UpdateTriggerResponseSource7Required, total=False):
+    accept: list[UpdateTriggerResponseSource7AcceptItem]
+
+
+class _UpdateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource7AcceptItem(_UpdateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource7AcceptItemWhereItem1 | UpdateTriggerResponseSource7AcceptItemWhereItem2 | UpdateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7864,9 +8350,15 @@ class UpdateTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class UpdateTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _UpdateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7884,6 +8376,12 @@ class UpdateTriggerResponseLastFiring(_UpdateTriggerResponseLastFiringRequired, 
 
 class UpdateTriggerResponseLastFiringError(TypedDict):
     code: str
+    message: str
+
+
+class UpdateTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
     message: str
 
 
@@ -8109,10 +8607,12 @@ OPERATIONS: dict[str, Operation] = {
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -8127,10 +8627,12 @@ OPERATIONS: dict[str, Operation] = {
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getMcpServer": Operation(method="GET", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8443,6 +8945,10 @@ class LocalResource(Group):
         """Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id})."""
         return self._call("deleteComputer", (computer_id,), None, None, timeout=timeout)
 
+    def delete_email_account(self, *, timeout: float | None = None) -> None:
+        """Forget this server's email account (DELETE /settings/email)."""
+        return self._call("deleteEmailAccount", (), None, None, timeout=timeout)
+
     def delete_workspace_archil(self, *, timeout: float | None = None) -> DeleteWorkspaceArchilResponse:
         """Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil)."""
         return self._call("deleteWorkspaceArchil", (), None, None, timeout=timeout)
@@ -8458,6 +8964,10 @@ class LocalResource(Group):
     def get_chat_gptsign_in(self, *, timeout: float | None = None) -> GetChatGPTSignInResponse:
         """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
         return self._call("getChatGPTSignIn", (), None, None, timeout=timeout)
+
+    def get_email_account(self, *, timeout: float | None = None) -> GetEmailAccountResponse:
+        """This server's email account: its address, servers and who signs in, never its password (GET /settings/email)."""
+        return self._call("getEmailAccount", (), None, None, timeout=timeout)
 
     def get_git_hub_connection(self, *, timeout: float | None = None) -> GetGitHubConnectionResponse:
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
@@ -8507,6 +9017,10 @@ class LocalResource(Group):
         """Save a computer provider's keys, sealed (PUT /computers/{provider}/keys)."""
         return self._call("saveComputerKeys", (provider,), body, None, timeout=timeout)
 
+    def save_email_account(self, body: SaveEmailAccountBody, *, timeout: float | None = None) -> SaveEmailAccountResponse:
+        """Save this server's email account, its password sealed (PUT /settings/email)."""
+        return self._call("saveEmailAccount", (), body, None, timeout=timeout)
+
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
@@ -8518,6 +9032,10 @@ class LocalResource(Group):
     def test_computer(self, provider: str, *, timeout: float | None = None) -> TestComputerResponse:
         """Test a computer provider's account with its saved keys (POST /computers/{provider}/test)."""
         return self._call("testComputer", (provider,), None, None, timeout=timeout)
+
+    def test_email_account(self, body: TestEmailAccountBody | None = None, *, timeout: float | None = None) -> TestEmailAccountResponse:
+        """Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test)."""
+        return self._call("testEmailAccount", (), body, None, timeout=timeout)
 
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""

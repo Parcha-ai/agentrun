@@ -59,6 +59,9 @@ export const SECRET_WRITE_PATHS = [
   // The server's ChatGPT sign-in (chatgpt-plan.ts): its state, its start and finish, and its sign-out.
   { methods: ["GET", "DELETE"], path: /^\/settings\/chatgpt$/ },
   { methods: ["POST"], path: /^\/settings\/chatgpt\/sign-in(?:\/finish)?$/ },
+  // The server's email account (email/routes.ts): its read, its save and removal, and its connection test.
+  { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/email$/ },
+  { methods: ["POST"], path: /^\/settings\/email\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });

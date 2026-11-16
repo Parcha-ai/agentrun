@@ -663,7 +663,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const web = deps.webFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, ...(web ? { web } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(web ? { web } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
@@ -1030,6 +1030,9 @@ export function buildToolHost(opts: {
   readonly sealKey: Buffer;
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
+  /** The run's launch (its trigger and origin) and its agent's own tool settings, as the email tools read them. */
+  readonly launch?: Pick<RunLaunch, "trigger" | "inputOrigin">;
+  readonly toolSettings?: unknown;
   /** The run's web fake, where a template eval's own runner gives one (AdapterSpecDeps.webFakes). */
   readonly web?: WebFake;
 }): ToolHost {
@@ -1066,6 +1069,9 @@ export function buildToolHost(opts: {
     // What a tool files for the run's read (monid's whole answer past the model's cut) goes in the run's own Workspace, the
     // one its hands read: in Mode 2 its folder on the run's disk, never the local folder at `root`.
     workspace: opts.workspace,
+    // The trigger that started the run, and the agent's own settings: an email's run reads its thread alone (email/tools.ts).
+    ...(opts.launch?.trigger && opts.launch.inputOrigin?.kind === "trigger" ? { startedBy: { trigger: opts.launch.trigger, source: opts.launch.inputOrigin.source } } : {}),
+    ...(opts.toolSettings !== undefined ? { toolSettings: opts.toolSettings } : {}),
   };
 }
 

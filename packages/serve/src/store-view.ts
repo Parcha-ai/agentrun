@@ -582,7 +582,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     archived_at: row.archivedAt ?? null,
     // Only what an imported run shows: never the server's internal file stamp (importedFrom.file).
     imported_from: runRow.importedFrom ? { source: runRow.importedFrom.source, session: runRow.importedFrom.session } : null,
-    trigger: launch?.trigger ?? null,
+    trigger: launch?.trigger ? { id: launch.trigger.id, firing_key: launch.trigger.firing_key } : null,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
     learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), settled),
     poll_after_ms: settled ? 0 : 1000,

@@ -12,6 +12,7 @@ import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { ADDRESS, mailbox, saved as savedAccount } from "./email-support.mjs";
 
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -318,11 +319,32 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
+// The email tools are host tools on every harness, as web_fetch is (tool-list.ts `host`): each CLI harness is handed them
+// (cli-run-spec.ts webHostTools) and runs one on the server's account.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`email_search runs on ${harness} as a host tool: the definition saves with no warning, and the run reads the server's email account`, { timeout: 60_000 }, async (t) => {
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+    const faux = await mailbox(t);
+    faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], subject: "Plan", text: "Shall we plan the launch?", messageId: "<h1@example.com>" });
+    await savedAccount(api, faux);
+    const made = await api("POST", "/agents", agent(`mail-${harness}`, { harness, instructions: 'Box calls: [{"call": "email_search", "args": {"subject": "Plan"}}]', tools: ["email_search"] }));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.doesNotMatch(JSON.stringify(made.body), /not bound yet/, "no warning that the tool is pi's only");
+    const run = await api("POST", `/agents/mail-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /h1@example\.com/, "the account's message, found over IMAP");
+    assert.equal(results[0][1], "success");
+  });
+}
+
+test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools, the email tools and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex", "opencode"];
-  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "tools_search", "tools_call", "codemode"];
+  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "email_search", "email_read", "email_draft", "email_send", "email_file", "tools_search", "tools_call", "codemode"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });

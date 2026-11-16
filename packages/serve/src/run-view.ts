@@ -13,6 +13,9 @@ import type { Turns } from "./turns.js";
 import type { PendingAsk } from "./browser-person.js";
 import { APPROVAL_ROW, type ApprovalPrice, type PendingApproval, previewOf } from "./tool-gate.js";
 import { ASK_TOOL } from "./tools.js";
+import { EMAIL_FILE, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
+// The email tools' timeline lines (registerLabel), registered as this module loads.
+import "./email/labels.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { builtinHarness } from "./harness-table.js";
 import { cutStrings, redacted, withoutLoopback } from "./key-refusal.js";
@@ -475,9 +478,25 @@ export const pendingOf = (rows: readonly TimelineEvent[]): Pending => {
   return last?.kind === "waiting" ? { kind: "question", question: last.text ?? last.summary ?? "", asked_at: last.timestamp } : null;
 };
 /** The run's pending approval (`pending`, kind approval): the call that waits; else undefined. */
+/** The tools whose approval card says what the call does in words: email_send's to whom and what, email_file's which
+ *  message and where. */
+const SUMMARIES: Record<string, (args: unknown) => string | undefined> = { [EMAIL_SEND]: sendSummary, [EMAIL_FILE]: fileSummary };
+/** A call's approval summary, where its tool has one (SUMMARIES), redacted as its arguments are. */
+function summaryOf(approval: Pick<Approval, "tool" | "args_json">, redact: (text: string) => string): { summary?: string } {
+  const summarize = Object.hasOwn(SUMMARIES, approval.tool) ? SUMMARIES[approval.tool]! : undefined;
+  if (!summarize) return {};
+  let args: unknown;
+  try {
+    args = JSON.parse(approval.args_json);
+  } catch {
+    return {};
+  }
+  const summary = summarize(args);
+  return summary === undefined ? {} : { summary: redact(summary) };
+}
 export const approvalOf = (run: Pick<RunView, "approvals" | "meta">, redact: (text: string) => string): PendingApproval | undefined => {
   const waiting = waitingApproval(run);
-  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
+  return waiting ? { kind: "approval", id: waiting.id, tool: waiting.tool, call_id: waiting.call_id, args_preview: shownArgs(waiting, redact), ...summaryOf(waiting, redact), requested_at: waiting.requested_at, ...(waiting.price !== undefined ? { price: waiting.price } : {}), ...(waiting.destructive ? { destructive: true as const } : {}) } : undefined;
 };
 /** A run whose agent asked for the person in its browser waits on their hand-back: what it asked them to do, when it is
  *  done, and when the ask expires. Never the session's tag or the live view's link. The two texts are the model's, so
