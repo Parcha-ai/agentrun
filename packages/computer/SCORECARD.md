@@ -24,7 +24,7 @@ documented calls, not from written code.
 
 ## The table
 
-Of 28 rows (25 vendors; Google, Fly.io and Beam have one row per product): 0 clean, 6 fit if unverified facts hold, 15
+Of 28 rows (25 vendors; Google, Fly.io and Beam have one row per product): 0 clean, 5 fit if unverified facts hold, 16
 need a workaround, 7 are blocked.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
@@ -35,7 +35,7 @@ need a workaround, 7 are blocked.
 | [Baseten Sandboxes](https://docs.baseten.co/sandboxes/overview.md) | microVMs | needs a workaround (the desktop image needs Baseten's sandbox API server as its entrypoint, a layer of ours) | 260-280 | [framedExec][fe], [prepareImage][pi] |
 | [Beam Sandbox](https://docs.beam.cloud/v2/sandbox/overview) | disposable containers with a TTL | blocked (`exec`: no live stdin) | n/a | none |
 | [Beam VM](https://docs.beam.cloud/v2/vm/overview) | persistent microVMs | needs a workaround (`extend` rewrites the whole metadata map, or is left out) | 300-350 | [ssh-exec][se], [prepareImage][pi] |
-| [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand; a deleted sandbox's record read as gone) | 250-280 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
+| [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand; a deleted sandbox's kept record read as no machine) | 250-280 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (a relay Worker of ours carries create, list, exec and the timer; the image is fixed at deploy) | 250-330, plus a relay Worker | [framedExec][fe], [keepalive][ka] |
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 330 | [keepalive][ka], [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | needs a workaround (a shim of ours over the pty console: raw mode, stderr framing) | about 300 | [packLabels][pl], [keepalive][ka], [prepareImage][pi] |
@@ -45,7 +45,7 @@ need a workaround, 7 are blocked.
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
 | [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | fits if (unverified: root makes a network namespace under GKE's gVisor; the exec stream has no idle cut); estimate over the bar | 300-380 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packLabels][pl], [backstopAt][bs], [prepareImage][pi] |
-| [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | fits if (unverified: a process started without a timeout has none; exec runs as root; root makes a network namespace; a team image can be found by name) | 250-280 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
+| [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | needs a workaround (an SSE event reader in the host) | 250-280 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
 | [Kasm Workspaces](https://docs.kasm.com/docs/reference/developer-api) | a container session streamed to a person | blocked (`exec`: no two-way exec stream) | n/a | none |
 | [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status); estimate over the bar | 260-300 | [framedExec][fe], [labels "machine"][lm] |
 | [microsandbox](https://docs.microsandbox.dev/cloud/overview.md) | libkrun microVMs (hosted cloud in private beta) | needs a workaround (exec only through an SDK whose backend and key are process-wide) | 220-240 | [prepareImage][pi] |
@@ -54,7 +54,7 @@ need a workaround, 7 are blocked.
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packLabels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [keepalive][ka], [prepareImage][pi] |
 | [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (no stdin call: a fifo pump of ours) | about 320 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
-| [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (a shut-down devbox's record read as gone; two SSE feeds merged by hand) | 270-290 | [framedExec][fe], [backstopAt][bs], [prepareImage][pi] |
+| [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (a shut-down devbox's kept record read as no machine; two SSE feeds merged by hand) | 270-290 | [framedExec][fe], [backstopAt][bs], [prepareImage][pi] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | needs a workaround (an SSE event reader in the host) | 260-290 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | fits if (unverified: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 230-290 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 
@@ -274,7 +274,9 @@ provider spec.
 - **Otherwise:** exec over SSH with [`SshExec`](PROVIDERS.md#exec-shapes-that-work), labels packed, a Job timeout set
   from [backstopAt](PROVIDERS.md#the-twelve-members) ([Jobs](https://huggingface.co/docs/huggingface_hub/guides/jobs)),
   and the published box image ([Jobs images](https://huggingface.co/docs/hub/jobs-images)): about 240 lines.
-- **Open:** the vendor's, a fence inside a Job (nested user namespaces, `CAP_NET_ADMIN`, or an egress-deny switch).
+- **Open:** the vendor's, a Job where root can make a network namespace, alone or inside a user namespace
+  ([pre-check](PROVIDERS.md#step-one-run-the-exec-pre-check)). A vendor egress policy doesn't stand in for it: init
+  refuses to start without the fence ([network forms](PROVIDERS.md#wire-it-up)).
 
 ### Hyperbrowser Sandboxes
 
@@ -282,15 +284,18 @@ provider spec.
   ([OpenAPI](https://hyperbrowser.ai/docs/openapi.json), `runtimeClass`; [macOS](https://hyperbrowser.ai/docs/sandboxes/macos.md)).
 - **Exec:** the runtime's process calls: start a process, stream its output, write its stdin, kill it
   ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)), as
-  [framedExec](PROVIDERS.md#a-text-exec-in-split-calls) pieces; the host parses the SSE.
+  [framedExec](PROVIDERS.md#a-text-exec-in-split-calls) pieces. Output comes as "server-sent events"
+  ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)) and main reads NDJSON only, so the host carries
+  an SSE reader.
 - **Labels and lifetime:** a sandbox has no name or label field ([OpenAPI](https://hyperbrowser.ai/docs/openapi.json)),
   so [labels "machine"](PROVIDERS.md#what-your-api-needs): a listing reads the label file of each running sandbox on the
   team. `timeoutMinutes` at create ends it ([lifecycle](https://hyperbrowser.ai/docs/sandboxes/lifecycle.md)); no call
   moves it, so no `extend`.
 - **Image:** a team image built from a Dockerfile in [prepareImage](PROVIDERS.md#wire-it-up)
   ([custom images](https://hyperbrowser.ai/docs/sandboxes/custom-images.md)).
-- **Open:** ours, a docs line for a closed sandbox's kept record. Unverified: the facts in the table; the docs give
-  `timeoutMs`, a process's "Maximum runtime in milliseconds", no default
+- **Open:** ours, an SSE reader beside `ndjson` and a docs line for a closed sandbox's kept record. Unverified: a
+  process started without a timeout has none, exec runs as root, root makes a network namespace, a team image can be
+  found by name; the docs give `timeoutMs`, a process's "Maximum runtime in milliseconds", no default
   ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)). The macOS runtime would be a direct
   `ComputerProvider`, outside the adapter.
 
@@ -419,7 +424,8 @@ provider spec.
 - **Labels and lifetime:** metadata; a janitor host that sets `keep_alive_time_seconds`, after which the devbox shuts
   down (48 hours at most), from [backstopAt](PROVIDERS.md#the-twelve-members)
   ([create](https://docs.runloop.ai/api-reference/devbox/create-a-devbox.md)). A
-  shut-down devbox stays readable, so `get` reads it as gone with no line on main behind it.
+  shut-down devbox stays readable. The delete wait ends only when `get` finds no machine, so the host reads that
+  record as `undefined` ([get](PROVIDERS.md#the-twelve-members)), with no line on main naming that case.
 - **Image:** a blueprint built in [prepareImage](PROVIDERS.md#wire-it-up).
 - **Open:** ours, an SSE reader beside `ndjson`, and a terminal state for a kept record. Unverified: listeners, SSE
   silence, metadata limits, root's network namespace.
@@ -462,7 +468,7 @@ The open gaps on our side, by how many rows they hold back:
 | Gap | Rows | Kind |
 | --- | --- | --- |
 | No two-way exec stream: a computer that dials out to AgentRun instead | 9: Alibaba, AWS, Azure, Beam Sandbox, Cloudflare, DigitalOcean (if its caps cut the bridge), Fly Machines, Google Agent Platform, Kasm | planned |
-| Exec shapes `framedExec` doesn't take: SSE events, a one-socket PTY, no stdin call | 5: Together, Runloop (SSE); DigitalOcean, OpenSandbox (PTY); Render (no stdin) | adapter helper |
+| Exec shapes `framedExec` doesn't take: SSE events, a one-socket PTY, no stdin call | 6: Together, Runloop, Hyperbrowser (SSE); DigitalOcean, OpenSandbox (PTY); Render (no stdin) | adapter helper |
 | An image that isn't "boot, run `install.sh`, snapshot": a deploy-time digest, or the vendor's agent as entrypoint | 5: Cloudflare, AWS, Blaxel, Baseten, Fly Sprites | docs and box |
 | A vendor's kept record of a deleted machine holds the delete wait | 4: Runloop, Blaxel, Hyperbrowser, Baseten | docs line |
 | One each: an idle destroy as the timer for `labels: "machine"` (Railway); a per-machine credential (Freestyle); `e2b.ts` taking an API URL (Cube); an SDK that keeps keys process-wide (microsandbox) | 4 | adapter or docs |
