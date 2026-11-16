@@ -26,12 +26,75 @@ final class PhoneScreen implements Device.Screen {
 		this.ax = ax;
 	}
 
+	/** The screen the last watchShot read, kept to tell an unchanged screen without encoding it; null when none is. */
+	private Bitmap lastWatched;
+
 	@Override
 	public Device.Shot shot(Rect crop, int maxEdge, String format, int quality) {
 		Bitmap.CompressFormat encoding = encoding(format);
 		if (encoding == Bitmap.CompressFormat.JPEG && (quality < 1 || quality > 100)) {
 			throw RpcError.invalid("jpeg quality is 1 to 100, not " + quality);
 		}
+		Bitmap frame = grab();
+		if (frame == null) return blocked();
+		try {
+			return encoded(frame, crop, maxEdge, format, encoding, quality);
+		} finally {
+			frame.recycle();
+		}
+	}
+
+	/**
+	 * A watch frame, called by one watch at a time (Shots' watching lock): a screen whose pixels are the last read's
+	 * (Bitmap.sameAs, a native compare) is null when skipUnchanged, with nothing cut, scaled or encoded.
+	 */
+	@Override
+	public Device.Shot watchShot(int maxEdge, int quality, boolean skipUnchanged) {
+		Bitmap frame = grab();
+		if (frame == null) {
+			forget();
+			return blocked();
+		}
+		boolean same = lastWatched != null && frame.sameAs(lastWatched);
+		forget();
+		lastWatched = frame;
+		if (skipUnchanged && same) {
+			// A black screen may have become a secure window's with no pixel changed: that is refused, never unchanged.
+			if (allBlack(frame, appArea(frame))) {
+				String secure = secureFocus();
+				if (secure != null) {
+					forget();
+					return new Device.Shot(new byte[0], 0, 0, secure);
+				}
+			}
+			return null;
+		}
+		Device.Shot s = encoded(frame, null, maxEdge, "jpeg", Bitmap.CompressFormat.JPEG, quality);
+		// A secure window's black frame is never the one to compare with: each read of it is refused again.
+		if (s.secure != null) forget();
+		return s;
+	}
+
+	@Override
+	public void forgetWatched() {
+		forget();
+	}
+
+	private void forget() {
+		if (lastWatched != null) lastWatched.recycle();
+		lastWatched = null;
+	}
+
+	/** No screenshot: a secure window's Shot, or unsupported in words. */
+	private static Device.Shot blocked() {
+		String secure = secureFocus();
+		if (secure != null) return new Device.Shot(new byte[0], 0, 0, secure);
+		throw RpcError.unsupported("the phone gave no screenshot; it may be locked with the screen off, or busy: "
+				+ "wake it and try again");
+	}
+
+	/** The screen now, in memory phoned can read; null when the phone gave none. */
+	private Bitmap grab() {
 		Bitmap frame;
 		try {
 			frame = ax.ui().takeScreenshot();
@@ -39,12 +102,7 @@ final class PhoneScreen implements Device.Screen {
 			ax.close();
 			frame = ax.ui().takeScreenshot();
 		}
-		if (frame == null) {
-			String secure = secureFocus();
-			if (secure != null) return new Device.Shot(new byte[0], 0, 0, secure);
-			throw RpcError.unsupported("the phone gave no screenshot; it may be locked with the screen off, or busy: "
-					+ "wake it and try again");
-		}
+		if (frame == null) return null;
 		if (frame.getConfig() == Bitmap.Config.HARDWARE) {
 			// Android 11 to 13 hand back a hardware bitmap, whose pixels cannot be read in place.
 			Bitmap soft = frame.copy(Bitmap.Config.ARGB_8888, false);
@@ -52,25 +110,26 @@ final class PhoneScreen implements Device.Screen {
 			if (soft == null) throw RpcError.unsupported("the phone's screenshot could not be copied out of graphics memory");
 			frame = soft;
 		}
+		return frame;
+	}
+
+	/** frame cut to crop, scaled to maxEdge and encoded; a secure window's Shot when it is black for one. frame is kept. */
+	private Device.Shot encoded(Bitmap frame, Rect crop, int maxEdge, String format, Bitmap.CompressFormat encoding, int quality) {
+		if (allBlack(frame, appArea(frame))) {
+			String secure = secureFocus();
+			if (secure != null) return new Device.Shot(new byte[0], 0, 0, secure);
+		}
+		Bitmap cropped = cut(frame, crop);
+		Bitmap out = scale(cropped, maxEdge);
 		try {
-			if (allBlack(frame, appArea(frame))) {
-				String secure = secureFocus();
-				if (secure != null) return new Device.Shot(new byte[0], 0, 0, secure);
+			ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+			if (!out.compress(encoding, encoding == Bitmap.CompressFormat.PNG ? 100 : quality, bytes)) {
+				throw RpcError.unsupported("the phone could not encode the screenshot as " + format);
 			}
-			Bitmap cropped = cut(frame, crop);
-			Bitmap out = scale(cropped, maxEdge);
-			try {
-				ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-				if (!out.compress(encoding, encoding == Bitmap.CompressFormat.PNG ? 100 : quality, bytes)) {
-					throw RpcError.unsupported("the phone could not encode the screenshot as " + format);
-				}
-				return new Device.Shot(bytes.toByteArray(), out.getWidth(), out.getHeight(), null);
-			} finally {
-				if (out != cropped) out.recycle();
-				if (cropped != frame) cropped.recycle();
-			}
+			return new Device.Shot(bytes.toByteArray(), out.getWidth(), out.getHeight(), null);
 		} finally {
-			frame.recycle();
+			if (out != cropped) out.recycle();
+			if (cropped != frame) cropped.recycle();
 		}
 	}
 
