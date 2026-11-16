@@ -567,7 +567,11 @@ test("answerTierProblems: the answering step is the model node writing output.pa
 // while 416 of 429 quotes were in those pages (verbatim, or after case, quote, dash and space normalisation, or read as
 // letters and digits alone). The quote check of a compiled workflow is the DSL's code predicate, quote_missing: a draft
 // whose answer carries quotes and which fetches pages is refused without one, in words the compile retry acts on.
-const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {} } = {}) => ({
+// `repick` (with a check): the answer step re-picks once before the check hands back (a loop of 2 until it passes).
+const ANSWER_STEP = { node: "decide", label: "answer", instructions: "Say whether {page} states a refund policy, quoting it.", out: "Answer", as: "answer" };
+const QUOTES_WHEN = (check) => ({ predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check });
+const repickOf = (check, body = ANSWER_STEP) => ({ node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_WHEN(check) }, body });
+const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {}, repick = true } = {}) => ({
   v: 2, name: "find-policies",
   schemas: {
     Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
@@ -580,9 +584,9 @@ const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {} } = {
   root: { node: "chain", steps: [
     { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
     { node: "extract", label: "facts", instructions: "Sum up the refund policy on {page}.", out: "Facts", as: "facts", tier: "fast" },
-    { node: "decide", label: "answer", instructions: "Say whether {page} states a refund policy, quoting it.", out: "Answer", as: "answer" },
+    check && repick ? repickOf(check) : ANSWER_STEP,
     ...extra,
-    ...(check ? [{ node: "escalate", label: "quotes", when: { predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check }, kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
+    ...(check ? [{ node: "escalate", label: "quotes", when: QUOTES_WHEN(check), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
   ] },
 });
 const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge';
@@ -601,6 +605,68 @@ test("the quote check is code: a draft whose answer carries quotes and which fet
   assert.deepEqual(checked(citedDraft({ check: { pages: ["page", "facts"] } })), [{ rule: "workflow", path: DRAFT_PATH, detail: 'the quote_missing escalate "quotes" reads "facts" as a page, which no call step fetched: its pages are the state keys its call steps write (page)' }]);
   // A check of quotes outside the answer is not the answer's.
   assert.deepEqual(checked(citedDraft({ check: { path: "facts.summary", field: undefined, pages: ["page"] } })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_QUOTE_CHECK }]);
+});
+
+// H5d (preregistered): on a quote miss, the answer step once more over the run's pages kept 26 of 31 misses, right 76.9%
+// against the draft's 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost 21.7%. So a checked
+// answer re-picks once before its check hands back: the step writing it is a loop of 2 until that check passes.
+const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`;
+
+test("the quote check re-picks once: a checked answer step that hands back on its first miss is refused; in a loop of 2 until that check passes it passes; more passes, or a loop until anything else, is refused", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  assert.deepEqual(checked(citedDraft()), []);
+  assert.deepEqual(checked(citedDraft({ repick: false })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_REPICK("answer") }]);
+  const again = (change) => {
+    const doc = citedDraft();
+    change(doc.root.steps[2]);
+    return quoteCheckProblems(doc);
+  };
+  assert.deepEqual(again((loop) => (loop.maxIters = 3)), [NO_REPICK("repick")], "one re-pick at most");
+  assert.deepEqual(again((loop) => (loop.maxIters = 1)), [NO_REPICK("repick")], "no re-pick");
+  assert.deepEqual(again((loop) => (loop.until = QUOTES_WHEN({ pages: ["page"] }))), [NO_REPICK("repick")], "until the quote misses");
+  assert.deepEqual(again((loop) => (loop.until = { predicate: "field_true", path: "answer.refunds" })), [NO_REPICK("repick")], "until something else");
+  assert.deepEqual(again((loop) => (loop.until.of = QUOTES_WHEN({ path: "answer.other", pages: ["page"] }))), [NO_REPICK("repick")], "until a check of other quotes");
+  // A quote check inside the loop's body hands back on the first pass's miss: the loop never re-picks, however it waits.
+  const inner = { node: "escalate", label: "inner_quotes", when: QUOTES_WHEN({ pages: ["page"] }), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" };
+  assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, inner] })), [INNER_CHECK("repick", "inner_quotes")], "a check in the loop's chain");
+  assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [ANSWER_STEP, { node: "route", label: "which", branches: { a: { body: inner }, b: { body: { node: "chain", steps: [] } } } }] })), [INNER_CHECK("repick", "inner_quotes")], "a check deeper in the body");
+  // The re-pick reads the failed draft only when its step takes the whole state: the DSL sends a step with a `state` map
+  // only the keys it names (each pass a fresh model session), and naming the answer there fails the first pass, which
+  // has no draft yet. The one shape that sees the draft is no `state` map at all.
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { page: "{page}" } })), [NO_DRAFT("answer", "repick")], "an explicit state without the draft");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { page: "{page}", draft: "{answer}" } })), [NO_DRAFT("answer", "repick")], "an explicit state naming the answer, unset on the first pass");
+  assert.deepEqual(again((loop) => (loop.body = { node: "route", label: "which", branches: { a: { body: { ...ANSWER_STEP, state: { page: "{page}" } } }, b: { body: ANSWER_STEP } } })), [NO_DRAFT("answer", "repick")], "deeper in the body");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP })), [], "no state map: the whole state, the draft included");
+  assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [{ node: "extract", label: "note", instructions: "Note the page.", state: { page: "{page}" }, out: "Facts", as: "note", tier: "fast" }, ANSWER_STEP] })), [], "a step in the loop not writing the answer may name its state");
+  // The compile turn is told the same.
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the check after the loop, never inside it/);
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /the step in the loop has no `state` map, so it reads the whole run state and its second pass sees the failed draft/);
+});
+const NO_DRAFT = (step, loop) => `the step "${step}" in the re-pick loop "${loop}" writes the answer from a "state" map, which passes it only the keys it names, so its second pass never sees the failed draft (and naming the answer there fails the first pass, before any draft exists): give it no "state" map, so it reads the whole run state, the failed draft included`;
+const INNER_CHECK = (loop, check) => `the re-pick loop "${loop}" holds the quote_missing escalate "${check}" in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`;
+
+// A loop's `until` is one predicate, and no predicate joins two quote_missing checks: a loop watching one of several
+// lets the others hand back with no re-pick (quotes: string | [{quote}], answered with records, while the loop reads the
+// string). So every quote check of the answer must be the one the loop waits on: one place holding the quotes.
+const ONE_CHECK = (n) => `the answer's quotes are checked by ${n} different quote_missing escalates, and a re-pick loop's "until" reads one check (no predicate joins two), so the loop would let the others hand back with no re-pick: give the answer's quotes one place one check reads (a quote, a list of quotes or a list of records each holding its quote at one field), one quote_missing escalate on it after the step that writes the answer, and that step the body of a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": <that same quote_missing>}, "body": <the step>}`;
+
+test("the re-pick waits on every quote check: a draft with two different quote checks is refused, its loop watching either one; the same check twice is one", () => {
+  const RECORDS = { type: "array", items: { type: "object", properties: { quote: { type: "string" }, url: { type: "string" } } } };
+  const STRING_READ = { path: "answer.quotes", field: undefined, pages: ["page"] };
+  const RECORD_READ = { path: "answer.quotes", field: "quote", pages: ["page"] };
+  const twoChecks = (watched) => citedDraft({
+    answer: { properties: { refunds: { type: "boolean" }, quotes: { anyOf: [{ type: "string" }, RECORDS] } } },
+    check: watched,
+    extra: [{ node: "escalate", label: "quotes_records", when: QUOTES_WHEN(watched === STRING_READ ? RECORD_READ : STRING_READ), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }],
+  });
+  assert.deepEqual(quoteCheckProblems(twoChecks(STRING_READ)), [ONE_CHECK(2)], "the loop reads the string: an answer of records exits it after one draft");
+  assert.deepEqual(quoteCheckProblems(twoChecks(RECORD_READ)), [ONE_CHECK(2)], "the loop reads the records: an answer of one string exits it after one draft");
+  // Two escalates of the same check are one check: the loop waits on it.
+  const same = citedDraft({ extra: [{ node: "escalate", label: "quotes_again", when: QUOTES_WHEN({ pages: ["page"] }), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] });
+  assert.deepEqual(quoteCheckProblems(same), []);
+  // The compile turn is told the same.
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /`until` reads one check: keep the answer's quotes in one place one `quote_missing` reads/);
 });
 
 test("quoteCheckProblems: quotes anywhere in the answer's schema (by $ref, items, anyOf), pages fetched by a call under a map, and nothing asked of an answer with no quotes or a workflow that fetches nothing", () => {
@@ -652,7 +718,13 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   routed.root.steps = [fetch, facts, { node: "route", label: "kind", branches: { quoted: { body: { node: "chain", steps: [answer, check] } }, plain: { body: answer } } }];
   assert.deepEqual(quoteCheckProblems(routed), [NO_QUOTE_CHECK], "checked on one branch only");
   routed.root.steps.push(check);
-  assert.deepEqual(quoteCheckProblems(routed), [], "checked after the route, on every branch's answer");
+  assert.deepEqual(quoteCheckProblems(routed), [NO_REPICK("kind")], "checked after the route, on every branch's answer, which hands back on a first miss");
+  // The route in the re-pick loop with a check still inside its branch: that check hands back on the first draft's miss,
+  // so the loop never re-picks. The check sits after the loop, never inside it.
+  routed.root.steps[2] = repickOf({ pages: ["page"] }, routed.root.steps[2]);
+  assert.deepEqual(quoteCheckProblems(routed), [INNER_CHECK("repick", "quotes")], "a check inside the loop's body");
+  routed.root.steps[2] = repickOf({ pages: ["page"] }, { node: "route", label: "kind", branches: { quoted: { body: answer }, plain: { body: answer } } });
+  assert.deepEqual(quoteCheckProblems(routed), [], "checked after the route, which re-picks once");
   const early = citedDraft({ check: null });
   early.root.steps = [fetch, check, facts, answer];
   assert.deepEqual(quoteCheckProblems(early), [NO_QUOTE_CHECK], "checked before the answer is written");
@@ -712,12 +784,13 @@ test("quoteCheckProblems: a quote key whose schema is a union is read branch by 
   ]) {
     assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ])), [missing("quotes[].quote", "quote")], `${name}: the string read leaves the records unread`);
     assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [RECORD_READ])), [missing("quotes")], `${name}: the records' read leaves the string unread`);
-    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ, RECORD_READ])), [], `${name}: a check reading each shape`);
+    // A check reading each shape covers the quotes, but the re-pick loop can wait on one of them only.
+    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ, RECORD_READ])), [ONE_CHECK(2)], `${name}: a check reading each shape, two checks no loop waits on together`);
   }
   // A list whose items are either quotes or records holding one: the same two reads of the list.
   const mixed = { type: "array", items: { anyOf: [{ type: "string" }, RECORDS.items] } };
   assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ])), [missing("quotes[].quote", "quote")]);
-  assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ, RECORD_READ])), []);
+  assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ, RECORD_READ])), [ONE_CHECK(2)]);
   // A branch that holds no quotes (null) asks for no check.
   assert.deepEqual(quoteCheckProblems(unionDraft({ anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] }, [STRING_READ])), []);
   // Quotes no one path and field reads (records whose quotes are a list, a branch of records holding no quote field) are
