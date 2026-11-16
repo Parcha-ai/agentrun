@@ -13,8 +13,8 @@ import { main } from "../dist/conformance/cli.js";
 import { checkExecStream, EXEC_STREAM_CHECKS, EXEC_STREAM_FACTS, formatExecStream, PID_STATE_SCRIPT, randomText, readFacts, tcpListeners, textProblem } from "../dist/conformance/exec-stream.js";
 import { fakeExecHost } from "./fake-exec-host.mjs";
 
-/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 1 s. */
-const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 1_000 };
+/** Short bounds: the no-timeout check sleeps 2 s, each step waits at most 3 s, the large payload is 1 MiB, stdout is left unread 200 ms. */
+const QUICK = { longMs: 2_000, stepMs: 3_000, largeBytes: 1024 * 1024, largeMs: 20_000, unreadMs: 200 };
 
 async function run(options = {}, checkOptions = {}) {
 	const host = fakeExecHost(options);
@@ -232,7 +232,7 @@ test("an exec whose stdin waits on stdout being read, and never goes on once it 
 test("an exec whose stdin waits while stdout is unread, and goes on once it is read, passes stdout-unread with every write", async () => {
 	const { byId } = await run({ stdinWaitsForReader: true });
 	assert.equal(byId["stdout-unread"].status, "pass", byId["stdout-unread"].words);
-	assert.equal(byId["stdout-unread"].words, "4194304 bytes written to cat while its stdout was left unread for 1 s all came back, in order, once it was read");
+	assert.equal(byId["stdout-unread"].words, "4194304 bytes written to cat while its stdout was left unread for 0.2 s all came back, in order, once it was read");
 });
 
 /** A directory holding stand-ins for the probe's programs, each a sh script, put first on PATH for every exec. */

@@ -1,6 +1,6 @@
 // The E2B host: sandboxes from an E2B template, a desktop (kind desktop) or a plain Linux (kind linux), both from our box
 // template by default (prepareImage, box-image.ts boxE2bTemplate), every call through the host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
-// import). E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
+// import). E2B's envd starts every process the adapter runs, so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
@@ -199,7 +199,7 @@ class E2BHost implements MachineHost {
 		maxLifetimeMs: PRO_MAX_MS,
 		arch: "amd64",
 		vendorAgentPorts: [ENVD_PORT],
-		// The box template has xfwm4 (box/Dockerfile), as E2B Desktop's has: the apps an agent opens are framed and focused.
+		// The box template has xfwm4 (box/install.sh's desktop step), as E2B Desktop's has: the apps an agent opens are framed and focused.
 		windowManager: true,
 		// System paths whose permissions E2B's template build sets wider than root's, on its templates and ours alike.
 		rootOnly: ROOT_ONLY,

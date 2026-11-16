@@ -502,44 +502,118 @@ test("stdin: a write is never sent again where the line may have reached the com
 	}
 });
 
-test("exec: a failed read of the command's session ends the run with that failure, at once, its log stream closed and its session removed; never a later timeout", async () => {
-	const deleted = [];
-	let socketClosed = false;
+/**
+ * A toolbox whose command cmd-1 the test drives: its log stream (send a frame, close it), its exit code in the session
+ * (exitCode, unset while it runs), and every input, session read and delete recorded.
+ */
+function liveCommand({ sessionRead } = {}) {
+	const seen = { inputs: [], reads: 0, deleted: [], closedByClient: false };
+	const command = { exitCode: undefined };
 	const rec = recorder({ [`GET /api/sandbox/${REF.id}`]: { body: sandbox() }, [`POST /toolbox/${REF.id}/process/session`]: { body: {} } });
 	const fetch = async (url, init = {}) => {
 		const at = new URL(url);
 		if (init.method === "POST" && at.pathname.endsWith("/exec")) return new Response(JSON.stringify({ cmdId: "cmd-1" }), { status: 200 });
-		// The session read: refused (403, never sent again), while the command runs on and its stream stays open.
-		if (init.method === "GET" && /\/process\/session\/[^/]+$/.test(at.pathname)) return new Response(JSON.stringify({ statusCode: 403, message: "session read refused" }), { status: 403 });
+		if (init.method === "POST" && at.pathname.endsWith("/command/cmd-1/input")) {
+			seen.inputs.push(JSON.parse(init.body).data);
+			return new Response(null, { status: 204 });
+		}
+		if (init.method === "GET" && /\/process\/session\/[^/]+$/.test(at.pathname)) {
+			seen.reads++;
+			if (sessionRead) return sessionRead();
+			return new Response(JSON.stringify({ commands: [{ id: "cmd-1", ...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }) }] }), { status: 200 });
+		}
 		if (init.method === "DELETE") {
-			deleted.push(at.pathname);
+			seen.deleted.push(at.pathname);
 			return new Response(null, { status: 204 });
 		}
 		return rec.fetch(url, init);
 	};
+	let listeners = {};
+	let opened = () => {};
+	const open = new Promise((done) => (opened = done));
 	const webSocket = () => {
-		const listeners = {};
-		queueMicrotask(() => listeners.open?.({}));
+		listeners = {};
+		queueMicrotask(() => {
+			listeners.open?.({});
+			opened();
+		});
 		return {
 			binaryType: "",
 			addEventListener: (type, listener) => (listeners[type] = listener),
 			close: () => {
-				socketClosed = true;
+				seen.closedByClient = true;
 				listeners.close?.({ code: 1000 });
 			},
 		};
 	};
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch, webSocket, timeouts: TIMEOUTS });
+	return {
+		provider,
+		seen,
+		command,
+		/** The log stream is open. */
+		opened: open,
+		send: (bytes) => listeners.message?.({ data: new Uint8Array(bytes).buffer }),
+		/** The stream ends as Daytona's does: once the command's exit code is written. */
+		end: (code) => {
+			command.exitCode = code;
+			listeners.close?.({ code: 1000 });
+		},
+	};
+}
+
+const frame = (prefix, text) => Buffer.concat([Buffer.from([prefix, prefix, prefix]), Buffer.from(text)]);
+
+test("exec reads the log stream's prefixed lines as stdout and stderr, drops an echoed request, and reads the exit code once the stream ends, never while it runs", async () => {
+	const live = liveCommand();
+	const { runToExit } = await import("../dist/hosted/process.js");
+	const running = runToExit(live.provider.host, REF.id, ["sh", "-c", "work"], { ms: 2_000, what: "a command" });
+	await live.opened;
+	live.send(Buffer.concat([frame(1, "out 1\n"), frame(2, "err 1\n"), frame(1, '{"jsonrpc":"2.0","id":1,"method":"hello"}\n'), frame(1, "out ")]));
+	// The rest of that line, a character split across two frames.
+	live.send(Buffer.from("€ 2\n").subarray(0, 1));
+	for (let i = 0; i < 20; i++) await new Promise((done) => setImmediate(done));
+	assert.equal(live.seen.reads, 0, "no session read while the stream is open: a bridge that runs for hours costs no call");
+	live.send(Buffer.from("€ 2\n").subarray(1));
+	live.end(3);
+	const ran = await running;
+	assert.equal(ran.ok, true, ran.ok ? "" : ran.error.message);
+	assert.deepEqual(ran.value, { exitCode: 3, stdout: "out 1\nout € 2\n", stderr: "err 1\n" });
+	assert.equal(live.seen.reads, 1, "one read, once the stream ended");
+	assert.equal(live.seen.deleted.length, 1, "the session is removed");
+});
+
+test("exec's stdin goes to Daytona in whole lines, since its input call ends each with a newline; end() sends what is left, and kill removes the session", async () => {
+	const live = liveCommand();
+	const proc = await live.provider.host.exec(REF.id, ["computerd", "stdio"], { timeoutMs: 1_000 });
+	await proc.write(Buffer.from('{"a":'));
+	assert.deepEqual(live.seen.inputs, [], "half a line waits for its end");
+	await proc.write(Buffer.from('1}\n{"b":'));
+	assert.deepEqual(live.seen.inputs, ['{"a":1}\n']);
+	await proc.end();
+	assert.deepEqual(live.seen.inputs, ['{"a":1}\n', '{"b":']);
+	await proc.kill();
+	assert.equal(live.seen.closedByClient, true, "the log stream is closed");
+	assert.equal(await proc.wait(), -1, "killed: no exit code is read");
+	assert.equal(live.seen.reads, 0);
+	assert.equal(live.seen.deleted.length, 1, "the session is removed, once");
+});
+
+test("exec: a failed read of the command's exit code ends the run with that failure, at once, its session removed; never a later timeout", async () => {
+	const live = liveCommand({ sessionRead: () => new Response(JSON.stringify({ statusCode: 403, message: "session read refused" }), { status: 403 }) });
 	const { runToExit } = await import("../dist/hosted/process.js");
 	const began = Date.now();
-	const ran = await runToExit(provider.host, REF.id, ["true"], { ms: 1_000, what: "a command" });
+	const running = runToExit(live.provider.host, REF.id, ["true"], { ms: 1_000, what: "a command" });
+	await live.opened;
+	live.end(0);
+	const ran = await running;
 	assert.equal(ran.ok, false);
 	assert.equal(ran.error.code, "vendor", ran.error.message);
 	assert.match(ran.error.message, /a command failed: reading the command's exit code failed .*403 .*session read refused/);
 	assert.ok(Date.now() - began < 1_000, "it ends with the read, not at the call's bound");
-	assert.equal(socketClosed, true, "the log stream is closed");
-	assert.equal(deleted.length, 1, "the session is removed");
-	assert.match(deleted[0], /\/process\/session\/agentrun-[0-9a-f]{16}$/);
+	assert.equal(live.seen.reads, 1, "a 403 is never sent again");
+	assert.equal(live.seen.deleted.length, 1, "the session is removed");
+	assert.match(live.seen.deleted[0], /\/process\/session\/agentrun-[0-9a-f]{16}$/);
 });
 
 test("exec is a session command of its own: argv as one shell line, async, no input echo, and Daytona adds no word of its own", async () => {

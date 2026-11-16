@@ -51,18 +51,20 @@ it by them alone:
 - **stdin needn't end.** Where your API has no end of file, `end()` may do nothing: nothing AgentRun runs waits for
   one (the default upload reads a length, a root command's input is one line, the bridge ends by `kill`), and the
   pre-check never ends stdin.
-- **`kill()` ends the process in the machine**, not only your streams: the pre-check reads its pid back gone. A
-  wrapper that writes the pid to a file, and a kill that reads it over a second exec, is fine.
+- **`kill()` ends the process in the machine**, not only your streams: the pre-check reads its pid back gone. Where
+  your API has no kill, start the process under `PID_WRAPPER` and kill it over a second exec with `pidKill`, both in
+  [`src/hosted/scripts.ts`](src/hosted/scripts.ts): the wrapper puts the process's pid first on stderr, and the kill
+  ends it and every process under it.
 - **stderr apart**, and `wait()` answers the process's own exit code.
 - **No timeout.** No command timeout and no idle timeout on the stream: the bridge sits silent for minutes.
 
 | Your API gives | Your `exec` | In the tree |
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
-| Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | none yet; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
+| Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | Daytona, [`src/daytona.ts`](src/daytona.ts): a session command, its log WebSocket, and its input call, which takes whole lines; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
 | The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
-| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
-| An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill` |
+| An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` kills by the pid the shared wrapper reports |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
 
@@ -75,7 +77,8 @@ your API offers.
 
 `framedExec` from `src/hosted/framed-exec.ts` takes your vendor's calls about one process and answers the
 `MachineProcess` that `exec` returns. Each `write` gets whole characters and starts once the one before it answered;
-a write that fails fails every one after it. Output is read no faster than AgentRun reads it. Without `kill`, the
+a write that fails fails every one after it. Output is read no faster than AgentRun reads it. An `events` that
+throws ends the output and fails `wait()` with its error. Without `kill`, the
 process starts under a `sh` that writes its pid and start time to stderr first, and `kill()` kills that pid and
 every process under it, only while it has that start time, so a reused pid is never hit. Without `end`, `end()` does nothing, so a command that reads to end
 of file never ends; AgentRun runs none. `rest`'s `stream` reads a response's body as it comes, with the call's
@@ -346,15 +349,16 @@ for the exit code, and `kill`. stdin is always open: AgentRun calls `end` itself
 input. AgentRun installs and starts its daemon this way, then talks to the daemon over one process's stdin and stdout
 for the machine's whole life, so it keeps the [five rules](#exec-shapes-that-work).
 
-E2B's SDK hands `commands.run` output over as text, decoded as UTF-8, which breaks any byte that isn't UTF-8. So E2B's
-`exec` reads envd's process stream itself and passes on the bytes each event carries:
+E2B's SDK runs `commands.run` in a login shell (`/bin/bash -l -c`), where root's profile, which the image may change,
+runs first and sets `PATH`. So E2B's `exec` makes the same envd call itself, without the login shell: `/bin/sh` by its
+path, the argv as its own words, `PATH` the system's directories alone:
 
 ```ts
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const sandbox = await this.#sandbox(id, ctx);
 		// … ProcessRpc types the slice of envd's stream it reads: the SDK keeps rpc protected
 		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
-			{ process: { cmd: "/bin/bash", args: ["-l", "-c", shellLine(argv)], envs: {} }, stdin: true },
+			{ process: { cmd: ROOT_SHELL, args: [...ROOT_SHELL_ARGS, ...argv], envs: { PATH: ROOT_PATH } }, stdin: true },
 			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
 		)[Symbol.asyncIterator]();
 		// … the start event gives the pid; then each data event's bytes go to out or err as they come
@@ -483,8 +487,10 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 
 Call `onWait` only when you build or pull. `findSnapshot` here answers true for a snapshot that is ready; if your
 vendor lists one while it is still being made, wait for it, bounded by `ctx.signal`, before you answer it. `install.sh`
-ends the same when run twice on one machine, so a retried build is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
-`prepareImage` twice and fails a second call that builds, pulls or answers another image.
+ends the same when run twice on one machine, so a retried build is safe. A first build takes minutes, once per account and recipe. The method is the declaration; the
+descriptor's flag says the same to Settings, which reads descriptors without loading a provider, and the Core case
+`provider.prepare-image` fails a provider where the two disagree, and calls `prepareImage` twice: it fails a second
+call that builds, pulls or answers another image.
 
 Two more shapes take `box/Dockerfile` as it is, with no other base, layer or entrypoint:
 
