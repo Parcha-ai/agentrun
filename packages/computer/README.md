@@ -2521,7 +2521,12 @@ An id is resolved through the provider registry, and only there; the usage lists
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
 daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
-group, status, reason?, undeclared? }], core, undeclared, cleanup, notes?, computerNotes? }`). A failure is listed under
+group, status, reason?, undeclared? }], core, undeclared, cleanup, computers: { peak, cap? }, notes?, computerNotes? }`).
+`computers.peak` is the most computers the run had alive at once, each counted from its create's call until its release
+(the text report's `computers alive at once: <peak> at most` line). `--concurrency <n>` (`concurrency` in
+`runConformance`'s options, its `cap`) keeps it at `n` or under, for a vendor plan that keeps fewer: a create waits for a
+computer to be released, the run's computer is deleted while a case that doesn't use it needs room (and made again for
+the next case that does), and a case that needs more at once than `n` fails in words. A failure is listed under
 its line with what the case found. A computer's `role` is `"shared"` for the run's computer, which the cases that need
 none of their own share, else the id of the case that made it. `daemons` holds each computer's first `hello`, one entry
 per computer in the order they answered (empty when none did), so computers of one run that differ are kept apart: a GPU
