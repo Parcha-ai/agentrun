@@ -426,7 +426,8 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 
 - **Your server needs a public https address** (`AGENTRUN_PUBLIC_URL`) that the vendor's machines reach. A laptop with
   a tunnel (cloudflared, tailscale funnel) works. Run one server process: a machine's socket lands on the process it
-  dialed. Without the address, create is refused in words before your API is called.
+  dialed. Without the address, or from a process with no attach hub, create is refused in words before your API is
+  called. The daemon your machines fetch is `hostedDaemonPath(arch)`, the file whose SHA-256 they check.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
 - **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.

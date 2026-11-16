@@ -7,7 +7,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, helloMismatch, MemoryMachineTokens, mintedComputer } from "../dist/index.js";
+import { fileURLToPath } from "node:url";
+import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MemoryMachineTokens, mintedComputer } from "../dist/index.js";
 import { HostedProvider } from "../dist/hosted/provider.js";
 import { fakeDialHost, PUBLIC_URL } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -129,8 +130,31 @@ test("a server with no public https address refuses a dial create in words befor
 		assert.match(refused.error.message, NO_ADDRESS, String(url));
 		assert.equal(fake.creates(), 0, `${url}: no create reached the vendor`);
 	}
-	const bare = new HostedProvider(fakeDialHost({ daemon: DAEMON_BYTES }).fake.host, { daemonPath: DAEMON_PATH });
-	assert.match((await create(bare)).error.message, NO_ADDRESS, "a provider given no dial at all");
+});
+
+test("a dial host's provider given no dial refuses create in its own words, of the process, before the vendor is called", async () => {
+	const { fake } = fakeDialHost({ daemon: DAEMON_BYTES });
+	const refused = await create(new HostedProvider(fake.host, { daemonPath: DAEMON_PATH }));
+	assert.equal(refused.error?.code, "refused");
+	assert.equal(refused.error.message, "Fakehost machines dial in to this server, and this process has no attach hub: start them from serve's own process");
+	assert.equal(fake.creates(), 0);
+});
+
+test("a host whose machines don't dial ignores a dial option: it creates and connects through exec, with no boot env", async () => {
+	const fake = fakeHost();
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS, dial: { url: PUBLIC_URL, tokens: new MemoryMachineTokens(), hub: new AttachHub() } });
+	const ref = made(await create(provider));
+	const [, request] = fake.calls.find(([what]) => what === "create");
+	assert.equal(request.boot, undefined);
+	const connection = made(await provider.connect(ref));
+	assert.deepEqual(made(await connection.client.call("ping", {})), {});
+	await connection.close();
+	made(await provider.release(ref, "delete"));
+	assert.deepEqual(fake.live(), []);
+});
+
+test("hostedDaemonPath(arch) is the build in dist a hosted machine of that arch runs, the file serve's daemon route serves", () => {
+	for (const arch of ["amd64", "arm64"]) assert.equal(hostedDaemonPath(arch), fileURLToPath(new URL(`../dist/computerd-linux-${arch}`, import.meta.url)));
 });
 
 test("a machine that never dials is deleted, its token revoked, and create fails naming the address it was given", async () => {
@@ -170,7 +194,7 @@ test("the constructor refuses a dial host with exec or upload, with labels kept 
 	assert.throws(() => new HostedProvider(host, { daemonPath: DAEMON_PATH, kind: "desktop" }), /agentrun-dial starts init with no display: make it kind linux/);
 });
 
-test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's arch may change", () => {
+test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's of another arch too", () => {
 	const minted = mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" });
 	const hello = { protocol: minted.hello.protocol, version: "0.1.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	assert.equal(helloMismatch(minted, hello), undefined);
@@ -179,8 +203,11 @@ test("a minted machine's hello of another kind, os or arch is closed 4400 in a m
 		assert.equal(wrong?.code, ATTACH_CLOSE.mismatch, JSON.stringify(other));
 		assert.match(wrong.message, /^computer-5f3a9c1e7b2d was made a linux linux on amd64 and says .*: its token is that machine's alone$/);
 	}
-	const paired = { id: "c-1", name: "Test Mac", hello: { ...hello, os: "macos", kind: "desktop" }, labels: {} };
-	assert.equal(helloMismatch(paired, { ...paired.hello, arch: "arm64", groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }), undefined);
+	const groups = ["screen", "input.pointer", "input.keys", "apps", "ui"];
+	const paired = { id: "c-1", name: "Test Mac", hello: { ...hello, os: "macos", kind: "desktop", groups }, labels: {} };
+	assert.equal(helloMismatch(paired, paired.hello), undefined);
+	assert.deepEqual(helloMismatch(paired, { ...paired.hello, arch: "arm64" }), { code: ATTACH_CLOSE.mismatch, message: "Test Mac paired on amd64 and now says arm64: pair it again" });
+	assert.equal(helloMismatch({ ...paired, hello: { ...paired.hello, arch: "" } }, { ...paired.hello, arch: "arm64" }), undefined, "a pairing that named no arch holds none");
 });
 
 test("Core's provider cases pass over a dial host, provider.dial-token among them, and leave nothing behind", { timeout: 60_000 }, async () => {

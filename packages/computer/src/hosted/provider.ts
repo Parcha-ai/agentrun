@@ -202,6 +202,14 @@ const START_POLL_MS = 500;
  * timeouts, and the vendor's clock against this one's.
  */
 const UNFILED_MARGIN_MS = 300_000;
+/**
+ * The computerd build a hosted machine of arch runs: HostedProvider's default daemonPath, and the file serve's daemon
+ * route serves, so the sha256 a dial machine checks (AGENTRUN_DAEMON_SHA256) is this file's.
+ */
+export function hostedDaemonPath(arch: "amd64" | "arm64"): string {
+	return fileURLToPath(new URL(`../computerd-linux-${arch}`, import.meta.url));
+}
+
 /** The dial creates in flight per request name, keyed by the server's AttachHub (#inTurn). */
 const DIAL_TURNS = new WeakMap<object, Map<string, Promise<void>>>();
 /** The longest a Node timer or AbortSignal.timeout holds. */
@@ -333,7 +341,7 @@ export class HostedProvider implements ComputerProvider {
 			kind = "linux",
 			desktop = {},
 			maxLifetimeMs = host.facts.maxLifetimeMs,
-			daemonPath = fileURLToPath(new URL(`../computerd-linux-${host.facts.arch}`, import.meta.url)),
+			daemonPath = hostedDaemonPath(host.facts.arch),
 			daemonUser = TOOL_USER,
 			timeouts = {},
 			probeTargets = DEFAULT_PROBE_TARGETS,
@@ -495,12 +503,16 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * Where a dial host's machines reach this server: its attach route as ws(s) and its daemon route, from dial.url, an
-	 * https address (http only on 127.0.0.1, for tests); or the refusal of a create, in words, where it has none.
+	 * https address (http only on 127.0.0.1, for tests); or the refusal of a create, in words, where it has none or where
+	 * the provider was given no dial (no hub, so no process to take the machine's socket).
 	 */
 	#dialed(): { attach: string; daemon: string; dial: HostedDial } | { problem: string } {
-		const url = this.#dial?.url;
+		if (this.#dial === undefined) {
+			return { problem: `${this.#label} machines dial in to this server, and this process has no attach hub: start them from serve's own process` };
+		}
+		const url = this.#dial.url;
 		const at = URL.canParse(url ?? "") ? new URL(url as string) : undefined;
-		if (this.#dial === undefined || at === undefined || !(at.protocol === "https:" || (at.protocol === "http:" && at.hostname === "127.0.0.1"))) {
+		if (at === undefined || !(at.protocol === "https:" || (at.protocol === "http:" && at.hostname === "127.0.0.1"))) {
 			return {
 				problem: `${this.#label} machines dial this server, and it has no public https address: set AGENTRUN_PUBLIC_URL to one the internet reaches (a tunnel such as cloudflared or tailscale funnel works), or use a provider whose host has exec`,
 			};

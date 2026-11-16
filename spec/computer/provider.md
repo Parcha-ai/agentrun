@@ -261,8 +261,9 @@ with `labels: "machine"` (read through exec), or for kind `desktop` (the machine
 `HostedProvider` takes `dial: { url, tokens, hub }`: the server's public address (`AGENTRUN_PUBLIC_URL`), its
 `MachineTokens` and its `AttachHub`. Then:
 
-- `create` refuses `refused`, before the vendor is called, when the url is missing or not `https` (`http` only on
-  `127.0.0.1`), and an Archil mount, in words. It mints the machine's token, expiring at `backstopAt`, and calls the
+- `create` refuses `refused`, before the vendor is called, each in its own words: with no `dial` (the process has
+  no attach hub), when the url is missing or not `https` (`http` only on `127.0.0.1`), and for an Archil mount. A
+  host that doesn't dial ignores `dial`, so a server may pass it to every hosted provider. It mints the machine's token, expiring at `backstopAt`, and calls the
   host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names the five) and `egress`
   true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
   machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
