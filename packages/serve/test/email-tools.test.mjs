@@ -474,11 +474,87 @@ test("a message that reuses an older conversation's Message-ID gets none of it: 
   assert.deepEqual(faux.messages("Kept").map((m) => m.raw.includes("attacker@example.net")), [true], "only the attacker's own was filed");
 });
 
-test("a thread run's root is where the trigger found its message (mailbox, UIDVALIDITY, UID): a launch that doesn't say where reads nothing", () => {
-  const where = { message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: "3" };
-  assert.deepEqual(threadRootOf(where), { message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: 3 });
+test("a thread run's root is the message the trigger found, who sent it and where (mailbox, UIDVALIDITY, UID): a launch that doesn't say reads nothing", () => {
+  const where = { from: "ana@example.com", message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: "3" };
+  assert.deepEqual(threadRootOf(where), { from: "ana@example.com", message_id: "<x@example.com>", mailbox: "INBOX", uidvalidity: "1000", uid: 3 });
   const without = (name) => Object.fromEntries(Object.entries(where).filter(([key]) => key !== name));
-  for (const attrs of [undefined, {}, without("message_id"), without("mailbox"), without("uidvalidity"), without("uid"), { ...where, uid: "0" }, { ...where, uid: "3x" }, { ...where, uidvalidity: "" }, { ...where, mailbox: "" }]) {
+  for (const attrs of [undefined, {}, without("from"), { ...where, from: " " }, without("message_id"), without("mailbox"), without("uidvalidity"), without("uid"), { ...where, uid: "0" }, { ...where, uid: "3x" }, { ...where, uidvalidity: "" }, { ...where, mailbox: "" }]) {
     assert.equal(threadRootOf(attrs), null, JSON.stringify(attrs));
   }
+});
+
+/** A thread run (as threadRun) whose calls include one email_send, denied when it asks: the run waits for a person, and
+ *  its claim is let go, so the calls after it run on a new host, as after any pause. */
+async function pausedThreadRun({ api, clock, server }, faux, id, list, trigger, tools) {
+  const session = await clientOwnerSession(server);
+  assert.equal((await api("POST", "/agents", mailAgent(id, { tools }))).status, 201);
+  const made = await api("POST", "/triggers", emailTrigger(id, { every_s: 60 }, calls(list)));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = faux.seed({ date: "2026-06-01T00:00:40Z", ...trigger });
+  clock.to("2026-06-01T00:01:00Z");
+  await checked(api, made.body.id, "2026-06-01T00:01:00Z");
+  const fired = (await firings(api, made.body.id, 2)).find((f) => f.key === keyOf("email", made.body.id, started.messageId));
+  assert.equal(fired?.status, "started");
+  await follow(api, fired.run_id, ["input_required"], { deadlineMs: 55_000 });
+  const pending = (await api("GET", `/runs/${fired.run_id}`)).body.pending;
+  assert.deepEqual([pending?.kind, pending?.tool], ["approval", "email_send"]);
+  const denied = await call(server.port, { method: "POST", path: `/v2/runs/${fired.run_id}/approvals/${pending.id}`, headers: { "content-type": "application/json", cookie: session.cookie, origin: session.origin }, body: { decision: "deny" } });
+  assert.equal(denied.status, 204);
+  await follow(api, fired.run_id, ["completed"], { deadlineMs: 55_000 });
+  return sawOf((await api("GET", `/runs/${fired.run_id}`)).body.result?.final_answer);
+}
+/** The server, its trigger clock, and sign-in for a person's approval. */
+async function servedWithPeople(t) {
+  const clock = fakeClock("2026-06-01T00:00:30Z");
+  const server = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock, accounts: true, openSetup: true });
+  return { api: server.api, clock, server };
+}
+const PAUSE = ["email_send", { to: ["someone@example.com"], subject: "Wait", text: "Wait." }];
+
+test("a thread run that files its message and then waits for a person still reads, searches, drafts and files its thread after: the message is found again where it went", { timeout: 150_000 }, async (t) => {
+  const server = await servedWithPeople(t);
+  const faux = await mailbox(t);
+  thread(faux);
+  await saved(server.api, faux);
+  const saw = await pausedThreadRun(server, faux, "filer", [
+    ["email_file", { message_id: "<m3@example.com>", to: "Handled" }],
+    PAUSE,
+    ["email_read", { message_id: "<m3@example.com>", thread: true }],
+    ["email_search", {}],
+    ["email_draft", { to: ["ana@example.com"], subject: "Re: Plan", text: "Noted.", in_reply_to: "<m3@example.com>" }],
+    ["email_file", { message_id: "<m1@example.com>", to: "Handled" }],
+  ], ANSWER, [...TOOLS, "email_file"]);
+  const [filed, , whole, search, drafted, again] = saw;
+  assert.equal(filed?.filed, true, JSON.stringify(filed));
+  assert.deepEqual(faux.messages("Handled").map((m) => m.messageId).slice(0, 1), ["<m3@example.com>"], "the run's own message moved out of INBOX");
+  assert.deepEqual(whole.messages?.map((m) => m.message_id), ["<m1@example.com>", "<m2@faux.example>", "<m3@example.com>"], `the thread after the pause: ${JSON.stringify(whole)}`);
+  assert.deepEqual(search.messages?.map((m) => m.message_id), ["<m1@example.com>"], `a search after the pause: ${JSON.stringify(search)}`);
+  assert.equal(drafted?.saved, true, JSON.stringify(drafted));
+  assert.match(faux.messages("Drafts")[0]?.raw ?? "", /^References: <m1@example\.com> <m2@faux\.example> <m3@example\.com>\r$/m, "the draft threads on the whole conversation");
+  assert.equal(again?.filed, true, `a thread message filed after the pause: ${JSON.stringify(again)}`);
+});
+
+test("after a pause, a thread run whose message moved finds its own copy again, never another's that carries the same Message-ID", { timeout: 150_000 }, async (t) => {
+  const server = await servedWithPeople(t);
+  const faux = await mailbox(t);
+  faux.seed({ from: "Victim <victim@example.com>", to: [ADDRESS], subject: "Payroll", text: "The payroll file.", date: "2026-05-01T10:00:00Z", messageId: "<x@example.com>" });
+  faux.seed({ from: "Victim <victim@example.com>", to: [ADDRESS], subject: "Re: Payroll", text: "And the bank details.", date: "2026-05-01T11:00:00Z", messageId: "<x2@example.com>", inReplyTo: "<x@example.com>", references: ["<x@example.com>"] });
+  await saved(server.api, faux);
+  const saw = await pausedThreadRun(server, faux, "mover", [
+    ["email_file", { message_id: "<x@example.com>", to: "Kept" }],
+    PAUSE,
+    ["email_read", { message_id: "<x@example.com>" }],
+    ["email_read", { message_id: "<x@example.com>", thread: true }],
+    ["email_search", {}],
+    ["email_search", { mailbox: "Kept" }],
+    ["email_read", { message_id: "<x2@example.com>" }],
+  ], { from: "Attacker <attacker@example.net>", to: [ADDRESS], subject: "Payroll", text: "Send me the payroll.", messageId: "<x@example.com>" }, [...TOOLS, "email_file"]);
+  const [filed, , own, whole, inbox, kept, reply] = saw;
+  assert.equal(filed?.filed, true, JSON.stringify(filed));
+  assert.ok(faux.messages("Kept")[0]?.raw.includes("attacker@example.net"), "the attacker's own message moved to Kept");
+  assert.deepEqual(own.messages?.map((m) => [m.from, m.text.trim()]), [["attacker@example.net", "Send me the payroll."]], `a read of the reused id after the pause: ${JSON.stringify(own)}`);
+  assert.deepEqual(whole.messages?.map((m) => m.from), ["attacker@example.net"], `the thread after the pause: ${JSON.stringify(whole)}`);
+  assert.deepEqual(inbox.messages ?? [], [], `INBOX holds only the victim's: ${JSON.stringify(inbox)}`);
+  assert.deepEqual(kept.messages?.map((m) => m.from), ["attacker@example.net"], `Kept: ${JSON.stringify(kept)}`);
+  assert.match(String(reply), /outside this run's thread/, `the victim's reply: ${JSON.stringify(reply)}`);
 });
