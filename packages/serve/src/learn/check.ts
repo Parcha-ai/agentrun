@@ -421,7 +421,8 @@ const writesKey = (node: unknown, key: string): boolean => isNode(node) && (writ
  *  and it fetches pages (a call step), yet some place in the answer holding quotes has no escalate on quote_missing
  *  reading it after the answer is written (quoteRule), or that escalate reads as a page a key holding no page as fetched
  *  (a model's summary of a page is no page), or, those checks in place, the step writing the answer hands back on its
- *  first miss instead of re-picking once (a loop of REPICK_PASSES until a check passes). A judge or an `ask` is never the quote check:
+ *  first miss instead of re-picking once (a loop of REPICK_PASSES until its check passes), or its quotes have more than
+ *  one check (a loop's `until` waits on one: the others would hand back with no re-pick). A judge or an `ask` is never the quote check:
  *  H5's judge flagged 149 of 170 answers while 416 of 429 quotes were in the pages, and could not tell the 8 answers
  *  quoting text no page held from the rest; code can. One line each, in words the compile retry acts on. */
 export function quoteCheckProblems(doc: unknown): string[] {
@@ -501,9 +502,14 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     }
     // Once the checks hold, the answer re-picks once before one hands back (H5d, preregistered: the answer step once more
     // over the run's pages kept 26 of 31 misses, right 76.9% against the draft's 50.0%, at 11.6% of the agent's cost
-    // where handing every miss back cost 21.7%): the step writing it is a loop of REPICK_PASSES until one check passes.
+    // where handing every miss back cost 21.7%): the step writing it is a loop of REPICK_PASSES until its check passes.
+    // A loop's `until` is one predicate and none joins two, so the loop waits on every check only when they are all one
+    // check (the same path, field and pages): a loop watching one of several lets the others hand back with no re-pick.
     const [first] = checks;
-    if (!problems.length && first && !checks.some((check) => repicks(writer, check))) {
+    const distinct = new Set(checks.map(quoteMissingText)).size;
+    if (!problems.length && distinct > 1) {
+      problems.push(`the answer's quotes are checked by ${distinct} different quote_missing escalates, and a re-pick loop's "until" reads one check (no predicate joins two), so the loop would let the others hand back with no re-pick: give the answer's quotes one place one check reads (a quote, a list of quotes or a list of records each holding its quote at one field), one quote_missing escalate on it after the step that writes the answer, and that step the body of a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": <that same quote_missing>}, "body": <the step>}`);
+    } else if (!problems.length && first && !checks.every((check) => repicks(writer, check))) {
       problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back`);
     }
   }

@@ -764,12 +764,13 @@ test("quoteCheckProblems: a quote key whose schema is a union is read branch by 
   ]) {
     assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ])), [missing("quotes[].quote", "quote")], `${name}: the string read leaves the records unread`);
     assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [RECORD_READ])), [missing("quotes")], `${name}: the records' read leaves the string unread`);
-    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ, RECORD_READ])), [], `${name}: a check reading each shape`);
+    // A check reading each shape covers the quotes, but the re-pick loop can wait on one of them only.
+    assert.deepEqual(quoteCheckProblems(unionDraft(quotes, [STRING_READ, RECORD_READ])), [ONE_CHECK(2)], `${name}: a check reading each shape, two checks no loop waits on together`);
   }
   // A list whose items are either quotes or records holding one: the same two reads of the list.
   const mixed = { type: "array", items: { anyOf: [{ type: "string" }, RECORDS.items] } };
   assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ])), [missing("quotes[].quote", "quote")]);
-  assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ, RECORD_READ])), []);
+  assert.deepEqual(quoteCheckProblems(unionDraft(mixed, [STRING_READ, RECORD_READ])), [ONE_CHECK(2)]);
   // A branch that holds no quotes (null) asks for no check.
   assert.deepEqual(quoteCheckProblems(unionDraft({ anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] }, [STRING_READ])), []);
   // Quotes no one path and field reads (records whose quotes are a list, a branch of records holding no quote field) are

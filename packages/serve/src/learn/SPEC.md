@@ -226,9 +226,12 @@ Over a cap is refused, never cut.
   are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
   reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
   Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
-  `loop` with `maxIters` 2 whose `until` is `not` of one check's `quote_missing` (the same `path`, `field` and
+  `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
   `pages`), its body the step that answers, which reads the failed draft in its state. A quote found first costs no
-  re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. On H5d
+  re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. A loop's
+  `until` is one predicate and none joins two, so the answer's quotes have one check: a draft whose quotes need two
+  different checks (`quotes: string | [{quote}]`, or quotes in two places) is refused, since a loop watching one would
+  let the other hand back with no re-pick; the detail asks for one place one check reads. On H5d
   (preregistered, 259 dead-site merchants) the check fired on 31; the answer step once more over the run's pages kept
   26, right 76.9% against the drafts' 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost
   21.7%. Each loop exit is a row of the run's metrics (`loops`: `{node, iterations, met, workflow}`), so a re-pick
