@@ -324,6 +324,28 @@ test("create's listing wait holds a stability window: the polls that show the ma
 	assert.throws(() => setup({ timeouts: { ...TIMEOUTS, listedStableMs: -1 } }), /timeouts\.listedStableMs must be a whole number of ms 0 or more/);
 });
 
+test("create's listing wait backs off from 150 ms to the host's pollMs: a vendor that lists a machine 10 s late costs a handful of listings", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	const fake = fakeHost();
+	const listedAt = Date.now() + 10_000;
+	let lists = 0;
+	// The vendor's listing leaves every machine out for its first 10 s.
+	const host = { ...fake.host, list: async (labels, ctx) => (++lists, Date.now() < listedAt ? [] : fake.host.list(labels, ctx)) };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, pollMs: 2_000, listedMs: 30_000, listedStableMs: 1_000 } });
+	let answer;
+	create(provider).then((result) => (answer = result));
+	while (answer === undefined && Date.now() < listedAt + 30_000) {
+		for (let i = 0; i < 5; i++) await new Promise((done) => setImmediate(done));
+		t.mock.timers.tick(10);
+	}
+	const waited = Date.now() - listedAt + 10_000;
+	t.mock.timers.reset();
+	made(answer);
+	// Two reads around the vendor's create, then the wait's, 150, 300, 600, 1200 and 2000 ms apart: eight to the 10 s
+	// mark and two that show it, 13 in all. At 150 ms flat, 78.
+	assert.ok(lists <= 14,`the wait backed off to pollMs (${lists} listings in ${waited / 1000} s)`);
+});
+
 test("idempotent create: a retry of one request returns the computer the first made, and never makes a second", async () => {
 	const { provider, fake } = setup();
 	const first = made(await provider.create(SPEC, { requestId: "run-a#1" }));

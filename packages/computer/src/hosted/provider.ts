@@ -89,7 +89,10 @@ export interface HostedTimeouts {
 	listMs: number;
 	/** From a delete to get answering none for the machine. */
 	goneMs: number;
-	/** The first pause between two reads while release waits; the pauses double up to 5 s. */
+	/**
+	 * The first pause between two reads while release waits; the pauses double up to 5 s. The longest pause between two
+	 * listings while create waits for the new computer to show: those start at 150 ms and double up to it.
+	 */
 	pollMs: number;
 	/** How long create waits for the listing to show the new computer. */
 	listedMs: number;
@@ -167,7 +170,6 @@ const ARCHIL_USER = `${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}`;
 const RELEASE_POLL_MAX_MS = 5_000;
 const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
-const LISTED_POLL_MAX_MS = 1_000;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
 /** The longest a Node timer or AbortSignal.timeout holds. */
@@ -698,18 +700,18 @@ export class HostedProvider implements ComputerProvider {
 	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
 	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
-	 * listedMs passes. Best effort, in words.
+	 * listedMs passes, as create's own wait reads it. Best effort, in words.
 	 */
 	async #deleteNamed(name: string): Promise<string> {
 		const { listedMs, pollMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
 		let found: Machine[];
-		for (;;) {
+		for (let delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
 			const listed = await foundBy(this.host, "the listing by name", byName(name), this.#timeouts);
 			if (!listed.ok) return `; a machine named ${name} may be left (${listed.error.message}), which ends at its deadline`;
 			found = listed.value.filter((machine) => ours(machine.labels, name));
 			if (found.length > 0 || Date.now() >= until) break;
-			await pause(Math.min(LISTED_POLL_MS, pollMs));
+			await pause(Math.min(delay, until - Date.now()));
 		}
 		if (found.length === 0) return `; no machine named ${name} was listed within ${seconds(listedMs)}, and any it made ends at its deadline`;
 		const said: string[] = [];
@@ -1003,12 +1005,13 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * Create waits until the listing shows the new computer on two consecutive polls at least listedStableMs apart (and on
 	 * every poll between), so list() shows it once create returns: a listing that showed it once and then not starts over.
+	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
 	 */
 	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
 		let since: number | undefined;
-		for (let hits = 0; ; ) {
+		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
 			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
 			if (!listed.ok) return listed;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
@@ -1017,7 +1020,7 @@ export class HostedProvider implements ComputerProvider {
 			} else [hits, since] = [0, undefined];
 			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok(undefined);
 			if (Date.now() >= until) return this.#fail("timeout", `the computer was not listed within ${seconds(listedMs)} of its creation`);
-			await pause(Math.min(LISTED_POLL_MS, LISTED_POLL_MAX_MS, pollMs), signal);
+			await pause(Math.min(delay, until - Date.now()), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
 		}
 	}
