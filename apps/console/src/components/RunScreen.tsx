@@ -44,7 +44,7 @@ export type ScreenView = Exclude<RunComputer, { state: "off" }> | { state: "sign
  *  opened (none, opening), a take-over waiting for the agent's step (pending), and for HURRY_MS after the page's own
  *  take-over or hand-back, whose answer is read right after its row is written, before the run applies it. So the first
  *  frame and who drives show when they happen, not up to a whole `every` later. */
-export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), starting = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
+export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, going: boolean, every = 3000, soon = Math.min(every, SOON_MS), anew = false): { view: ScreenView | null; held: (hold: ComputerHold) => void } {
   const [now, setNow] = useState<ScreenView | null>(null);
   // A caller the route refuses (401, 403) is read no more, whatever the run does.
   const [refused, setRefused] = useState(false);
@@ -63,10 +63,13 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
   const hurry = useRef<(() => void) | null>(null);
   // The desktop or phone this page saw live while the run goes. Its claim holds it from the run's start to its end, so
   // once it was live, an answer of opening (its viewer gone, the run not yet read as ended) is the one that was let go:
-  // released, never one to wait for. A new turn opens a new one, which is waited for: the memory goes when the run ends,
-  // and when a turn's claim is `starting` it (the run queued: a follow-up after the run completed or was stopped).
+  // released, never one to wait for. A new turn opens its screen anew, which is waited for: the memory goes when the run
+  // ends, and while `anew` says so (the run queued: a follow-up after the run completed or was stopped, its claim starting
+  // a new one; or its desktop or phone kept at a park, whose resume opens it again), when a live read isn't remembered.
   const wasLive = useRef<RunMachine["kind"] | null>(null);
-  useEffect(() => { if (starting) wasLive.current = null; }, [starting]);
+  const opensAnew = useRef(anew);
+  opensAnew.current = anew;
+  useEffect(() => { if (anew) wasLive.current = null; }, [anew]);
   const has = !!read;
   useEffect(() => {
     if (!has || refused) return;
@@ -82,7 +85,7 @@ export function useRunScreen(read: (() => Promise<RunComputer>) | undefined, goi
         const read = await reader.current!();
         if (!alive) return;
         answered.current = true;
-        if (read.state === "live") wasLive.current = read.kind;
+        if (read.state === "live" && !opensAnew.current) wasLive.current = read.kind;
         const next: RunComputer = read.state === "none" && read.session === "opening" && read.kind !== "browser" && read.kind === wasLive.current ? { ...read, session: "closed" } : read;
         unopened.current = next.state === "none" && next.session === "unopened";
         onItsWay = (next.state === "none" && next.session === "opening") || (next.state === "live" && next.hold === "pending");
@@ -319,8 +322,9 @@ function words(kind: Kind, screen: ScreenView | null, machine: RunMachine | unde
   if (kind === "sandbox") return "A sandbox has no screen. What the agent runs in it is on the timeline.";
   if (machine?.state === "failed") return `The ${kind} didn't start.${machine.why ? ` ${machine.why}` : ""}`;
   // Parked with its desktop or phone kept for the resume (its park's row on the timeline): what the run waits for, and
-  // until when it is kept. Never "ended" or "released": an answer in time goes on on the same one.
-  if (opens && waitsFor && keptUntil && screen?.state === "none" && screen.session === "closed" && !screen.ended) return `${WAITING[waitsFor]} The ${kind} is kept until ${clock(keptUntil).replace(/^at /, "")}.`;
+  // until when it is kept. Never "ended" or "released": an answer in time goes on on the same one. A page that never saw
+  // it live reads it opening (held to the run's end), and says the same.
+  if (opens && waitsFor && keptUntil && screen?.state === "none" && !screen.ended) return `${WAITING[waitsFor]} The ${kind} is kept until ${clock(keptUntil).replace(/^at /, "")}.`;
   // Let go while the run waited for its person: said, with when, and that a new one opens when the run goes on. Never
   // "waiting for the browser" here: nothing is opening one until the person answers. A desktop's or a phone's words say
   // that themselves (its keep's time passed).

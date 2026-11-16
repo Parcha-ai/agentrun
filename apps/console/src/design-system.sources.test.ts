@@ -32,6 +32,7 @@ const RULES: Rule[] = [
     find: /\bduration-(?:\d+|\[)|\bease-(?:in|out|in-out)\b|\bdelay-(?:\d+|\[)/ },
   { id: "caps-by-hand", says: "Mono caps is the .caps class.", fix: "caps", find: /(?<![\w-])uppercase\b(?=[\s"'`])/, skip: (path) => path === "components/ui/tip.tsx" },
   { id: "dark-variant", says: "Tokens change with the theme; a component never does.", fix: "the token whose two values you need, or a new one", find: /(?<![\w-])dark:[a-z]/ },
+  { id: "page-width-by-hand", says: "A page's width is a token.", fix: "max-w-page (forms and text) or max-w-page-wide (data)", find: /\bmax-w-\[(?:1100|1600)px\]/ },
   { id: "focus-removed", says: "outline-none comes with a focus-visible: replacement.", fix: "drop outline-none (the global ring shows), or add focus-visible:outline-offset-0 and friends",
     find: /(?<![\w:-])outline-none\b/, unless: /focus-visible:(?!outline-none)|focus:(?!outline-none)|data-\[focus\]|tabIndex=\{-1\}/, near: 2 },
   { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /^<button\b.*["`\s]caps\s[^"`]*\bborder\b(?!-[blrtxy]\b)|^<button\b.*["`\s]border\s[^"`]*\bcaps\b/, skip: outsideUi, tag: true },
@@ -152,6 +153,7 @@ describe("the console's sources follow the design system", () => {
   it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
     const rule = (id: string) => RULES.find((r) => r.id === id)!;
     const found = (id: string, source: string) => lineHits(rule(id), source.split("\n")).length;
+    expect(found("page-width-by-hand", '<div className="max-w-[1100px]">')).toBe(1);
     expect(found("focus-removed", 'className={cn("border outline-none",\n  "focus-visible:outline-offset-0")}')).toBe(0);
     expect(found("focus-removed", 'className="border outline-none"\nonClick={go}\ntitle="x"\naria-label="y"')).toBe(1);
     // A neighbour's focus mark, or a comment that names one, does not answer for an element that has none.

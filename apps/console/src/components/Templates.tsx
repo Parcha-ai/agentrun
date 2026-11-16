@@ -8,7 +8,7 @@ import { SecretOnce } from "@/components/Schedules";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { Input } from "@/components/ui/field";
+import { formColumnsClass, Input } from "@/components/ui/field";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
@@ -67,7 +67,7 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
   };
   return (
     <>
-      <Heading className="mb-5 font-mono text-2xl font-semibold">Templates</Heading>
+      <Heading className="mb-5 text-2xl font-semibold">Templates</Heading>
       <form aria-label="Add from URL" className="mb-5 flex flex-wrap items-end gap-2 border bg-card px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (source.trim()) go(installHash(source.trim())); }}>
         <label className="min-w-0 flex-1">
           <span className="caps text-small font-semibold">Add from URL</span>
@@ -360,8 +360,8 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     || (i.field.startsWith("secrets.") && [...t.secrets, ...choiceKeys(picked?.secrets ?? [])].includes(i.field.slice("secrets.".length)));
   if (made) {
     return (
-      <section aria-label="Applied" className="max-w-3xl">
-        <Heading className="mb-4 flex items-center gap-2 font-mono text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
+      <section aria-label="Applied" className="max-w-page">
+        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">The agent is made. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
@@ -413,14 +413,15 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     );
   }
   return (
-    <div className="max-w-3xl">
-      <a href={catalogHash(playground)} className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
-      <Heading className="font-mono text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
+    <div>
+      <a href={catalogHash(playground)} className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
+      <Heading className="text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
       <TemplateProvenance t={t} />
-      <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
+      <p className="mt-2 max-w-prose text-lead leading-[1.6]">{t.description}</p>
       <p className="mt-2 text-body text-muted-foreground">{playground ? "Apply creates an agent and its triggers. It does not start a run." : applies ? "Apply creates an agent and its triggers. It does not start a run. Or set it up with your coding agent, which asks for any missing inputs and runs the task." : "Run with your coding agent. It sets up this template, asks for any missing inputs, and runs the task."}</p>
       {draftError && <p className="mt-3 text-body text-destructive-text" role="alert">{draftError} <a href={templatePlaygroundHref(t)} className="underline">Open a fresh request</a>.</p>}
 
+      <div className={`mt-6 ${formColumnsClass}`}>
       {params.length > 0 && (
         <Section title="Parameters">
           {params.map(([key, p]) => (
@@ -540,7 +541,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         </dl>
       </Section>
 
-      <div className="mt-6 flex flex-wrap items-center gap-3">
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center gap-3">
         {applies ? <>
           <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked || waiting.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : reading ? `Reading ${reading.what}…` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
           {!playground && <CodingAgentAction variant="outline" label="Set it up with an agent" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
