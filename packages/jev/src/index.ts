@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { APIConnectionError, APIError, APITimeoutError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
 import { validateAnswers, SystemOneError, isSystemOneResponseReason, checkCapabilities, DecisionProviderError, imageDimensions } from "@parcha/agentrun-dsl";
+import { openRouterAttribution } from "@parcha/agentrun-kernel/openrouter-app";
 import type { WorkflowDeps, SystemOneResponseReason, DecisionProvider, DecisionProviderErrorCode, DecisionStateCut, DecisionStateSent } from "@parcha/agentrun-dsl";
 
 /** Injectable client boundary. Custom clients must honor signal and disable their own retries. */
@@ -431,6 +432,10 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
     throw new JevError("configuration", `Could not configure Jev. Supply apiKey or set ${keyVariable[provider]}, and check transport options.`);
   }
   const runnerSignal = options.signal;
+  // AgentRun's app attribution (agentrun-dsl openrouter-app.ts) on a request to OpenRouter's own origin, never to a gateway
+  // or TypeSafe; none where AGENTRUN_OPENROUTER_ATTRIBUTION=off.
+  const base = provider === "openrouter" ? URL.parse(options.baseURL ?? OPENROUTER_BASE_URL) : null;
+  const attribution = base?.hostname === "openrouter.ai" ? openRouterAttribution(process.env) : {};
 
   return async params => {
     const deadline = new AbortController();
@@ -447,7 +452,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
     let sent: DecisionStateSent | undefined;
     try {
       const prepared = prepareRequest(params, model, maxStateBytes, provider, longContext);
-      const { request, body, headers } = prepared;
+      const { request, body } = prepared;
+      const headers = prepared.headers || Object.keys(attribution).length ? { ...attribution, ...prepared.headers } : undefined;
       sent = prepared.sent;
       // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
       let billable: { status?: number } | undefined;

@@ -248,11 +248,11 @@ async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS
   } else if (handed[JEV_OPENROUTER_KEY_ENV] !== undefined) {
     // No Parallel key handed: Parallel's model through OpenRouter, on the OpenRouter key (parallelRoute chose it).
     const [{ parallelProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(env, FAUX_OPENROUTER_ENV)]);
-    providers.parallel = parallelProvider({ openrouter: { apiKey: handed[JEV_OPENROUTER_KEY_ENV], app: { title: "AgentRun Server" } }, ...(faux ? { fetch: faux } : {}) });
+    providers.parallel = parallelProvider({ openrouter: { apiKey: handed[JEV_OPENROUTER_KEY_ENV] }, ...(faux ? { fetch: faux } : {}) });
   }
   if (handed[JEV_OPENROUTER_KEY_ENV] !== undefined) {
     const [{ openrouterProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(env, FAUX_OPENROUTER_ENV)]);
-    providers.openrouter = openrouterProvider({ apiKey: handed[JEV_OPENROUTER_KEY_ENV], ...(faux ? { fetch: faux } : {}), app: { title: "AgentRun Server" } });
+    providers.openrouter = openrouterProvider({ apiKey: handed[JEV_OPENROUTER_KEY_ENV], ...(faux ? { fetch: faux } : {}) });
   }
   return Object.keys(providers).length ? { providers, default: DEFAULT_DECISION_PROVIDER } : undefined;
 }

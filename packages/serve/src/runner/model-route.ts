@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { calculateCost } from "@earendil-works/pi-ai";
 import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
-import { ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
+import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
 import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
 import { providerFor } from "../provider.js";
@@ -129,12 +129,9 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // proxy reads it on ROUTE_ORIGIN (statesUsageCost). A model that reasons is given to pi's session as one that asks its
   // thinking level by name (LEVELS_BY_NAME), which the translation hands to pi-ai (levelOf): the run's effort reaches the
   // model, mapped and clamped by its own catalog entry.
-  return { ...route, ...(target.reasoning ? { like: { ...sees, ...LEVELS_BY_NAME } } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
+  return { ...route, ...(target.reasoning ? { like: { ...sees, ...LEVELS_BY_NAME } } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
-/** OpenRouter's origin: every answer it gives states its cost in its usage (https://openrouter.ai/docs/use-cases/usage-accounting). */
-const OPENROUTER_HOST = "openrouter.ai";
-const onOpenRouter = (origin: string): boolean => URL.canParse(origin) && new URL(origin).hostname === OPENROUTER_HOST;
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
 const piOnOpenRouter = (target: PiModel): boolean => target.provider === "openrouter" || onOpenRouter(target.baseUrl ?? "");
 
@@ -165,8 +162,11 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
 
 /** A fetch that answers Anthropic Messages requests on `target`, through pi-ai's `models`. A provider's error text, which
  *  pi records, goes through `redact` (the runner's one redactor): a provider that echoes its key leaves none there.
- *  `upstream`: the route's own fetch, for a model that does not speak Messages (absent: the network). */
-export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch): typeof fetch {
+ *  `upstream`: the route's own fetch, for a model that does not speak Messages (absent: the network). A request pi-ai
+ *  sends to OpenRouter carries AgentRun's app attribution unless `env` turns it off (kernel openrouter-attribution.ts),
+ *  as one the model proxy sends there does; a request to any other provider carries none. */
+export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch, env: NodeJS.ProcessEnv = process.env): typeof fetch {
+  const attribution = piOnOpenRouter(target) ? openRouterAttribution(env) : {};
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
   const providerIds = new Map<string, string>();
   const messagesId = (id: string): string => {
@@ -185,7 +185,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     const tap = piOnOpenRouter(target) ? tapped(upstream) : undefined;
     const sendWith = tap?.fetch ?? upstream;
     const level = levelOf(body);
-    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}) };
+    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({

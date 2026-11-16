@@ -390,3 +390,29 @@ test('a blank apiKey is a configuration error on either provider, before any req
   }
   assert.equal(calls, 0);
 });
+
+test("on OpenRouter's own origin a request carries AgentRun's app attribution; TypeSafe, a gateway and AGENTRUN_OPENROUTER_ATTRIBUTION=off get none", async () => {
+  const NAMES = ['http-referer', 'x-openrouter-title', 'x-openrouter-categories', 'x-openrouter-app-visibility', 'x-title'];
+  const sentWith = async (options, env) => {
+    const seen = [];
+    const fetch = async (url, init) => {
+      const headers = new Headers(init?.headers ?? (url instanceof Request ? url.headers : undefined));
+      seen.push(Object.fromEntries(NAMES.flatMap(name => (headers.has(name) ? [[name, headers.get(name)]] : []))));
+      return response(payload());
+    };
+    const saved = process.env.AGENTRUN_OPENROUTER_ATTRIBUTION;
+    if (env !== undefined) process.env.AGENTRUN_OPENROUTER_ATTRIBUTION = env;
+    try {
+      await createJevRunner({ apiKey: 'fake-test-key', retryBaseMs: 1, retryMaxMs: 2, ...options, fetch })(params);
+    } finally {
+      if (saved === undefined) delete process.env.AGENTRUN_OPENROUTER_ATTRIBUTION; else process.env.AGENTRUN_OPENROUTER_ATTRIBUTION = saved;
+    }
+    assert.equal(seen.length, 1);
+    return seen[0];
+  };
+  const attributed = { 'http-referer': 'https://github.com/Parcha-ai/agentrun', 'x-openrouter-title': 'AgentRun', 'x-openrouter-categories': 'cloud-agent,personal-agent' };
+  assert.deepEqual(await sentWith({ provider: 'openrouter' }), attributed);
+  assert.deepEqual(await sentWith({ provider: 'openrouter' }, 'off'), {});
+  assert.deepEqual(await sentWith({ provider: 'openrouter', baseURL: 'https://fake.invalid/gateway' }), {}, 'a gateway in front gets none');
+  assert.deepEqual(await sentWith({ baseURL: 'https://fake.invalid/gateway' }), {}, 'TypeSafe gets none');
+});

@@ -9,6 +9,7 @@
 // documents them as alpha, so the provider marks them experimental.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError, imageDimensions } from "@parcha/agentrun-dsl";
+import { openRouterAttribution, type OpenRouterApp } from "@parcha/agentrun-kernel/openrouter-app";
 import type { DecisionCapabilities, DecisionContext, DecisionImage, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer } from "@parcha/agentrun-dsl";
 import { urlCitations } from "./evidence.js";
 
@@ -38,8 +39,9 @@ export interface OpenRouterOptions {
    *  once, through `fetch`, the first time a request carries an image; a model it does not list with image input is refused
    *  before sending. A catalog that cannot be read refuses nothing. */
   takesImages?: (model: string) => boolean | Promise<boolean>;
-  /** Sent as OpenRouter's app attribution headers (HTTP-Referer, X-Title) when set. */
-  app?: { url?: string; title?: string };
+  /** Your own app's attribution on OpenRouter (HTTP-Referer, X-OpenRouter-Title), in place of AgentRun's, which is sent
+   *  when this is absent (`@parcha/agentrun-kernel/openrouter-app`). AGENTRUN_OPENROUTER_ATTRIBUTION=off sends neither. */
+  app?: OpenRouterApp;
   /** Whether a citation keeps its passage (default true); false keeps none, whatever the model sent. */
   includeExcerpts?: boolean;
 }
@@ -265,7 +267,9 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
       const payload = { state, model, questions: request.questions };
       // Sent and lost: it may have been answered and billed, so it is never sent again, at an unknown cost.
       const lost = (attempts: number, what: string, status?: number) => new DecisionProviderError("outcome_unknown", `OpenRouter ${what} after the request was sent; it may have been answered, and is not sent again.`, { attempts, ...(status !== undefined ? { status } : {}), costUsd: null, costBasis: "unknown" });
-      const app = { ...(options.app?.url ? { "HTTP-Referer": options.app.url } : {}), ...(options.app?.title ? { "X-Title": options.app.title } : {}) };
+      // App attribution (kernel openrouter-app.ts: AgentRun's, or the caller's `app`), as the model proxy sends it: to
+      // OpenRouter's own origin only, never a gateway at another baseURL; none where AGENTRUN_OPENROUTER_ATTRIBUTION=off.
+      const app = URL.parse(root)?.hostname === "openrouter.ai" ? openRouterAttribution(process.env, options.app) : {};
       for (let attempt = 1; ; attempt++) {
         // A form body is read as it is sent, so each attempt builds its own.
         const { body, headers } = bodyOf(payload, images);

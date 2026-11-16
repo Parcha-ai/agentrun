@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@parcha/agentrun-dsl": "0.1.0-beta.40",
+    "@parcha/agentrun-kernel": "0.1.0-beta.40",
     "@typesafe-ai/sdk": "0.7.0"
   },
   "repository": {
