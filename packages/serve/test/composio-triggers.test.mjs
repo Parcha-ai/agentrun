@@ -113,12 +113,14 @@ test("the first Composio trigger makes the subscription at this server's address
   assert.notEqual(second.body.source.instance_id, first.body.source.instance_id);
 });
 
-test("a subscription at someone else's address is refused, naming it, and moved here only when asked", async (t) => {
+test("a subscription at someone else's address is refused, naming it and saying what a move stops, and moved here only when asked", async (t) => {
   const s = await setup(t, { composio: { subscription: { webhook_url: "https://elsewhere.example/hooks/composio" } } });
   const refused = await s.api("POST", "/triggers", issueTrigger());
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "composio_subscription_elsewhere");
-  assert.match(refused.body.error.message, /https:\/\/elsewhere\.example\/hooks\/composio/);
+  // Only another server or a tool of the owner's can hold it now: the words say so, and that a move stops what it gets.
+  const there = "https://elsewhere.example/hooks/composio";
+  assert.equal(refused.body.error.message, `Composio sends this project's events to ${there} now. Moving them here stops them arriving there: anything listening at ${there} (another AgentRun server, or a tool of yours) gets no more events.`);
   assert.equal(refused.body.error.details.webhook_url, "https://elsewhere.example/hooks/composio");
   assert.equal(s.composio.subscriptions[0].webhook_url, "https://elsewhere.example/hooks/composio", "not moved");
   assert.equal(s.composio.instances.size, 0, "no instance made");
@@ -463,11 +465,20 @@ test("a saved server with Composio triggers can't be deleted: refused, naming th
 
 test("with no public address, making a Composio trigger is refused in words saying Composio can't reach this server", async (t) => {
   const s = await setup(t, { server: { publicUrl: undefined } });
+  // The capabilities say so first, for the console to turn New app trigger off.
+  assert.equal((await s.api("GET", "/capabilities")).body.features.triggers.public_url, false);
   const res = await s.api("POST", "/triggers", issueTrigger());
   assert.equal(res.status, 409, JSON.stringify(res.body));
   assert.equal(res.body.error.code, "composio_no_public_url");
   assert.match(res.body.error.message, /Composio can't reach this server/);
   assert.equal(s.composio.calls.filter((c) => c.path.startsWith("/api/v3/webhook_subscriptions") || c.path.startsWith("/api/v3/trigger_instances")).length, 0, "Composio was asked nothing");
+});
+
+test("the capabilities say whether this server has a public address Composio can send to, and never the address", async (t) => {
+  const s = await setup(t);
+  const caps = (await s.api("GET", "/capabilities")).body;
+  assert.equal(caps.features.triggers.public_url, true);
+  assert.ok(!JSON.stringify(caps).includes("agentrun.example.com"), "the address itself is not answered");
 });
 
 test("rotate keeps the new secret: the old one signs nothing from then on; the subscription is deleted only once no trigger uses it", async (t) => {

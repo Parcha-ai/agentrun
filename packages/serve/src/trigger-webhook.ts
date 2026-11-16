@@ -6,7 +6,7 @@
 import { MIN_KEY_BYTES } from "./standard-webhooks.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
-import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES, type Scheme, type SchemeName, schemeOf } from "./trigger-signatures.js";
+import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES, schemeOf } from "./trigger-signatures.js";
 import { isObject } from "./validate.js";
 
 /** The longest of a sender's words a payload's attrs keep (its event, its action). */
@@ -15,13 +15,14 @@ const ATTR_CHARS = 200;
 /** The scheme a trigger's source takes. */
 const schemeName = (source: Source): string => (typeof source.signature === "string" ? source.signature : DEFAULT_SCHEME);
 
-/** Whether a source's secret is the sender's own (Composio's): given, not minted. */
-const givesSecret = (source: Source): boolean => (SIGNATURE_SCHEMES[schemeName(source) as SchemeName] as Scheme | undefined)?.givenSecret === true;
-
 /** The source's own fields, checked: each issue through `bad`. Undefined when one does not read. */
 function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: string, message: string) => void): Source | undefined {
   let failed = false;
-  if (value.signature !== undefined && !(SCHEME_NAMES as readonly unknown[]).includes(value.signature)) {
+  if (value.signature === "composio") {
+    // Composio's events start runs through a Composio trigger, whose project subscription this server makes and keeps.
+    failed = true;
+    bad("signature", "not_an_option", `A webhook trigger takes no composio signature: make a Composio trigger instead, in the console's Triggers → New app trigger (source kind "composio"). signature is one of ${SCHEME_NAMES.join(", ")} (default ${DEFAULT_SCHEME}).`);
+  } else if (value.signature !== undefined && !(SCHEME_NAMES as readonly unknown[]).includes(value.signature)) {
     failed = true;
     bad("signature", "not_an_option", `signature is one of ${SCHEME_NAMES.join(", ")} (default ${DEFAULT_SCHEME})`);
   }
@@ -44,7 +45,6 @@ export const webhook: TriggerAdapter = {
   delivery: "push",
   owner: false,
   settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
-  givesSecret,
   describe: `{kind: "webhook", signature?: ${SCHEME_NAMES.map((name) => `"${name}"`).join(" | ")}, accept?: [{event, actions?, where?}]}`,
   fires: "a signed request to /hooks/{trigger_id} (`webhook`) that its `accept` takes",
   firedBy: "`webhook`: a signed request to /hooks/{trigger_id}, its key from the trigger and what the request's signature covers: its `webhook-id` (`standard`), or the SHA-256 of its body (`github`).",

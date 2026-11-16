@@ -43,7 +43,7 @@ export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balan
 const SCALAR_TYPES = ["string", "number", "integer", "boolean"] as const;
 /** A case's grader types. The answer's output schema is no grader's: every graded run of a package with `output` is held
  *  to it by the server's own verdict (template-eval.ts outputVerdict). */
-export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists"] as const;
+export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbox"] as const;
 /** The entries of a package's `computer` preference list: `shell`, a computer that gives the agent a shell here (bash);
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
@@ -783,9 +783,12 @@ export function readPackage(from: string | PackageFiles): Package {
     evals.push(entry.name);
     const own = files(at).map((path) => path.slice(at.length + 1));
     for (const path of own.filter((p) => !(p === "prompt.md" || p === "case.yaml" || /^graders\/[^/]+\.md$/.test(p) || p.startsWith("fixtures/")))) bad(`${at}/${path}`, "a case holds prompt.md, graders/*.md, case.yaml and fixtures/ only");
+    const caseDoc = own.includes("case.yaml") ? parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }) : undefined;
+    if (caseDoc?.errors.length) bad(`${at}/case.yaml`, "is not YAML");
+    // An email case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has no body.
+    const emailCase = !!caseDoc && !caseDoc.errors.length && isObject(caseDoc.toJS()) && (caseDoc.toJS() as Json).email !== undefined;
     if (!own.includes("prompt.md")) bad(at, "has no prompt.md");
-    else if (!front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
-    if (own.includes("case.yaml") && parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }).errors.length) bad(`${at}/case.yaml`, "is not YAML");
+    else if (!emailCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
     const graders = own.filter((p) => p.startsWith("graders/"));
     if (!graders.length) bad(at, "has no graders/*.md");
     for (const path of graders) {

@@ -558,12 +558,13 @@ export interface components {
       failures_to_pause: number;
       webhook: {
         signing: "standard-webhooks/v1";
-        signatures: ("standard" | "github" | "composio")[];
+        signatures: ("standard" | "github")[];
         tolerance_s: number;
         max_body_bytes: number;
         payload_kept_bytes: number;
         at_rest: "sealed";
       };
+      public_url?: boolean;
     };
   };
   File: {
@@ -1648,7 +1649,7 @@ export interface operations {
         start_at?: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github" | "composio";
+        signature?: "standard" | "github";
         accept?: {
           event: string;
           actions?: string[];
@@ -1754,7 +1755,7 @@ export interface operations {
         start_at: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github" | "composio";
+        signature?: "standard" | "github";
         accept?: {
           event: string;
           actions?: string[];
@@ -3093,7 +3094,7 @@ export interface operations {
         start_at: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github" | "composio";
+        signature?: "standard" | "github";
         accept?: {
           event: string;
           actions?: string[];
@@ -4155,7 +4156,7 @@ export interface operations {
           start_at: string;
         } | {
           kind: "webhook";
-          signature?: "standard" | "github" | "composio";
+          signature?: "standard" | "github";
           accept?: {
             event: string;
             actions?: string[];
@@ -4888,9 +4889,7 @@ export interface operations {
     };
   };
   rotateTriggerSecret: {
-    body: {
-      secret?: string;
-    };
+    body: never;
     answer: {
       secret: components["SecretMeta"];
       signing_secret?: string;
@@ -5334,7 +5333,7 @@ export interface operations {
         start_at?: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github" | "composio";
+        signature?: "standard" | "github";
         accept?: {
           event: string;
           actions?: string[];
@@ -5440,7 +5439,7 @@ export interface operations {
         start_at: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github" | "composio";
+        signature?: "standard" | "github";
         accept?: {
           event: string;
           actions?: string[];

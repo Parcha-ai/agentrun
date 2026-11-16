@@ -145,9 +145,6 @@ describe("Triggers: a webhook's filter", () => {
     expect(t.text()).toContain("the JSON body's top-level type");
     await t.choose("signature", "github");
     expect(t.text()).toContain("the X-GitHub-Event header");
-    await t.choose("signature", "composio");
-    expect(t.text()).toContain("metadata.trigger_slug");
-    expect(t.text()).toContain("/data/");
   });
 
   it("checks the filter's shape before it sends: a pointer starts with /, a value list and a prefix have their limits", async () => {
