@@ -384,9 +384,21 @@ test("lifetime.idle on the wall clock, aborted during its 6 min wait: the run en
 	const timers = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
 	const before = timers();
 	const stop = new AbortController();
-	const aborting = setTimeout(() => stop.abort(), 1_000);
-	const report = await run(fakeDevices().provider, ["lifetime.idle"], { clock: undefined, long: true, signal: stop.signal });
-	clearTimeout(aborting);
+	// Aborted as the wait starts: the case closes its first connection, then sleeps.
+	const { provider } = fakeDevices();
+	const connect = provider.connect.bind(provider);
+	provider.connect = async (...args) => {
+		const opened = await connect(...args);
+		if (opened.ok) {
+			const close = opened.value.close;
+			opened.value.close = async () => {
+				await close();
+				setImmediate(() => stop.abort());
+			};
+		}
+		return opened;
+	};
+	const report = await run(provider, ["lifetime.idle"], { clock: undefined, long: true, signal: stop.signal });
 	assert.equal(statuses(report)["lifetime.idle"], "fail", reasons(report)["lifetime.idle"]);
 	assert.ok(timers() <= before, `${timers() - before} more timers after the run than before it: the 6 min wait outlived the run`);
 });

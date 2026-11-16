@@ -4,6 +4,7 @@
 // a pid1 host's machine runs the entrypoint as its main process, which waits for the daemon and becomes init. Every
 // connection runs stdio. Each is one argv, `sh -c '<script>' sh <args>`; shellCommand gives it as one string for a
 // vendor whose exec takes a shell line.
+import { PassThrough } from "node:stream";
 import { DAEMON_IN_COMPUTER, helloDrift, SOCKET_DIR, WORK } from "../drift.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import type { ComputerCapabilities, ComputerConnection } from "../provider.js";
@@ -366,4 +367,120 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 		if (stat.value.target !== want) found.push(`daemon ${what}: declared ${want}, read back ${show(stat.value.target)}`);
 	}
 	return ok(found);
+}
+
+/**
+ * The sh a process starts under where the vendor has no kill that ends it (framedExec with no kill, SSH, Modal): one
+ * line on stderr, its pid and its start time (field 22 of /proc/<pid>/stat, counted past the command's name in
+ * parentheses, which may hold spaces), then the command in its place, which keeps both. pidLine takes the line off.
+ */
+export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")" >&2; exec "$@"', "sh"];
+
+/**
+ * The sh pidKill starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let
+ * be. Otherwise it kills the process and every process under it (an upload's head and base64 would wait on the open
+ * stdin, and hold stderr open, past their sh; a child that left the process group too): each is stopped as it is found,
+ * so none forks away, by its parent pid (field 4 of its stat) until a pass over /proc finds no more, and then all are
+ * killed. When the pid leads its own process group (field 5), as a command an sshd starts does, every process in that
+ * group is taken too: a background job whose parent exited is under no process the walk finds, but still in the group.
+ * A pid that leads no group of its own is let be past its tree, so a kill never reaches what it didn't start.
+ */
+export const PID_KILL = [
+	"pid=$1 start=$2",
+	'read -r s 2>/dev/null <"/proc/$pid/stat" || exit 0',
+	'set -- ${s##*") "}',
+	'[ "${20}" = "$start" ] || exit 0',
+	'group=; [ "$3" = "$pid" ] && group=$pid',
+	'kill -STOP "$pid" 2>/dev/null',
+	'all=" $pid " new=$pid',
+	'while [ -n "$new" ]; do',
+	"\tnew=",
+	"\tfor f in /proc/[0-9]*/stat; do",
+	'\t\tread -r s 2>/dev/null <"$f" || continue',
+	"\t\tp=${s%% *}",
+	'\t\tset -- ${s##*") "}',
+	'\t\tcase "$all" in *" $p "*) continue ;; esac',
+	'\t\tcase "$all" in *" $2 "*) ;; *) [ -n "$group" ] && [ "$3" = "$group" ] || continue ;; esac',
+	'\t\tall="$all$p " new="$new $p"; kill -STOP "$p" 2>/dev/null',
+	"\tdone",
+	"done",
+	"kill -KILL $all 2>/dev/null",
+	"exit 0",
+].join("\n");
+
+/** A process's pid and start time, from PID_WRAPPER's line. */
+export interface PidOf {
+	pid: string;
+	start: string;
+}
+
+/** The argv that kills a process started under PID_WRAPPER, and every process under it, while its pid has that start time. */
+export const pidKill = ({ pid, start }: PidOf): string[] => ["sh", "-c", PID_KILL, "sh", pid, start];
+
+/** What pidLine and pidStderr answer: the pid and start time once the line ends, waited for at most ms. */
+export type PidWithin = (ms: number) => Promise<PidOf | undefined>;
+
+/**
+ * PID_WRAPPER's line taken off a process's stderr: take() is given each piece of stderr and answers what of it is the
+ * process's own (nothing while the line has not ended). pid answers once the line ends; undefined for a line that is
+ * no pid and start time, once end() came first (the stream ended), or past ms.
+ */
+export function pidLine(): { take(bytes: Uint8Array): Buffer; end(): void; pid: PidWithin } {
+	let held: Buffer | undefined = Buffer.alloc(0);
+	let got: (found: PidOf | undefined) => void = () => {};
+	const found = new Promise<PidOf | undefined>((done) => (got = done));
+	return {
+		take(bytes) {
+			const piece = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+			if (held === undefined) return piece;
+			held = Buffer.concat([held, piece]);
+			const at = held.indexOf(0x0a);
+			if (at < 0) return Buffer.alloc(0);
+			const line = /^([1-9][0-9]*) ([0-9]+)$/.exec(held.subarray(0, at).toString("latin1").trim());
+			got(line ? { pid: line[1] as string, start: line[2] as string } : undefined);
+			const rest = held.subarray(at + 1);
+			held = undefined;
+			return rest;
+		},
+		end: () => got(undefined),
+		pid: async (ms) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const late = new Promise<undefined>((done) => (timer = setTimeout(() => done(undefined), ms)));
+			try {
+				return await Promise.race([found, late]);
+			} finally {
+				clearTimeout(timer);
+			}
+		},
+	};
+}
+
+/**
+ * A stream's stderr with PID_WRAPPER's line taken off (pidLine), read from its start whether or not anyone reads what
+ * it passes on, so the pid comes; the rest waits for its reader.
+ */
+export function pidStderr(source: AsyncIterable<Uint8Array>): { stderr: PassThrough; pid: PidWithin } {
+	const line = pidLine();
+	const stderr = new PassThrough().on("error", () => {});
+	const drained = () =>
+		new Promise<void>((done) => {
+			const go = () => {
+				stderr.off("drain", go).off("close", go);
+				done();
+			};
+			stderr.on("drain", go).on("close", go);
+		});
+	void (async () => {
+		try {
+			for await (const bytes of source) {
+				const own = line.take(bytes);
+				if (own.length > 0 && !stderr.destroyed && !stderr.write(own)) await drained();
+			}
+		} catch {
+			// A stream that broke ends here, as one that ended.
+		}
+		line.end();
+		stderr.end();
+	})();
+	return { stderr, pid: line.pid };
 }
