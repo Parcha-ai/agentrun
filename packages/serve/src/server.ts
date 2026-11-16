@@ -162,7 +162,7 @@ import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { type AttachRoutes, createAttachRoutes, pairedView } from "./computer-attach.js";
+import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -174,7 +174,7 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ServerDial, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -404,9 +404,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
-  /** The tokens a dial provider's create mints for its machines (computer-attach.ts machineTokens), over this server's
-   *  store and hub: the runner beside the server hands them to its dial providers with the hub. */
-  machineTokens: AttachRoutes["machineTokens"];
+  /** What a dial provider's create takes of this server (HostedProvider's dial): the address its machines dial
+   *  (AGENTRUN_PUBLIC_URL, absent without one), the tokens it mints for them (computer-attach.ts machineTokens) and the
+   *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
+  dial: ServerDial;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
@@ -4563,7 +4564,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
-    machineTokens: attach.machineTokens,
+    dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).

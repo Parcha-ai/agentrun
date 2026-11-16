@@ -51,7 +51,9 @@ const fetchDaemon = (server, token, arch = "amd64") => fetch(`${server.baseUrl}/
 test("a minted token: kept as its SHA-256, it dials the attach socket as its machine; a hello of another kind is 4400; unknown, expired and revoked tokens are 401, and a revoke closes the live socket with 4401", async (t) => {
   const lines = [];
   const server = await serve(t, { runner: false, log: (line) => lines.push(line) });
-  const token = await server.machineTokens.mint("computer-00000000000a", { ...MINT, expiresAt: inMs(60_000) });
+  assert.equal(server.dial.hub, server.attachHub, "a dial provider's machines land in the server's hub");
+  assert.equal(server.dial.url, undefined, "with no public URL, no address to dial: a dial provider's create refuses");
+  const token = await server.dial.tokens.mint("computer-00000000000a", { ...MINT, expiresAt: inMs(60_000) });
   assert.match(token, /^art_[0-9a-f]{64}$/, "art_ and 32 random bytes in hex");
   const row = await server.store.mintedTokens.get("computer-00000000000a");
   assert.deepEqual({ ...row, createdAt: typeof row.createdAt }, { machine: "computer-00000000000a", ...MINT, expiresAt: row.expiresAt, revokedAt: null, createdAt: "number" });
@@ -68,7 +70,7 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   assert.equal(server.attachHub.hello("computer-00000000000a").kind, DRIVER_HELLO.kind);
 
   // Minted as another kind than its hello says: closed with 4400, and it dials no more.
-  const other = await server.machineTokens.mint("computer-00000000000b", { ...MINT, kind: "linux", expiresAt: inMs(60_000) });
+  const other = await server.dial.tokens.mint("computer-00000000000b", { ...MINT, kind: "linux", expiresAt: inMs(60_000) });
   const wrong = attachDriver({ address, token: other, scale: 0.01 });
   t.after(() => wrong.stop());
   wrong.start();
@@ -77,11 +79,11 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   assert.equal(server.attachHub.online("computer-00000000000b"), false);
 
   assert.deepEqual(await dial(server, UNKNOWN), { open: false, status: 401 }, "an unknown token");
-  const expiring = await server.machineTokens.mint("computer-00000000000c", { ...MINT, expiresAt: inMs(200) });
+  const expiring = await server.dial.tokens.mint("computer-00000000000c", { ...MINT, expiresAt: inMs(200) });
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.deepEqual(await dial(server, expiring), { open: false, status: 401 }, "a token past its end");
 
-  await server.machineTokens.revoke("computer-00000000000a");
+  await server.dial.tokens.revoke("computer-00000000000a");
   await until(async () => driver.stopped, Boolean, "the machine stops dialing once its token is revoked");
   assert.deepEqual(driver.stopped, { code: 4401 });
   assert.equal(server.attachHub.online("computer-00000000000a"), false);
@@ -103,8 +105,9 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
 
 test("the daemon route serves this server's computerd build for the machine's arch, the bytes a hosted provider uploads; ten fetches a minute per machine, then 429; another arch is 422; the token is in no log line", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" }, async (t) => {
   const lines = [];
-  const server = await serve(t, { runner: false, log: (line) => lines.push(line) });
-  const token = await server.machineTokens.mint("computer-00000000000d", { ...MINT, expiresAt: inMs(60_000) });
+  const server = await serve(t, { runner: false, publicUrl: "https://agentrun.example.com/", log: (line) => lines.push(line) });
+  assert.equal(server.dial.url, "https://agentrun.example.com", "the public URL (AGENTRUN_PUBLIC_URL) is the address its machines dial");
+  const token = await server.dial.tokens.mint("computer-00000000000d", { ...MINT, expiresAt: inMs(60_000) });
   const first = await fetchDaemon(server, token);
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("content-type"), "application/octet-stream");
@@ -117,7 +120,7 @@ test("the daemon route serves this server's computerd build for the machine's ar
   assert.equal(limited.status, 429, "the eleventh fetch in a minute");
   assert.ok(Number(limited.headers.get("retry-after")) >= 1);
   // Another machine's token is not held by it.
-  const other = await server.machineTokens.mint("computer-00000000000e", { ...MINT, expiresAt: inMs(60_000) });
+  const other = await server.dial.tokens.mint("computer-00000000000e", { ...MINT, expiresAt: inMs(60_000) });
   assert.equal((await fetchDaemon(server, other, "x86")).status, 422);
   const logged = lines.join("\n");
   for (const secret of [token, other]) {

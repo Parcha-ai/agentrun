@@ -132,6 +132,17 @@ export function dockerVolumeOf(paths: DockerPaths): DockerComputerOptions | unde
 /** The deps computerForClaim takes once per process: all but the claim's own. */
 export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
 
+/** What a dial provider's create takes of the server (HostedProvider's dial): the address its machines dial, the
+ *  tokens it mints for them and the hub their sockets land in. */
+export interface ServerDial {
+  readonly url?: string;
+  readonly tokens: {
+    mint(machine: string, mint: { kind: string; os: string; arch: string; expiresAt: Date }): Promise<string>;
+    revoke(machine: string): Promise<void>;
+  };
+  readonly hub: AttachHub;
+}
+
 export interface ComputerDepsOptions {
   /** The server's environment: a provider key named here wins over its saved one; AGENTRUN_DOCKER_IMAGE names Docker's
    *  image. Passed in, never read here. */
@@ -142,6 +153,10 @@ export interface ComputerDepsOptions {
   /** The server's AttachHub, where this runner shares the server's process (runner/beside.ts): a paired computer's
    *  socket is there. Absent: a runner of its own process, which refuses a paired computer in words. */
   readonly hub?: AttachHub;
+  /** The server's dial (Serve.dial), where this runner shares the server's process: every remote provider's create
+   *  takes it, and one whose host dials the server (facts.connect "dial") mints its machine's token there. Absent: a
+   *  runner of its own process, where such a provider's create refuses in words. */
+  readonly dial?: ServerDial;
   /** The server's seal key: absent, no saved key is opened (a key from the environment still is). */
   readonly sealKey: Buffer | undefined;
   /** The kind registry: the computer package's unless given (a test's fixture). */
@@ -356,11 +371,11 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
    *  Chrome's, where it finds Chrome), and no other variable of the server's. */
   const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
-   *  its image source and its host options; the host environment it reads. */
+   *  its image source and its host options; for a remote one, the server's dial; the host environment it reads. */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
-      ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : {}),
+      ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : options.dial ? { dial: options.dial } : {}),
       ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
     };
   };

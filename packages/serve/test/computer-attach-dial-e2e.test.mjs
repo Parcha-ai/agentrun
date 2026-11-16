@@ -57,7 +57,7 @@ test("the real computerd attach dials with its minted token: the machine is in t
   const lines = [];
   const server = await serve(t, { runner: false, log: (line) => lines.push(line) });
   const init = await fakeInit(t);
-  const token = await server.machineTokens.mint(MACHINE, { kind: HELLO.kind, os: HELLO.os, arch: HELLO.arch, expiresAt: new Date(Date.now() + 60_000) });
+  const token = await server.dial.tokens.mint(MACHINE, { kind: HELLO.kind, os: HELLO.os, arch: HELLO.arch, expiresAt: new Date(Date.now() + 60_000) });
 
   const env = { PATH: process.env.PATH, AGENTRUN_ATTACH_URL: `${server.url.replace(/^http/, "ws")}${ATTACH_PATH}`, AGENTRUN_ATTACH_TOKEN: token, AGENTRUN_COMPUTERD_SOCKET: init.socket };
   const child = spawn(DAEMON, ["attach"], { env, stdio: ["ignore", "ignore", "pipe"] });
@@ -72,7 +72,7 @@ test("the real computerd attach dials with its minted token: the machine is in t
   assert.deepEqual(await connection.client.call("processes.list", { probe: 7 }), { ok: true, value: { echoed: { probe: 7 } } }, "a call round-trips through attach to init and back");
   assert.deepEqual(init.calls, ["hello", "processes.list"]);
 
-  await server.machineTokens.revoke(MACHINE);
+  await server.dial.tokens.revoke(MACHINE);
   assert.equal(await exited, 3, `attach exits 3, the server refused its token: ${stderr}`);
   assert.match(stderr, /4401/, "the socket was closed with 4401");
   assert.equal(server.attachHub.online(MACHINE), false);
