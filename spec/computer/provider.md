@@ -38,9 +38,9 @@ such as a refusal, a computer that is gone or a vendor that said no, is a result
 | `list(labels)` | Every computer this provider made that carries all of these labels: the janitor's view. |
 | `network(ref, policy?)` | Reads the network back; with a policy, sets it, or refuses in words. Never wider than asked. A remote computer's network is fixed at create: a change is refused `refused`, and asking for the network it has answers ok. |
 | `connect(ref)` | A connection to the computer, after `hello`. It refuses a `hello` whose protocol, version, kind or groups differ from what it declared. |
-| `release(ref, how)` | `delete`, `stop` where declared, or `detach` (an agent's computer, kept with its state) where `persistence` is declared. An undeclared `stop` or `detach` is refused in words, with the computer left as it was. Idempotent: a computer already gone is ok. |
+| `release(ref, how)` | `delete`, `stop` where declared, or `detach` (an agent's computer, kept with its state) where `persistence` is declared. An undeclared `stop` or `detach` is refused in words, with the computer left as it was. Idempotent: a computer already gone is ok. A deleted computer stays gone: no later call, a read included, brings it back. |
 | `extend?` | Moves the deadline later, never earlier, and never past the provider's cap counted from create. |
-| `stream?` | A URL that shows the screen live, the vendor's own. |
+| `stream?` | A URL that shows the screen live, the vendor's own. A vendor with none leaves it out: `watch` is the live view. |
 | `watch?` | The computer's live view: frames, and input on what it answers. A computer with a screen gives it. |
 | `sweepLeftovers?` | Removes what its computers left outside themselves, by labels. |
 | `testConnection?` | One account-level read with the provider's keys that never creates a computer, so it never spends. |
@@ -99,15 +99,15 @@ it and expects the same id refused `exists`. Both are Full.
 | `kind`, `os`, `daemon` | What the computers are, and who answers their methods (see [`kinds.md`](kinds.md)). |
 | `groups` | What each computer offers; each computer's `hello` repeats it. |
 | `lifetime` | Who ends a computer at its deadline: the vendor, or our janitor by label. |
-| `maxLifetimeMs` | The longest lifetime it gives: the vendor's hard cap. |
+| `maxLifetimeMs` | The longest lifetime it gives: the vendor's hard cap, measured where the vendor documents none, or the janitor's where the vendor never ends a computer. |
 | `network` | The networks it takes: `none`, `open`, `allow`. With `allow`, `allow` says what a list may hold. `networkReadBack` says whether the vendor reads the policy back from outside. |
 | `isolation` | `container`, `gvisor`, `microvm`, `vm`, `machine` or `host` (processes of the provider's own machine, such as the local browser's). |
 | `release` | `delete`, and `stop` where a stopped computer is kept; `stopDeletes` where a stop ends in deletion. |
 | `user` | What `spec.user` may ask for beyond the non-root default: `root`, another `uid`. |
 | `mount` | The kinds of folder a computer can mount at `/workspace`. |
-| `vendorAgentPorts` | The ports the vendor's own agent listens on inside the computer. A `child` daemon must declare them. |
+| `vendorAgentPorts` | The TCP ports the vendor's own agent listens on inside the computer. A `child` daemon must declare them: `[]` where none listens on TCP (the agent is on a unix socket or a virtio device, or not in the computer). |
 | `gpu`, `browser` | The GPUs `spec.gpu` may ask for; a browser's features beyond the protocol. |
-| `persistence` | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer comes back running or boots again from its disk. Absent means neither: each computer lives for one run. |
+| `persistence` | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer comes back running or boots again from its disk. Absent means neither: each computer lives for one run. A provider on the shared machine-host adapter never declares it today: delete is its only release. |
 
 ## The descriptor
 
@@ -161,8 +161,9 @@ adapter calls `end()` at once for a command it gives no input, such as the daemo
   nothing added or dropped.
 - **Without a timeout.** The process runs until it exits or `kill()` ends it. The vendor's command timeout, and any idle
   timeout on the stream, are off.
-- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and `kill()`
-  ends the process itself, not only the streams.
+- **Apart and accountable.** stdout and stderr stay separate, `wait()` answers the process's own exit code, and `end()`
+  gives stdin end of file (the bridge ends by `kill()` and needs no `end()`; a command given input does). `kill()` ends
+  the process in the machine, not only the streams: a wrapper that records its pid for a second exec to kill is enough.
 
 The exec pre-check checks each of these with `exec` alone, on a machine made by hand, before anything else of the host
 is written:
@@ -176,6 +177,16 @@ It builds the host with the module's `createHost(options)`, which it calls with 
 (compared by sha256), checks output and stdin while the process runs, stderr apart, `sh -c 'exit 7'`, a killed `sleep`,
 and a silent process of 75 s (`--quick`: 5 s). Each failure says what the exec did wrong, such as "byte 0x80
 came back on stdout as ef bf bd: your exec decodes UTF-8". It exits 0 when every check passes and 1 when one fails.
+
+The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, or a relay in the image
+over any binary two-way stream. A request and response exec, which answers a command's output when it ends, can't
+carry the bridge. A text-only exec breaks byte-exact; there is no text mode, so a host over one encodes the bytes itself.
+
+On a vendor whose root can make a network namespace, or one inside a user namespace, the three networks are the
+adapter's: init's fence holds `none`, and init's egress proxy holds `open` and a list
+(`packages/computer/src/hosted/network.ts`). A vendor policy is optional hardening, never wider than these, and a host
+may ignore `egress: false` where it has none. The probe from inside is what counts. Where root can make neither, init
+refuses to start, so the adapter doesn't fit.
 
 ## A new vendor
 
