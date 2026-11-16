@@ -124,8 +124,8 @@ events: async function* (pid) {
 #### No call for stdin
 
 `fifoStdin` from `src/hosted/framed-exec.ts` takes your `start` and `events` and answers the pieces `framedExec` takes,
-with `write` and `end` made of more starts. The process starts under a `sh` that makes a fifo in `/tmp` and feeds the
-process what comes into it. Each write is a second, short exec that hands the fifo its text (up to 64 KiB of it, in
+with `write` and `end` made of more starts. The process starts under a `sh` that makes a fifo in a directory in `/tmp`
+that only root can open, and feeds the process what comes into it. Each write is a second, short exec that hands the fifo its text (up to 64 KiB of it, in
 its argv), one after another, and `end()` is one more. Each write costs an exec, so a limit on your vendor's execs is
 spent there. For an API whose one call starts a process and answers its events as server-sent events, `event: output`
 with `data: {"stream":"stdout","data":"…"}`, then `event: exit` with `data: {"exit_code":0}`:
@@ -153,7 +153,9 @@ const exec = (id: string, argv: readonly string[], ctx: HostCall) =>
 what comes back, `close` hangs it up) and answers the pieces `framedExec` takes. Each process gets a terminal of its
 own. ptyPieces types one short line that runs `stty raw -echo` and reads a script; the script runs the process on
 fifos, off the terminal, and writes its stdout and stderr back as base64 lines with a marker, then its exit code.
-stdin goes the other way as a length line and that much base64. framedExec kills by pid, over a second terminal. The
+stdin goes the other way as a length line and that much base64. framedExec kills by pid, over a second terminal. Each
+piece of output costs a few processes in the machine: on a busy one, output runs at about a megabyte a second, and the
+pre-check's 8 MiB came back in 9.4 s. The
 machine needs `stty`, `mktemp`, `mkfifo`, `dd`, `base64` and `head`, which coreutils and busybox both have. Here
 `open` is a local pty, as the tests' fake opens one; yours opens your vendor's socket:
 

@@ -202,15 +202,22 @@ export async function* sse(body: AsyncIterable<Uint8Array>): AsyncIterable<SseEv
 	let event = "";
 	let id = "";
 	let retry: number | undefined;
+	// The last line ended at a \r that ended what came: a \n that starts what comes next is that \r's, no line of its own.
+	let halfCrLf = false;
 	const eol = /\r\n|\r|\n/g;
-	function* lines(last: boolean): Generator<SseEvent> {
+	function* lines(text: string): Generator<SseEvent> {
+		if (halfCrLf && text !== "") {
+			if (text.startsWith("\n")) text = text.slice(1);
+			halfCrLf = false;
+		}
+		// What is left from before holds no line end: the search starts at what came.
+		eol.lastIndex = rest.length;
+		rest += text;
 		let from = 0;
-		eol.lastIndex = 0;
 		for (let end = eol.exec(rest); end !== null; end = eol.exec(rest)) {
-			// A \r that ends what came may be half of a \r\n: it waits for the next chunk.
-			if (!last && end[0] === "\r" && end.index === rest.length - 1) break;
 			const line = rest.slice(from, end.index);
 			from = eol.lastIndex;
+			halfCrLf = end[0] === "\r" && from === rest.length;
 			if (line === "") {
 				if (data.length > 0) yield { event: event || "message", data: data.join("\n"), id, ...(retry === undefined ? {} : { retry }) };
 				data = [];
@@ -228,12 +235,8 @@ export async function* sse(body: AsyncIterable<Uint8Array>): AsyncIterable<SseEv
 		}
 		rest = rest.slice(from);
 	}
-	for await (const chunk of body) {
-		rest += decoder.decode(chunk, { stream: true });
-		yield* lines(false);
-	}
-	rest += decoder.decode();
-	yield* lines(true);
+	for await (const chunk of body) yield* lines(decoder.decode(chunk, { stream: true }));
+	yield* lines(decoder.decode());
 }
 
 /**

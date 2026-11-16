@@ -69,24 +69,25 @@ export const PID_KILL = [
 ].join("\n");
 
 /**
- * The sh a process starts under when the vendor has no call that writes to its stdin, given a fifo's path and argv: it
- * makes the fifo, holds it open both ways (so no write's end is an end of file), and feeds the process what comes into
- * it, a length line and that many bytes at a time, until a line "e", which ends the process's stdin.
+ * The sh a process starts under when the vendor has no call that writes to its stdin, given a directory's path and
+ * argv: it makes the directory, root's alone (the computer's programs share /tmp, and must never read root's input), and
+ * in it the fifo `i`, which it holds open both ways (so no write's end is an end of file). It feeds the process what
+ * comes into `i`, a length line and that many bytes at a time, until a line "e", which ends the process's stdin.
  */
 export const FIFO_STDIN = [
-	'f=$1; shift',
-	'mkfifo "$f" 2>/dev/null; mkfifo "$f.0" && [ -p "$f" ] || exit 1',
-	'exec 3<>"$f"',
-	'{ while read -r n <&3 && [ "$n" != e ]; do head -c "$n" <&3; done >"$f.0"; } &',
-	'"$@" <"$f.0" 3<&-',
-	'c=$?',
+	'd=$1; shift',
+	'umask 077 && mkdir "$d" && mkfifo "$d/i" "$d/0" || exit 1',
+	'exec 3<>"$d/i"',
+	'{ while read -r n <&3 && [ "$n" != e ]; do head -c "$n" <&3; done >"$d/0"; } &',
+	'"$@" <"$d/0" 3<&-',
+	"c=$?",
 	'printf "e\\n" >&3',
-	'rm -f "$f" "$f.0"',
-	'exit $c',
+	'rm -rf "$d"',
+	"exit $c",
 ].join("\n");
 
-/** The short exec that hands the fifo one piece, given its path, its length line and its text; it waits for the fifo's start. */
-export const FIFO_WRITE = 'i=0; until [ -p "$1" ]; do i=$((i+1)); [ $i -le 100 ] || exit 1; sleep 0.1; done; printf "%s\\n%s" "$2" "$3" >"$1"';
+/** The short exec that hands the fifo one piece, given the directory, the length line and the text; it waits for the fifo. */
+export const FIFO_WRITE = 'i=0; until [ -p "$1/i" ]; do i=$((i+1)); [ $i -le 100 ] || exit 1; sleep 0.1; done; printf "%s\\n%s" "$2" "$3" >"$1/i"';
 
 /** The most UTF-8 bytes one write's exec carries in its argv, well under Linux's 128 KiB for one word. */
 const FIFO_PIECE = 64 * 1024;

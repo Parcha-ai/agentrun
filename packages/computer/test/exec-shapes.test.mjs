@@ -3,7 +3,7 @@
 // terminal (`ptyPieces`, src/hosted/pty-exec.ts) and a start with no stdin call (`fifoStdin`, src/hosted/framed-exec.ts).
 // Then the SSE reader's own rules.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,8 +20,8 @@ const QUICK = { longMs: 2_000, stepMs: 5_000, largeBytes: 1024 * 1024, largeMs: 
 const HAS_PROC = existsSync("/proc/self/stat");
 
 /** The pre-check over exec, every check named in the failure. */
-async function precheck(exec) {
-	const report = await checkExecStream({ descriptor: { id: "fake" }, exec }, "machine-1", QUICK);
+async function precheck(exec, options = QUICK) {
+	const report = await checkExecStream({ descriptor: { id: "fake" }, exec }, "machine-1", options);
 	assert.equal(report.pass, true, formatExecStream(report));
 }
 
@@ -46,13 +46,31 @@ test("a start that streams server-sent events with no stdin call (Render's shape
 	});
 	await precheck(fifoExec(vendor.base));
 	assert.ok(!vendor.requests.some((request) => request.endsWith("/stdin")), "no write call: every write was a run of its own");
-	const fifos = local.calls.filter(({ argv }) => argv[2] === FIFO_STDIN).flatMap(({ argv }) => [argv[4], `${argv[4]}.0`]);
-	assert.ok(fifos.length > 0);
+	const dirs = local.calls.filter(({ argv }) => argv[2] === FIFO_STDIN).map(({ argv }) => argv[4]);
+	assert.ok(dirs.length > 0);
 	assert.deepEqual(
-		fifos.filter((path) => existsSync(path)),
+		dirs.filter((path) => existsSync(path)),
 		[],
 		"each process's sh took its fifos with it",
 	);
+});
+
+test("fifoStdin's fifos sit in a directory of root's alone: no program of the computer's reads root's input", async (t) => {
+	if (!HAS_PROC) return t.skip("no /proc here");
+	const local = fakeExecHost();
+	const vendor = await textVendor(local);
+	t.after(async () => {
+		local.stopAll();
+		await vendor.close();
+	});
+	const proc = await fifoExec(vendor.base)("machine-1", ["cat"], { timeoutMs: 5_000 });
+	const out = proc.stdout[Symbol.asyncIterator]();
+	await proc.write(Buffer.from("in\n"));
+	assert.equal(Buffer.from((await out.next()).value).toString(), "in\n");
+	const dir = local.calls.find(({ argv }) => argv[2] === FIFO_STDIN).argv[4];
+	assert.equal(statSync(dir).mode & 0o777, 0o700);
+	assert.equal(statSync(join(dir, "i")).mode & 0o777, 0o600);
+	await proc.kill();
 });
 
 test("one terminal on a real pty (echo on, \\n out as \\r\\n, a prompt, stderr merged), on ptyPieces, passes every check of the exec pre-check and leaves no fifo behind", async (t) => {
@@ -63,7 +81,9 @@ test("one terminal on a real pty (echo on, \\n out as \\r\\n, a prompt, stderr m
 		await terminals.stopAll();
 		rmSync(tmp, { recursive: true, force: true });
 	});
-	await precheck(ptyExec(terminals));
+	// Output through a terminal costs a few processes a piece: on a busy machine, stdout-unread's 4 MiB takes past --quick's
+	// 5 s step to come back (the pre-check's own step is 30 s).
+	await precheck(ptyExec(terminals), { ...QUICK, stepMs: 20_000 });
 	// Each sh takes its fifos with it as it ends, a moment after its terminal closes.
 	for (let at = 0; at < 100 && readdirSync(tmp).length > 0; at++) await pause(20);
 	assert.deepEqual(readdirSync(tmp), []);
@@ -87,4 +107,21 @@ test("sse reads events as the standard says: comments, event, id and retry, many
 		{ event: "message", data: "one\ntwo\n", id: "7", retry: 2500 },
 		{ event: "message", data: "€", id: "7", retry: 2500 },
 	]);
+});
+
+test("sse gives an event whose blank line ends at a \\r that ends a chunk at once, and reads a \\n that starts the next chunk as that \\r's", async () => {
+	let release = () => {};
+	const released = new Promise((done) => (release = done));
+	const events = sse(
+		(async function* () {
+			yield Buffer.from("data: ready\r\r");
+			await released;
+			yield Buffer.from("\ndata: next\n\n");
+		})(),
+	)[Symbol.asyncIterator]();
+	const first = await Promise.race([events.next(), pause(1_000, { value: "held until more of the body came" })]);
+	assert.deepEqual(first.value, { event: "message", data: "ready", id: "" });
+	release();
+	assert.deepEqual((await events.next()).value, { event: "message", data: "next", id: "" });
+	assert.equal((await events.next()).done, true);
 });
