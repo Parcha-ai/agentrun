@@ -49,7 +49,7 @@ export interface CliIo {
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
@@ -65,7 +65,10 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
               as T4 or H100:2; it bills by the second, so without it the gpu case skips
   --long      run the long cases too, which wait minutes on a vendor's timer: lifetime.idle leaves a computer quiet
               6 min and reads it running; the live sweep gives it, and without it they skip
-  --json     print the report as JSON
+  --concurrency
+              the most computers alive at once, for a plan that keeps fewer (default no cap; the report says the
+              run's peak). The run's computer makes way for a case's own; a case that needs more fails
+  --json      print the report as JSON
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
               by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
@@ -87,6 +90,8 @@ interface Args {
 	gpu?: { type: string; count: number };
 	/** --long: the long cases run too. */
 	long?: true;
+	/** --concurrency: the most computers alive at once. */
+	concurrency?: number;
 	/** --exec-stream's machine: the pre-check runs alone on it. */
 	execStream?: { machine: string; quick: boolean };
 	json: boolean;
@@ -124,7 +129,11 @@ function parse(argv: string[], cases: Case[]): Args {
 		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--gpu") args.gpu = gpuOf(value());
 		else if (flag === "--long") args.long = true;
-		else if (flag === "--exec-stream") execStream = true;
+		else if (flag === "--concurrency") {
+			const given = value();
+			if (!/^[1-9][0-9]*$/.test(given) || !Number.isSafeInteger(Number(given))) throw new Usage(`--concurrency: ${JSON.stringify(given)} is not a whole number of computers, 1 or more`);
+			args.concurrency = Number(given);
+		} else if (flag === "--exec-stream") execStream = true;
 		else if (flag === "--machine") machine = value();
 		else if (flag === "--quick") quick = true;
 		else if (flag === "--json") args.json = true;
@@ -135,7 +144,7 @@ function parse(argv: string[], cases: Case[]): Args {
 	if (args.provider === undefined) throw new Usage("--provider is required");
 	if (execStream) {
 		if (machine === undefined) throw new Usage("--exec-stream needs --machine <id>, a machine you made by hand");
-		const others = (["image", "only", "kind", "fixture", "gpu", "long"] as const).filter((name) => args[name] !== undefined);
+		const others = (["image", "only", "kind", "fixture", "gpu", "long", "concurrency"] as const).filter((name) => args[name] !== undefined);
 		if (others.length > 0) throw new Usage(`--exec-stream runs alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
 		return { provider: args.provider, execStream: { machine, quick }, json: args.json, help: false };
 	}
@@ -155,6 +164,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		...(args.gpu ? { gpu: args.gpu } : {}),
 		...(args.long ? { long: args.long } : {}),
+		...(args.concurrency ? { concurrency: args.concurrency } : {}),
 		json: args.json,
 		help: false,
 	};
@@ -368,6 +378,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(args.gpu ? { gpu: args.gpu } : {}),
 		...(args.long ? { long: true } : {}),
+		...(args.concurrency ? { concurrency: args.concurrency } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),
 		...(target.declared ? { declared: target.declared } : {}),

@@ -33,8 +33,10 @@ export type ThinkingLevelMap = NonNullable<Model<Api>["thinkingLevelMap"]>;
 /** The catalog's entry for a session's model, as its route carries it (model-route.ts `like`): its reasoning, price,
  *  window and ceiling, the effort each thinking level asks for, and what it takes as input with its input limits. */
 /** `developerRole`: on Responses, the instructions go as a developer message, not a system one (a ChatGPT plan's route,
- *  which takes no system message). */
-export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens" | "thinkingLevelMap">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean };
+ *  which takes no system message). `adaptiveThinking`: on Messages, the session asks its thinking level as an adaptive
+ *  effort (pi-ai's `forceAdaptiveThinking`), never a token budget: the route's own translation reads that level back
+ *  (model-route.ts LEVELS_BY_NAME). */
+export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens" | "thinkingLevelMap">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean };
 
 /** The one model of a session's route as pi-ai lists it, for the port's requests and for pi's own (runner adapters/pi.ts):
  *  `model` in `api` at the proxy `url` (sessionBaseUrl), under `provider`, with `headers` (the session key as the proxy
@@ -57,6 +59,7 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
     cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
     ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: like?.developerRole === true } } : {}),
+    ...(api === "anthropic-messages" && like?.adaptiveThinking ? { compat: { forceAdaptiveThinking: true } } : {}),
   } as unknown as Model<Api>;
 }
 

@@ -53,8 +53,9 @@ export interface ModelRoute {
    *  takes images) and its input limits (an image's most size), which pi's session and its read size an image by; on a
    *  wire that carries its reasoning (Responses), also whether it reasons, its window, its output ceiling, and the effort
    *  each thinking level asks for (`thinkingLevelMap`: a level mapped to null sends no effort, so pi's thinking off asks
-   *  a model that takes no "none" for none, gpt-6.1-sol's case). */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly thinkingLevelMap?: ThinkingLevelMap };
+   *  a model that takes no "none" for none, gpt-6.1-sol's case). On the route's own translation, a model that reasons
+   *  asks its level by name (LEVELS_BY_NAME: `adaptiveThinking`), so the run's effort reaches it. */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean; readonly thinkingLevelMap?: ThinkingLevelMap };
   /** A request's price from its usage (the proxy's booking reads it): pi-ai's calculateCost, tiers included. */
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
@@ -125,8 +126,10 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
     };
   }
   // The translation writes an answer's cost in its usage only where pi-ai read the provider's own (OpenRouter's): the
-  // proxy reads it on ROUTE_ORIGIN (statesUsageCost).
-  return { ...route, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
+  // proxy reads it on ROUTE_ORIGIN (statesUsageCost). A model that reasons is given to pi's session as one that asks its
+  // thinking level by name (LEVELS_BY_NAME), which the translation hands to pi-ai (levelOf): the run's effort reaches the
+  // model, mapped and clamped by its own catalog entry.
+  return { ...route, ...(target.reasoning ? { like: { ...sees, ...LEVELS_BY_NAME } } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream) };
 }
 
 /** OpenRouter's origin: every answer it gives states its cost in its usage (https://openrouter.ai/docs/use-cases/usage-accounting). */
@@ -181,7 +184,8 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // On OpenRouter, each answer's end is kept as it streams by, for a rate limit it ends in (limitedWords).
     const tap = piOnOpenRouter(target) ? tapped(upstream) : undefined;
     const sendWith = tap?.fetch ?? upstream;
-    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}) };
+    const level = levelOf(body);
+    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -420,10 +424,25 @@ type MessagesBlock = { type: string; text?: string; id?: string; name?: string; 
 type MessagesRequest = {
   model?: string;
   max_tokens?: number;
+  thinking?: { type?: string };
+  output_config?: { effort?: unknown };
   system?: string | MessagesBlock[];
   messages?: { role: "user" | "assistant"; content: string | MessagesBlock[] }[];
   tools?: { name: string; description?: string; input_schema?: unknown }[];
 };
+
+/** pi-ai's thinking levels past off, each asked by its own name. */
+const NAMED_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/** How the route's translation has pi's session register a model that reasons: on Messages, with adaptive thinking whose
+ *  effort is the level's own name (a thinkingLevelMap of each level to itself), so a request carries the session's level
+ *  as it is, `output_config.effort`, and no budget the translation would have to read a level back from. Off maps to
+ *  nothing: a session at off sends thinking disabled, and no level reaches the model. */
+const LEVELS_BY_NAME = { reasoning: true, adaptiveThinking: true, thinkingLevelMap: Object.fromEntries(NAMED_LEVELS.map((level) => [level, level])) as ThinkingLevelMap } as const;
+/** The thinking level a Messages request from pi's session asks (LEVELS_BY_NAME), else undefined: none asked, or off. */
+function levelOf(body: MessagesRequest): (typeof NAMED_LEVELS)[number] | undefined {
+  const effort = body.output_config?.effort;
+  return body.thinking?.type === "adaptive" && (NAMED_LEVELS as readonly unknown[]).includes(effort) ? (effort as (typeof NAMED_LEVELS)[number]) : undefined;
+}
 
 /** A part of a pi-ai message, as the context carries it. */
 type Part = { readonly type: string; readonly [key: string]: unknown };

@@ -2134,6 +2134,7 @@ export type GetLearningCostResponse = {
       runs: number;
       mean_usd: number;
     } | null;
+    after_state: "priced" | "no_served_runs" | "cost_unknown";
     times_cheaper: number | null;
     hand_backs: {
       ran: number;

@@ -63,7 +63,7 @@ export default {
         if (shots) await markExample(page.getByTestId("held-out-test"));
         if (shots && width === WIDTHS[0]) await page.getByTestId("held-out-test").screenshot({ path: join(shots, `held-out-${theme}-${width}.png`) });
         const headline = await card.locator("h3 + p").textContent();
-        check(/before takeover, .* all-in after: 7\.0x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
+        check(/before takeover, .* all-in over 59 served runs after: 7\.7x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
         // The chart draws at 720px, then at its card's width once its ResizeObserver has answered: measure after that.
         // A chart that never fits is measured as it stands, and fails on the widths below.
         await page.waitForFunction(() => {

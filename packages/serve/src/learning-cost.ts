@@ -75,20 +75,31 @@ export const COST_RUNS_MAX = 10_000;
  *  agent's in percent to a tenth, and whether it `cleared` the bar promotion reads (learn/promote.ts withinBar). */
 export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; cleared: boolean };
 
+/** The paths a learned workflow served a run on: it ran first and answered alone (`workflow`) or handed back
+ *  (`handed_back`). A `replay` checks a new revision on a graded input and serves no one; an `agent` run is by hand. */
+export const SERVED_PATHS: readonly RunPath[] = ["workflow", "handed_back"];
+
+/** Why the after side has a figure or not: `priced`, it has; `no_served_runs`, no learned workflow has taken over (a
+ *  replay is no served run); `cost_unknown`, runs were served but none's all-in cost is known exactly. */
+export const AFTER_STATES = ["priced", "no_served_runs", "cost_unknown"] as const;
+export type AfterState = (typeof AFTER_STATES)[number];
+
 /** What the series shows: `takeover`, its first `workflow` run, null before one; `before`, the mean of the job's own $
  *  (learning left out) over its `agent` runs before the takeover (every one when there is none yet), whose cost is known
- *  exactly; `after`, the mean all-in $ (learning included) of every run from the takeover on whose total is known exactly;
- *  and `times_cheaper`, before over after to a tenth, once `after` counts CHEAPER_AFTER_RUNS runs or more and every run
- *  either side reads is known exactly, else null. The before side leaves learning out and the after side keeps it in, so
- *  the figure never flatters learning. `withheld`: after a takeover, how many runs either side reads have an unknown cost
- *  and how many one known only as at most (`cost_upper_bound`); while any does there is no ratio, null when none does.
- *  `hand_backs`: of the runs a learned workflow ran first on from the takeover on (`workflow` or `handed_back`), how many
- *  handed back; null before a takeover. `replay`: the serving promotion's, as given. Every one is over every run, never
- *  only the latest a read lists. */
+ *  exactly; `after`, the mean all-in $ (learning included) of the runs a learned workflow served from the takeover on
+ *  (SERVED_PATHS: never a replay, which checks a revision and serves no one, nor a run by hand) whose total is known
+ *  exactly, and `after_state` why it is null when it is; and `times_cheaper`, before over after to a tenth, once `after`
+ *  counts CHEAPER_AFTER_RUNS runs or more and every run either side reads is known exactly, else null. The before side
+ *  leaves learning out and the after side keeps it in, so the figure never flatters learning. `withheld`: after a
+ *  takeover, how many runs either side reads have an unknown cost and how many one known only as at most
+ *  (`cost_upper_bound`); while any does there is no ratio, null when none does. `hand_backs`: of the served runs from
+ *  the takeover on, how many handed back; null before a takeover. `replay`: the serving promotion's, as given. Every one
+ *  is over every run, never only the latest a read lists. */
 export type CostSummary = {
   takeover: { n: number; run_id: string } | null;
   before: { runs: number; mean_usd: number } | null;
   after: { runs: number; mean_usd: number } | null;
+  after_state: AfterState;
   times_cheaper: number | null;
   hand_backs: { ran: number; back: number } | null;
   withheld: { unknown: number; at_most: number } | null;
@@ -100,7 +111,9 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   // Each side's figures: the job's own $ before, all-in after; `bound`, known only as at most.
   type Figure = { value: number | null; bound: boolean };
   const beforeSide: Figure[] = (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent").map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
-  const afterSide: Figure[] = first < 0 ? [] : runs.slice(first).map((run) => ({ value: run.total_usd, bound: run.cost_upper_bound }));
+  // Served runs alone: a replay (a check of a new revision, at workflow cost) and a run by hand are never the after side.
+  const served = first < 0 ? [] : runs.slice(first).filter((run) => SERVED_PATHS.includes(run.path));
+  const afterSide: Figure[] = served.map((run) => ({ value: run.total_usd, bound: run.cost_upper_bound }));
   const mean = (side: Figure[]) => {
     const values = side.flatMap(({ value, bound }) => (value === null || bound ? [] : [value]));
     return values.length ? { runs: values.length, mean_usd: usd(values.reduce((a, b) => a + b, 0) / values.length) } : null;
@@ -113,9 +126,9 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   const atMost = read.filter(({ bound }) => bound).length;
   const withheld = first >= 0 && unknown + atMost > 0 ? { unknown, at_most: atMost } : null;
   const times = !withheld && before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
-  const ranFirst = first < 0 ? [] : runs.slice(first).filter((run) => run.path === "workflow" || run.path === "handed_back");
-  const handBacks = first < 0 ? null : { ran: ranFirst.length, back: ranFirst.filter((run) => run.path === "handed_back").length };
-  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, times_cheaper: times, hand_backs: handBacks, withheld, replay };
+  const handBacks = first < 0 ? null : { ran: served.length, back: served.filter((run) => run.path === "handed_back").length };
+  const afterState: AfterState = after ? "priced" : first < 0 ? "no_served_runs" : "cost_unknown";
+  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, after_state: afterState, times_cheaper: times, hand_backs: handBacks, withheld, replay };
 }
 
 /** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that
