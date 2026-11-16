@@ -444,6 +444,16 @@ const repicks = (step: unknown, check: QuoteRead): boolean => {
   const of = step.until.of;
   return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
+/** The labels of the steps inside `node` (a loop's body) that write state key `key` from a `state` map. The DSL sends
+ *  such a step only the keys its map names (each pass a fresh model session), so on a re-pick it never sees the failed
+ *  draft, and a map naming the answer fails the first pass, which has none yet: only a step with no map reads the whole
+ *  state. A map's or a composed workflow's own steps write their item's or child's state, not this one. */
+const answersFromStateMap = (node: unknown, key: string, depth = 0): string[] => {
+  if (!isNode(node) || depth > 32) return [];
+  const own = writeKeyOf(node) === key && node.state !== undefined ? [String(node.label ?? node.node).slice(0, 64)] : [];
+  const inner = node.node === "map" || node.node === "workflow" ? [] : childNodes(node).flatMap((child) => answersFromStateMap(child, key, depth + 1));
+  return [...own, ...inner];
+};
 /** The labels of the quote_missing escalates inside `node` (a loop's body), a composed workflow's included: each hands
  *  back on the first pass's miss, so a re-pick loop around one never re-picks. */
 const quoteEscalatesIn = (node: unknown, depth = 0): string[] => {
@@ -520,6 +530,9 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && quoteEscalatesIn(writer.body).length) {
       // A check inside the loop's body hands back on the first draft's miss: the loop never re-picks.
       problems.push(`the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} holds the quote_missing escalate ${JSON.stringify(quoteEscalatesIn(writer.body)[0])} in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`);
+    } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && repicks(writer, first) && answersFromStateMap(writer.body, answerPath.split(".")[0]).length) {
+      // The re-pick must see the failed draft: its step reads the whole state (no `state` map).
+      problems.push(`the step ${JSON.stringify(answersFromStateMap(writer.body, answerPath.split(".")[0])[0])} in the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} writes the answer from a "state" map, which passes it only the keys it names, so its second pass never sees the failed draft (and naming the answer there fails the first pass, before any draft exists): give it no "state" map, so it reads the whole run state, the failed draft included`);
     } else if (!problems.length && first && !checks.every((check) => repicks(writer, check))) {
       problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`);
     }

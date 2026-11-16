@@ -227,7 +227,10 @@ Over a cap is refused, never cut.
   reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
   Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
   `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
-  `pages`), its body the step that answers, which reads the failed draft in its state. A quote found first costs no
+  `pages`), its body the step that answers, which reads the failed draft in its state: that step has no `state` map
+  (the DSL sends a step with one only the keys it names, each pass a fresh model session, so the second pass would not
+  see the draft, and naming the answer there fails the first pass, before any draft exists), and a draft whose step
+  writing the answer in the loop has one is refused. A quote found first costs no
   re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. The check
   is a step of the top-level chain after the loop, never inside it: a `quote_missing` escalate anywhere in the loop's
   body (a composed workflow's included) hands back on the first draft's miss, so the loop never re-picks, and a draft
