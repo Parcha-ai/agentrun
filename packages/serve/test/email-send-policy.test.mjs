@@ -218,7 +218,9 @@ test("a template eval's thread run with a real account saved, not its case's fak
   const draft = await settled(server.api, runId);
   assert.equal(draft.status, "input_required", JSON.stringify(draft.pending));
   assert.deepEqual([draft.pending?.kind, draft.pending?.tool], ["approval", "email_draft"]);
-  const before = real.commands().length;
+  // Sign-ins, not lines: a stray connection on a fake's port (a local HTTP probe) logs lines that are no IMAP session.
+  const signIns = (faux) => faux.commands().filter((c) => /^LOGIN /.test(c)).length;
+  const before = signIns(real);
   assert.equal(await server.decide(runId, draft.pending.id, "allow"), 204);
   const { status, pending, view } = await until(async () => {
     const now = await settled(server.api, runId);
@@ -226,8 +228,8 @@ test("a template eval's thread run with a real account saved, not its case's fak
     return now.status === "completed" || now.status === "failed" || (now.status === "input_required" && now.pending?.id !== draft.pending.id) ? now : undefined;
   });
   assert.equal(status, "completed", `the send to eve asks nothing: the thread's people were never read off the real account: ${JSON.stringify(pending)}`);
-  assert.deepEqual(real.commands().slice(before), [], "no IMAP command reached the real account from the run");
+  assert.equal(signIns(real), before, "no IMAP session reached the real account from the run");
   const saw = sawOf(view.result?.final_answer).map((one) => (typeof one === "string" ? one : JSON.stringify(one)));
   assert.match(saw[1] ?? "", /^email_send: this eval run reads only its case's fake mailbox, and the server's email account is another\./, `the send refused in execute's words: ${saw.join(" | ")}`);
-  assert.deepEqual([real.sent().length, caseFake.sent().length, caseFake.commands().length], [0, 0, 0], "nothing sent, and the case's fake, not the account saved, never reached either");
+  assert.deepEqual([real.sent().length, caseFake.sent().length, signIns(caseFake)], [0, 0, 0], "nothing sent, and the case's fake, not the account saved, never reached either");
 });
