@@ -42,6 +42,7 @@ function manyLoops(t, server, store, record) {
     stopMarginMs: 2_000,
     pollMs: 20,
     commandPollMs: 200,
+    // What a failure names (where() below): the claims lost, and the first error the runner said.
     onEvent: (event) => {
       if (event.type === "claim-lost") said.lost += 1;
       if (event.type === "error") said.firstError ??= `${event.step}: ${event.message}`;
