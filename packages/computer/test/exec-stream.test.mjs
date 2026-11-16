@@ -40,6 +40,24 @@ test("a live, two-way exec that keeps text intact, with no timeout, passes every
 	assert.match(formatExecStream(report), /exec PASS/);
 });
 
+test("every command the pre-check starts, each check's and the probe's, stays at or under 32 KiB of argv, so a vendor with a 64 KiB cap runs it", async () => {
+	// The size as a vendor counts it: each argument's UTF-8 bytes, summed, no separator. Modal refuses 64 KiB or more.
+	const size = (argv) => argv.reduce((sum, word) => sum + Buffer.byteLength(word, "utf8"), 0);
+	const host = fakeExecHost();
+	const ended = [];
+	try {
+		const report = await checkExecStream(host, "machine-1", { ...QUICK, onCheck: (check) => ended.push({ id: check.id, calls: host.calls.length }) });
+		assert.equal(report.pass, true, formatExecStream(report));
+	} finally {
+		host.stopAll();
+	}
+	const over = host.calls.flatMap((call, i) => {
+		const by = ended.find((check) => i < check.calls)?.id ?? "the capability probe";
+		return size(call.argv) > 32 * 1024 ? [`${by} starts ${size(call.argv)} bytes of argv`] : [];
+	});
+	assert.deepEqual(over, []);
+});
+
 test("kill's probe reads a killed process its parent has not reaped yet (a zombie) as gone, and a live one as running", async (t) => {
 	if (!existsSync("/proc/self/status")) return t.skip("no /proc here: the probe falls back to kill -0 alone");
 	const probe = (pid) => spawnSync("sh", ["-c", PID_STATE_SCRIPT, "sh", String(pid)], { encoding: "utf8" }).stdout.trim();

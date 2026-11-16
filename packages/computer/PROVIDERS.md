@@ -163,6 +163,8 @@ It calls `exec` and nothing else, and checks the five rules: text of every kind 
 unread for 10 seconds, then reads it: a write may wait for the reader, but it must go on once stdout is read, and every
 byte must come back in order. Each failure says what your exec did wrong, such as "U+000A (at byte 12) came back on
 stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints `exec PASS`, write the rest.
+Every command it starts stays under 32 KiB of argv (the 1 MiB line is made in the machine), so a vendor that caps a
+command's arguments at 64 KiB, as Modal does, runs it.
 
 After the checks it prints what the machine offers, each fact with what it means for your host: whether root can make
 a network namespace (`unshare -n`, else `unshare -Urn`, the gVisor fence), whether root can open `/dev/fuse` (an Archil
