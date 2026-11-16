@@ -168,9 +168,9 @@ test("create then waits until boxd's agent is ready, and closes egress and hiber
 		["setEgressAllow", "m-1", ["none"]],
 		["setAutoHibernateTimeout", "m-1", 0],
 	]);
-	const failing = setup({}, { create: machine(), setEgressAllow: () => Promise.reject(named("APIStatusError", { grpcCode: 14 })) });
+	const failing = setup({}, { create: machine(), setEgressAllow: () => Promise.reject(named("APIStatusError", { grpcCode: 9 })) });
 	await assert.rejects(failing.host.create(request(), ctx), { name: "APIStatusError" }, "a setting that fails fails the create");
-	assert.deepEqual(failing.rec.calls.at(-1), ["delete", "m-1"], "and deletes the machine it made");
+	assert.deepEqual(failing.rec.calls.at(-1), ["delete", "m-1"], "and a refusal deletes the machine it made");
 	const open = setup();
 	await assert.rejects(open.host.create({ ...request(), egress: true }, ctx), (error) => error.code === "invalid" && /reaches nothing outside/.test(error.message));
 	assert.deepEqual(open.rec.calls, [], "no machine is made");
@@ -210,28 +210,38 @@ test("the provider's create whose wait for the machine throws RateLimitError fai
 	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [["delete", "m-1"]]);
 });
 
-test("a step that fails as vendor leaves its machine to the adapter's sweep by name, which deletes it and never a second create's", async () => {
+test("a step that fails as vendor or timeout leaves its machine to the adapter's sweep by name, which deletes it and never a second create's", async () => {
 	// Another provider instance's create of the same request finds no machine by the name once this one's is deleted,
-	// and makes its own (m-2). A delete here before the adapter's sweep would leave the sweep to find m-2 instead.
-	const deleted = new Set();
-	let mine;
-	const replacement = () => ({ ...mine, id: "m-2", status: "starting", createdAt: new Date(CREATED.getTime() + 60_000) });
-	const listing = () => (mine === undefined ? [] : deleted.has("m-1") ? [replacement()] : [mine]);
-	const { rec, provider } = setup(
-		{ timeouts: { ...TIMEOUTS, pollMs: 5 } },
-		{
-			list: listing,
-			create: (params) => (mine = machine({ name: params.name, labels: params.labels })),
-			waitUntilReady: () => Promise.reject(named("BoxdError", { message: "machine computer-x entered terminal state 'failed' while waiting" })),
-			get: (id) => (deleted.has(id) ? Promise.reject(named("NotFoundError")) : id === "m-1" ? mine : replacement()),
-			delete: (id) => void deleted.add(id),
-		},
-	);
-	const made = await provider.create(SPEC, { requestId: "r-vendor" });
-	assert.equal(made.ok, false);
-	assert.equal(made.error.code, "vendor");
-	assert.match(made.error.message, /entered terminal state 'failed'/);
-	assert.deepEqual(rec.calls.filter(([name]) => name === "delete"), [["delete", "m-1"]], "the machine this create made, and no other");
+	// and makes its own (m-2). A delete here before the adapter's sweep would leave the sweep to find m-2 instead. The
+	// adapter sweeps a vendor failure before create answers, and a timeout's once the host's call settles, after it.
+	const failures = [
+		["vendor", named("BoxdError", { message: "machine computer-x entered terminal state 'failed' while waiting" }), /entered terminal state 'failed'/],
+		["timeout", named("APIConnectionError", { message: "connection to boxd timed out" }), /connection to boxd timed out/],
+	];
+	for (const [code, failure, words] of failures) {
+		const deleted = new Set();
+		let mine;
+		const replacement = () => ({ ...mine, id: "m-2", status: "starting", createdAt: new Date(CREATED.getTime() + 60_000) });
+		const listing = () => (mine === undefined ? [] : deleted.has("m-1") ? [replacement()] : [mine]);
+		const { rec, provider } = setup(
+			{ timeouts: { ...TIMEOUTS, pollMs: 5 } },
+			{
+				list: listing,
+				create: (params) => (mine = machine({ name: params.name, labels: params.labels })),
+				waitUntilReady: () => Promise.reject(failure),
+				get: (id) => (deleted.has(id) ? Promise.reject(named("NotFoundError")) : id === "m-1" ? mine : replacement()),
+				delete: (id) => void deleted.add(id),
+			},
+		);
+		const made = await provider.create(SPEC, { requestId: `r-${code}` });
+		assert.equal(made.ok, false);
+		assert.equal(made.error.code, code);
+		assert.match(made.error.message, words);
+		const deletes = () => rec.calls.filter(([name]) => name === "delete");
+		for (let waited = 0; deletes().length === 0 && waited < 2_000; waited += 10) await new Promise((done) => setTimeout(done, 10));
+		await new Promise((done) => setTimeout(done, 200));
+		assert.deepEqual(deletes(), [["delete", "m-1"]], `${code}: the machine this create made, and no other`);
+	}
 });
 
 test("get reads the machine back: its labels, its state and when boxd made it", async () => {

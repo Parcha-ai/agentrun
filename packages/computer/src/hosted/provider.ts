@@ -238,7 +238,7 @@ const REFUSED_CREATE: ReadonlySet<ComputerError["code"]> = new Set(["invalid", "
  * nothing: a machine under the name then is another's (exists: another instance's create of the request), never
  * deleted. Any other failure (the vendor's, a timeout) may have made one, answered in time or after create gave up.
  */
-const mayHaveMade = (code: ComputerError["code"]) => !REFUSED_CREATE.has(code);
+export const mayHaveMade = (code: ComputerError["code"]) => !REFUSED_CREATE.has(code);
 
 /** An ISO time a label holds, or undefined when it is missing or not the ISO time create writes. */
 export function isoOf(written: string | undefined): Date | undefined {

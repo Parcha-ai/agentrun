@@ -6,7 +6,7 @@ import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { codeOfError } from "./hosted/process.js";
-import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, mayHaveMade } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
@@ -140,12 +140,13 @@ class BoxdHost implements MachineHost {
 	/**
 	 * An isolated machine (on none of the org's networks) with no standby, which would freeze a quiet computer. Once it is
 	 * ready: nothing out (the allowlist ["none"]) and no hibernation, since boxd's idle timers watch traffic and a computer
-	 * may have none. A step after the machine exists that throws an error the adapter reads as vendor is the adapter's to
-	 * clean up: it sweeps the request's name, finds this machine and deletes it. Deleted here first, the sweep would find
-	 * none and keep listing, and delete a second create's machine of the same request instead. Any other code (a
-	 * refusal, a timeout) the adapter reads as a create that made nothing, so the step deletes the machine by its id (best
-	 * effort) and throws its own error, the delete's outcome added in words. boxd's delete timer, written in the same call
-	 * that makes the machine, ends it at req.backstopAt, so it ends even when the server that made it is gone.
+	 * may have none. A step after the machine exists that throws an error the adapter reads as a create that may have made
+	 * one (mayHaveMade: vendor, timeout) is the adapter's to clean up: it sweeps the request's name, finds this machine and
+	 * deletes it (a timeout's once this call settles). Deleted here first, the sweep would find none and keep listing, and
+	 * delete a second create's machine of the same request instead. A refusal (limit, denied, ...) the adapter reads as a
+	 * create that made nothing, so the step deletes the machine by its id (best effort) and throws its own error, the
+	 * delete's outcome added in words. boxd's delete timer, written in the same call that makes the machine, ends it at
+	 * req.backstopAt, so it ends even when the server that made it is gone.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		if (req.egress) throw new HostError("invalid", "a boxd computer reaches nothing outside, and this request asks it to");
@@ -164,7 +165,7 @@ class BoxdHost implements MachineHost {
 			await this.machines.setEgressAllow(made.id, ["none"]);
 			await this.machines.setAutoHibernateTimeout(made.id, 0);
 		} catch (error) {
-			if (codeOfError(this, error) === "vendor") throw error;
+			if (mayHaveMade(codeOfError(this, error))) throw error;
 			throw await this.#unmade(made.id, error);
 		}
 		return { id: made.id };
