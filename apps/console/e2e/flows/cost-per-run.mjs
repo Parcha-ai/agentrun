@@ -64,6 +64,13 @@ export default {
         if (shots && width === WIDTHS[0]) await page.getByTestId("held-out-test").screenshot({ path: join(shots, `held-out-${theme}-${width}.png`) });
         const headline = await card.locator("h3 + p").textContent();
         check(/before takeover, .* all-in after: 7\.0x cheaper/.test(headline ?? ""), `${theme} ${width}px: the headline says ${headline}`);
+        // The chart draws at 720px, then at its card's width once its ResizeObserver has answered: measure after that.
+        // A chart that never fits is measured as it stands, and fails on the widths below.
+        await page.waitForFunction(() => {
+          const card = document.querySelector('[data-testid="cost-per-run"]');
+          const svg = card?.querySelector('[tabindex="0"] > svg');
+          return !!card && !!svg && svg.getBoundingClientRect().width <= card.getBoundingClientRect().width + 0.5;
+        }, null, { timeout: 5_000 }).catch(() => {});
         const m = await page.evaluate(measure);
         check(m, `${theme} ${width}px: no chart`);
         if (m.plotWidth > m.cardWidth + 0.5) wrong.push(`${theme} ${width}px: the plot is ${m.plotWidth}px in a ${m.cardWidth}px card`);

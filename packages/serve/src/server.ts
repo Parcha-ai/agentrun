@@ -147,7 +147,7 @@ import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, PAYLOAD_KEPT_BYTES, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
-import { applyBodyOf, choiceUnrunnable, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
 import { templateInstallLink, templateLink } from "./console-links.js";
 import { GITHUB_HOSTS } from "./template-source.js";
@@ -2292,9 +2292,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
     // /triggers hands back its own, so the owner can give it to the sender.
     const secrets: { trigger_id: string; secret: string }[] = [];
-    // A github trigger on a server GitHub is not connected to is skipped, never the apply: the agent stands, and the
-    // answer says to connect GitHub and apply again (a warning under triggers.<i>).
-    const unconnected = new Set<number>();
+    // A trigger this server can't set up yet (templates.ts TRIGGER_NOT_SET_UP_YET: a github one with GitHub not connected,
+    // a composio one Composio can't reach or run as here) is skipped, never the apply: the agent stands, and the answer
+    // says what to do (a warning under triggers.<i>). Kept with its refusal, whose words the warning carries.
+    const unconnected = new Map<number, ApiError>();
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         try {
@@ -2302,8 +2303,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ids.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
-          if (error instanceof ApiError && error.code === "github_not_connected" && isObject(trigger.source) && trigger.source.kind === "github") {
-            unconnected.add(i);
+          if (error instanceof ApiError && isObject(trigger.source) && notSetUpYet(trigger.source.kind, error.code)) {
+            unconnected.set(i, error);
             continue;
           }
           if (error instanceof ApiError && error.code === "input_invalid" && error.extra.fields) throw told(new ApiError("input_invalid", error.message, { ...error.extra, fields: error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}` })) }));
@@ -2337,12 +2338,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
       ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
       : []));
+    // Each composio trigger it skipped: which, the refusal's words, and where to make it once that's fixed.
+    const composioSkipped: InputIssue[] = made.triggers.flatMap((trigger, i) => {
+      const refused = unconnected.get(i);
+      return refused && isObject(trigger.source) && trigger.source.kind === "composio" ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: composioTriggerSkipped(pkg.name, trigger, refused.message), fix: COMPOSIO_TRIGGER_FIX }] : [];
+    });
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...appShort] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...appShort] };
     return { applied, minted };
   }
 

@@ -44,7 +44,7 @@ test("a cloud Android with phoned passes the phone kind, the ui fixture's Full c
 	// A run by kind leaves out the Core cases of groups a phone does not offer (exec, files, process): partial, with
 	// every case that ran passed. The kind's verdict is the phone's.
 	assert.equal(report.core, "partial", formatReport(report));
-	assert.ok(report.coreNotRun.every((id) => /^(exec|files|process)\./.test(id) || ["provider.deadline", "drift.arch", "isolation.vendor-agent", "isolation.root-runs", "input.click-lands", "input.actions-stops-at-first-failure", "apps.install-launch"].includes(id)), report.coreNotRun.join(" "));
+	assert.ok(report.coreNotRun.every((id) => /^(exec|files|process)\./.test(id) || ["provider.deadline", "drift.arch", "isolation.vendor-agent", "isolation.root-runs", "isolation.label-file", "input.click-lands", "input.actions-stops-at-first-failure", "apps.install-launch"].includes(id)), report.coreNotRun.join(" "));
 	assert.deepEqual(report.kindVerdict, { kind: "phone", verdict: "pass", reasons: [] }, formatReport(report));
 	const got = statuses(report);
 	const ui = ["ui.fixture-shape", "ui.refs-stable", "ui.expect", "ui.stale-ref", "ui.stale-point", "ui.route-reported", "ui.features-declared", "ui.features-off-refused", "ui.set-holds"];

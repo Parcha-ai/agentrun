@@ -2,8 +2,8 @@ import { agentHash } from "@/components/AgentPage";
 import { nativeReadinessOf } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { ToolBlockers } from "@/components/ToolBlockers";
-import { ArrowRight, Copy, Play } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, Copy, Eye, EyeOff, Play } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
@@ -91,9 +91,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [view, setView] = useState<"form" | "json">("form");
   const [pane, setPane] = useState<"code" | "response">(initialResult ? "response" : "code");
   const [lang, setLang] = useState<"curl" | "fetch">("curl");
-  // In a short viewport (a phone in landscape) the code and response panel is folded so the form gets the height, and
-  // Show code swaps the two. Taller viewports show both, as before.
-  const [showCode, setShowCode] = useState(false);
+  // The code and response panel folds to one bar, so the form gets the room while a person fills it in: its own button
+  // hides it and shows it again, and an answer opens it. It starts open where the two panels stand side by side (a wide,
+  // tall window, the grid's own condition below), and folded where they would stack, a phone: there the form comes
+  // first. A short viewport (a phone in landscape) has room for one panel only: open, the code takes the form's place.
+  const [showCode, setShowCode] = useState(() => !(typeof window !== "undefined" && typeof window.matchMedia === "function") || window.matchMedia("(min-width: 1024px) and (min-height: 501px)").matches);
+  const codePanel = useId();
   const [result, setResult] = useState<StartResult | null>(initialResult);
   // A refusal's issue at one of the typed fields (input.<key>, or an item's input.<key>.<i>) is said at that field.
   const fieldKeys = new Set(form?.fields.map(([k]) => k) ?? []);
@@ -147,20 +150,21 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
         {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk.runtime)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
-        <span className="flex-1" />
-        {!sdk && <span className="caps text-label text-muted-foreground">Live API</span>}
-        {!sdk && <Button size="sm" type="button" onClick={() => setShowCode((s) => !s)} aria-expanded={showCode} className="caps hidden border px-3 py-1.5 text-label text-muted-foreground hover:text-foreground short:inline-flex">{showCode ? "Hide code" : "Show code"}</Button>}
       </div>
-      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width. */}
+      {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
+          With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
+          the panel again floats where the one that hid it was, at the top right, over the Request header's free end;
+          so does it in a short window, which has no row to spare; where they stacked (a phone held upright), it is a bar
+          under the form, where the panel's own header was. */}
       {sdk ? <section className="space-y-4 p-5 md:p-8">
         <h2 className="text-lg font-semibold">Run through your backend</h2>
         <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
         <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
-      </section> : <div className="grid min-h-0 flex-1 grid-cols-1 lg:[@media(min-height:501px)]:grid-cols-2">
-        <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r", showCode && "short:hidden")}>
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
+      </section> : <div className={cn("relative grid min-h-0 flex-1 grid-cols-1", showCode ? "lg:[@media(min-height:501px)]:grid-cols-2" : "grid-rows-[minmax(0,1fr)_auto]")}>
+        <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b", showCode ? "lg:border-b-0 lg:border-r short:hidden" : "lg:[@media(min-height:501px)]:border-b-0 short:border-b-0")}>
+          <header className={cn("flex items-center justify-between border-b px-5 py-3 md:px-6", !showCode && "lg:[@media(min-height:501px)]:min-h-[57px] lg:[@media(min-height:501px)]:pr-80 short:min-h-[57px] short:pr-72")}>
             <span className="text-lead font-semibold">Request</span>
-            <span className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
+            <span role="group" aria-label="Request as" className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("min-h-6 border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
             {native && <div className="space-y-2 border p-4 text-small" role="status"><p>Native execution on {native.machine_id}: {native.project}. It reuses your native model, profile and sign-in. Native spend caps are unavailable. Use files already in the source project; uploaded attachments and effort overrides are unsupported.</p>{nativeBlocked && <p className="text-warning-text">{repo.trim() ? "This request selects a repository. Native execution uses its source project." : cap.trim() ? "This request has a spend cap. Native execution cannot enforce it." : effort || attachments.fileIds.length ? "This request has managed effort or attachments. Native execution uses its source configuration and project files." : "Verify a connected native launch before sending a run."}</p>}{!!repo.trim() && <Button size="sm" onClick={() => setRepo("")}>Use native source repository</Button>}{!!effort && <Button size="sm" onClick={() => setEffort("")}>Use native configured effort</Button>}{attachments.fileIds.length > 0 && <Button size="sm" onClick={() => attachments.clear()}>Remove uploaded attachments</Button>}{!!cap.trim() && <Button size="sm" onClick={() => setCap("")}>Remove cap for native execution</Button>}<a href={agentHash(agentId)} className="underline underline-offset-2">Open native connection</a></div>}
@@ -176,8 +180,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             ) : (
               <>
-                <Label name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
-                  <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
+                <Label htmlFor="playground-input" name={json ? "input" : "input.content"} required={!form || form.contentRequired} optional={!!form && !form.contentRequired} error={!built.ok && built.field === "input" && text ? built.message : undefined}>
+                  <Textarea id="playground-input" value={text} onChange={(e) => setText(e.target.value)} rows={json ? 7 : 4} placeholder={placeholder} className={field} />
                   {example && (
                     <p className="mt-1 font-mono text-label text-muted-foreground">
                       {exampleHint(example, "start", kind === "workflow" ? "workflow" : "agent")}
@@ -202,12 +206,12 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Picker label="Effort" value={effort} onChange={setEffort} className="w-full"
                     options={["", ...efforts].map((value) => ({ value, label: value || "Agent default" }))} />
                 </Label>}
-                {kind === "agentic" && !native && <Label name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
-                  <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
+                {kind === "agentic" && !native && <Label htmlFor="playground-repo" name="repo" note={NOTES.repo} error={!built.ok && built.field === "repo" ? built.message : undefined}>
+                  <Input id="playground-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
                 </Label>}
                 {kind === "agentic" && !native && (
-                  <Label name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <Input value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                  <Label htmlFor="playground-cap" name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
                     <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
                 )}
@@ -222,18 +226,27 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             </div>
           </footer>
         </section>
-        <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "short:hidden")}>
-          <header className="flex items-center justify-between border-b px-5 py-3 md:px-6">
-            <span className="flex gap-4 text-body">
-              <button type="button" onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
-              <button type="button" onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-primary" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
+        <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "lg:[@media(min-height:501px)]:absolute lg:[@media(min-height:501px)]:right-6 lg:[@media(min-height:501px)]:top-3 short:absolute short:right-5 short:top-3")}>
+          <header className={cn("flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 md:px-6", showCode ? "border-b py-3" : "py-2 lg:[@media(min-height:501px)]:p-0 short:p-0")}>
+            <span role="group" aria-label="Show" className={cn("flex gap-4 text-body", !showCode && "hidden")}>
+              <button type="button" aria-pressed={pane === "code"} onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
+              <button type="button" aria-pressed={pane === "response"} onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-primary" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono max-sm:hidden", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
             </span>
-            {pane === "code" && <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>}
+            <span className="ml-auto flex items-center gap-2">
+              <Button type="button" size="sm" className="max-sm:px-2" aria-expanded={showCode} aria-controls={codePanel} onClick={() => setShowCode((s) => !s)}>
+                {showCode ? <EyeOff aria-hidden /> : <Eye aria-hidden />} {showCode ? "Hide code and response" : "Show code and response"}
+              </Button>
+            </span>
           </header>
+          {/* Folded, the panel stays in the page, hidden: a run followed here keeps its place. */}
+          <div id={codePanel} className={cn("flex min-h-0 flex-1 flex-col", !showCode && "hidden")}>
           {pane === "code" ? (
             <>
-              <div className="flex gap-5 border-b px-5 text-small md:px-6">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
-              <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
+              <div className="flex items-center justify-between gap-3 border-b px-5 md:px-6">
+              <div role="group" aria-label="Code in" className="flex gap-5 text-small">{(["curl", "fetch"] as const).map((l) => <button key={l} type="button" aria-pressed={lang === l} onClick={() => setLang(l)} className={cn("-mb-px border-b-2 py-2.5", lang === l ? "border-primary" : "border-transparent text-muted-foreground")}>{l === "curl" ? "cURL" : "JavaScript"}</button>)}</div>
+                <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
+              </div>
+              <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
               <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
@@ -253,10 +266,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-small leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>
-              ) : <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
+              ) : <pre tabIndex={0} aria-label="Response body" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
               {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-small text-primary-text hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}
+          </div>
         </section>
       </div>}
     </div>
@@ -265,10 +279,13 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
 
 const field = "w-full border bg-card px-3 py-2.5 font-mono text-body outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
-function Label({ name, required, optional, note, error, children }: { name: string; required?: boolean; optional?: boolean; note?: string; error?: string; children: React.ReactNode }) {
+/** One field of the request under its name in the API. `htmlFor`: the id of the one control it names (a label, so a
+ *  press on the name goes to the field); without it the name is the name of the group of controls under it. */
+function Label({ name, htmlFor, required, optional, note, error, children }: { name: string; htmlFor?: string; required?: boolean; optional?: boolean; note?: string; error?: string; children: React.ReactNode }) {
+  const id = useId();
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between"><span className="font-mono text-body">{name}</span>{required ? <span className="text-label text-muted-foreground">required</span> : optional && <span className="text-label text-muted-foreground">optional</span>}</div>
+    <div role={htmlFor ? undefined : "group"} aria-labelledby={htmlFor ? undefined : id}>
+      <div className="mb-2 flex items-center justify-between">{htmlFor ? <label htmlFor={htmlFor} className="font-mono text-body">{name}</label> : <span id={id} className="font-mono text-body">{name}</span>}{required ? <span className="text-label text-muted-foreground">required</span> : optional && <span className="text-label text-muted-foreground">optional</span>}</div>
       {children}
       {note && <p className="mt-1.5 text-small text-muted-foreground">{note}</p>}
       {error && <p className="mt-1.5 font-mono text-small text-destructive-text" role="alert">{error}</p>}

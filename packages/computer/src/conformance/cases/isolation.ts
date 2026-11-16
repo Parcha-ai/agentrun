@@ -1,8 +1,10 @@
 // A program the computer's user runs reaches none of the vendor's own agent, whose ports each provider declares
 // (capabilities().vendorAgentPorts), and no outside address, sees its own loopback alone, and finds nothing listening in
-// its own network but computerd: computerd init --own-network at work. And it can write nothing root runs.
+// its own network but computerd: computerd init --own-network at work. And it can write nothing root runs, nor read the
+// labels a provider keeps in the machine.
 import { DAEMON_IN_COMPUTER, SOCKET_DIR } from "../../drift.js";
 import { EGRESS_PROXY_SOCKET } from "../../hosted/network.js";
+import { LABEL_FILE } from "../../hosted/scripts.js";
 import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET } from "../../mount-archil.js";
 import type { ComputerClient } from "../../protocol.js";
 import type { Case, CaseContext } from "../types.js";
@@ -190,6 +192,19 @@ export const isolationCases: Case[] = [
 		needs: ["exec"],
 		async run(t) {
 			await assertRootRunsClosed(t);
+		},
+	},
+	{
+		// The label file of a host that keeps no labels is root's alone: absent or unreadable passes, readable fails.
+		id: "isolation.label-file",
+		level: "core",
+		group: "isolation",
+		needs: ["files"],
+		async run(t) {
+			const read = await t.client.call("files.read", { path: LABEL_FILE });
+			if (read.ok) return t.assert(false, `the computer's user reads ${LABEL_FILE}, the labels the provider keeps in the machine`);
+			t.observe(`${LABEL_FILE}, as the computer's user: ${read.error.code}`);
+			t.refused(read, `files.read of ${LABEL_FILE} as the computer's user`, ["not_found", "denied"]);
 		},
 	},
 ];

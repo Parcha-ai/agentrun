@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentsList } from "./AgentsList";
 import { Playground } from "./Playground";
 import { agentFixture } from "@/fixtures";
@@ -9,7 +9,7 @@ import { agentFixture } from "@/fixtures";
 // these pin the variant classes and the structure; the walk measures real boxes at 390×844 and 844×390.
 //  - Portrait only (a narrow, tall screen): the Agents search box drops its placeholder (only its first letter fitted)
 //    and keeps the magnifying glass and its accessible name. Landscape and desktop keep the placeholder.
-//  - Short viewports only (max-height 500px, a phone in landscape): the Playground's code panel folds behind Show code,
+//  - Short viewports only (max-height 500px, a phone in landscape): the Playground's code panel starts folded behind Show code and response,
 //    so the form gets the height; the agent header keeps its place; Send sits in its own row. Taller ones are unchanged.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -40,21 +40,45 @@ describe("Playground in a short viewport (a phone in landscape)", () => {
   const base = agentFixture("invoice-checker");
   const open = () => mount(createElement(Playground, { agents: [base], efforts: [], origin: "http://serve.test", agentId: base.agent_id }));
   const codeSection = (host: HTMLElement) => host.querySelector('section[aria-label="Code and response"]');
-  const toggle = (host: HTMLElement) => [...host.querySelectorAll("button")].find((b) => /^(Show|Hide) code$/.test((b.textContent ?? "").trim())) as HTMLButtonElement | undefined;
+  const toggle = (host: HTMLElement) => [...host.querySelectorAll("button")].find((b) => /^(Show|Hide) code and response$/.test((b.textContent ?? "").trim())) as HTMLButtonElement | undefined;
+  const body = (host: HTMLElement) => [...host.querySelectorAll("[id]")].find((e) => e.id === toggle(host)!.getAttribute("aria-controls")) ?? null;
+  const request = (host: HTMLElement) => host.querySelector('section[aria-label="Request"]');
+  // The panel starts open only where the two stand side by side: a wide and tall window.
+  const short = (isShort: boolean) => vi.stubGlobal("matchMedia", (query: string) => ({ matches: !isShort && query === "(min-width: 1024px) and (min-height: 501px)", media: query, addEventListener() {}, removeEventListener() {} }));
+  afterEach(() => vi.unstubAllGlobals());
 
-  it("folds the code panel behind Show code there, and only there: a taller viewport shows it as before", async () => {
+  it("starts with the code panel folded to its bar there, and Show code and response puts it in the form's place", async () => {
+    short(true);
     const host = open();
-    expect(classes(codeSection(host))).toContain("short:hidden");
     const t = toggle(host);
-    expect(t, "a Show code toggle").toBeTruthy();
+    expect(t, "a Show code and response button").toBeTruthy();
+    expect(t!.textContent?.trim()).toBe("Show code and response");
     expect(t!.getAttribute("aria-expanded")).toBe("false");
-    // The toggle shows only in a short viewport.
-    expect(classes(t)).toContain("hidden");
-    expect(classes(t)).toContain("short:inline-flex");
+    expect(classes(body(host))).toContain("hidden");
+    expect(classes(request(host))).not.toContain("short:hidden");
     await act(async () => { t!.click(); });
-    expect(classes(codeSection(host))).not.toContain("short:hidden");
-    expect(toggle(host)!.textContent?.trim()).toBe("Hide code");
+    expect(toggle(host)!.textContent?.trim()).toBe("Hide code and response");
     expect(toggle(host)!.getAttribute("aria-expanded")).toBe("true");
+    expect(classes(body(host))).not.toContain("hidden");
+    // One panel at a time in a short viewport: open, the code panel takes the form's place.
+    expect(classes(request(host))).toContain("short:hidden");
+  });
+
+  it("a wide, tall window starts with the code panel open, and its own button folds it to one bar under the form", async () => {
+    short(false);
+    const host = open();
+    const grid = request(host)!.parentElement;
+    expect(toggle(host)!.textContent?.trim()).toBe("Hide code and response");
+    expect(classes(body(host))).not.toContain("hidden");
+    expect(classes(grid)).toContain("lg:[@media(min-height:501px)]:grid-cols-2");
+    await act(async () => { toggle(host)!.click(); });
+    expect(toggle(host)!.textContent?.trim()).toBe("Show code and response");
+    expect(toggle(host)!.getAttribute("aria-expanded")).toBe("false");
+    // Folded, the panel stays in the page (a run followed there keeps its place) and the form gets the whole width.
+    expect(body(host)).not.toBeNull();
+    expect(classes(body(host))).toContain("hidden");
+    expect(classes(grid)).not.toContain("lg:[@media(min-height:501px)]:grid-cols-2");
+    expect(classes(grid)).toContain("grid-rows-[minmax(0,1fr)_auto]");
   });
 
   it("a wide but short window gets one column too: the two-column grid applies only when the window is tall enough, so a folded panel leaves no half of the page empty", () => {
