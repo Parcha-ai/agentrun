@@ -630,6 +630,29 @@ test("the quote check re-picks once: a checked answer step that hands back on it
   assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
 });
 
+// A loop's `until` is one predicate, and no predicate joins two quote_missing checks: a loop watching one of several
+// lets the others hand back with no re-pick (quotes: string | [{quote}], answered with records, while the loop reads the
+// string). So every quote check of the answer must be the one the loop waits on: one place holding the quotes.
+const ONE_CHECK = (n) => `the answer's quotes are checked by ${n} different quote_missing escalates, and a re-pick loop's "until" reads one check (no predicate joins two), so the loop would let the others hand back with no re-pick: give the answer's quotes one place one check reads (a quote, a list of quotes or a list of records each holding its quote at one field), one quote_missing escalate on it after the step that writes the answer, and that step the body of a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": <that same quote_missing>}, "body": <the step>}`;
+
+test("the re-pick waits on every quote check: a draft with two different quote checks is refused, its loop watching either one; the same check twice is one", () => {
+  const RECORDS = { type: "array", items: { type: "object", properties: { quote: { type: "string" }, url: { type: "string" } } } };
+  const STRING_READ = { path: "answer.quotes", field: undefined, pages: ["page"] };
+  const RECORD_READ = { path: "answer.quotes", field: "quote", pages: ["page"] };
+  const twoChecks = (watched) => citedDraft({
+    answer: { properties: { refunds: { type: "boolean" }, quotes: { anyOf: [{ type: "string" }, RECORDS] } } },
+    check: watched,
+    extra: [{ node: "escalate", label: "quotes_records", when: QUOTES_WHEN(watched === STRING_READ ? RECORD_READ : STRING_READ), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }],
+  });
+  assert.deepEqual(quoteCheckProblems(twoChecks(STRING_READ)), [ONE_CHECK(2)], "the loop reads the string: an answer of records exits it after one draft");
+  assert.deepEqual(quoteCheckProblems(twoChecks(RECORD_READ)), [ONE_CHECK(2)], "the loop reads the records: an answer of one string exits it after one draft");
+  // Two escalates of the same check are one check: the loop waits on it.
+  const same = citedDraft({ extra: [{ node: "escalate", label: "quotes_again", when: QUOTES_WHEN({ pages: ["page"] }), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] });
+  assert.deepEqual(quoteCheckProblems(same), []);
+  // The compile turn is told the same.
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /`until` reads one check: keep the answer's quotes in one place one `quote_missing` reads/);
+});
+
 test("quoteCheckProblems: quotes anywhere in the answer's schema (by $ref, items, anyOf), pages fetched by a call under a map, and nothing asked of an answer with no quotes or a workflow that fetches nothing", () => {
   assert.deepEqual(quoteCheckProblems(JSON.parse(richWorkflow())), [], "no quotes in the answer");
   const noFetch = citedDraft({ check: null });
