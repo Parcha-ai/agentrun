@@ -25,6 +25,7 @@ import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, mo
 import type { EvalFakes } from "./runner/adapter-run-spec.js";
 import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
+import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
 import { EMAIL_TOOLS } from "./email/names.js";
 import { CALENDAR_EVENTS } from "./calendar/names.js";
 import type { IcsFaux } from "./calendar/ics-faux.js";
@@ -37,7 +38,7 @@ import { WEB_FETCH_TOOL } from "./web-fetch.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
-import { applyBodyOf, compiled, filledPins, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -70,7 +71,7 @@ export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's o
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -87,7 +88,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -144,6 +145,9 @@ export type EvalCase = {
    *  (calendar/ics-faux.ts) and saved as the eval's own server's calendar for the case's runs, read by calendar_events with
    *  the case's `now` as its clock. Absent: the server's calendar, if any. */
   calendar?: { file: string; text: string };
+  /** The case's fake feed (eval-feed.ts): each run gets fake feeds served from it, read in place of the URLs the
+   *  package's feed trigger names, and is started by that trigger as it would be. */
+  feed?: FeedFixture;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -331,7 +335,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     const c = typeof spec === "string" ? (bad(`${at}/case.yaml: ${spec}`), {}) : isObject(spec) ? spec : (bad(`${at}/case.yaml: is not a mapping`), {});
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
     // An email case's run is on its trigger's input, and its prompt gives none (`email` below holds it to that).
-    if (c.email === undefined) for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
+    if (c.email === undefined && c.feed === undefined) for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
     if (c.parameters !== undefined && !isObject(c.parameters)) bad(`${at}/case.yaml: parameters is a mapping, the apply's parameters`);
     if (c.grants !== undefined && !(Array.isArray(c.grants) && c.grants.every((g) => typeof g === "string"))) bad(`${at}/case.yaml: grants is a list of gate names (mcp:<server>/<tool>)`);
     if (c.now !== undefined && instantOf(c.now) === undefined) bad(`${at}/case.yaml: now is a date and time with its offset (2026-11-14T09:00:00Z), not ${JSON.stringify(c.now)}`);
@@ -429,6 +433,31 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       }
       if (!(pkg.tools ?? []).includes(CALENDAR_EVENTS)) bad(`${at}/case.yaml: calendar fakes the server's calendar, and the package's tools don't name ${CALENDAR_EVENTS}`);
     }
+    // The case's fake feed: its fixture, and the package's feed trigger its runs start from (eval-feed.ts).
+    let feed: FeedFixture | undefined;
+    if (c.feed !== undefined) {
+      const path = inside(root, c.feed, "file");
+      let parsed: unknown;
+      if (c.email !== undefined) bad(`${at}/case.yaml: a case's run is started by one trigger: email or feed, not both`);
+      if (!path) bad(`${at}/case.yaml: feed is a feed fixture file in the case (not ${JSON.stringify(c.feed)})`);
+      else {
+        try {
+          parsed = JSON.parse(readFileSync(join(root, path), "utf8"));
+        } catch (error) {
+          bad(`${at}/${path}: is not JSON (${(error as Error).message})`);
+        }
+      }
+      const fixture = parsed === undefined ? undefined : feedFixtureOf(parsed, `${at}/${path}`, bad);
+      const kindOf = (t: Json) => (isObject(t.source) ? t.source.kind : undefined);
+      const named = fixture?.trigger === undefined ? undefined : pkg.triggers.find((t) => t.name === fixture.trigger);
+      const starts = named ? [named] : pkg.triggers.filter((t) => kindOf(t) === "feed");
+      if (!fixture) undefined;
+      else if (fixture.trigger !== undefined && !named) bad(`${at}/${path}: trigger ${fixture.trigger} is not one of the package's triggers (${pkg.triggers.map((t) => String(t.name)).join(", ") || "none"})`);
+      else if (starts.length !== 1 || kindOf(starts[0]!) !== "feed") bad(`${at}/${path}: a feed case starts its run through the package's feed trigger, and ${named ? `${fixture.trigger} is a ${String(kindOf(named))} trigger` : starts.length ? `the package has ${starts.length}: name one with trigger` : "the package has none"}`);
+      else feed = { ...fixture, trigger: String(starts[0]!.name) };
+      // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
+      if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a feed case's run is started by the package's trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
+    }
     const learning: EvalCase["learning"] = [];
     if (c.learning !== undefined) {
       const folder = inside(root, c.learning, "dir");
@@ -463,7 +492,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -978,7 +1007,9 @@ type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
 /** `fakes`: each run's fakes by its agent's id, read by the eval's own runner (runner/beside.ts evalFakes). `clock`: the
  *  eval's own server's trigger clock, for a package with an email case (a run starts as its trigger's); `owner`, the
  *  headers of that server's console session, which saves and removes its email account (a secret write). */
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes>; clock?: EvalClock; owner?: Record<string, string> };
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes>; clock?: EvalClock; owner?: Record<string, string>; feedRoutes?: FeedRoutes };
+/** The running feed case's route to its fake feeds (eval-feed.ts CaseFeeds), which the eval's own server reads through. */
+type FeedRoutes = { route?: (url: string) => string | undefined };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
 /** A run's tokens, model requests and tool calls as its end wrote them (GET /stats over the run's agent: an eval makes a
  *  fresh agent for each run). `input` excludes cached input: the whole prompt is `input + cache_read + cache_write`.
@@ -1023,7 +1054,11 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   if (refused.length) throw new CaseError(options.dir, refused);
   // Each run's fakes, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
   const fakes = new Map<string, EvalFakes>();
-  const clock = !options.server && cases.some((one) => one.email) ? evalClock() : undefined;
+  const clock = !options.server && cases.some((one) => one.email || one.feed) ? evalClock() : undefined;
+  // Where the eval's own server reads each feed: the running feed case's fakes (feedRun). A feed no case routes (a feed
+  // trigger of the package's that the eval deletes once the apply made it, read at its creation) is served nowhere: its
+  // read is unreachable at once, never sent, so no eval reads a real feed.
+  const feedRoutes: FeedRoutes = {};
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
   // The in-process server's data: the owner's folder (options.data), which stays, or one in the scratch, gone with it.
@@ -1055,7 +1090,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // A token of its own on a scratch folder. On the owner's folder none is given: a given token makes the server remove
     // the folder's .token (server.ts), the owner's saved API token, so the eval's server reads the one the folder keeps,
     // and a .token it had to make there (the folder had none) goes when it closes, the folder as it was.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, feedsAt: (url: string) => feedRoutes.route?.(url) ?? null, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });
@@ -1124,7 +1159,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
   const ctx: Ctx = {
-    api, pkg, options, made, log, fakes, ...(clock ? { clock } : {}), ...(owner ? { owner } : {}),
+    api, pkg, options, made, log, fakes, feedRoutes, ...(clock ? { clock } : {}), ...(owner ? { owner } : {}),
     graderAgent: async () => {
       if (grader) return grader;
       // No computer: a grader reads, it never runs a command, and a server with no sandbox would fail its run at the start.
@@ -1209,7 +1244,7 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       for (let n = 1; n <= total; n++) {
         options.signal?.throwIfAborted();
         for (const fake of fakes) fake.calls.length = 0;
-        const result = layout ? await mailRun(ctx, one, n, fakes, layout) : await runOnce(ctx, one, n, fakes);
+        const result = layout ? await mailRun(ctx, one, n, fakes, layout) : one.feed ? await feedRun(ctx, one, n, fakes) : await runOnce(ctx, one, n, fakes);
         log(`case ${one.name} run ${n}${layout ? ` (${layout})` : ""}: ${result.status}, ${result.pass ? "pass" : "FAIL"}${result.cost_usd === null ? "" : ` (${usd(result.cost_usd)})`}`);
         runs.push(result);
       }
@@ -1281,24 +1316,46 @@ async function mailRun(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
 /** An email run's fake account, on its layout. */
 type MailOf = { faux: EmailFaux; layout: Layout };
 
-/** The run of an email case's trigger on `mail`: its first poll waited on at the apply, on the account as seeded (the history),
- *  then the case's new message delivered, and the trigger's own next time come on the eval's clock, so its poll (or its
- *  schedule) fires through the engine's path; the run is its firing's. */
-async function triggerRun(ctx: Ctx, one: EvalCase, agentId: string, triggerId: string, mail: MailOf): Promise<{ runId: string; before: Snapshot }> {
+/** One run of a feed case: its fake feeds started from the case's fixture, the trigger's URLs (filled from the case's
+ *  parameters, as the apply fills them) routed to them before the apply makes the trigger, the run started as the
+ *  package's trigger starts it (runOnce), then the fakes closed: runs never share one. */
+async function feedRun(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[]): Promise<RunResult> {
+  const fixture = one.feed!;
+  const source = filledSource(ctx.pkg, fixture.trigger, one.parameters);
+  const urls = Array.isArray(source?.urls) ? source.urls.filter((url): url is string => typeof url === "string") : [];
+  if (!urls.length) throw new ApiFailure(`the package's trigger ${fixture.trigger} names no feed URL with the case's parameters`);
+  const feeds = await caseFeeds(fixture, urls, typeof source?.items === "string" ? source.items : undefined);
+  ctx.feedRoutes!.route = feeds.route;
+  try {
+    return await runOnce(ctx, one, n, fakes, undefined, feeds);
+  } finally {
+    ctx.feedRoutes!.route = undefined;
+    await feeds.close();
+  }
+}
+
+/** The run of an email or feed case's trigger: its first poll waited on at the apply, on what the fake held then (the
+ *  history), then the case's new message or item delivered (`deliver`, given the trigger as it reads), and the trigger's
+ *  own next time come on the eval's clock, so its poll (or its schedule) fires through the engine's path; the run is its
+ *  firing's. `hint`: what to add when it starts none. */
+async function triggerRun(ctx: Ctx, name: string, agentId: string, triggerId: string, deliver: (trigger: Json) => void, hint: string): Promise<string> {
   const { api, options } = ctx;
-  const fixture = one.email!;
-  const read = () => api("GET", `/triggers/${encodeURIComponent(triggerId)}`).then((answered) => expectOk(`reading the package's trigger ${fixture.trigger}`, answered));
-  const firings = async () => (expectOk(`reading the firings of ${fixture.trigger}`, await api("GET", `/triggers/${encodeURIComponent(triggerId)}/firings`)).firings as Json[] | undefined) ?? [];
-  const known = new Set((await firings()).map((f) => String(f.key)));
-  const trigger = await read();
-  // The new message arrives where the trigger watches: its source's mailbox (INBOX by default).
-  const watched = isObject(trigger.source) && typeof trigger.source.mailbox === "string" ? trigger.source.mailbox : "INBOX";
-  if (fixture.message) seed(mail.faux, mail.layout, watched, fixture.message);
-  // What the account holds before the run: what it adds or moves is read against this.
-  const before = snapshot(mail.faux);
-  if (typeof trigger.next_at !== "string") throw new ApiFailure(`the package's trigger ${fixture.trigger} has no next time to fire at${isObject(trigger.disabled) ? ` (it is off: ${String(trigger.disabled.detail ?? trigger.disabled.reason)})` : ""}`);
-  ctx.clock!.to(Date.parse(trigger.next_at));
+  const read = () => api("GET", `/triggers/${encodeURIComponent(triggerId)}`).then((answered) => expectOk(`reading the package's trigger ${name}`, answered));
+  const firings = async () => (expectOk(`reading the firings of ${name}`, await api("GET", `/triggers/${encodeURIComponent(triggerId)}/firings`)).firings as Json[] | undefined) ?? [];
   const deadline = Date.now() + (options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS);
+  // Its first poll takes its start (the apply kicks it, and answers once it has or at FIRST_POLL_WAIT_MS, if slower): the
+  // case's mail or item goes in only once that poll has read, or it would be part of the start and fire nothing, and the
+  // clock moves only once that poll has set the next time, or the poll's next time would be a tick past the clock's.
+  let trigger = await read();
+  while (trigger.last_check === null && trigger.enabled === true && Date.now() < deadline) {
+    options.signal?.throwIfAborted();
+    await sleep(100);
+    trigger = await read();
+  }
+  const known = new Set((await firings()).map((f) => String(f.key)));
+  deliver(trigger);
+  if (typeof trigger.next_at !== "string") throw new ApiFailure(`the package's trigger ${name} has no next time to fire at${isObject(trigger.disabled) ? ` (it is off: ${String(trigger.disabled.detail ?? trigger.disabled.reason)})` : ""}`);
+  ctx.clock!.to(Date.parse(trigger.next_at));
   for (;;) {
     options.signal?.throwIfAborted();
     const fresh = (await firings()).filter((f) => !known.has(String(f.key)));
@@ -1306,17 +1363,17 @@ async function triggerRun(ctx: Ctx, one: EvalCase, agentId: string, triggerId: s
     if (started) {
       ctx.made.runs.add(String(started.run_id));
       // Off at once, before the run is waited on or graded: a repeating schedule (or a second message) would start
-      // another paid run on the same fake account, which no report counts and which changes what the graders read.
-      expectOk(`turning off the package's trigger ${fixture.trigger} after its run started`, await api("PATCH", `/triggers/${encodeURIComponent(triggerId)}`, { enabled: false }));
-      return { runId: String(started.run_id), before };
+      // another paid run on the same fake, which no report counts and which changes what the graders read.
+      expectOk(`turning off the package's trigger ${name} after its run started`, await api("PATCH", `/triggers/${encodeURIComponent(triggerId)}`, { enabled: false }));
+      return String(started.run_id);
     }
     const failed = fresh.find((f) => f.status === "failed");
-    if (failed) throw new ApiFailure(`the package's trigger ${fixture.trigger} fired and its run was refused: ${String(failed.error ?? "no reason given")}`);
+    if (failed) throw new ApiFailure(`the package's trigger ${name} fired and its run was refused: ${String(failed.error ?? "no reason given")}`);
     if (Date.now() > deadline) {
       const last = (await read()).last_check;
       const check = isObject(last) ? last : undefined;
       const said = fresh.flatMap((f) => (typeof f.reason === "string" ? [f.reason] : []));
-      throw new ApiFailure(`the package's trigger ${fixture.trigger} started no run of ${agentId} within ${Math.round((options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS) / 1000)} s of its time${check ? `; its last check: ${String(check.message)}` : ""}${said.length ? `; its firings: ${said.join(" ")}` : ""}${fixture.message ? " (its accept rules may leave the case's message)" : ""}`);
+      throw new ApiFailure(`the package's trigger ${name} started no run of ${agentId} within ${Math.round((options.queueTimeoutMs ?? QUEUE_TIMEOUT_MS) / 1000)} s of its time${check ? `; its last check: ${String(check.message)}` : ""}${said.length ? `; its firings: ${said.join(" ")}` : ""}${hint}`);
     }
     await sleep(200);
   }
@@ -1324,7 +1381,7 @@ async function triggerRun(ctx: Ctx, one: EvalCase, agentId: string, triggerId: s
 
 /** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. An
  *  email case's run (`mail`) is its trigger's (triggerRun). */
-async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], mail?: MailOf): Promise<RunResult> {
+async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], mail?: MailOf, feeds?: CaseFeeds): Promise<RunResult> {
   const { api, pkg, options, made } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
   await serverPins(ctx, one);
@@ -1335,7 +1392,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // every run. Left where the run before took it, a schedule's next time is a later day each run, with no mail of the case.
   // A millisecond before it: a schedule's next time is strictly after the clock, so a case whose `now` is the schedule's
   // own time (an evening digest's 18:00) fires for that time, not the next day's.
-  if (mail && one.now !== undefined) ctx.clock?.set(instantOf(one.now)! - 1);
+  // An email or feed case's run is its one trigger's (readCases chose it): `via`, that trigger's name.
+  const via = mail ? one.email!.trigger : feeds ? one.feed!.trigger : undefined;
+  if (via !== undefined && one.now !== undefined) ctx.clock?.set(instantOf(one.now)! - 1);
   // Approvals never, for the eval's own agent only: a run that stopped at its first ask would measure nothing. The
   // package's default (ask, say, for a template whose tools cost money) is the owner's at install, and stays as it is;
   // the report says how it was measured.
@@ -1344,14 +1403,14 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   made.agents.push(agentId);
   // An eval's agent runs only the eval's runs: the package's triggers (a weekly schedule, say) would start paid runs of
   // their own, into the fakes' logs, and outlive the eval. Each one the apply made is deleted at once.
-  // An email case's run is its one trigger's (readCases chose it): that one stays, until the run is read.
+  // An email or feed case's run is its one trigger's: that one stays, until the run is read.
   let kept: string | undefined;
   for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) {
-    if (mail && !kept && expectOk(`reading the package's trigger ${id}`, await api("GET", `/triggers/${encodeURIComponent(id)}`)).name === one.email!.trigger) kept = id;
+    if (via !== undefined && !kept && expectOk(`reading the package's trigger ${id}`, await api("GET", `/triggers/${encodeURIComponent(id)}`)).name === via) kept = id;
     else made.triggers.add(id);
   }
   await deleteTriggers(api, made, true);
-  if (mail && !kept) throw new ApiFailure(`the apply made no trigger named ${one.email!.trigger}`);
+  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   if (kept) made.triggers.add(kept);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
   // The saved server the apply gave each need ({toolkit: server}; null for a need it left unset).
@@ -1365,18 +1424,30 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // The case's fakes, for this run's agent alone, before its run can be claimed.
   ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}) });
   let runId: string;
-  let after: (() => Promise<MailboxRecord>) | undefined;
-  if (mail && kept) {
+  let fired: Fired | undefined;
+  if (via !== undefined && kept) {
     // A trigger the package ships off is turned on for the eval's run: its start is taken then, on the history.
-    if (expectOk(`reading the package's trigger ${one.email!.trigger}`, await api("GET", `/triggers/${encodeURIComponent(kept)}`)).enabled !== true) expectOk(`turning on the package's trigger ${one.email!.trigger}`, await api("PATCH", `/triggers/${encodeURIComponent(kept)}`, { enabled: true }));
-    const started = await triggerRun(ctx, one, agentId, kept, mail);
-    runId = started.runId;
-    after = () => mailboxAfter(mail.faux, mail.layout, started.before);
+    if (expectOk(`reading the package's trigger ${via}`, await api("GET", `/triggers/${encodeURIComponent(kept)}`)).enabled !== true) expectOk(`turning on the package's trigger ${via}`, await api("PATCH", `/triggers/${encodeURIComponent(kept)}`, { enabled: true }));
+    if (mail) {
+      const fixture = one.email!;
+      let before: Snapshot | undefined;
+      runId = await triggerRun(ctx, via, agentId, kept, (trigger) => {
+        // The new message arrives where the trigger watches: its source's mailbox (INBOX by default).
+        const watched = isObject(trigger.source) && typeof trigger.source.mailbox === "string" ? trigger.source.mailbox : "INBOX";
+        if (fixture.message) seed(mail.faux, mail.layout, watched, fixture.message);
+        // What the account holds before the run: what it adds or moves is read against this.
+        before = snapshot(mail.faux);
+      }, fixture.message ? " (its accept rules may leave the case's message)" : "");
+      fired = { mailbox: () => mailboxAfter(mail.faux, mail.layout, before!) };
+    } else {
+      runId = await triggerRun(ctx, via, agentId, kept, () => feeds!.deliver(), " (its accept rules may leave the case's item)");
+      fired = {};
+    }
   } else runId = await startRun(ctx, agentId, { input: runInput(one.input, one.fields), ...(one.maxCostUsd !== undefined ? { max_cost_usd: one.maxCostUsd } : {}) }, "starting the run");
   // A run started is paid for: whatever fails after this (a read, a grade) still gives it a result, with its cost where
   // the server says it, so the case's total never drops it.
   try {
-    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId, used, after);
+    return await ranOnce(ctx, one, n, fakes, agent, agentId, runId, used, fired);
   } catch (error) {
     if (!(error instanceof ApiFailure)) throw error;
     const cost = await api("GET", `/runs/${runId}`).then((read) => (read.status === 200 && isObject(read.body) ? costOf(read.body) : null), () => null);
@@ -1387,9 +1458,13 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
 }
 
+/** A run its trigger started (an email or feed case's): `mailbox`, an email run's fake mailbox, read once it has ended. */
+type Fired = { mailbox?: () => Promise<MailboxRecord> };
+
 /** The started run `runId` of `agentId` waited on, read and graded; its calls on the saved servers `used` gave its needs
- *  ({toolkit: server}) named on the package's toolkits; an email run's fake mailbox read once it has ended (`after`). */
-async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string, used: Readonly<Record<string, string>>, after?: () => Promise<MailboxRecord>): Promise<RunResult> {
+ *  ({toolkit: server}) named on the package's toolkits; a run its trigger started (`fired`) graded on the input it was
+ *  given, an email run's fake mailbox read once it has ended. */
+async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], agent: Json, agentId: string, runId: string, used: Readonly<Record<string, string>>, fired?: Fired): Promise<RunResult> {
   const { api, options } = ctx;
   const stopped = () => options.signal?.throwIfAborted();
   const ended = await waitRun(api, runId, Date.now() + (options.runTimeoutMs ?? RUN_TIMEOUT_MS), options.signal, options.queueTimeoutMs);
@@ -1398,7 +1473,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   await settle(ctx, runId, ended.status);
   // Its metrics once it has ended (a cancelled run's end writes them too), before the eval's server can go.
   const metrics = await metricsOf(api, agentId, options.signal);
-  const mailbox = after ? await after() : undefined;
+  const mailbox = fired?.mailbox ? await fired.mailbox() : undefined;
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
@@ -1416,8 +1491,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   };
   stopped();
   const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics, ...(mailbox ? { mailbox_after: mailbox.after } : {}) };
-  // The grader's task: the input the run was given, an email run's its trigger's (the payload in its tag).
-  const task = after ? inputMessage(view.input ?? {}) : inputMessage(runInput(one.input, one.fields));
+  // The grader's task: the input the run was given, an email or feed run's its trigger's (the payload in its tag).
+  const task = fired ? inputMessage(view.input ?? {}) : inputMessage(runInput(one.input, one.fields));
   // Waiting on its person's answer (an ask_person question, a tool call's approval) is where such a run stops, and is
   // graded; paused at its cap, or stopped, it did not get there.
   const pending = isObject(view.pending) && typeof view.pending.kind === "string" ? view.pending.kind : undefined;

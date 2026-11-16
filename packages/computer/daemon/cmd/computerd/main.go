@@ -28,6 +28,16 @@
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
+//	computerd attach    for a machine the server cannot reach: dial the server's attach socket (AGENTRUN_ATTACH_URL,
+//	                    wss:// or ws://) with the machine's token (AGENTRUN_ATTACH_TOKEN, art_ and 64 hex) as a bearer
+//	                    and the subprotocol agentrun.computer.<protocol>, and bridge each socket to a connection of
+//	                    init's as stdio does, a text message a line (spec/computer/attach.md). It pings every 20 s,
+//	                    closes with 4408 after 60 s with nothing heard, and dials again as attach.md's close codes say
+//	                    (1 s doubling to 60 s, less up to a fifth at random). It exits 0 on SIGTERM or SIGINT, 1 when
+//	                    init's socket is gone, 2 with no URL or token or a malformed one, 3 when the server refuses the
+//	                    token (401 at the upgrade, or 4401), 4 when its hello is not what the token was minted for
+//	                    (4400), 5 for another protocol version or a hello its kind does not serve (426, or 4426). No
+//	                    line it logs holds the token
 //	computerd probe [--sockets] [--connect <host:port>[/udp]]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
 //	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets it can connect to
@@ -71,6 +81,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -79,12 +90,15 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilrelay"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilsync"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/attach"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 )
 
 var version = "0.0.0-dev"
@@ -109,6 +123,16 @@ func main() {
 		fmt.Println(version)
 	case "stdio":
 		os.Exit(daemon.Bridge(daemon.SocketPath(), os.Stdin, os.Stdout, os.Stderr))
+	case "attach":
+		cfg, err := attach.FromEnv(daemon.SocketPath(), "agentrun.computer."+methods.ProtocolVersion, rpc.MaxLine)
+		if err != nil {
+			logger.Printf("attach: %v", err)
+			os.Exit(attach.ExitUsage)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		code := attach.Run(ctx, cfg, logger)
+		stop()
+		os.Exit(code)
 	case "init":
 		opts, ok := initOptionsOf(logger, os.Args[2:])
 		if !ok {
@@ -416,7 +440,7 @@ func egressProxy(logger *log.Logger, args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] | stdio | attach | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
 	os.Exit(2)
 }
 

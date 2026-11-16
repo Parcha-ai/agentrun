@@ -1,10 +1,10 @@
-// The machine host: what a vendor writes to put computers on its machines. A host has twelve members: its descriptor
-// and its facts, five calls about its own machines (create, get, list, delete, exec), and five optional hooks (upload,
-// errorCode, extend, check, keepalive). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider
-// does: the spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels,
-// list and attach, the deadline and extend, the keepalive's timer, the wait after a delete, the sweep of a lost create,
-// the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
-// (PROVIDERS.md, "The twelve members").
+// The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
+// and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
+// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
+// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels (packed
+// where the host declares it), list and attach, the deadline and extend, the wait after a delete, the sweep of a lost
+// create, the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
+// (PROVIDERS.md, "The eleven members").
 import type { ProviderDescriptor } from "./descriptor.js";
 import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -35,7 +35,12 @@ export interface MachineHost {
 	 * name where it has one (Machine.name), and the adapter writes req.labels into the machine itself.
 	 */
 	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
-	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
+	/**
+	 * One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a
+	 * HostError not_found), and for a record the vendor keeps of a machine that is deleted and will not come back
+	 * (Hyperbrowser's closed, Blaxel's TERMINATED), which list leaves out too. gone is one still being destroyed: it holds
+	 * the wait after a delete, so a host that reads a kept record gone waits out goneMs on every delete.
+	 */
 	get(id: string, ctx: HostCall): Promise<Machine | undefined>;
 	/**
 	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all.
@@ -45,7 +50,9 @@ export interface MachineHost {
 	 * none): the adapter keeps those whose get does. A listing may lag a create: two creates of one request on two
 	 * provider instances can then both make a machine, and the adapter deletes every one but the oldest (createdAt), so
 	 * a vendor may see a second create deleted. With facts.labels "machine" it lists by req.name where the vendor lists by
-	 * name, else every machine: the adapter keeps those of the name, then reads each one's labels from inside it.
+	 * name, else every machine: the adapter keeps those of the name and of our image (Machine.image), then reads each
+	 * one's labels from inside it; one whose read fails or does not end is left out of that listing, in words, except
+	 * from a listing by a request's name, which that read fails.
 	 */
 	list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]>;
 	/**
@@ -63,7 +70,10 @@ export interface MachineHost {
 	 *   the process writes them, while it runs. Not request and response, never held until the process exits.
 	 * - Text intact. UTF-8 text both ways, every code point as it was: long lines, \r and \r\n kept (no terminal, no
 	 *   newline translation), nothing added or dropped. Everything the adapter sends or reads is text (the bridge's JSON
-	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this.
+	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this. A
+	 *   vendor whose input call ends what it is given with a newline (Daytona's) holds a write's last partial line until
+	 *   its newline or end(), so the process reads its stdin as written: the bridge's lines end in one, and what is
+	 *   read by length is followed by end().
 	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
 	 *   on the stream, are off.
 	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
@@ -71,7 +81,7 @@ export interface MachineHost {
 	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
 	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
 	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
-	 * this from them with framedExec (./hosted/framed-exec.ts). The exec pre-check (conformance --exec-stream,
+	 * this from them with framedExec (./hosted/framed-exec.ts), as Daytona's does. The exec pre-check (conformance --exec-stream,
 	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 */
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
@@ -91,16 +101,10 @@ export interface MachineHost {
 	 * vendor's own timer (facts.lifetime "vendor"), or the janitor's deadline label (facts.lifetime "janitor"). A refusal
 	 * (a HostError limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past
 	 * the most: nothing moves then. The adapter reads the end back with get (deadlineOf, the deadline label: a vendor that
-	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. With facts.labels
-	 * "machine", the adapter then moves the deadline label in the machine itself. Optional: a host without it has no extend.
+	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. Optional: a host without
+	 * it has no extend, and a host with facts.labels "machine" is refused one.
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
-	/**
-	 * The vendor's cheapest call that restarts its idle timer (facts.idleMs) on the machine: Cube's or E2B's setTimeout,
-	 * Railway's heartbeat. The adapter calls it every idleMs / 3 from create, or attach, until release; one that fails is
-	 * told through onNote and the next one tries again. Required with facts.idleMs; a host with no idle timer leaves it out.
-	 */
-	keepalive?(id: string, ctx: HostCall): Promise<void>;
 	/**
 	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
 	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
@@ -144,8 +148,8 @@ export interface MachineRequest {
 	lifetimeMs: number;
 	/**
 	 * An ISO time a margin past the most the machine's deadline may reach: create + maxLifetimeMs + BACKSTOP_MARGIN_MS. A
-	 * janitor's host whose vendor has a delete or stop timer of its own sets it here (facts.backstop), so the machine still
-	 * ends when the server that made it is gone. A vendor-lifetime host ignores it.
+	 * janitor's host whose vendor has a delete or stop timer of its own sets it here, so the machine still ends when the
+	 * server that made it is gone. A vendor-lifetime host ignores it.
 	 */
 	backstopAt: string;
 	/**
@@ -178,11 +182,17 @@ export interface Machine {
 	 */
 	name?: string;
 	/**
+	 * The image the vendor reads back for this machine. Required in practice with facts.labels "machine": list runs the
+	 * label read only in a machine of the provider's image option or a box image (isBoxImage), and leaves one with none
+	 * out, in words.
+	 */
+	image?: string;
+	/**
 	 * starting: not yet running; stopped: there, not running, and not being deleted (paused, asleep): listed, so the
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
 	 */
 	state: "starting" | "running" | "stopped" | "gone";
-	/** With facts.lifetime "vendor", or facts.backstop: when the vendor's timer ends it. */
+	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
 	endsAt?: Date;
 	/**
 	 * When the vendor made it, by its clock, where it says. Two creates of one request on two provider instances can each
@@ -219,26 +229,17 @@ export type HostDescriptor = Pick<ProviderDescriptor, "id" | "label" | "network"
  */
 export interface HostFacts {
 	/**
-	 * child: the vendor's agent is the machine's first process and starts init, after the adapter closes the session
-	 * buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a path socket. pid1:
-	 * init is the machine's main process (Modal's, whose sandbox ends when it does), started by request.command.
+	 * child: the vendor starts the adapter's processes through exec, and the adapter starts init that way at boot, after
+	 * it closes the session buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a
+	 * path socket. pid1: init is the machine's main process (Modal's, whose sandbox ends when it does), started by
+	 * request.command.
 	 */
 	daemon: "child" | "pid1";
 	isolation: ComputerCapabilities["isolation"];
 	/** Who ends a machine at its deadline: the vendor's timer, or the janitor by label. */
 	lifetime: "vendor" | "janitor";
-	/**
-	 * A janitor's host claims its create sets the vendor's own delete or stop timer from req.backstopAt, and get reads it
-	 * back as endsAt (the Core case provider.backstop checks it). Only this lets a janitor's host keep labels "machine".
-	 */
-	backstop?: true;
 	/** The vendor's hard cap of a machine's life; the adapter's maxLifetimeMs may only lower it. */
 	maxLifetimeMs: number;
-	/**
-	 * Where the vendor ends or pauses a machine no call reaches for a while (an idle timer that can't be switched off): that
-	 * window, in whole ms. The adapter then calls keepalive every idleMs / 3 while it holds the machine. Default none.
-	 */
-	idleMs?: number;
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
@@ -249,12 +250,14 @@ export interface HostFacts {
 	/**
 	 * The most a machine's labels may be, the adapter's own with the caller's: count, how many; bytes, every name and
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
-	 * Absent: no bound. packed: the host stores the labels as packLabels packs them (./hosted/values.ts: one name to
-	 * list by, the map in parts of at most valueBytes each) and get answers unpackLabels' map; count and bytes are then
-	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
-	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as
-	 * JSON, what a run's output keeps (OUTPUT_MAX, ./hosted/process.ts). Only with
-	 * lifetime "vendor" or backstop: a machine whose labels were never written is ended by the vendor's timer alone.
+	 * Absent: no bound. packed: the adapter packs the labels it gives create (packLabels, ./hosted/values.ts: one name to
+	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
+	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. "machine":
+	 * the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in the machine (LABEL_FILE,
+	 * ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as JSON, what a run's output
+	 * keeps (OUTPUT_MAX, ./hosted/process.ts). Only with lifetime "vendor", since a machine whose labels were never
+	 * written is ended by the vendor's timer alone, and no extend. get and list answer each machine's image
+	 * (Machine.image): the labels are read only in one of ours.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**

@@ -124,6 +124,11 @@ __all__ = [
     "CreateTriggerBodySource7AcceptItemWhereItem1",
     "CreateTriggerBodySource7AcceptItemWhereItem2",
     "CreateTriggerBodySource7AcceptItemWhereItem3",
+    "CreateTriggerBodySource8",
+    "CreateTriggerBodySource8AcceptItem",
+    "CreateTriggerBodySource8AcceptItemWhereItem1",
+    "CreateTriggerBodySource8AcceptItemWhereItem2",
+    "CreateTriggerBodySource8AcceptItemWhereItem3",
     "CreateTriggerBodyTarget1",
     "CreateTriggerBodyTarget2",
     "CreateTriggerBodyTarget2Input",
@@ -159,6 +164,11 @@ __all__ = [
     "CreateTriggerResponseSource7AcceptItemWhereItem1",
     "CreateTriggerResponseSource7AcceptItemWhereItem2",
     "CreateTriggerResponseSource7AcceptItemWhereItem3",
+    "CreateTriggerResponseSource8",
+    "CreateTriggerResponseSource8AcceptItem",
+    "CreateTriggerResponseSource8AcceptItemWhereItem1",
+    "CreateTriggerResponseSource8AcceptItemWhereItem2",
+    "CreateTriggerResponseSource8AcceptItemWhereItem3",
     "CreateTriggerResponseTarget1",
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
@@ -466,6 +476,11 @@ __all__ = [
     "GetTriggerResponseSource7AcceptItemWhereItem1",
     "GetTriggerResponseSource7AcceptItemWhereItem2",
     "GetTriggerResponseSource7AcceptItemWhereItem3",
+    "GetTriggerResponseSource8",
+    "GetTriggerResponseSource8AcceptItem",
+    "GetTriggerResponseSource8AcceptItemWhereItem1",
+    "GetTriggerResponseSource8AcceptItemWhereItem2",
+    "GetTriggerResponseSource8AcceptItemWhereItem3",
     "GetTriggerResponseTarget1",
     "GetTriggerResponseTarget2",
     "GetTriggerResponseTarget2Input",
@@ -644,6 +659,11 @@ __all__ = [
     "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1",
     "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2",
     "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource8",
+    "ListTriggersResponseTriggersItemSource8AcceptItem",
+    "ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource8AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource8AcceptItemWhereItem3",
     "ListTriggersResponseTriggersItemTarget1",
     "ListTriggersResponseTriggersItemTarget2",
     "ListTriggersResponseTriggersItemTarget2Input",
@@ -937,6 +957,11 @@ __all__ = [
     "UpdateTriggerBodySource7AcceptItemWhereItem1",
     "UpdateTriggerBodySource7AcceptItemWhereItem2",
     "UpdateTriggerBodySource7AcceptItemWhereItem3",
+    "UpdateTriggerBodySource8",
+    "UpdateTriggerBodySource8AcceptItem",
+    "UpdateTriggerBodySource8AcceptItemWhereItem1",
+    "UpdateTriggerBodySource8AcceptItemWhereItem2",
+    "UpdateTriggerBodySource8AcceptItemWhereItem3",
     "UpdateTriggerBodyTarget1",
     "UpdateTriggerBodyTarget2",
     "UpdateTriggerBodyTarget2Input",
@@ -973,6 +998,11 @@ __all__ = [
     "UpdateTriggerResponseSource7AcceptItemWhereItem1",
     "UpdateTriggerResponseSource7AcceptItemWhereItem2",
     "UpdateTriggerResponseSource7AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource8",
+    "UpdateTriggerResponseSource8AcceptItem",
+    "UpdateTriggerResponseSource8AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource8AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource8AcceptItemWhereItem3",
     "UpdateTriggerResponseTarget1",
     "UpdateTriggerResponseTarget2",
     "UpdateTriggerResponseTarget2Input",
@@ -4063,7 +4093,7 @@ class ReceiveHookComposioResponseObject11(TypedDict):
 
 class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -4098,7 +4128,7 @@ class ReceiveHookComposioResponseObject2(TypedDict):
 
 class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -5782,7 +5812,7 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
 
 class _TimelineRowTriggerRequired(TypedDict):
     id: str
-    source: Literal["schedule", "webhook", "slack", "github", "composio", "email"]
+    source: Literal["schedule", "webhook", "slack", "github", "composio", "email", "feed"]
     owner: bool
 
 
@@ -6130,7 +6160,7 @@ class FeaturesWebhooks(TypedDict):
 
 class _FeaturesTriggersRequired(TypedDict):
     routes: bool
-    sources: list[Literal["schedule", "webhook", "github", "composio", "email"]]
+    sources: list[Literal["schedule", "webhook", "github", "composio", "email", "feed"]]
     targets: list[Literal["start_run", "message_run"]]
     min_every_s: int
     history_kept: int
@@ -7010,7 +7040,7 @@ class PutToolSettingsResponseBrowser(_PutToolSettingsResponseBrowserRequired, to
 
 
 class _CreateTriggerBodyRequired(TypedDict):
-    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6 | CreateTriggerBodySource7
+    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6 | CreateTriggerBodySource7 | CreateTriggerBodySource8
     target: CreateTriggerBodyTarget1 | CreateTriggerBodyTarget2
 
 
@@ -7171,6 +7201,40 @@ class CreateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerBodySource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+
+
+class CreateTriggerBodySource8(_CreateTriggerBodySource8Required, total=False):
+    every_s: int
+    items: str
+    id: str
+    accept: list[CreateTriggerBodySource8AcceptItem]
+
+
+class _CreateTriggerBodySource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource8AcceptItem(_CreateTriggerBodySource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource8AcceptItemWhereItem1 | CreateTriggerBodySource8AcceptItemWhereItem2 | CreateTriggerBodySource8AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource8AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource8AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7196,7 +7260,7 @@ class _CreateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6 | CreateTriggerResponseSource7
+    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6 | CreateTriggerResponseSource7 | CreateTriggerResponseSource8
     target: CreateTriggerResponseTarget1 | CreateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -7362,6 +7426,40 @@ class CreateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _CreateTriggerResponseSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class CreateTriggerResponseSource8(_CreateTriggerResponseSource8Required, total=False):
+    items: str
+    id: str
+    accept: list[CreateTriggerResponseSource8AcceptItem]
+
+
+class _CreateTriggerResponseSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource8AcceptItem(_CreateTriggerResponseSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource8AcceptItemWhereItem1 | CreateTriggerResponseSource8AcceptItemWhereItem2 | CreateTriggerResponseSource8AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource8AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource8AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _CreateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7414,7 +7512,7 @@ class CreateTriggerResponseDisabled5(TypedDict):
 
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7453,7 +7551,7 @@ class DeleteTriggerResponseComposio(TypedDict):
 
 class _FireTriggerResponseRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7480,7 +7578,7 @@ class ListTriggerFiringsResponse(TypedDict):
 
 class _ListTriggerFiringsResponseFiringsItemRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7505,7 +7603,7 @@ class _GetTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6 | GetTriggerResponseSource7
+    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6 | GetTriggerResponseSource7 | GetTriggerResponseSource8
     target: GetTriggerResponseTarget1 | GetTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -7669,6 +7767,40 @@ class GetTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _GetTriggerResponseSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class GetTriggerResponseSource8(_GetTriggerResponseSource8Required, total=False):
+    items: str
+    id: str
+    accept: list[GetTriggerResponseSource8AcceptItem]
+
+
+class _GetTriggerResponseSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource8AcceptItem(_GetTriggerResponseSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource8AcceptItemWhereItem1 | GetTriggerResponseSource8AcceptItemWhereItem2 | GetTriggerResponseSource8AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource8AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource8AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _GetTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7721,7 +7853,7 @@ class GetTriggerResponseDisabled5(TypedDict):
 
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7756,7 +7888,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6 | ListTriggersResponseTriggersItemSource7
+    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6 | ListTriggersResponseTriggersItemSource7 | ListTriggersResponseTriggersItemSource8
     target: ListTriggersResponseTriggersItemTarget1 | ListTriggersResponseTriggersItemTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -7920,6 +8052,40 @@ class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _ListTriggersResponseTriggersItemSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class ListTriggersResponseTriggersItemSource8(_ListTriggersResponseTriggersItemSource8Required, total=False):
+    items: str
+    id: str
+    accept: list[ListTriggersResponseTriggersItemSource8AcceptItem]
+
+
+class _ListTriggersResponseTriggersItemSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource8AcceptItem(_ListTriggersResponseTriggersItemSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource8AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource8AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource8AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _ListTriggersResponseTriggersItemTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -7972,7 +8138,7 @@ class ListTriggersResponseTriggersItemDisabled5(TypedDict):
 
 class _ListTriggersResponseTriggersItemLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -8010,7 +8176,7 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
-    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6 | UpdateTriggerBodySource7
+    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6 | UpdateTriggerBodySource7 | UpdateTriggerBodySource8
     target: UpdateTriggerBodyTarget1 | UpdateTriggerBodyTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -8166,6 +8332,40 @@ class UpdateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerBodySource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+
+
+class UpdateTriggerBodySource8(_UpdateTriggerBodySource8Required, total=False):
+    every_s: int
+    items: str
+    id: str
+    accept: list[UpdateTriggerBodySource8AcceptItem]
+
+
+class _UpdateTriggerBodySource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource8AcceptItem(_UpdateTriggerBodySource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource8AcceptItemWhereItem1 | UpdateTriggerBodySource8AcceptItemWhereItem2 | UpdateTriggerBodySource8AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource8AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource8AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerBodyTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -8191,7 +8391,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6 | UpdateTriggerResponseSource7
+    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6 | UpdateTriggerResponseSource7 | UpdateTriggerResponseSource8
     target: UpdateTriggerResponseTarget1 | UpdateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -8356,6 +8556,40 @@ class UpdateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
     prefix: str
 
 
+class _UpdateTriggerResponseSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class UpdateTriggerResponseSource8(_UpdateTriggerResponseSource8Required, total=False):
+    items: str
+    id: str
+    accept: list[UpdateTriggerResponseSource8AcceptItem]
+
+
+class _UpdateTriggerResponseSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource8AcceptItem(_UpdateTriggerResponseSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource8AcceptItemWhereItem1 | UpdateTriggerResponseSource8AcceptItemWhereItem2 | UpdateTriggerResponseSource8AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource8AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource8AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
 class _UpdateTriggerResponseTarget1Required(TypedDict):
     kind: Literal["start_run"]
     agent_id: str
@@ -8408,7 +8642,7 @@ class UpdateTriggerResponseDisabled5(TypedDict):
 
 class _UpdateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "email", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str

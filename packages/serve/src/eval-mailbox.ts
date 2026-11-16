@@ -196,7 +196,10 @@ export function mailboxVerdict(record: MailboxRecord, id: string, inside: string
  *  fired. A run starts as its trigger's would: the eval moves the clock to the trigger's next time, and the trigger's own
  *  poll or schedule fires through the engine's path, never a paste of its payload into an ordinary run. `set` puts it at
  *  `at`, back or forward, and holds it there until the next `to`, before a case's run makes its trigger: a case with a
- *  clock of its own (`now`) fires every run on its own date, never on the schedule's next time after the run before. */
+ *  clock of its own (`now`) fires every run on its own date, never on the schedule's next time after the run before.
+ *  A timer `to` leaves fires when the clock, running on from `at`, reaches its time: the engine reads its wait on one
+ *  now() and the timer is armed on the next, so one armed across a millisecond's tick is a millisecond past the time the
+ *  eval moves to, and its first real wait, armed before the move, is a whole interval on. */
 export type EvalClock = TriggerClock & { to(at: number): void; set(at: number): void };
 export function evalClock(): EvalClock {
   let skew = 0;
@@ -204,6 +207,13 @@ export function evalClock(): EvalClock {
   let held: number | undefined;
   const holds = new Set<{ at: number; fire: () => void; timer: NodeJS.Timeout }>();
   const now = () => held ?? Date.now() + skew;
+  // Its real timer, for the wait from the clock's time to its own (a wait past setTimeout's range fires early, and the
+  // engine, finding nothing due, arms again).
+  const wait = (hold: { at: number; fire: () => void; timer: NodeJS.Timeout }) => {
+    clearTimeout(hold.timer);
+    hold.timer = setTimeout(() => holds.delete(hold) && hold.fire(), Math.max(0, Math.min(hold.at - now(), 2 ** 31 - 1)));
+    hold.timer.unref();
+  };
   // Every timer due by the clock's time, fired.
   const due = () => {
     for (const hold of [...holds]) {
@@ -217,9 +227,7 @@ export function evalClock(): EvalClock {
     now,
     arm(fire, ms) {
       const hold = { at: now() + ms, fire, timer: undefined as unknown as NodeJS.Timeout };
-      // A timer past setTimeout's range fires early, and the engine, finding nothing due, arms again.
-      hold.timer = setTimeout(() => holds.delete(hold) && fire(), Math.max(0, Math.min(ms, 2 ** 31 - 1)));
-      hold.timer.unref();
+      wait(hold);
       holds.add(hold);
       return { clear: () => (clearTimeout(hold.timer), holds.delete(hold), undefined) };
     },
@@ -229,6 +237,8 @@ export function evalClock(): EvalClock {
       held = undefined;
       skew = from - Date.now();
       due();
+      // The rest wait from the clock's new time, not from where it was when they were armed.
+      for (const hold of holds) wait(hold);
     },
     set(at) {
       held = at;

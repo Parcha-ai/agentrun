@@ -1272,7 +1272,8 @@ Exa takes keyless use only over IPv4, straight to its endpoint (through a proxy 
 free limit Exa answers a `429` with a Retry-After, or a tool result it marks rate-limited (`ai.exa/rateLimited`); the
 search is tried once more after a jittered 1 to 3 s, or the Retry-After Exa names when it is 5 s or less (a longer one, as
 for its daily limit, is not waited out). Still limited, the tool answers `{error}` in our words: `Free web search is
-rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.` Any
+rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant
+the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key.` Any
 other failure Exa answers reads `Free web search failed. Exa said: "<the first sentence of its text>"`, cut at 120
 characters; Exa's own instructions (a key for its MCP URL) are never passed on.
 
@@ -1775,7 +1776,9 @@ another loopback address, the IPv6 loopback, or a name for this machine in its p
 loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
 its own port. What that leaves: such an authorization server can still have this server send its sign-in and refresh
 requests to other ports on that same loopback host (a port Docker publishes there, say), blind, learning only the
-endpoint and its status, never a body. That is why the allowance is for development only. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+endpoint and its status, never a body. That is why the allowance is for development only. A sign-in at Google's authorization endpoint
+(`accounts.google.com`) asks for offline access (`access_type=offline` and `prompt=consent`), the one way Google gives a
+refresh token; any other authorization server's page is opened as it was. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the
@@ -2397,6 +2400,46 @@ Quotes answer `501 unsupported_here` naming the feature. Home export and import 
 `POST /runs/{id}/kill` are not served here: they answer `404`, and the served document leaves them out (its
 `info.x-agentrun-serve.not_served` lists them). Capabilities declare each of the four false. No run waits out `input_wait_s` here (`null`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+### Feed triggers
+
+A feed trigger starts a run for each new or updated item in one or more feeds: RSS (2.0 and 1.0), Atom, JSON Feed, or a
+plain JSON list such as GitHub's pulls API. It polls, as the email trigger does, so nothing outside has to reach the
+server.
+
+**The source.** `{kind: "feed", urls, every_s?: 900, items?, id?, accept?}`. `urls` is 1 to 20 `http` or `https` URLs,
+no two alike, each read every `every_s` seconds (the schedules' bounds). `items` and `id` are JSON Pointers for a JSON
+list: where its array is (`""`, the whole answer, by default) and where each item's id is (`/id` by default). A rule's
+`accept` takes the event `item`; its `where` reads the payload.
+
+**From the first poll.** A feed trigger starts watching at its first poll: making it, or turning it on again, polls at
+once and answers when that poll has (10 s at most). The items already in its feeds start no run, and the check says so
+(`Watching <feed> from now: the 25 items already there won't start runs.`). Turning it on again forgets what it read, so it
+starts again from that poll; editing it keeps what it read. A URL added by an edit starts the same way at its own first
+read.
+
+**What fires.** Each item fires once, and again when its `updated` time moves past the one it fired on (an
+incident that is updated); items with no id are told apart by link, then by title and date. Each URL keeps the keys of
+the items it has seen, the larger of 1,000 and twice the feed's length, so an item that drops off and comes back stays seen.
+One poll starts 20 runs at most across all its URLs, oldest first; the rest wait for the next poll, which the check says
+(`Read <feed>: 26 new, 6 more at the next check.`). Each read is conditional on the last ETag and Last-Modified, and a
+`304` reads nothing.
+
+**When a feed fails.** A read that fails (no answer, an HTTP error, a body that isn't a feed) is said in the trigger's last
+check and read again at the next poll; nothing it saw is lost. A `410`, or a `404` three checks running, stops that URL:
+it is no longer read and the check names it. The trigger turns itself off (`source_unreadable`) only when every URL it
+reads has stopped; edit its `urls`, then turn it on again.
+
+**Where it may read.** The same address check as an [MCP server](#mcp-servers)'s requests: no private, link-local or
+loopback address and no address of this machine, every address a name resolves to checked and the one dialled checked
+again, each redirect (5 at most) checked as the first URL is. Plain `http` is read on a public address only; a private host
+the owner allows for MCP sign-in is read over `https` only. A read takes 20 s at most and a body over 5 MB is refused.
+A feed that declares an entity in a DTD is refused.
+
+**The payload.** An RSS, Atom or JSON Feed item: `{id, link, title, published, updated, author, summary, categories,
+feed: {title, url}, update}`, with `summary` as plain text of 4,000 characters at most and `update` true when the item
+was seen before and has been updated since. A JSON list item: `{id, link, title, item, update}`, `item` the raw object (cut down,
+with `item_truncated`, when it would pass 16 KB). A run it starts is titled `Feed <trigger name>: <item title>`, and its payload is marked untrusted.
 
 ### API only
 

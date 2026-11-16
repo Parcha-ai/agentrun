@@ -4,7 +4,7 @@
 // codes, check()'s shapes and cap, and an exec's stdin, stdout, stderr, exit code and kill. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Agent37's own is proven live.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
@@ -316,12 +316,13 @@ test("exec's stdin: written in order, then ended; a write after the end is refus
 	assert.equal(Buffer.concat(out).toString(), "one two");
 });
 
-test("kill ends the whole process group, with stdin ended or held open, and wait answers -1", async (t) => {
+test("kill ends the process and every process under it, one that left its process group too, with stdin ended or held open, and wait answers -1", async (t) => {
 	const { host } = await setup(t);
 	const value = await host.create(request(), CTX);
 	for (const [stdin, script] of [
 		[false, "sleep 300 & echo $!; sleep 301 & echo $!; wait"],
 		[true, "sleep 302 & echo $!; cat; wait"],
+		[false, "setsid sleep 303 & echo $!; wait"],
 	]) {
 		const proc = await host.exec(value.id, ["sh", "-c", script], CTX);
 		// stdin ended at once, as the adapter does where it gives none, or held open.
@@ -333,7 +334,7 @@ test("kill ends the whole process group, with stdin ended or held open, and wait
 		(async () => {
 			for await (const _ of proc.stderr);
 		})();
-		const want = stdin ? 1 : 2;
+		const want = script.split("echo $!").length - 1;
 		assert.ok(await until(() => text.trim().split("\n").filter(Boolean).length === want), "the sleeps started");
 		const pids = text.trim().split("\n").map(Number);
 		assert.ok(pids.every(alive));
@@ -354,12 +355,12 @@ test("kill ends the whole process group, with stdin ended or held open, and wait
 	await done.kill();
 });
 
-test("the pid file each command writes is gone once it ends, killed or not", async (t) => {
+test("each command starts under the shared pid wrapper, whose line never reaches the command's stderr", async (t) => {
 	const { fake, host } = await setup(t);
+	const { PID_WRAPPER, shellLine } = await import("../dist/hosted/scripts.js");
 	const value = await host.create(request(), CTX);
-	await run(host, value.id, ["true"]);
-	const file = /\/tmp\/\.agentrun-exec-[0-9a-f]{16}/.exec(fake.sshd.commands[0])[0];
-	assert.equal(existsSync(file), false);
+	assert.deepEqual(await run(host, value.id, ["sh", "-c", "echo said >&2"]), { code: 0, stdout: "", stderr: "said\n" });
+	assert.equal(fake.sshd.commands[0], shellLine([...PID_WRAPPER, "sh", "-c", "echo said >&2"]));
 });
 
 test("an SSH key pasted onto one line (a password field drops line breaks) is wrapped again and still taken", async (t) => {
