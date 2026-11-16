@@ -20,7 +20,7 @@ export type FeedFormat = (typeof FEED_FORMATS)[number];
 export type FauxEntry = { id?: string; link?: string; title?: string; published?: string; updated?: string; author?: string; summary?: string; content?: string; categories?: string[] };
 export type FauxItem = FauxEntry | Record<string, unknown>;
 
-export type FeedFauxOptions = {
+export type FeedFixtureOptions = {
   format: FeedFormat;
   /** The feed's own title (RSS, Atom and JSON Feed). */
   title?: string;
@@ -113,7 +113,7 @@ function bodyOf(format: FeedFormat, title: string, items: FauxItem[], under: str
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule a fake feed listens on loopback alone
 
 /** A feed on loopback, closed with `close`. */
-export async function startFeedFaux(options: FeedFauxOptions): Promise<FeedFaux> {
+export async function startFeedFaux(options: FeedFixtureOptions): Promise<FeedFaux> {
   const host = options.host ?? LOOPBACK;
   let items = [...(options.items ?? [])];
   let failing: number | undefined;

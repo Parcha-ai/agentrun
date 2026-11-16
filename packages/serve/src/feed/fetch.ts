@@ -14,8 +14,10 @@ export const FEED_MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 /** Where a feed is read from: the network (the server's own, a test's), where it may go (`reach`), and `route`, a test's
- *  or an eval's seam (ServeOptions.feedsAt): the URL actually read in place of a trigger's, its answer the trigger's. */
-export type FeedReach = { network: OAuthNetwork; reach: Reach; route?: (url: string) => string | undefined; signal?: AbortSignal };
+ *  or an eval's seam (ServeOptions.feedsAt): the URL actually read in place of a trigger's, its answer the trigger's;
+ *  null when the seam serves no feed at that URL (an eval's, for a feed its case doesn't fake), read as unreachable and
+ *  never sent; undefined to read the URL as it is. */
+export type FeedReach = { network: OAuthNetwork; reach: Reach; route?: (url: string) => string | null | undefined; signal?: AbortSignal };
 /** The last read's validators, sent back so a feed that hasn't changed answers 304. */
 export type Validators = { etag?: string; modified?: string };
 /** A read: 200 with its body and validators, 304, or another status (with no body). */
@@ -34,11 +36,13 @@ export class FeedUnreachable extends Error {
 export async function readFeed(url: string, last: Validators, { network, reach, route, signal: stop }: FeedReach): Promise<FeedRead> {
   const signal = AbortSignal.any([AbortSignal.timeout(FEED_TIMEOUT_MS), ...(stop ? [stop] : [])]);
   let at: URL;
+  const routed = route?.(url);
   try {
-    at = new URL(route?.(url) ?? url);
+    at = new URL(routed ?? url);
   } catch {
     throw new FeedRefused(`${url.slice(0, 200)} is not a URL; refused`);
   }
+  if (routed === null) throw new FeedUnreachable(`the eval serves no feed at ${at.host}`);
   const headers: Record<string, string> = { accept: "application/atom+xml, application/rss+xml, application/feed+json, application/json;q=0.9, application/xml;q=0.8, text/xml;q=0.8, */*;q=0.5", "user-agent": "agentrun-feed/1" };
   if (last.etag) headers["if-none-match"] = last.etag;
   if (last.modified) headers["if-modified-since"] = last.modified;

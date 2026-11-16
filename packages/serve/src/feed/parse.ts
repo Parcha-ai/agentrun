@@ -89,11 +89,13 @@ const field = (node: unknown, max = FIELD_CHARS): string | null => {
   const text = textOf(node)?.trim();
   return text ? clip(text, max) : null;
 };
-/** An Atom text construct (a title, a summary, a content) as text: type html (or xhtml) read as HTML, text as text. */
-const atomText = (node: unknown): string | null => {
+/** An Atom text construct (a title, a summary, a content) as text: type html read as HTML, text as text; type xhtml (its
+ *  XHTML inline, which the parser keeps by name, out of order) as the HTML its `ordered` reading writes. */
+const atomText = (node: unknown, ordered?: string): string | null => {
+  const type = node && typeof node === "object" && !Array.isArray(node) ? (node as Record<string, unknown>)["@_type"] : undefined;
+  if (type === "xhtml" && ordered !== undefined) return htmlToText(ordered) || null;
   const text = textOf(node);
   if (!text?.trim()) return null;
-  const type = node && typeof node === "object" && !Array.isArray(node) ? (node as Record<string, unknown>)["@_type"] : undefined;
   return type === "html" || type === "xhtml" ? htmlToText(text) || null : lines(text) || null;
 };
 const list = (node: unknown): unknown[] => (node === undefined || node === null ? [] : Array.isArray(node) ? node : [node]);
@@ -134,6 +136,53 @@ const XML = new XMLParser({
   attributeValueProcessor: (_name, value) => xmlRefs(value),
   isArray: (name) => ["item", "entry", "category", "link", "author", "creator"].includes(name),
 });
+// The same reading with each element's children in the order they are written (an xhtml text construct's), the spaces
+// between them kept.
+const ORDERED = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  textNodeName: "#text",
+  cdataPropName: "#cdata",
+  parseTagValue: false,
+  parseAttributeValue: false,
+  trimValues: false,
+  processEntities: false,
+  htmlEntities: false,
+  removeNSPrefix: true,
+  preserveOrder: true,
+  tagValueProcessor: (_name, value) => xmlRefs(value),
+  attributeValueProcessor: (_name, value) => xmlRefs(value),
+});
+/** An ordered reading's node: one key, its name (`#text`, `#cdata`, an element's), and its attributes under `:@`. */
+type Ordered = Record<string, unknown>;
+const nameOf = (node: Ordered) => Object.keys(node).find((key) => key !== ":@");
+const children = (node: Ordered | undefined, name: string): Ordered[] => (node && Array.isArray(node[name]) ? (node[name] as Ordered[]) : []);
+const escapeHtml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Ordered nodes written back as HTML: each element's tag around its children, text escaped, CDATA as text. */
+const markup = (nodes: readonly Ordered[]): string =>
+  nodes
+    .map((node) => {
+      const name = nameOf(node);
+      if (name === undefined) return "";
+      if (name === "#text") return escapeHtml(String(node[name]));
+      if (name === "#cdata") return children(node, name).map((one) => escapeHtml(String(one["#text"] ?? ""))).join("");
+      return `<${name}>${markup(children(node, name))}</${name}>`;
+    })
+    .join("");
+/** Each xhtml text construct of an Atom document as HTML, written in order: the feed's title, and each entry's (in the
+ *  order the entries are) title, summary and content; undefined for one that is not xhtml or not there. */
+function atomXhtml(text: string): { title?: string; entries: { title?: string; summary?: string; content?: string }[] } {
+  const doc = ORDERED.parse(text) as Ordered[];
+  const feed = doc.find((node) => nameOf(node) === "feed");
+  const of = (parent: Ordered | undefined, field: string) => {
+    const node = children(parent, parent ? nameOf(parent)! : "").find((one) => nameOf(one) === field);
+    return node && (node[":@"] as Record<string, unknown> | undefined)?.["@_type"] === "xhtml" ? markup(children(node, field)) : undefined;
+  };
+  return {
+    title: of(feed, "title"),
+    entries: children(feed, "feed").filter((node) => nameOf(node) === "entry").map((entry) => ({ title: of(entry, "title"), summary: of(entry, "summary"), content: of(entry, "content") })),
+  };
+}
 
 /** `body` read as a feed. A JSON document is a JSON Feed (its `version` says so) unless `pointers` name a list, else a
  *  JSON list; anything else is read as XML: RSS or Atom. Throws FeedUnreadable in words. */
@@ -169,7 +218,7 @@ export function parseFeed(body: string, pointers: ListPointers = {}): ParsedFeed
   const rdf = doc.RDF as Record<string, unknown> | undefined;
   if (rdf && typeof rdf === "object") return rssOf((list(rdf.channel)[0] as Record<string, unknown> | undefined) ?? {}, list(rdf.item));
   const atom = doc.feed as Record<string, unknown> | undefined;
-  if (atom && typeof atom === "object") return atomOf(atom);
+  if (atom && typeof atom === "object") return atomOf(atom, /\btype\s*=\s*["']xhtml["']/.test(text) ? atomXhtml(text) : undefined);
   throw new FeedUnreadable("it is not RSS, Atom, JSON Feed or a JSON list");
 }
 
@@ -198,18 +247,19 @@ function rssOf(channel: Record<string, unknown>, items: unknown[]): ParsedFeed {
   };
 }
 
-function atomOf(feed: Record<string, unknown>): ParsedFeed {
+/** An Atom feed; `xhtml`, its xhtml text constructs written in order (atomXhtml), when it has any. */
+function atomOf(feed: Record<string, unknown>, xhtml?: ReturnType<typeof atomXhtml>): ParsedFeed {
   return {
     list: false,
     title: (() => {
-      const title = atomText(feed.title);
+      const title = atomText(feed.title, xhtml?.title);
       return title ? clip(title, TITLE_CHARS) : null;
     })(),
-    items: list(feed.entry).filter((one): one is Record<string, unknown> => !!one && typeof one === "object").map((one) => {
+    items: list(feed.entry).map((one, i) => [one, xhtml?.entries[i]] as const).filter((pair): pair is readonly [Record<string, unknown>, (typeof pair)[1]] => !!pair[0] && typeof pair[0] === "object").map(([one, ordered]) => {
       const links = list(one.link);
       const alternate = links.find((l) => (attr(l, "rel") ?? "alternate") === "alternate" && attr(l, "href")) ?? links.find((l) => attr(l, "href"));
-      const summary = atomText(one.summary) ?? atomText(one.content);
-      const title = atomText(one.title);
+      const summary = atomText(one.summary, ordered?.summary) ?? atomText(one.content, ordered?.content);
+      const title = atomText(one.title, ordered?.title);
       return item({
         id: field(one.id), link: alternate ? clip(attr(alternate, "href")!.trim(), FIELD_CHARS) : null, title: title ? clip(title, TITLE_CHARS) : null,
         published: instant(one.published) ?? instant(one.issued), updated: instant(one.updated) ?? instant(one.modified),

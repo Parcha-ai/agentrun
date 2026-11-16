@@ -297,7 +297,9 @@ async function poll(source: FeedSource, reach: FeedReach, cursor: Cursor): Promi
   const events: PolledEvent[] = taken.map((c) => {
     const body = payloadOf(c, lists.get(c.url) ?? false, states[c.url]?.title ?? null);
     const key = `${c.url}\n${c.item.key}${c.item.updated !== null ? `\n${iso(c.item.updated)}` : ""}`;
-    return { key, text: JSON.stringify(body), attrs: { title: (c.item.title ?? c.item.link ?? c.item.key).slice(0, 200), feed: c.url }, event: EVENT, body, cursor: cursorAfter(c.n + 1) };
+    // Its cursor made only when the engine asks for it (the last event it records, when the poll is cut short): never one
+    // whole cursor per item taken.
+    return { key, text: JSON.stringify(body), attrs: { title: (c.item.title ?? c.item.link ?? c.item.key).slice(0, 200), feed: c.url }, event: EVENT, body, get cursor() { return cursorAfter(c.n + 1); } };
   });
   const stopped = source.urls.filter((url) => states[url]?.stopped);
   const said = stopped.map((url) => `${url} ${states[url]!.stopped}: it is no longer read; edit the trigger's urls to drop or fix it.`);

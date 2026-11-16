@@ -87,10 +87,6 @@ const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate:
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
 const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "feed", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["feed", "feed fakes the package's feeds"]];
-/** Where the eval's own server reads a feed no case routes (a feed trigger of the package's that the eval deletes once
- *  the apply made it, read at its creation): a port on loopback nothing answers, so no eval reads a real feed. */
-const NO_FEED = "http://127.0.0.1:9/no-feed"; // key-gate: loopback-rule the eval server reads an unrouted feed on loopback, where nothing answers
-
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
@@ -1040,7 +1036,9 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   // Each run's fakes, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
   const fakes = new Map<string, EvalFakes>();
   const clock = !options.server && cases.some((one) => one.email || one.feed) ? evalClock() : undefined;
-  // Where the eval's own server reads each feed: the running feed case's fakes (feedRun), else nowhere real (NO_FEED).
+  // Where the eval's own server reads each feed: the running feed case's fakes (feedRun). A feed no case routes (a feed
+  // trigger of the package's that the eval deletes once the apply made it, read at its creation) is served nowhere: its
+  // read is unreachable at once, never sent, so no eval reads a real feed.
   const feedRoutes: FeedRoutes = {};
   const started = new Date().toISOString();
   const scratch = options.server ? undefined : mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-eval-"));
@@ -1073,7 +1071,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // A token of its own on a scratch folder. On the owner's folder none is given: a given token makes the server remove
     // the folder's .token (server.ts), the owner's saved API token, so the eval's server reads the one the folder keeps,
     // and a .token it had to make there (the folder had none) goes when it closes, the folder as it was.
-    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, feedsAt: (url: string) => feedRoutes.route?.(url) ?? NO_FEED, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
+    const serve = await startServe({ mcpLoopback: true, mcpStandIns: true, data: data!, port: 0, ...(options.data === undefined ? { token: randomBytes(24).toString("base64url") } : {}), templates: join(scratch!, "templates"), drainTimeout: "5s", harnessInstall, feedsAt: (url: string) => feedRoutes.route?.(url) ?? null, ...(options.serve ?? {}), ...(clock ? { triggerClock: clock } : {}) }).catch((error: unknown) => {
       removeTree(scratch!);
       throw error;
     });

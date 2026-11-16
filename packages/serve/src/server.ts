@@ -353,8 +353,9 @@ export type ServeOptions = {
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
   /** A test's and a template eval's seam: the URL a feed trigger's read of `url` goes to in its place (a fake feed on
-   *  loopback, feed/feed-faux.ts), or undefined to read it as it is. The trigger, its payload and its words keep `url`. */
-  feedsAt?: (url: string) => string | undefined;
+   *  loopback, feed/feed-faux.ts); null when it serves no feed at `url` (read as unreachable, nothing sent); undefined
+   *  to read it as it is. The trigger, its payload and its words keep `url`. */
+  feedsAt?: (url: string) => string | null | undefined;
   /** The server's store (store/index.ts), where the triggers and their firings live, with the agents they run as. Without
    *  it the trigger routes answer unavailable and nothing fires. */
   store?: Pick<Store, "triggers" | "runs" | "agents"> & Partial<Pick<Store, "liveViewers">>;

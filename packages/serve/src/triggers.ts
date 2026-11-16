@@ -765,7 +765,8 @@ export class Triggers {
    *  history line; one it leaves, skipped and said; one its accept does not take, an ignored row kept for its day; any
    *  other due, and driven), its cursor kept once they are, then its last check, and at the REFUSALS_TO_STOPth refused
    *  sign-in in a row the trigger turned off. A poll that throws is a failed check. */
-  /** False when an edit of its source while it polled dropped what it found (the edit's poll comes after it); else true. */
+  /** False when an edit of its source while it polled dropped what it found, or landed while its cursor was written and
+   *  left its stop and its check unwritten (the edit's poll comes after it); else true. */
   private async polled(trigger: Trigger, adapter: TriggerAdapter, nominalAt: number, now: number): Promise<boolean> {
     const settings = this.deps.settings(adapter.id);
     // Turned on again while it polled (off and on): its cursor was forgotten, and nothing this poll found is its own.
@@ -787,7 +788,9 @@ export class Triggers {
       const at = Math.floor(nominalAt / 1000) * 1000;
       if (result.note) await this.record(current, { key: firingKey(by, trigger.id, `note\n${second(nominalAt)}`), by, nominalAt: at, status: "skipped", reason: result.note });
       const events = result.events ?? [];
-      let cursor = events.length ? undefined : result.cursor;
+      // The last event recorded: the cursor is its once they are (each event's is read only here, once: a source may make
+      // it when asked, as the feed's does).
+      let last: (typeof events)[number] | undefined;
       let full = false;
       for (const event of events) {
         const key = firingKey(by, trigger.id, event.key);
@@ -806,11 +809,16 @@ export class Triggers {
           full = true;
           break;
         }
-        cursor = event.cursor;
+        last = event;
       }
-      if (!full && events.length) cursor = result.cursor ?? cursor;
+      const cursor = !events.length ? result.cursor : full ? last?.cursor : (result.cursor ?? last?.cursor);
       if (restarted()) return true;
       for (const [field, value] of Object.entries(cursor ?? {})) await settings?.set(trigger.id, field, value);
+      // Edited, turned off or on again while its cursor was written: its stop, a refusal's turn-off and its check were read
+      // on the source as it was. None is applied; an edit's poll, after this one, says what holds now.
+      const still = await this.find(trigger.id);
+      if (!still || !still.enabled || restarted()) return true;
+      if (JSON.stringify(still.source) !== JSON.stringify(trigger.source)) return false;
       const refusals = result.refused ? (checkOf(settings?.get(trigger.id, LAST_CHECK))?.refused ?? 0) + 1 : 0;
       if (result.refused && refusals >= REFUSALS_TO_STOP) {
         await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "sign_in_refused", detail: result.refused.detail } });
