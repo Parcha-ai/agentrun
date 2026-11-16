@@ -122,34 +122,37 @@ test("a calendar on a private address is refused, on loopback only for a local i
   assert.equal(faux.requests().length, 0, "nothing reached loopback");
 });
 
-test("each hop under the server's one address rule (mcp-oauth.ts calendarAt): a redirect to a private address, to link-local or to plain http on a public host is refused before it is dialled; a name that resolves to a private address is refused", async (t) => {
+test("each hop under the server's one address rule (mcp-oauth.ts calendarAt): a private IP, a public address that redirects to link-local 169.254.169.254, a name that resolves to 10.x, and plain http on a public host are each refused before a byte is sent to them", async (t) => {
   const { forgetCalendarsForTests, readCalendar } = await import("../dist/calendar/fetch.js");
   forgetCalendarsForTests();
   t.after(() => forgetCalendarsForTests());
-  const faux = await calendarFaux(t);
-  const reach = { loopback: true };
+  // The network the read goes through (mcp-oauth.ts OAuthNetwork): each name resolves to what the test says, and each
+  // request dialled is recorded with the address it was dialled at. A public calendar's host redirects to the metadata
+  // address; any other host serves the calendar.
   const dialled = [];
-  // A network that resolves every name to what the test says, and records each dial: nothing refused is dialled.
-  const network = (resolved) => ({ lookup: async () => resolved, fetch: async (url) => { dialled.push(url); return new Response(FAUX_CALENDAR); }, dial: async (url) => { dialled.push(url); return new Response(FAUX_CALENDAR); }, local: () => [] });
-  for (const [to, said] of [
-    ["https://10.0.0.7/calendar/basic.ics", "The calendar at 10.0.0.7 is on a private network, refused: an owner can allow 10.0.0.7 in Settings → MCP servers."], // key-gate: loopback-rule a private literal the fetch refuses
-    ["https://169.254.169.254/latest/meta-data.ics", "The calendar at 169.254.169.254 is a private address; refused."], // key-gate: loopback-rule the metadata address the fetch refuses
-    ["http://calendar.example.com/basic.ics", "The calendar at calendar.example.com is not https; refused."],
-  ]) {
-    faux.move("/hop.ics", to);
-    const error = await readCalendar(faux.at("/hop.ics"), reach, network(["93.184.216.34"])).then(() => "read", (e) => e);
-    assert.equal(error?.message, said, to);
-  }
-  assert.deepEqual(dialled, [], "nothing refused was dialled");
-  // A public-looking name that resolves to the owner's network, read with no loopback allowance: refused, never dialled.
-  const inside = await readCalendar("https://calendar.example.com/private-0123/basic.ics", {}, network(["192.168.1.20"])).then(() => "read", (e) => e);
-  assert.equal(inside?.message, "The calendar at calendar.example.com is on a private network, refused: an owner can allow calendar.example.com in Settings → MCP servers.");
-  assert.ok(!inside.message.includes("private-0123"));
-  assert.deepEqual(dialled, []);
-  // The same name on a public address is dialled at the address checked.
+  const network = (resolved) => {
+    const answer = (url, address) => {
+      dialled.push(`${url} @ ${address}`);
+      return url.startsWith("https://calendar.example.com/moved/") ? new Response(null, { status: 302, headers: { location: "https://169.254.169.254/latest/meta-data.ics" } }) : new Response(FAUX_CALENDAR); // key-gate: loopback-rule the metadata address the fetch refuses
+    };
+    return { lookup: async () => resolved, fetch: async (url, _init, address) => answer(url, address), dial: async (url, _init, address) => answer(url, address), local: () => [] };
+  };
+  const refused = (url, resolved) => readCalendar(url, {}, network(resolved)).then(() => "read", (error) => error.message);
+  assert.equal(await refused("https://10.0.0.7/calendar/private-0123/basic.ics", []), "The calendar at 10.0.0.7 is on a private network, refused: an owner can allow 10.0.0.7 in Settings → MCP servers."); // key-gate: loopback-rule a private literal the fetch refuses
+  assert.equal(await refused("https://calendar.example.org/private-0123/basic.ics", ["10.20.30.40"]), "The calendar at calendar.example.org is on a private network, refused: an owner can allow calendar.example.org in Settings → MCP servers.");
+  assert.equal(await refused("http://calendar.example.net/private-0123/basic.ics", ["93.184.216.34"]), "The calendar at calendar.example.net is not https; refused.");
+  assert.deepEqual(dialled, [], "none of the three was dialled");
+  assert.equal(await refused("https://calendar.example.com/moved/private-0123/basic.ics", ["93.184.216.34"]), "The calendar at 169.254.169.254 is a private address; refused.");
+  assert.deepEqual(dialled, ["https://calendar.example.com/moved/private-0123/basic.ics @ 93.184.216.34"], "the public hop alone, at the address checked; the metadata address never");
+  // A public host is read, dialled at the address its name was checked at.
   const read = await readCalendar("https://calendar.example.com/private-0123/basic.ics", {}, network(["93.184.216.34"]));
   assert.equal(read.name, "Work");
-  assert.deepEqual(dialled, ["https://calendar.example.com/private-0123/basic.ics"]);
+  assert.equal(dialled.at(-1), "https://calendar.example.com/private-0123/basic.ics @ 93.184.216.34");
+  // A redirect from the fake calendar server (loopback, a local install's) to a private address is refused the same way.
+  const faux = await calendarFaux(t);
+  faux.move("/hop.ics", "https://10.0.0.7/calendar/basic.ics"); // key-gate: loopback-rule a private literal the fetch refuses
+  assert.equal(await readCalendar(faux.at("/hop.ics"), { loopback: true }, network([])).then(() => "read", (error) => error.message), "The calendar at 10.0.0.7 is on a private network, refused: an owner can allow 10.0.0.7 in Settings → MCP servers.");
+  assert.equal(dialled.length, 2, "and never dialled");
 });
 
 test("a read is kept for 5 minutes with no request; past that it asks with its ETag, and a 304 keeps the parsed copy; a new file is read anew; redirects are followed", async (t) => {

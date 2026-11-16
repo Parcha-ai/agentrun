@@ -10,7 +10,7 @@
 import { registerSecretWrite } from "../secret-writes.js";
 import { isObject } from "../validate.js";
 import { bodyAddress, type CalendarStore, calendarView, noCalendar, openCalendar, removeCalendar, saveCalendar, scrubAddress } from "./address.js";
-import type { CalendarReach } from "./fetch.js";
+import type { CalendarNetwork, CalendarReach } from "./fetch.js";
 import type { CalendarEvent } from "./parse.js";
 
 /** The routes, by their operation names. */
@@ -18,8 +18,9 @@ export const CALENDAR_ROUTES: ReadonlySet<string> = new Set(["getCalendar", "sav
 for (const operation of CALENDAR_ROUTES) registerSecretWrite(operation, () => true);
 
 /** The store and seal key; where a read may go beyond public hosts (the server's: a local install's loopback, the owner's
- *  private hosts), read at each use; the clock a test's next event is found by. */
-export type CalendarRouteDeps = { store: CalendarStore; sealKey: Buffer; reach: () => Promise<CalendarReach>; now?: () => number; signal?: AbortSignal };
+ *  private hosts), read at each use, and the network it goes through (McpServersOverStore.outboundReach); the clock a
+ *  test's next event is found by. */
+export type CalendarRouteDeps = { store: CalendarStore; sealKey: Buffer; reach: () => Promise<CalendarReach>; network?: CalendarNetwork; now?: () => number; signal?: AbortSignal };
 
 /** An event's start as a test says it, in the calendar's zone: "Mon Nov 17 09:30", or an all-day one's day, "Thu Nov 26". */
 function whenOf(event: CalendarEvent, zone: string): string {
@@ -36,7 +37,7 @@ async function tested(url: string, deps: CalendarRouteDeps): Promise<{ ok: boole
   const { CalendarError, readCalendar } = await import("./fetch.js");
   const { summaryOf } = await import("./parse.js");
   try {
-    const calendar = await readCalendar(url, await deps.reach(), undefined, deps.signal);
+    const calendar = await readCalendar(url, await deps.reach(), deps.network, deps.signal);
     const { count, next } = summaryOf(calendar, deps.now?.() ?? Date.now());
     const name = calendar.name ?? URL.parse(url)?.host ?? "The calendar";
     const events = count === 1 ? "1 event" : `${count} events`;
@@ -59,7 +60,7 @@ export async function calendarRoute(deps: CalendarRouteDeps, name: string, body?
       let found: { name: string | null; zone: string | null } = { name: null, zone: null };
       try {
         const { readCalendar } = await import("./fetch.js");
-        const calendar = await readCalendar(url, await deps.reach(), undefined, deps.signal);
+        const calendar = await readCalendar(url, await deps.reach(), deps.network, deps.signal);
         found = { name: calendar.name, zone: calendar.zone };
       } catch {}
       await saveCalendar(deps.store, deps.sealKey, { url, name: found.name, time_zone: found.zone });

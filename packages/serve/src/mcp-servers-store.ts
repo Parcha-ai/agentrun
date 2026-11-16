@@ -112,10 +112,6 @@ export class McpServersOverStore {
   appOrigin = GITHUB_MCP_ORIGIN;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
-  /** This server's own origins (McpSignIns.own): never dialled on loopback, by an MCP server's request or a calendar read. */
-  get own(): string[] {
-    return this.signIns.own;
-  }
   /** The callbacks under way, which close() waits out before the server lets its data go. */
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly stopped = new AbortController();
@@ -152,6 +148,13 @@ export class McpServersOverStore {
   /** The origin the authorization server sends the browser back to. */
   get callbackOrigin(): string {
     return new URL(this.signIns.base).origin;
+  }
+
+  /** Where a server-side read of a URL may go (a feed's, a calendar's), as an MCP server's requests may: this server's
+   *  network, its own addresses (never read), the private-network hosts the owner allows (read now, at each call), loopback
+   *  only on a local install, and stopped with the server. */
+  async outboundReach(): Promise<{ network: OAuthNetwork; reach: { own: readonly string[]; allowed: readonly string[]; loopback: boolean }; signal: AbortSignal }> {
+    return { network: this.network, reach: { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback }, signal: this.stopped.signal };
   }
 
   /** The server's own tool settings, set as the server starts. */

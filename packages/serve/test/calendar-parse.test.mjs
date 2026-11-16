@@ -106,6 +106,15 @@ test("a busy window's answer, events with not one space in them, passes the run'
   const answer = JSON.parse(text);
   assert.deepEqual([Object.keys(answer), answer.count, answer.truncated, answer.events.length], [["calendar", "time_zone", "from", "to", "count", "truncated", "events"], 200, true, 200]);
   assert.ok(Math.max(...text.split("\n").map((line) => line.length)) < 200, "each line one field");
+
+  // The redactor is as strict as ever: a calendar's address in an event's description is still cut, the answer still JSON.
+  const url = "https://calendar.google.com/calendar/ical/me%40example.com/private-0123456789abcdef0123456789abcdef/basic.ics";
+  const quoting = calendarText({ calendar: "Busy", time_zone: "UTC", from: "2026-11-02T00:00:00+00:00", to: "2026-12-01T00:00:00+00:00", events: events.map((event, at) => (at === 7 ? { ...event, description: `Subscribe at ${url}` } : event)), truncated });
+  const cut = redactedAnswer(quoting, addressForms(url));
+  assert.ok(!cut.includes("private-0123456789abcdef0123456789abcdef"), "the address's secret is cut");
+  const said = JSON.parse(cut);
+  assert.match(said.events[7].description, /^Subscribe at .*\[redacted\]/);
+  assert.deepEqual(said.events.map((event) => event.title), events.map((event) => event.title), "every other event whole");
 });
 
 test("the window: from now for 7 days by default; dates in the calendar's zone, to's day included; at most 62 days; to after from; refused in words", () => {

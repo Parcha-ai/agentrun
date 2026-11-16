@@ -3735,12 +3735,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "testCalendar": {
         const body = found.name === "saveCalendar" || found.name === "testCalendar" ? await bodyOf(req) : undefined;
         if (found.name === "saveCalendar" && stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the calendar was not saved.");
-        // The MCP servers' reach (mcp-oauth.ts calendarAt is mcpServerAt's rule): this server's own origins never dialled.
-        const reach = async () => {
-          const { privateOAuthHosts } = await import("./mcp-private-hosts.js");
-          return { ...(options.mcpLoopback === true ? { loopback: true } : {}), allowed: await privateOAuthHosts(store), own: mcpServers.own };
-        };
-        const answer = await calendarRoute({ store, sealKey, reach, signal: stopping.signal }, found.name, body);
+        // The MCP servers' network and reach (mcp-oauth.ts calendarAt is mcpServerAt's rule), and their stop with the server's.
+        const outbound = await mcpServers.outboundReach();
+        const answer = await calendarRoute({ store, sealKey, reach: async () => outbound.reach, network: outbound.network, signal: AbortSignal.any([outbound.signal, stopping.signal]) }, found.name, body);
         if (found.name === "saveCalendar") await heldCalendar();
         if (answer === undefined) return void res.writeHead(204, { "cache-control": "no-store" }).end();
         return send(res, 200, answer, { "cache-control": "no-store" });
