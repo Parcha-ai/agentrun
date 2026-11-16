@@ -135,6 +135,8 @@ export interface CaseContext {
 	runFolder(kind: MountKind): Promise<RunFolder>;
 	/** The GPU the run pays for (options.gpu, the CLI's --gpu); skips the case when the run names none. */
 	gpu(): GpuSpec;
+	/** Skips the case, saying what makes it long, unless the run takes long cases (options.long, the CLI's --long). */
+	long(what: string): void;
 	/**
 	 * Starts the run's fixture in the case's computer and waits until it is up: an app that logs each input event it
 	 * gets, so a case checks what an action did with no model. It is stopped when the case ends. Skips the case when the
@@ -359,6 +361,11 @@ export interface ConformanceOptions {
 	 * the one it pays for; without it the case skips in words.
 	 */
 	gpu?: GpuSpec;
+	/**
+	 * Run the long cases, which wait minutes on a vendor's timer (lifetime.idle leaves a computer quiet 6 min): the CLI's
+	 * --long, which the live sweep gives. Without it they skip in words.
+	 */
+	long?: boolean;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
 	/** How the browser cases open a CDP socket; default a WebSocket (dialCdp). Tests give a fake browser's. */

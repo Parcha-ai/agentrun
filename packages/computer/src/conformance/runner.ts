@@ -16,7 +16,6 @@ import { kindCases, kindRunProblem, kindVerdict } from "./kind.js";
 import {
 	type Capability,
 	type Case,
-	type Clock,
 	type CaseContext,
 	type CaseResult,
 	type ComputerRole,
@@ -99,7 +98,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu, concurrency } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu, long = false, concurrency } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
 	if (concurrency !== undefined && !(Number.isSafeInteger(concurrency) && concurrency >= 1)) throw new TypeError(`concurrency is a whole number of computers, 1 or more; got ${concurrency}`);
 	const cap = concurrency ?? Infinity;
@@ -111,7 +110,6 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
 	const dialer = options.cdp ?? dialCdp;
-	const clock: Clock = options.clock ?? { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 	const run = randomBytes(6).toString("hex");
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
@@ -501,7 +499,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					else sockets.push(socket);
 					return socket;
 				},
-				clock,
+				// The wall clock's wait ends with the case (its timeout, or the run's abort), so no timer outlives the run.
+				clock: options.clock ?? { now: () => Date.now(), sleep: (ms) => sleep(ms, undefined, { signal: caseSignal }).catch(() => undefined) },
 				async drifted() {
 					if (drifted === undefined) return t.skip("no drifted provider was given: a provider module exports createDriftedProvider() for the drift cases");
 					return await drifted();
@@ -524,6 +523,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					// A GPU bills by the second: the run names the one it pays for, never a default.
 					if (gpu === undefined) return t.skip("the run named no GPU: give --gpu <type>[:<count>] (or options.gpu), one the provider declares in capabilities().gpu");
 					return { type: gpu.type, count: gpu.count };
+				},
+				long(what) {
+					if (!long) t.skip(`a long case (${what}): run with --long (or options.long), as the live sweep does`);
 				},
 				async exec(argv: string[], extra: Partial<ExecRunParams> = {}, client: ComputerClient = t.client): Promise<Ran> {
 					const ran = unwrap(await client.call("exec.run", { argv, timeoutMs: patience, ...extra }, { signal: caseSignal }), `exec.run ${show(argv)}`);

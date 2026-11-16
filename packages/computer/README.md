@@ -1538,7 +1538,8 @@ the TTL.
   the deadline to), `public: false`, `networkBlockAll`, `ttlMinutes`, `autoStopInterval` (`autoStopMinutes`; unset, 0,
   since Daytona's idle timer counts only outside traffic and a daemon at work would be stopped), and
   `autoDeleteInterval` (`autoDeleteMinutes`; unset, -1: a stop keeps the sandbox, which the TTL then ends). `POST
-  /sandbox` is never retried; a name Daytona already holds (409) is `exists`. A create that fails without a 4xx
+  /sandbox` is never retried; a name Daytona already holds (409) is `exists`, and the adapter adopts the sandbox the
+  name lists, as a retry does (or answers `exists` when none lists). A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
   none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
@@ -2493,7 +2494,7 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--json]
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--json]
 ```
 
 ```text
@@ -2514,8 +2515,14 @@ core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · moun
 A hosted vendor runs the exec pre-check first, with `--exec-stream --machine <id> [--quick]`: the module's
 `createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way, byte-exact stream
 with no timeout (`src/conformance/exec-stream.ts`; [the contract](../../spec/computer/provider.md#a-hosted-vendors-exec)).
-It exits 0 when every check passes and 1 when one fails, and `--json` prints `{ host, machine, checks: [{ id, status,
-words, ms }], pass }`.
+`stdout-unread` writes 4 MiB to `cat` over 10 s with its stdout left unread, then reads it: a write may wait while
+nobody reads, but must go on once stdout is read, and every byte comes back in order. After the checks, one more exec
+prints what the machine offers the rest of the host, each with what it means: whether root's `unshare -n` works (else
+`unshare -Urn`, the gVisor fence, else no fence for network none, open and allow), whether root can open `/dev/fuse`
+(Archil), `uname -m` (`facts.arch`), the kernel (gVisor when dmesg says so) and the TCP listeners from
+`/proc/net/tcp{,6}` (for `facts.vendorAgentPorts`). These are facts, never a pass or a fail of exec. It exits 0 when
+every check passes and 1 when one fails, and `--json` prints `{ host, machine, checks: [{ id, status, words, ms }],
+pass, facts: [{ id, value, means }], factsProblem? }`.
 
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
@@ -2585,7 +2592,8 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   `files.*` and `tar.*` methods, the `process.*` methods, a computer with network `none` (`network:none`: a provider
   that cannot make one fails Core, and the suite never asks for a wider network instead), `check`, `create`, `attach`
   (with the spec it reads back: the network and image create asked for, and a non-root `user` as `uid:gid`), `list`,
-  `network` read-back and `release`, `release(ref, "stop")` as declared (a provider whose `capabilities().release` holds
+  `network` read-back and `release` (a deleted computer stays gone: after a refused connect, `attach` by id, a second
+  connect and `list` find nothing, so a vendor that wakes a machine on the next request fails), `release(ref, "stop")` as declared (a provider whose `capabilities().release` holds
   `"stop"` lists the computer stopped until it is deleted, or, when it also declares `stopDeletes`, leaves it neither
   listed nor attachable; one that does not refuses stop as `unsupported`, in words, and the computer stays listed and
   running), a change to a network the provider does not declare refused with the
@@ -2635,7 +2643,9 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   moving apart), `lifetime.extend` (`extend`: made with 45 s and extended to 120 s, at 60 s it answers ping with a
   process started earlier still running and `list()` shows the new deadline; three extends are refused with the
   deadline unchanged: to an earlier deadline, to maxLifetimeMs + 1, and, 60 s after create, to maxLifetimeMs less 30 s,
-  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it).
+  within the cap on its own but past create + maxLifetimeMs; a cap under 3 min skips it), and `lifetime.idle`, a long
+  case that runs only with `--long` (`long` from code; the live sweep gives it): a computer made with 10 min, left with
+  no call and no connection for 6 min, past a vendor's idle timer, is still listed running and answers ping.
 - **`screen.watch` is Core in the screen group**: through the provider's `watch()`, the first frame decodes (a PNG
   whole; a JPEG walked to its end, as the suite has no JPEG decoder) to the size it says, of the screen `screen.shot`
   reads; on a computer with `input.pointer`, a pointer move through `input()` is a new frame with the cursor where it

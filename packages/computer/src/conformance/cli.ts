@@ -49,7 +49,7 @@ export interface CliIo {
 	providerOptions?: { env?: ProviderEnv } & Record<string, unknown>;
 }
 
-const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--concurrency <n>] [--json]
+const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
@@ -63,14 +63,18 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
               desktop, the fixture APK for an Android phone
   --gpu       the GPU the gpu case's one computer asks for, a type the provider declares and a count (default 1), such
               as T4 or H100:2; it bills by the second, so without it the gpu case skips
+  --long      run the long cases too, which wait minutes on a vendor's timer: lifetime.idle leaves a computer quiet
+              6 min and reads it running; the live sweep gives it, and without it they skip
   --concurrency
-              the most computers alive at once, for a plan or rate limit that keeps fewer (default no cap; the report
-              says the run's peak). The run's computer makes way for a case's own; a case that needs more fails
+              the most computers alive at once, for a plan that keeps fewer (default no cap; the report says the
+              run's peak). The run's computer makes way for a case's own; a case that needs more fails
   --json      print the report as JSON
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
-              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stderr apart,
-              the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s) that is not cut off
+              by hand. Bytes 0-255 both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
+              stdout is left unread, stderr apart, the exit code, kill, and a silent process of ${DEFAULT_LONG_MS / 1000} s (--quick: ${QUICK_LONG_MS / 1000} s)
+              that is not cut off; then what the machine offers: root's network namespace, /dev/fuse, the arch, the
+              kernel (gVisor) and the TCP listeners, each with what it means for your host
 exit: 0 Core passes, 1 it fails, 2 usage error, 3 partial (--only) and every case that ran passed; with --kind,
       0 the provider passes the kind, 1 it does not; with --exec-stream, 0 every check passes, 1 one fails`;
 const PROVIDER_METHODS = ["capabilities", "check", "create", "attach", "list", "network", "connect", "release"] as const;
@@ -84,6 +88,8 @@ interface Args {
 	kind?: ComputerSettingKind;
 	fixture?: string;
 	gpu?: { type: string; count: number };
+	/** --long: the long cases run too. */
+	long?: true;
 	/** --concurrency: the most computers alive at once. */
 	concurrency?: number;
 	/** --exec-stream's machine: the pre-check runs alone on it. */
@@ -122,6 +128,7 @@ function parse(argv: string[], cases: Case[]): Args {
 			args.kind = kind as ComputerSettingKind;
 		} else if (flag === "--fixture") args.fixture = value();
 		else if (flag === "--gpu") args.gpu = gpuOf(value());
+		else if (flag === "--long") args.long = true;
 		else if (flag === "--concurrency") {
 			const given = value();
 			if (!/^[1-9][0-9]*$/.test(given) || !Number.isSafeInteger(Number(given))) throw new Usage(`--concurrency: ${JSON.stringify(given)} is not a whole number of computers, 1 or more`);
@@ -137,7 +144,7 @@ function parse(argv: string[], cases: Case[]): Args {
 	if (args.provider === undefined) throw new Usage("--provider is required");
 	if (execStream) {
 		if (machine === undefined) throw new Usage("--exec-stream needs --machine <id>, a machine you made by hand");
-		const others = (["image", "only", "kind", "fixture", "gpu", "concurrency"] as const).filter((name) => args[name] !== undefined);
+		const others = (["image", "only", "kind", "fixture", "gpu", "long", "concurrency"] as const).filter((name) => args[name] !== undefined);
 		if (others.length > 0) throw new Usage(`--exec-stream runs alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
 		return { provider: args.provider, execStream: { machine, quick }, json: args.json, help: false };
 	}
@@ -156,6 +163,7 @@ function parse(argv: string[], cases: Case[]): Args {
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: args.fixture } : {}),
 		...(args.gpu ? { gpu: args.gpu } : {}),
+		...(args.long ? { long: args.long } : {}),
 		...(args.concurrency ? { concurrency: args.concurrency } : {}),
 		json: args.json,
 		help: false,
@@ -369,6 +377,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 		...(args.kind ? { kind: args.kind } : {}),
 		...(args.fixture ? { fixture: resolve(cwd, args.fixture) } : {}),
 		...(args.gpu ? { gpu: args.gpu } : {}),
+		...(args.long ? { long: true } : {}),
 		...(args.concurrency ? { concurrency: args.concurrency } : {}),
 		...(signal ? { signal } : {}),
 		...(target.drifted ? { drifted: target.drifted } : {}),

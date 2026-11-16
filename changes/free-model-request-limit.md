@@ -1,9 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-client
-kind: feature
----
-A run on a free model now stops at 60 requests on free models. A free model's catalog price is all zeros (an OpenRouter `:free` model and the like), so no spend cap could stop one stuck in a loop: a run on a free model made 520 web searches before it ended, burning its provider's shared daily quota. The request after the 60th is not sent, and the run ends `failed`, as one its cap ends, with error `spend_cap_reached`: "Not sent: this run reached its 60-request limit for free models." The limit holds capped or not, on every harness, and no raise lifts it. A server that needs more sets `AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything else refuses the start). ChatGPT-plan requests don't count.
-- What counts: each request on a free model the run makes, its subagents' and side calls' included, and one a crash cut. A paid request, a paid tool call and a workflow's decision never count.
-- A free request a crash cut, booked by the next process, is now a known $0 marked `free`, as a free request that ends in its own process already is; it was booked as unknown.
-- Capabilities report the limit as `limits.free_model_requests` (marked `freerequests/1`), and the console says "free model: up to 60 requests" beside the spend cap of an agent on a free model.
-- Kernel: `runCap` takes `freeRequests`, and `kernel/cap` exports `freeModel` and `freeRequest` (one rule for what the cap books at $0 and what the limit counts), `planCapModel`, `freeModelRequestsOf` and `freeCeilingEnd`. A runner's `runner.request` record says `freeRequest: true` for a request the limit counts.

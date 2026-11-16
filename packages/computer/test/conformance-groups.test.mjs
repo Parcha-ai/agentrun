@@ -364,6 +364,33 @@ test("lifetime.extend passes a provider whose extend moves the deadline: the com
 	assert.deepEqual(statuses(report), { "lifetime.extend": "pass" }, reasons(report)["lifetime.extend"]);
 });
 
+test("lifetime.idle, a long case: skipped in words without long; with it, a computer quiet 6 min on the run's clock is still running and answers, and one a 5 min idle timer ends fails", async () => {
+	assert.deepEqual(byId("lifetime.idle").map((c) => [c.level, c.needs]), [["full", []]], "Full: a skip without long fails no Core");
+	const skipped = await run(fakeDevices().provider, ["lifetime.idle"]);
+	assert.deepEqual(statuses(skipped), { "lifetime.idle": "skip" });
+	assert.equal(reasons(skipped)["lifetime.idle"], "a long case (it leaves a computer quiet 6 min): run with --long (or options.long), as the live sweep does");
+	const clock = virtualClock();
+	const awake = await run(fakeDevices({ clock }).provider, ["lifetime.idle"], { clock, long: true });
+	assert.deepEqual(statuses(awake), { "lifetime.idle": "pass" }, reasons(awake)["lifetime.idle"]);
+	const idleClock = virtualClock();
+	const ended = await run(fakeDevices({ clock: idleClock, idleEndsMs: 5 * 60_000 }).provider, ["lifetime.idle"], { clock: idleClock, long: true });
+	assert.deepEqual(statuses(ended), { "lifetime.idle": "fail" });
+	assert.match(reasons(ended)["lifetime.idle"], /^after 6 min with no call, well inside its lifetime: still listed, running \(a vendor's idle timer ends a quiet computer under the run: turn it off, or keep the computer busy\): expected \[\["desktop-\d+","running"\]\], got \[\["desktop-\d+","stopped"\]\]/);
+	const short = await run(fakeDevices({ clock, maxLifetimeMs: 5 * 60_000 }).provider, ["lifetime.idle"], { clock, long: true });
+	assert.equal(reasons(short)["lifetime.idle"], "lifetime.idle needs a maxLifetimeMs of 10 min or more, not 300000 ms");
+});
+
+test("lifetime.idle on the wall clock, aborted during its 6 min wait: the run ends and leaves no timer behind", { timeout: 30_000 }, async () => {
+	const timers = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length;
+	const before = timers();
+	const stop = new AbortController();
+	const aborting = setTimeout(() => stop.abort(), 1_000);
+	const report = await run(fakeDevices().provider, ["lifetime.idle"], { clock: undefined, long: true, signal: stop.signal });
+	clearTimeout(aborting);
+	assert.equal(statuses(report)["lifetime.idle"], "fail", reasons(report)["lifetime.idle"]);
+	assert.ok(timers() <= before, `${timers() - before} more timers after the run than before it: the 6 min wait outlived the run`);
+});
+
 test("apps.launch-terminate needs apps alone: a phone with no ui group and no files is seen launching Settings in its screenshot", async () => {
 	const groups = ["screen", "input.touch", "apps"];
 	const seen = await run(fakeDevices({ kind: "android", groups }).provider, ["apps.launch-terminate"]);
