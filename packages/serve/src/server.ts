@@ -173,7 +173,7 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -2008,6 +2008,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (dropped) await keep();
   };
   const deleteInTurn = oneAtATime();
+  const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
+  /** `work`, a thing a deleted agent owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted there
+   *  yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again. */
+  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"]): Promise<void> => {
+    try {
+      await work();
+    } catch (error) {
+      if (!(error instanceof ApiError && codes.includes(error.code))) throw error;
+      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${AGAIN}`, { retry_after_ms: 5_000 });
+    }
+  };
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
   const agentDeleteHost = (deleteLearning: DeleteLearning): AgentDeleteHost => ({
     store,
@@ -2026,8 +2037,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         throw error;
       }
     },
-    removeTrigger: async (triggerId) => void (await triggers.remove(triggerId)),
-    forgetSignIns: (agentId) => signIns.forgetAll(agentId),
+    removeTriggerThere: (triggerId) => notYetWith(() => triggers.removeThere(triggerId)),
+    removeTrigger: (triggerId) => triggers.removeHere(triggerId),
+    forgetSignIns: (agentId) => notYetWith(() => signIns.forgetAll(agentId)),
     removeOwnComputer: async (agentId) => {
       // Archived, the agent has no use for its own computer: deleted at its provider now, waited for.
       await reconcileAgentComputer(store, agentId, (provider, image) => computersOf().providerFor(provider, image));
@@ -2035,12 +2047,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (left) throw new ApiError("unavailable", `The agent ${agentId}'s own computer ${left.name} is not deleted yet${left.why ? ` (${left.why})` : ""}. It starts no run meanwhile: send the DELETE again to finish it.`, { retry_after_ms: 5_000 });
       await store.settings.remove(agentComputerHoldKey(agentId));
     },
-    removeDisk: async (agentId) => void (await archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) })),
+    removeDisk: async (agentId) => {
+      // The disk stored on the agent, read whatever the Archil settings are now: with Archil off the route below removes
+      // nothing, and the agent's row going would leave its disk at Archil with nothing here to reach it.
+      const stored = await agentDiskOf(store, agentId);
+      if (!stored) return;
+      if (!(await archil.agentView(agentId)).on) throw new ApiError("unavailable", `The agent ${agentId}'s Archil disk ${stored.diskId} is not deleted yet: Archil is off on this server, so it can't be deleted there. Turn Archil on again (PUT /v2/workspace/archil). ${AGAIN}`, { retry_after_ms: 5_000 });
+      // Archil's failure (424), a live run of another agent on the disk (412) or no key (503): each is retried by the next DELETE.
+      await notYetWith(() => archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) }), ["upstream_failed", "precondition_failed", "unavailable"]);
+    },
     forgetRun: async (agentId, runId) => {
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
+      // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
+      // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
+      // the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
+      await store.settings.remove(runDiskKey(runId));
       await forgetKept((path, body) => path.startsWith(`/runs/${runId}/`) || (isObject(body) && body.run_id === runId));
     },
     forgetAgent: async (agentId) => {

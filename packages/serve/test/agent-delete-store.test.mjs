@@ -118,6 +118,7 @@ function storeHost(store, crashAt) {
       await end(store, runId, { state: "stopped", outcome: "cancelled" });
       return true;
     },
+    removeTriggerThere: async () => {},
     removeTrigger: (id) => store.triggers.remove(id),
     forgetSignIns: async () => {},
     removeOwnComputer: async () => {},

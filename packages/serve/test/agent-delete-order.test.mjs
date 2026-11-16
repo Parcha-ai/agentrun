@@ -8,7 +8,7 @@ const { deleteExternalAgent } = await import("../dist/agent-delete.js");
 
 /** A host over a fake store: `runs` maps run id to its state; a cancelled run reads `stopped` from the next read on
  *  (after `endAfter` reads). `cannot` names runs whose cancel answers false; `busy` makes the learning delete refuse. */
-function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = false, endAfter = 1, waitMs = 2_000 } = {}) {
+function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = false, endAfter = 1, waitMs = 2_000, upstreamFails = false } = {}) {
   const calls = [];
   const states = new Map(Object.entries(runs));
   const cancelled = new Map();
@@ -41,6 +41,10 @@ function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = f
       if (!cancelled.has(runId)) cancelled.set(runId, 0);
       return true;
     },
+    removeTriggerThere: async (id) => {
+      calls.push(`removeTriggerThere:${id}`);
+      if (upstreamFails) throw new Error("not removed upstream");
+    },
     removeTrigger: async (id) => calls.push(`removeTrigger:${id}`),
     forgetSignIns: async (agentId) => calls.push(`forgetSignIns:${agentId}`),
     removeOwnComputer: async (agentId) => calls.push(`removeOwnComputer:${agentId}`),
@@ -61,6 +65,7 @@ test("the delete runs in its order: refuse, cancel each run going and wait for i
     "cancel:r2",
     "learning:a:going=0",
     "triggers.list:a",
+    "removeTriggerThere:t1",
     "removeTrigger:t1",
     "forgetSignIns:a",
     "removeOwnComputer:a",
@@ -72,6 +77,12 @@ test("the delete runs in its order: refuse, cancel each run going and wait for i
     "forgetAgent:a",
     "agents.remove:a",
   ]);
+});
+
+test("a trigger's registration upstream is removed before its row; one that fails there keeps the row and stops the delete before anything else of step 3", async () => {
+  const { host, calls } = fakeHost({ upstreamFails: true });
+  await assert.rejects(deleteExternalAgent(host, "a"), /not removed upstream/);
+  assert.deepEqual(calls, ["refuse:a", "cancel:r2", "learning:a:going=0", "triggers.list:a", "removeTriggerThere:t1"]);
 });
 
 test("a run this server cannot end is 409 runs_in_flight before the learning delete, after the refusal; nothing of step 3 is done", async () => {

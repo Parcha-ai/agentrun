@@ -577,10 +577,30 @@ export class Triggers {
   /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds). */
   async remove(id: string): Promise<Json | undefined> {
     const trigger = await this.need(id);
-    await this.store.triggers.remove(id);
-    if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
-    await this.arm();
+    await this.dropHere(trigger);
     return this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
+  }
+
+  /** A deleted agent's trigger (agent-delete.ts), its first half: what its sender keeps of it removed there, the trigger
+   *  kept here, so a failure, or a stop before the second half (removeHere), leaves the row that names what is left to
+   *  remove for the next delete to find. Throws `unavailable` with what could not be done there. */
+  async removeThere(id: string): Promise<void> {
+    const trigger = await this.need(id);
+    const said = await this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
+    if (said === undefined) return;
+    const notes = isObject(said) ? Object.values(said).flatMap((one) => (isObject(one) && typeof one.note === "string" ? [one.note] : [])) : [];
+    throw new ApiError("unavailable", `What ${trigger.source.kind} keeps of the trigger ${id} is not removed there yet${notes.length ? ` (${notes.join(" ")})` : ""}.`, { retry_after_ms: 5_000 });
+  }
+
+  /** The second half, once removeThere is done: the trigger deleted here, its row and its adapter settings. */
+  async removeHere(id: string): Promise<void> {
+    await this.dropHere(await this.need(id));
+  }
+
+  private async dropHere(trigger: Trigger): Promise<void> {
+    await this.store.triggers.remove(trigger.id);
+    if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(trigger.id);
+    await this.arm();
   }
 
   /** Run now: one firing per Idempotency-Key, driven before the answer. `created` false: the key's firing, as it stands. */

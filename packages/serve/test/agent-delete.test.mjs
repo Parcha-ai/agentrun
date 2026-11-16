@@ -7,12 +7,20 @@
 // learning_busy while learning work is in flight, the agent left refusing runs. A DELETE stopped at any step (a crash) is
 // finished by the next one.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, follow, serve } from "./support.mjs";
+import { agentDiskKey, keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
+import { saveSignIn } from "../dist/sign-ins-store.js";
+import { archilControlFetch } from "./archil-control-fake.mjs";
+import { calls as bbCalls, contexts, deleteFailures, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
+import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
+
+secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
+const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
 
 const DEFINITION = { name: "Expert 9", description: "Answers questions.", instructions: "Answer.", skills: [], tools: [] };
 const external = (id = "9", version = 1) => ({ source: "host", kind: "expert", id, version });
@@ -81,8 +89,10 @@ async function populated(api) {
 
 test("DELETE /agents/{id} removes an external agent's runs, finished and running, its trigger, its revisions and the agent; a second DELETE is 404", { timeout: 180_000 }, async (t) => {
   const learning = fakeLearning();
-  const { api, data } = await serve(t, { deleteLearning: learning.deleteLearning });
+  const { api, data, store } = await serve(t, { deleteLearning: learning.deleteLearning });
   const { agentId, runs, trigger } = await populated(api);
+  // The disk its first run resolved to, as a run in Archil mode keeps it (archil-settings.ts keepRunDisk).
+  await keepRunDisk(store, runs[0], "dsk-c0570000000000c1");
   const before = rowsOf(data, agentId, runs);
   assert.ok(before.agents === 1 && before.revisions === 1 && before.named === 2 && before.runs >= 2 && before.triggers === 1 && before.launches === 2 && before.journal > 0, JSON.stringify(before));
   assert.ok(existsSync(join(data, "disk", "agents", agentDir(agentId))), "the agent has a folder on the disk");
@@ -98,6 +108,7 @@ test("DELETE /agents/{id} removes an external agent's runs, finished and running
   assert.deepEqual(rowsOf(data, agentId, runs), NONE, "no row of the agent or its runs is left");
   assert.ok(!existsSync(join(data, "disk", "agents", agentDir(agentId))), "its folder on the disk is gone");
   assert.ok(!existsSync(join(data, "scratch", agentDir(agentId))), "its scratch folders are gone");
+  assert.equal(await store.settings.get(runDiskKey(runs[0])), undefined, "its run's disk setting is gone");
 
   // The idempotency key its first run was made under answers nothing of it any more: the same key starts a new agent.
   const again = await api("POST", "/runs", inline("What is six times seven?"), { "idempotency-key": "delete-me-once" });
@@ -127,7 +138,7 @@ async function refusesRuns(api, agentId, finished) {
   if (finished) assert.equal((await api("GET", `/runs/${finished}`)).body.status, "completed", "its finished run was not opened again");
 }
 
-for (const step of ["after_step_1", "after_step_2", "in_step_3"]) {
+for (const step of ["after_step_1", "after_step_2", "in_step_3_trigger", "in_step_3"]) {
   test(`a DELETE stopped ${step.replaceAll("_", " ")} leaves the agent refusing runs${step === "after_step_1" ? ", across a restart" : ""}; the next DELETE finishes it`, { timeout: 240_000 }, async (t) => {
     const learning = fakeLearning();
     const crash = { done: false };
@@ -211,4 +222,129 @@ test("an agent made here is not deleted: 409 that points at archive, nothing tou
   assert.equal((await api("GET", "/agents/local-1")).status, 200);
   const unknown = await api("DELETE", "/agents/no-such-agent");
   assert.deepEqual([unknown.status, unknown.body.error?.code], [404, "not_found"]);
+});
+
+/** An external agent with one finished run: its id and the run's. */
+async function finishedAgent(api, id = "9") {
+  const done = await api("POST", "/runs", inline("What is six times seven?", id));
+  assert.equal(done.status, 202, JSON.stringify(done.body));
+  await follow(api, done.body.run_id, ["completed"]);
+  return { agentId: done.body.agent_id, runId: done.body.run_id };
+}
+
+/** A DELETE that stopped because something the agent owns elsewhere is not deleted there yet: 503 unavailable, retryable,
+ *  in words that say to send it again, with the agent still there and refusing runs. */
+async function notYet(api, agentId, runId, words) {
+  const answer = await api("DELETE", `/agents/${agentId}`);
+  assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable], [503, "unavailable", true], JSON.stringify(answer.body));
+  assert.match(answer.body.error.message, words);
+  assert.match(answer.body.error.message, /send the DELETE again/);
+  assert.equal((await api("GET", `/agents/${agentId}`)).status, 200, "the agent is kept");
+  await refusesRuns(api, agentId, runId);
+}
+
+test("an API-only server deletes an external agent: the backend that made it by its inline runs deletes it", { timeout: 120_000 }, async (t) => {
+  const learning = fakeLearning();
+  const { api } = await serve(t, { apiOnly: true, deleteLearning: learning.deleteLearning });
+  const { agentId, runId } = await finishedAgent(api);
+  const deleted = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(deleted.status, 204, `DELETE /agents/{id} on an API-only server: ${deleted.status} ${JSON.stringify(deleted.body)}`);
+  assert.deepEqual(learning.calls, [agentId]);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 404, "its run is gone");
+});
+
+test("a saved sign-in whose vendor delete fails keeps the delete from finishing: 503, the agent kept and refusing runs; the next DELETE deletes it at the vendor, then 204", { timeout: 120_000 }, async (t) => {
+  const seal = randomBytes(32).toString("base64");
+  withEnv(t, { BROWSERBASE_API_KEY: BB_KEY, BROWSERBASE_PROJECT_ID: "proj-1", AGENTRUN_SEAL_KEY: seal }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY"]);
+  const learning = fakeLearning();
+  const { api, data, store } = await serve(t, { deleteLearning: learning.deleteLearning, fauxBrowserbase: FAUX_BROWSERBASE });
+  const { agentId, runId } = await finishedAgent(api);
+  const context = `ctx-delete-${randomBytes(4).toString("hex")}`;
+  contexts.add(context);
+  await saveSignIn(store, Buffer.from(seal, "base64"), { agentId, provider: "browserbase", pointer: context });
+  const deletes = () => bbCalls.filter((call) => call.method === "DELETE" && call.path === `/v1/contexts/${context}`).length;
+
+  deleteFailures.left = 1;
+  await notYet(api, agentId, runId, /browserbase/);
+  assert.equal(deletes(), 1, "the vendor was asked once");
+  assert.ok(contexts.has(context), "and still holds the saved cookies");
+  assert.equal(rowsOf(data, agentId, [runId]).agents, 1);
+
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  assert.equal(deletes(), 2, "the next DELETE asked the vendor again");
+  assert.equal(contexts.has(context), false, "the vendor no longer holds it");
+  assert.deepEqual(rowsOf(data, agentId, [runId]), { ...NONE }, "nothing of the agent is left");
+});
+
+test("a trigger's registration upstream goes before its row: a Composio failure is 503 with the trigger kept; a stop between the two leaves the row for the next DELETE, which finishes", { timeout: 180_000 }, async (t) => {
+  const composio = await startFakeComposio({
+    toolkits: { github: { no_auth: false, tools: [{ slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "Lists issues." }] } },
+    authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] },
+    active: ["github"],
+    fail: { path: (path) => path.startsWith("/api/v3/trigger_instances/manage/"), method: "DELETE", status: 500, times: 1 },
+  });
+  t.after(() => composio.close());
+  const learning = fakeLearning();
+  const crash = { armed: false, done: false };
+  const { api } = await serve(t, {
+    publicUrl: "https://agentrun.example.com",
+    composioControl: { baseUrl: composio.baseUrl },
+    deleteLearning: learning.deleteLearning,
+    agentDeleteAt: (at) => {
+      if (at !== "in_step_3_trigger" || !crash.armed || crash.done) return;
+      crash.done = true;
+      throw new Error(`stopped ${at}`);
+    },
+  });
+  const saved = await api("PUT", "/settings/mcp-servers/gh/composio", { api_key: composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "agentrun-qa" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const { agentId, runId } = await finishedAgent(api);
+  const made = await api("POST", "/triggers", {
+    name: "issues",
+    source: { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } },
+    target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this issue." }, max_cost_usd: 0.5 },
+  });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const instance = made.body.source.instance_id;
+  assert.ok(composio.instances.has(instance));
+
+  // Composio fails the delete: the trigger is kept, so the next DELETE finds what is left to remove there.
+  await notYet(api, agentId, runId, new RegExp(instance));
+  assert.ok(composio.instances.has(instance), "still registered at Composio");
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 200, "the trigger is kept");
+
+  // A stop once Composio removed it and before the row went: the row is still there, and the next DELETE finishes.
+  crash.armed = true;
+  const stopped = await api("DELETE", `/agents/${agentId}`);
+  assert.deepEqual([stopped.status, stopped.body.error?.code], [500, "internal"], JSON.stringify(stopped.body));
+  assert.ok(crash.done, "it stopped between Composio and the row");
+  assert.equal(composio.instances.has(instance), false, "removed at Composio");
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 200, "the row is kept");
+
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 404, "the trigger is gone");
+  assert.equal((await api("GET", `/agents/${agentId}`)).status, 404);
+});
+
+test("an agent's stored Archil disk with Archil off keeps the delete from finishing: 503, the agent kept and refusing runs; with Archil on again the next DELETE deletes the disk there, then 204", { timeout: 120_000 }, async (t) => {
+  const disk = "dsk-a9de1e7e00000001";
+  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: disk, name: "its-disk" }] });
+  withEnv(t, { ARCHIL_API_KEY: "fake-archil-account-key-0001" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  const learning = fakeLearning();
+  const { api, store } = await serve(t, { deleteLearning: learning.deleteLearning, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch } });
+  const { agentId, runId } = await finishedAgent(api);
+  // The disk an earlier Archil mode made for it; Archil was turned off since, which leaves the disk stored on the agent.
+  await storeAgentDisk(store, agentId, { diskId: disk });
+
+  await notYet(api, agentId, runId, /Archil is off/);
+  assert.ok(control.disks.has(disk), "the disk is still at Archil");
+  assert.deepEqual(await store.settings.get(agentDiskKey(agentId)), { diskId: disk }, "and stored on the agent");
+
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  assert.equal(control.disks.has(disk), false, "its disk deleted at Archil");
+  assert.equal(await store.settings.get(agentDiskKey(agentId)), undefined);
 });
