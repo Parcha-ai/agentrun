@@ -378,6 +378,10 @@ export type ServeOptions = {
   /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
    *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
   webhookPrivateTargets?: boolean;
+  /** A test's seam: the addresses the outbound webhook's receiver's name resolves to, at a save's check and at each try
+   *  (webhooks.ts), in place of the system resolver's. A test's server answers its example hosts here, so no CI
+   *  runner's resolver decides what a test sees. */
+  webhookLookup?: (host: string) => Promise<string[]>;
 };
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
@@ -1333,6 +1337,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
   const webhooks = new Webhooks(store, sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
     ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
     privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.

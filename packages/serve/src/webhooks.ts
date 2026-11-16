@@ -104,12 +104,14 @@ type Signing = "sealed" | "unreadable";
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** `work`'s result, or `signal`'s reason the moment it aborts: a lookup that never answers is given up on, not waited out. */
+/** `work`'s result, or `signal`'s reason the moment it aborts: a lookup that never answers is given up on, not waited out.
+ *  `work` is always followed to its end, so one that fails after the abort (a name that answers NXDOMAIN once the server
+ *  is stopping) is no unhandled rejection. */
 const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
   new Promise<T>((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason);
     const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
     work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 export { signatureOf } from "./standard-webhooks.js";
