@@ -219,3 +219,44 @@ test('a cut request whose outcome is lost is receipted with the state it was sen
   assert.deepEqual(receipts[0].state, sent[0].state);
   assert.deepEqual(receipts[0].state_cut.map((each) => each.path), ['/home']);
 });
+
+// Jev's limits are per question (the state and that question, with the images either names) and per request (all of it):
+// a question's own image counts against its own room, not against the other questions'.
+test('three short questions, each with its own full-size image, fit the limits and are sent, not refused', async () => {
+  const sent = [];
+  const client = {
+    async systemOne(request) {
+      sent.push(request);
+      const uses = (value) => Object.keys(request.assets ?? {}).reduce((n, reference) => n + JSON.stringify(value).split(reference).length - 1, 0);
+      const perQuestion = Object.entries(request.questions).map(([id, question]) => bytes(request.state) + bytes({ [id]: question }) + (uses(request.state) + uses(question)) * 12_544);
+      const whole = bytes(request.state) + bytes(request.questions) + uses([request.state, request.questions]) * 12_544;
+      if (Math.max(...perQuestion) > JEV_CONTEXT_TOKENS.perQuestion || whole > JEV_CONTEXT_TOKENS.perRequest) throw new Error('HTTP 400 max_tokens_exceeded');
+      return { model: 'jev-1.14.0', answers: Object.fromEntries(Object.keys(request.questions).map((id) => [id, { type: 'noul', noul: 0.9 }])), usage: { input_tokens: whole, output_tokens: 0 } };
+    },
+  };
+  const run = createJevRunner({ client, longContext: false });
+  const questions = Object.fromEntries(['a', 'b', 'c'].map((id) => [id, { type: 'noul', instructions: `Does <${id}> show a refund policy?` }]));
+  const assets = Object.fromEntries(['a', 'b', 'c'].map((id) => [`<${id}>`, { bytes: png(1568), mime: 'image/png' }]));
+  const result = await run({ label: 'policy', state: { merchant: 'Example Outfitters' }, questions, assets });
+  assert.equal(result.answers.a.noul, 0.9);
+  assert.equal(sent.length, 1);
+});
+
+test('a question whose own images do not fit its room is refused, whatever the others hold', async () => {
+  const run = createJevRunner({ client: { async systemOne() { throw new Error('must not be sent'); } }, longContext: false });
+  const own = Array.from({ length: 3 }, () => '<a>').join(' ');
+  const questions = { a: { type: 'noul', instructions: `Does ${own} show a refund policy?` }, b: { type: 'noul', instructions: 'Is it in English?' } };
+  await assert.rejects(run({ label: 'policy', state: { merchant: 'Example Outfitters' }, questions, assets: { '<a>': { bytes: png(1568), mime: 'image/png' } } }),
+    (error) => error.requestDiagnostic?.reason === 'over_context');
+});
+
+test("a cut request that fails hands the recorder the state it was sent, so the saved request size is what was sent", async () => {
+  const sent = [];
+  const lost = async (_url, init) => { sent.push(JSON.parse(init.body)); return json({}, 502); };
+  const exchanges = [];
+  const input = { merchant: 'Example Outfitters', home: page(0, 40_000).content, pages: [] };
+  await runWorkflow(rubricFlow, input, { runJudge: judgeOn({ fetch: lost, longContext: false }), recordDecision: async (_receipt, exchange) => { exchanges.push(exchange); } });
+  assert.equal(exchanges.length, 1);
+  assert.deepEqual(exchanges[0].result?.state_sent?.state, sent[0].state);
+  assert.ok(bytes(sent[0].state) < bytes(input), 'the request was cut');
+});
