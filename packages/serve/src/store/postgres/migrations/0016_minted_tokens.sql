@@ -1,5 +1,5 @@
--- The store's schema on Postgres, version 15: a hosted machine's minted token (a dial provider's create,
--- spec/computer/attach.md), as store/schema.ts keeps it on SQLite (MINTED_TOKENS). Applied once, after 0014, inside the
+-- The store's schema on Postgres, version 16: a hosted machine's minted token (a dial provider's create,
+-- spec/computer/attach.md), as store/schema.ts keeps it on SQLite (MINTED_TOKENS). Applied once, after 0015, inside the
 -- transaction migrate.ts opens. Never edit this file once applied: a change is a new file.
 --
 -- minted_tokens: one row per machine (its name, from its create's request id); the token's SHA-256 alone is kept (hex),
@@ -18,4 +18,4 @@ CREATE TABLE IF NOT EXISTS minted_tokens (
   created_at BIGINT NOT NULL
 );
 
-UPDATE store_meta SET schema_version = 15 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 16 WHERE singleton = 1;
