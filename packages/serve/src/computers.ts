@@ -351,7 +351,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const declared = new Set(provider.keys.map((key) => key.name));
     const refused = Object.entries(body).flatMap(([name, value]) =>
       !declared.has(name) ? [{ field: name, reason: "not_allowed", message: `${provider.label} takes ${[...declared].join(", ") || "no keys"}, not ${name}` }]
-        : value !== null && (typeof value !== "string" || value === "") ? [{ field: name, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` }] : []);
+        // Whitespace alone is no value, as in the environment (key-meta.ts envValue): saved, it would read as set here and
+        // as none where a value is read (resolve-computer.ts registryHere), so Settings would show ready what a run refuses.
+        : value !== null && (typeof value !== "string" || value.trim() === "") ? [{ field: name, reason: "wrong_type", message: `${name} is a non-empty string, or null to remove it` }] : []);
     if (refused.length) throw new KeysRefused(refused);
     for (const [name, value] of Object.entries(body)) {
       if (value === null) await removeSealedKey(store, name);

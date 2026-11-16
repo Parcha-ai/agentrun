@@ -163,6 +163,19 @@ test("Mode 2: with DAYTONA_ARCHIL_EGRESS saved but no AGENTRUN_DAYTONA_SNAPSHOT,
   assert.ok(!JSON.stringify(said).includes(DAYTONA_KEY));
 });
 
+test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save, so Settings never shows a Daytona sandbox ready that its run's start refuses", async (t) => {
+  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
+  const blank = await api("PUT", "/computers/daytona/keys", { DAYTONA_ARCHIL_EGRESS: "   " });
+  assert.equal(blank.status, 422, JSON.stringify(blank.body));
+  assert.match(JSON.stringify(blank.body), /DAYTONA_ARCHIL_EGRESS is a non-empty string/);
+  const view = await api("GET", "/computers");
+  const daytona = view.body.kinds.find((one) => one.kind === "sandbox").providers.find((one) => one.id === "daytona");
+  assert.deepEqual([daytona.ready, /hosted cloud/.test(daytona.why ?? "")], [false, true], JSON.stringify(daytona));
+  const said = await saveAndStart(api, "daytona-blank-egress", { computer: { kind: "sandbox", provider: "daytona" } });
+  assert.match(said.refused[0]?.[2] ?? "", /hosted cloud/, JSON.stringify(said));
+});
+
 test("Mode 2: AGENTRUN_DAYTONA_SNAPSHOT named but no DAYTONA_ARCHIL_EGRESS (hosted Daytona): a Daytona sandbox is still refused, saying Archil's client hangs on its sandboxes", async (t) => {
   const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
