@@ -459,12 +459,14 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 	const name = `agentrun-box-${boxRecipeHash()}`; // Vercel: the tag agentrun-box:<hash> in your project's VCR
 	const vendor = (this.host as VendorHost).client;
 	try {
-		const found = (await vendor.listImages(ctx)).find((image) => image.name === name && image.status === "ready");
-		if (found) return ok(found.name); // a second call ends here: no build, no onWait
-		ctx.onWait?.("build", name);
-		const box = (file: string) => readFile(new URL(`../box/${file}`, import.meta.url));
-		const context = { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
-		return ok(await vendor.build(name, context, ctx)); // the vendor's builder; it answers once the image is ready
+		const image = (await vendor.listImages(ctx)).find((one) => one.name === name); // no get by name: list
+		if (image?.status === "failed") throw new Error(`its last build failed (${image.error}): delete ${name} in the account, then call again`);
+		if (image === undefined) {
+			ctx.onWait?.("build", name); // only here: a second call finds the image and is told nothing
+			const box = (file: string) => readFile(new URL(`../box/${file}`, import.meta.url));
+			await vendor.build(name, { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") }, ctx);
+		}
+		return ok(await vendor.ready(name, ctx)); // ready now, or once a build (this one, or another server's) is
 	} catch (error) {
 		return fail(codeOfError(this.host, error), `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -472,10 +474,11 @@ async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag:
 ```
 
 An image of that name the vendor is still making (VCR's `Preparing`, a Hyperbrowser build under way) is another
-server's build of it: wait for it, bounded by `ctx.signal`, and don't build again. One that failed (VCR's `Error`) is a
-failure, in the vendor's words. Both vendors run amd64 alone, which the box Dockerfile builds. Vercel never runs an
-image's `ENTRYPOINT` or `CMD`, and Hyperbrowser takes them as launch defaults: the box's `sleep infinity` suits both,
-for the adapter starts what a computer runs through exec.
+server's build of it: `ready` waits for it, bounded by `ctx.signal`, and nothing builds again. One that failed (VCR's
+`Error`) is a failure, in the vendor's words and with the next step; building over it would hide why. Both vendors run
+amd64 alone, which the box Dockerfile builds. Vercel never runs an image's `ENTRYPOINT` or `CMD`, and Hyperbrowser
+takes them as launch defaults: the box's `sleep infinity` suits both, for the adapter starts what a computer runs
+through exec.
 
 A vendor that needs its own base or its agent in the image (Blaxel's and Baseten's sandbox API) builds
 `vendorDockerfile(base, { agent, start })` from `box/recipe.mjs` instead, named by the `hash` it answers. Any base must

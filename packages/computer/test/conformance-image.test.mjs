@@ -199,21 +199,32 @@ test("two servers that build the same recipe at once both answer its image: the 
 
 /**
  * A vendor whose builder takes a Dockerfile and its context and makes an image under a name, in memory: its images by
- * name, each ready or preparing, found only by listing them all (Hyperbrowser has no get by name), and every build it
- * ran. A build answers once the image is ready, with the name a create then names.
+ * name, each building, ready or failed, found only by listing them all (Hyperbrowser has no get by name), and every
+ * build it ran. A build starts the image building and answers at once; `ready` waits until the image of that name is
+ * ready (or failed, or the call's signal aborts), and answers the name a create then names. A test finishes a build.
  */
 function builder() {
 	const account = { images: [], builds: [] };
 	const live = (ctx) => ctx?.signal?.throwIfAborted();
+	const named = (name) => account.images.find((image) => image.name === name);
 	account.client = {
 		listImages: async (ctx) => (live(ctx), account.images.map((image) => ({ ...image }))),
 		build: async (name, context, ctx) => {
 			live(ctx);
 			account.builds.push({ name, context });
-			account.images.push({ name, status: "ready" });
-			return name;
+			account.images.push({ name, status: account.hold ? "building" : "ready" });
+		},
+		ready: async (name, ctx) => {
+			for (;;) {
+				live(ctx);
+				const image = named(name);
+				if (image?.status === "ready") return name;
+				if (image?.status === "failed") throw new Error(`the build of ${name} failed: ${image.error}`);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+			}
 		},
 	};
+	account.finish = (name, status = "ready", error) => Object.assign(named(name), { status, error });
 	return account;
 }
 
@@ -225,12 +236,14 @@ function dockerfileProvider(account, { findsByName }) {
 			const name = `agentrun-box-${recipeHash()}`;
 			const vendor = this.host.client;
 			try {
-				const found = findsByName ? (await vendor.listImages(ctx)).find((image) => image.name === name && image.status === "ready") : undefined;
-				if (found) return { ok: true, value: found.name };
-				ctx.onWait?.("build", name);
-				const box = (file) => readFile(new URL(file, BOX));
-				const context = { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
-				return { ok: true, value: await vendor.build(name, context, ctx) };
+				const image = findsByName ? (await vendor.listImages(ctx)).find((one) => one.name === name) : undefined;
+				if (image?.status === "failed") throw new Error(`its last build failed (${image.error}): delete ${name} in the account, then call again`);
+				if (image === undefined) {
+					ctx.onWait?.("build", name);
+					const box = (file) => readFile(new URL(file, BOX));
+					await vendor.build(name, { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") }, ctx);
+				}
+				return { ok: true, value: await vendor.ready(name, ctx) };
 			} catch (error) {
 				return { ok: false, error: { code: codeOfError(this.host, error), message: `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}` } };
 			}
@@ -264,6 +277,27 @@ test("on the Dockerfile path, a prepareImage that builds every call fails Core i
 	assert.equal(result.status, "fail");
 	assert.equal(result.reason, `the second prepareImage was told onWait(build ${NAME}): it must find the image the first made by its name (one that carries the box recipe's hash) and answer it with no build and no pull`);
 	assert.equal(account.builds.length, 2, "a build for each call");
+});
+
+test("on the Dockerfile path, an image of that name still building is another server's build: waited for, never built again; a failed one fails in words, with no build", async () => {
+	const account = builder();
+	account.hold = true;
+	const told = [];
+	const first = dockerfileProvider(account, { findsByName: true }).prepareImage({ onWait: (making, tag) => told.push(`${making} ${tag}`) });
+	await until(() => account.images.length === 1);
+	const second = dockerfileProvider(account, { findsByName: true }).prepareImage({ onWait: (making, tag) => told.push(`${making} ${tag}`) });
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	account.finish(NAME);
+	assert.deepEqual(await Promise.all([first, second]), [{ ok: true, value: NAME }, { ok: true, value: NAME }]);
+	assert.equal(account.builds.length, 1, "one build: the second waited for the first's");
+	assert.deepEqual(told, [`build ${NAME}`], "only the build is told onWait");
+
+	const failed = builder();
+	failed.images.push({ name: NAME, status: "failed", error: "install.sh exited 1" });
+	const refused = await dockerfileProvider(failed, { findsByName: true }).prepareImage();
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.message, `building the box image ${NAME}: its last build failed (install.sh exited 1): delete ${NAME} in the account, then call again`);
+	assert.equal(failed.builds.length, 0, "a failed image is not built over");
 });
 
 test("a build cancelled by the caller's signal still deletes its machine: the delete has its own deadline", async () => {

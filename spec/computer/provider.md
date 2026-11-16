@@ -197,7 +197,8 @@ Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only
   own form: `agentrun-box-<hash>` where it takes a name (a Hyperbrowser team image), the tag `agentrun-box:<hash>`
   where it takes a repository (Vercel); `vendorDockerfile`'s `hash` in place of the recipe's for its file. Where the
   vendor has no get by name, `prepareImage` lists its images and takes the one of that name. A name the vendor refuses
-  as taken, or one it is still making (VCR's `Preparing`), is another build of it: wait for that one.
+  as taken, or one it is still making (VCR's `Preparing`), is another build of it: wait for that one. One whose build
+  failed is a failure in the vendor's words, never built over.
 - It calls `ctx.onWait("build" | "pull", tag)` once, and only when it really builds or pulls.
 - It answers the image a create then names: ok with it, or an error in the vendor's words.
 
