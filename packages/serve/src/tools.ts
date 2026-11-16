@@ -718,7 +718,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   [EMAIL_DRAFT]: emailTool(EMAIL_DRAFT),
   [EMAIL_SEND]: emailTool(EMAIL_SEND),
   [EMAIL_FILE]: emailTool(EMAIL_FILE),
-  // The server's calendar (calendar/tools.ts, Settings → Calendar), every harness's as web_fetch is; ical.js loads at the
+  // The server's calendar (calendar/tools.ts, saved with PUT /v2/settings/calendar), every harness's as web_fetch is; ical.js loads at the
   // first bind.
   [CALENDAR_EVENTS]: {
     summary: CALENDAR_SUMMARY,

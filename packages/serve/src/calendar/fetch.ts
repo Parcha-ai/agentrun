@@ -10,7 +10,7 @@
 // the host at most: never the address, which is a secret.
 import type { OAuthNetwork, Reach } from "../mcp-oauth.js";
 import { scrubAddress } from "./address.js";
-import { BODY_MAX_BYTES, CALENDAR_PAGE, FETCH_TIMEOUT_MS, FRESH_MS, REDIRECTS_MAX } from "./names.js";
+import { BODY_MAX_BYTES, CALENDAR_SETTING, FETCH_TIMEOUT_MS, FRESH_MS, REDIRECTS_MAX } from "./names.js";
 import { type ParsedCalendar, parseCalendar } from "./parse.js";
 
 /** A read that failed, in words that never hold the address. */
@@ -65,7 +65,7 @@ const hostOf = (url: string | URL) => (typeof url === "string" ? (URL.parse(url)
 /** `refused` (mcp-oauth.ts checked's words, which name the host alone) as a sentence. */
 const refusal = (at: { refused: string; unresolved?: true }): string => {
   const said = `${at.refused.charAt(0).toUpperCase()}${at.refused.slice(1)}`;
-  return at.unresolved ? `${said}: check the address in ${CALENDAR_PAGE}.` : `${said}.`;
+  return at.unresolved ? `${said}: check the address saved with ${CALENDAR_SETTING}.` : `${said}.`;
 };
 
 /** An error's code (ECONNREFUSED, ENOTFOUND, CERT_HAS_EXPIRED), from it or its cause: never its message, which may name
@@ -99,7 +99,7 @@ async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarN
         res = await dialAt(network, at.address)(target.href, { redirect: "manual", signal, headers });
         const location = res.headers.get("location");
         if (res.status >= 300 && res.status < 400 && res.status !== 304 && location) {
-          if (hop >= REDIRECTS_MAX) throw new CalendarError(`${hostOf(url)}'s calendar redirected more than ${REDIRECTS_MAX} times: check the address in ${CALENDAR_PAGE}.`);
+          if (hop >= REDIRECTS_MAX) throw new CalendarError(`${hostOf(url)}'s calendar redirected more than ${REDIRECTS_MAX} times: check the address saved with ${CALENDAR_SETTING}.`);
           const next = URL.parse(location, target);
           if (!next) throw new CalendarError(`${target.host} redirected the calendar to an address that isn't one.`);
           target = next;
@@ -107,7 +107,7 @@ async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarN
         }
         const validators = { ...(res.headers.get("etag") ? { etag: res.headers.get("etag")! } : {}), ...(res.headers.get("last-modified") ? { modified: res.headers.get("last-modified")! } : {}) };
         if (res.status === 304 && held) return { status: 304, etag: validators.etag ?? held.etag, modified: validators.modified ?? held.modified };
-        if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 410) throw new CalendarError(`${target.host} answered ${res.status}: the address may be old or wrong; copy it again into ${CALENDAR_PAGE}.`);
+        if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 410) throw new CalendarError(`${target.host} answered ${res.status}: the address may be old or wrong; copy it again and save it with ${CALENDAR_SETTING}.`);
         if (res.status < 200 || res.status >= 300) throw new CalendarError(`${target.host} answered ${res.status}.`);
         return { status: 200, body: await bodyOf(res, target), ...validators };
       } finally {

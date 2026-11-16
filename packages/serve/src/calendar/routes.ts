@@ -35,16 +35,18 @@ function whenOf(event: CalendarEvent, zone: string): string {
 /** The calendar at `url` read and said in words; a read that fails, its words (never the address). */
 async function tested(url: string, deps: CalendarRouteDeps): Promise<{ ok: boolean; message: string }> {
   const { CalendarError, readCalendar } = await import("./fetch.js");
-  const { summaryOf } = await import("./parse.js");
+  const { RepeatsError, summaryOf } = await import("./parse.js");
+  const scrub = (text: string) => scrubAddress(text, url);
   try {
     const calendar = await readCalendar(url, await deps.reach(), deps.network, deps.signal);
-    const { count, next } = summaryOf(calendar, deps.now?.() ?? Date.now());
-    const name = calendar.name ?? URL.parse(url)?.host ?? "The calendar";
+    const { count, next } = summaryOf(calendar, deps.now?.() ?? Date.now(), { scrub });
+    const name = calendar.name === null ? (URL.parse(url)?.host ?? "The calendar") : scrub(calendar.name);
     const events = count === 1 ? "1 event" : `${count} events`;
     const coming = next ? `next: ${next.title}, ${whenOf(next, calendar.zone)}` : "nothing in the next 62 days";
     return { ok: true, message: scrubAddress(`${name}: ${events}, time zone ${calendar.zone}, ${coming}`, url) };
   } catch (error) {
     if (error instanceof CalendarError) return { ok: false, message: error.message };
+    if (error instanceof RepeatsError) return { ok: false, message: `${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}` };
     return { ok: false, message: scrubAddress(`The calendar couldn't be read (${String((error as Error)?.message ?? error).slice(0, 200)})`, url) };
   }
 }
@@ -56,12 +58,13 @@ export async function calendarRoute(deps: CalendarRouteDeps, name: string, body?
       return calendarView(deps.store, deps.sealKey);
     case "saveCalendar": {
       const url = bodyAddress(body);
-      // Read once for its own name and time zone; a read that fails saves the address all the same.
+      // Read once for its own name (the address cut out of it) and time zone; a read that fails saves the address all the
+      // same.
       let found: { name: string | null; zone: string | null } = { name: null, zone: null };
       try {
         const { readCalendar } = await import("./fetch.js");
         const calendar = await readCalendar(url, await deps.reach(), deps.network, deps.signal);
-        found = { name: calendar.name, zone: calendar.zone };
+        found = { name: calendar.name === null ? null : scrubAddress(calendar.name, url), zone: calendar.zone };
       } catch {}
       await saveCalendar(deps.store, deps.sealKey, { url, name: found.name, time_zone: found.zone });
       return calendarView(deps.store, deps.sealKey);

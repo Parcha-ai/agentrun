@@ -7,13 +7,18 @@
 //   - Recurrence: an RRULE is walked in the event's wall-clock time (so a 09:30 meeting stays at 09:30 across a DST
 //     change, as calendars keep it), its UNTIL read as an instant; RDATEs are added and EXDATEs taken out, each in its
 //     own zone (an EXDATE that is a date takes out that day's instance). A RECURRENCE-ID override replaces the instance
-//     it names wherever it moved it (in or out of the window), and a cancelled one removes it; a cancelled series, or a
-//     cancelled single event, is left out. A series stops at SERIES_MAX instances in the window, and its rule at
-//     SERIES_STEPS_MAX steps from its start, so no rule can run away.
+//     it names wherever it moved it (in or out of the window), and a cancelled one removes it; one with
+//     RANGE=THISANDFUTURE does so for its instance and every later one (moved by as much, its length and fields, or
+//     cancelled). An RDATE that is a PERIOD keeps its own end or duration. A cancelled series, or a cancelled single
+//     event, is left out. A series stops at SERIES_MAX instances in the window.
+//   - Work: one read (eventsIn, summaryOf) has READ_STEPS_MAX rule steps (and READ_WORK_MS) to expand every series,
+//     and past them stops with words (RepeatsError, TOO_MANY_REPEATS), never a partial list. A rule whose UNTIL is
+//     before the window is not walked at all, and a plain rule (no COUNT; no BY parts, or a weekly one's BYDAY, or a monthly one's day parts) is started
+//     whole periods on, just before the window, instead of from its DTSTART years back.
 //   - An event's start and end: ISO date-times with the offset of the event's own zone at that instant (a UTC event's in
 //     the calendar's zone), or, all day, dates (its end the day after its last, as iCalendar has it).
 import ICAL from "ical.js";
-import { ATTENDEES_MAX, DESCRIPTION_MAX, EMAIL_MAX, EVENTS_MAX, LOCATION_MAX, NAME_MAX, SERIES_MAX, SERIES_STEPS_MAX, TITLE_MAX, WINDOW_DAYS_DEFAULT, WINDOW_DAYS_MAX } from "./names.js";
+import { ATTENDEES_MAX, DESCRIPTION_MAX, EMAIL_MAX, EVENTS_MAX, LOCATION_MAX, NAME_MAX, READ_STEPS_MAX, READ_WORK_MS, SERIES_MAX, TITLE_MAX, TOO_MANY_REPEATS, WINDOW_DAYS_DEFAULT, WINDOW_DAYS_MAX } from "./names.js";
 
 type Time = InstanceType<typeof ICAL.Time>;
 type Component = InstanceType<typeof ICAL.Component>;
@@ -45,6 +50,7 @@ type Series = { main: Component; overrides: Component[]; host: Hosted };
 type Hosted = { zone: Zone; tzs: Map<string, Zone> };
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
 /** `name` as an IANA zone the runtime knows (a vendor's path ending in one, /mozilla.org/…/Europe/Madrid, read as it), or
@@ -71,14 +77,37 @@ function formatter(zone: string): Intl.DateTimeFormat {
   return one;
 }
 
-/** An IANA zone. */
+/** The IANA zones read so far, by name, and the names a TZID was read as (ianaZone): each kept for every read after. */
+const ianaZones = new Map<string, Zone>();
+const ianaNames = new Map<string, string | undefined>();
+/** The most days of offsets one zone keeps (a few years); past it they are forgotten and found again. */
+const ZONE_DAYS_MAX = 20_000;
+
+/** An IANA zone. An instant's offset is the runtime's (Intl, some 6 µs a call), kept by UTC day: a day whose first and
+ *  last second have one offset has it all day, and only a day a change falls in asks the runtime at each instant. */
 function iana(name: string): Zone {
-  const offsetAt = (instant: number): number => {
+  const known = ianaZones.get(name);
+  if (known) return known;
+  const exact = (instant: number): number => {
     const parts = Object.fromEntries(formatter(name).formatToParts(new Date(instant)).map((part) => [part.type, part.value]));
     const wall = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute), Number(parts.second));
     return Math.round((wall - Math.floor(instant / 1000) * 1000) / 60_000);
   };
-  return { name, offsetAt, toInstant: (wall) => placed(wall, offsetAt) };
+  const days = new Map<number, number | null>();
+  const offsetAt = (instant: number): number => {
+    const day = Math.floor(instant / DAY);
+    let all = days.get(day);
+    if (all === undefined) {
+      const first = exact(day * DAY);
+      all = first === exact((day + 1) * DAY - 1000) ? first : null;
+      if (days.size >= ZONE_DAYS_MAX) days.clear();
+      days.set(day, all);
+    }
+    return all ?? exact(instant);
+  };
+  const zone: Zone = { name, offsetAt, toInstant: (wall) => placed(wall, offsetAt) };
+  ianaZones.set(name, zone);
+  return zone;
 }
 
 /** A wall-clock time placed in a zone by its offset at that instant: the offset at the first guess, and again at the
@@ -121,7 +150,8 @@ const wallOf = (time: Time): number => Date.UTC(time.year, time.month - 1, time.
 function zoneOf(tzid: string | undefined, utc: boolean, host: Hosted): Zone {
   if (utc) return UTC;
   if (!tzid) return host.zone;
-  const named = ianaZone(tzid);
+  if (!ianaNames.has(tzid) && ianaNames.size < 1_000) ianaNames.set(tzid, ianaZone(tzid));
+  const named = ianaNames.has(tzid) ? ianaNames.get(tzid) : ianaZone(tzid);
   if (named) return named === "UTC" ? UTC : iana(named);
   return host.tzs.get(tzid) ?? host.zone;
 }
@@ -262,8 +292,58 @@ function single(component: Component, main: Component, host: Hosted, recurring: 
 /** Whether an instance is in the window: it overlaps it, or, taking no time, starts in it. */
 const inWindow = (one: { start: number; end: number }, window: Window) => (one.end > one.start ? one.start < window.end && one.end > window.start : one.start >= window.start && one.start < window.end);
 
-/** A series' instances in `window`, its overrides in their place; none for a cancelled series. */
-function instancesOf(series: Series, window: Window): Instance[] {
+/** One read's work budget: the rule steps it has left (READ_STEPS_MAX), and the moment it must be done by (READ_WORK_MS
+ *  from its start). */
+type Budget = { steps: number; until: number };
+const budgetOf = (): Budget => ({ steps: READ_STEPS_MAX, until: performance.now() + READ_WORK_MS });
+/** A read stopped at its work budget: the calendar has too many repeating events to read. Its message is the words. */
+export class RepeatsError extends Error {}
+const spend = (budget: Budget) => {
+  budget.steps -= 1;
+  if (budget.steps < 0 || performance.now() > budget.until) throw new RepeatsError(TOO_MANY_REPEATS);
+};
+
+/** A rule's period, of the frequencies a rule is started later in by whole periods (fastForward). */
+const PERIOD_MS: Record<string, number> = { SECONDLY: 1000, MINUTELY: 60_000, HOURLY: HOUR, DAILY: DAY, WEEKLY: 7 * DAY };
+
+/** Where to walk `rule` from instead of its DTSTART (`first`, a wall-clock time), when a plain rule starts whole periods
+ *  before `before` (a wall-clock time no step before which reaches the window): a later start, a whole number of periods
+ *  on, one period and more before `before`. Its own instants are the rule's from there, the first one (the new start)
+ *  and its period's earlier days aside, which fall before `before`. undefined: walk it from its DTSTART. */
+function fastForward(rule: InstanceType<typeof ICAL.Recur>, first: number, isDate: boolean, before: number): Time | undefined {
+  if (rule.count) return undefined;
+  const parts = Object.entries(rule.parts ?? {}).filter(([, values]) => Array.isArray(values) && values.length).map(([part]) => part);
+  const interval = Math.max(1, rule.interval || 1);
+  const d = new Date(first);
+  if (rule.freq === "MONTHLY") {
+    // The month's own days (BYDAY, BYMONTHDAY, BYSETPOS) are found in each month whatever day it starts on; a plain monthly
+    // rule takes DTSTART's day, which every month has only up to the 28th.
+    if (parts.some((part) => part !== "BYDAY" && part !== "BYMONTHDAY" && part !== "BYSETPOS")) return undefined;
+    if (!parts.length && d.getUTCDate() > 28) return undefined;
+    const b = new Date(before);
+    const months = (b.getUTCFullYear() - d.getUTCFullYear()) * 12 + (b.getUTCMonth() - d.getUTCMonth()) - interval - 1;
+    const k = Math.floor(months / interval) * interval;
+    if (k <= 0) return undefined;
+    return floating(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + k, parts.length ? 1 : d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()), isDate);
+  }
+  const unit = PERIOD_MS[rule.freq];
+  if (!unit) return undefined;
+  // A weekly rule's weekdays (BYDAY without a number) fall the same in every week.
+  const weekdays = rule.freq === "WEEKLY" && parts.length === 1 && parts[0] === "BYDAY" && (rule.parts.BYDAY ?? []).every((day) => /^[A-Z]{2}$/.test(day));
+  if (parts.length && !weekdays) return undefined;
+  const period = interval * unit;
+  const k = Math.floor((before - first) / period) - 1;
+  if (k <= 0) return undefined;
+  return floating(first + k * period, isDate);
+}
+
+/** An override with RANGE=THISANDFUTURE: from the instant of the instance it names, each instance moved by `shift` (in
+ *  wall-clock time), `length` long, with its fields; or, cancelled, left out. */
+type Future = { from: number; shift: number; length: number; component: Component; cancelled: boolean };
+
+/** A series' instances in `window`, its overrides in their place; none for a cancelled series. Each step of a rule spends
+ *  from `budget`. */
+function instancesOf(series: Series, window: Window, budget: Budget): Instance[] {
   const { main, overrides, host } = series;
   if (cancelled(main)) return [];
   const isRecurring = main.hasProperty("rrule") || main.hasProperty("rdate");
@@ -275,20 +355,43 @@ function instancesOf(series: Series, window: Window): Instance[] {
   const span = spanOf(main, host);
   if (!span) return [];
   const { start: first, length } = span;
-  // The overrides, by the instance each replaces.
+  // A value of `prop` as a wall-clock time in the series' zone: as written when it has no zone of its own (as DTSTART).
+  const wallIn = (stamp: Stamp, prop: Property): number => {
+    if (stamp.date || (!prop.getParameter("tzid") && !stamp.utc)) return stamp.wall;
+    const instant = instantOf(stamp, host);
+    return instant + first.zone.offsetAt(instant) * 60_000;
+  };
+  // The overrides, by the instance each replaces; the THISANDFUTURE ones also by where their range starts.
   const replaced = new Set<number>();
+  const futures: Future[] = [];
   const out: Instance[] = [];
   for (const override of overrides) {
     const prop = override.getFirstProperty("recurrence-id");
     const value = prop?.getFirstValue() as Time | undefined;
     if (!prop || !value || typeof value !== "object" || !("year" in value)) continue;
-    const stamp = stampOf(value, prop, host);
+    const read = stampOf(value, prop, host);
     // A RECURRENCE-ID with no zone of its own is in the series' (as its DTSTART is).
-    replaced.add(instantOf(prop.getParameter("tzid") || stamp.utc || stamp.date ? stamp : { ...stamp, zone: first.zone }, host));
+    const stamp = prop.getParameter("tzid") || read.utc || read.date ? read : { ...read, zone: first.zone };
+    const from = instantOf(stamp, host);
+    replaced.add(from);
+    if (String(prop.getParameter("range") ?? "").toUpperCase() === "THISANDFUTURE") {
+      const own = spanOf(override, host);
+      const dtstart = override.getFirstProperty("dtstart");
+      const shift = own && dtstart ? wallIn(own.start, dtstart) - wallIn(stamp, prop) : 0;
+      const timed = own && (override.hasProperty("dtend") || override.hasProperty("duration"));
+      futures.push({ from, shift, length: timed ? own.length : length, component: override, cancelled: cancelled(override) });
+    }
     if (cancelled(override)) continue;
     const moved = single(override, main, host, true);
     if (moved && inWindow(moved, window)) out.push(moved);
   }
+  futures.sort((a, b) => a.from - b.from);
+  // The latest THISANDFUTURE range an instance (by the instant it had) is in.
+  const futureAt = (at: number): Future | undefined => {
+    let found: Future | undefined;
+    for (const future of futures) if (future.from <= at) found = future;
+    return found;
+  };
   // The EXDATEs: instants, and days (an EXDATE that is a date takes out that day's instance).
   const exInstants = new Set<number>();
   const exDays = new Set<string>();
@@ -302,36 +405,54 @@ function instancesOf(series: Series, window: Window): Instance[] {
   }
   const seen = new Set<number>();
   let kept = 0;
-  const take = (wall: number): boolean => {
-    const stamp: Stamp = { ...first, wall };
-    const start = instantOf(stamp, host);
-    if (seen.has(start)) return true;
-    seen.add(start);
-    if (replaced.has(start) || exInstants.has(start) || exDays.has(dateOf(first.date ? wall : wall + first.zone.offsetAt(start) * 60_000 - (first.utc ? 0 : first.zone.offsetAt(start) * 60_000)))) return true;
-    const end = first.date ? host.zone.toInstant(wall + length) : start + length;
-    const one: Instance = { start, end, startStamp: stamp, endWall: wall + length, component: main, main, recurring: true, date: first.date };
+  // The instance at `wall`, `own` long when it has its own length (an RDATE's PERIOD), else its range's or the series'.
+  const take = (wall: number, own?: number): boolean => {
+    const at = instantOf({ ...first, wall }, host);
+    if (seen.has(at)) return true;
+    seen.add(at);
+    if (replaced.has(at) || exInstants.has(at) || exDays.has(dateOf(first.date ? wall : wall + first.zone.offsetAt(at) * 60_000 - (first.utc ? 0 : first.zone.offsetAt(at) * 60_000)))) return true;
+    const future = futureAt(at);
+    if (future?.cancelled) return true;
+    const placed = future ? wall + future.shift : wall;
+    const stamp: Stamp = { ...first, wall: placed };
+    const start = future?.shift ? instantOf(stamp, host) : at;
+    const span = own ?? future?.length ?? length;
+    const end = first.date ? host.zone.toInstant(placed + span) : start + span;
+    const one: Instance = { start, end, startStamp: stamp, endWall: placed + span, component: future?.component ?? main, main, recurring: true, date: first.date };
     if (inWindow(one, window)) {
       out.push(one);
       kept += 1;
     }
     return kept < SERIES_MAX;
   };
+  // The window's edges as wall-clock times in the series' zone, and the steps that cannot reach it: one whose wall-clock
+  // time is before `before` ends before the window (however long, however far a THISANDFUTURE range moves it on), and one
+  // at or past `after` starts after it (however far one moves it back). Each edge in the zone's smaller (before) or larger
+  // (after) offset of the day around it, so a DST change there moves no instance out of reach.
+  const wallZone = first.date ? host.zone : first.zone;
+  const longest = Math.max(length, ...futures.map((future) => future.length));
+  const reachBack = longest + Math.max(0, ...futures.map((future) => future.shift));
+  const reachOn = -Math.min(0, ...futures.map((future) => future.shift));
+  const before = window.start + Math.min(wallZone.offsetAt(window.start), wallZone.offsetAt(window.start - reachBack - DAY)) * 60_000 - reachBack;
+  const after = window.end + Math.max(wallZone.offsetAt(window.end), wallZone.offsetAt(window.end + reachOn + DAY)) * 60_000 + reachOn;
   // Each RRULE walked in wall-clock time from DTSTART, its UNTIL read as the wall-clock time of its instant.
-  const floatingStart = floating(first.wall, first.date);
   for (const prop of main.getAllProperties("rrule")) {
     const rule = (prop.getFirstValue() as InstanceType<typeof ICAL.Recur>).clone();
     if (rule.until) {
       const until = stampOf(rule.until, null, host);
       const instant = until.utc ? until.wall : instantOf({ ...until, zone: first.zone }, host);
       rule.until = floating(first.date ? (until.date ? until.wall : instant + host.zone.offsetAt(instant) * 60_000) : instant + first.zone.offsetAt(instant) * 60_000, first.date);
+      // Ended before the window: not walked at all.
+      if (wallOf(rule.until) < before) continue;
     }
     let iterator: InstanceType<typeof ICAL.RecurIterator>;
     try {
-      iterator = rule.iterator(floatingStart);
+      iterator = rule.iterator(fastForward(rule, first.wall, first.date, before) ?? floating(first.wall, first.date));
     } catch {
       continue;
     }
-    for (let steps = 0; steps < SERIES_STEPS_MAX; steps += 1) {
+    for (;;) {
+      spend(budget);
       let next: Time | null;
       try {
         next = iterator.next();
@@ -340,19 +461,29 @@ function instancesOf(series: Series, window: Window): Instance[] {
       }
       if (!next) break;
       const wall = wallOf(next);
-      if (instantOf({ ...first, wall }, host) >= window.end) break;
+      if (wall >= after) break;
+      if (wall < before) continue;
       if (!take(wall)) break;
     }
   }
-  // DTSTART is an instance of a series whose rule may not reach it (RFC 5545), and each RDATE is one.
+  // DTSTART is an instance of a series whose rule may not reach it (RFC 5545), and each RDATE is one: a PERIOD's with its
+  // own end or duration.
   if (!main.hasProperty("rrule")) take(first.wall);
   for (const prop of main.getAllProperties("rdate")) {
     for (const value of prop.getValues() as unknown[]) {
-      const time = (value && typeof value === "object" && "start" in value ? (value as { start: Time }).start : value) as Time;
+      const period = value && typeof value === "object" && "start" in value ? (value as { start: Time; end?: Time | null; duration?: InstanceType<typeof ICAL.Duration> | null }) : undefined;
+      const time = (period ? period.start : value) as Time;
       if (!time || typeof time !== "object" || !("year" in time)) continue;
+      spend(budget);
       const stamp = stampOf(time, prop, host);
-      const wall = stamp.date || (!prop.getParameter("tzid") && !stamp.utc) ? stamp.wall : instantOf(stamp, host) + first.zone.offsetAt(instantOf(stamp, host)) * 60_000;
-      take(wall);
+      let own: number | undefined;
+      if (period?.end && typeof period.end === "object" && "year" in period.end) {
+        const end = stampOf(period.end, prop, host);
+        own = Math.max(0, stamp.date ? end.wall - stamp.wall : instantOf(end, host) - instantOf(stamp, host));
+      } else if (period?.duration && typeof period.duration === "object" && "toSeconds" in period.duration) {
+        own = Math.max(0, period.duration.toSeconds() * 1000);
+      }
+      take(wallIn(stamp, prop), own);
     }
   }
   return out;
@@ -364,20 +495,26 @@ function floating(wall: number, isDate: boolean): Time {
   return new ICAL.Time({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: isDate ? 0 : d.getUTCHours(), minute: isDate ? 0 : d.getUTCMinutes(), second: isDate ? 0 : d.getUTCSeconds(), isDate }, ICAL.Timezone.localTimezone);
 }
 
-/** `text` cut to `max` characters, ending in "…" when cut; null for none. */
-function cut(value: unknown, max: number): string | null {
+/** What a read takes besides its window: `scrub`, run on each of an event's texts before it is cut (address.ts
+ *  scrubAddress: the calendar's address cut out whole, before a cut could leave part of it). */
+export type ReadOptions = { scrub?: (text: string) => string };
+type Scrub = (text: string) => string;
+const asIs: Scrub = (text) => text;
+
+/** `text` scrubbed, then cut to `max` characters, ending in "…" when cut; null for none. */
+function cut(value: unknown, max: number, scrub: Scrub): string | null {
   if (typeof value !== "string") return null;
-  const text = value.replace(/\r\n?/g, "\n").trim();
+  const text = scrub(value.replace(/\r\n?/g, "\n")).trim();
   if (!text) return null;
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /** A person of an ORGANIZER or ATTENDEE property. */
-function personOf(prop: Property): Person {
+function personOf(prop: Property, scrub: Scrub): Person {
   const value = String(prop.getFirstValue() ?? "");
   const email = /^mailto:/i.test(value) ? value.replace(/^mailto:/i, "").trim() : null;
   const cn = prop.getParameter("cn");
-  return { name: cut(typeof cn === "string" ? cn.replace(/^"|"$/g, "") : null, NAME_MAX), email: cut(email, EMAIL_MAX) };
+  return { name: cut(typeof cn === "string" ? cn.replace(/^"|"$/g, "") : null, NAME_MAX, scrub), email: cut(email, EMAIL_MAX, scrub) };
 }
 
 /** A field of an instance: its override's, else its series'. */
@@ -386,42 +523,45 @@ function fieldOf(one: Instance, name: string): unknown {
 }
 
 /** An instance as an answer's event. */
-function eventOf(one: Instance, host: Hosted): CalendarEvent {
+function eventOf(one: Instance, host: Hosted, scrub: Scrub): CalendarEvent {
   const zone = one.startStamp.utc ? host.zone : one.startStamp.zone;
   const start = one.date ? dateOf(one.startStamp.wall) : isoIn(one.start, zone);
   const end = one.date ? dateOf(one.endWall) : isoIn(one.end, zone);
   const people = one.component.getAllProperties("attendee").length ? one.component : one.main;
-  const attendees = people.getAllProperties("attendee").map(personOf);
+  const attendees = people.getAllProperties("attendee").map((prop) => personOf(prop, scrub));
   const organizer = (one.component.getFirstProperty("organizer") ?? one.main.getFirstProperty("organizer")) as Property | null;
   const status = String(fieldOf(one, "status") ?? "").toUpperCase() === "TENTATIVE" ? "tentative" : "confirmed";
   return {
-    title: cut(fieldOf(one, "summary"), TITLE_MAX)?.replace(/\s*\n\s*/g, " ") ?? "(no title)",
+    title: cut(fieldOf(one, "summary"), TITLE_MAX, scrub)?.replace(/\s*\n\s*/g, " ") ?? "(no title)",
     start, end, all_day: one.date,
-    location: cut(fieldOf(one, "location"), LOCATION_MAX),
-    description: cut(fieldOf(one, "description"), DESCRIPTION_MAX),
+    location: cut(fieldOf(one, "location"), LOCATION_MAX, scrub),
+    description: cut(fieldOf(one, "description"), DESCRIPTION_MAX, scrub),
     status, recurring: one.recurring,
-    organizer: organizer ? personOf(organizer) : null,
+    organizer: organizer ? personOf(organizer, scrub) : null,
     attendees: attendees.slice(0, ATTENDEES_MAX),
     ...(attendees.length > ATTENDEES_MAX ? { attendees_omitted: attendees.length - ATTENDEES_MAX } : {}),
   };
 }
 
-/** The calendar's events in `window`, sorted by start (then title), at most EVENTS_MAX; `truncated` when there were more. */
-export function eventsIn(calendar: ParsedCalendar, window: Window): { events: CalendarEvent[]; truncated: boolean } {
-  const all = calendar.series.flatMap((series) => instancesOf(series, window).map((one) => ({ one, host: series.host })));
+/** The calendar's events in `window`, sorted by start (then title), at most EVENTS_MAX; `truncated` when there were more.
+ *  One read, under one work budget: past it, RepeatsError. */
+export function eventsIn(calendar: ParsedCalendar, window: Window, options: ReadOptions = {}): { events: CalendarEvent[]; truncated: boolean } {
+  const budget = budgetOf();
+  const all = calendar.series.flatMap((series) => instancesOf(series, window, budget).map((one) => ({ one, host: series.host })));
   all.sort((a, b) => a.one.start - b.one.start || a.one.end - b.one.end);
-  const events = all.slice(0, EVENTS_MAX).map(({ one, host }) => eventOf(one, host));
+  const events = all.slice(0, EVENTS_MAX).map(({ one, host }) => eventOf(one, host, options.scrub ?? asIs));
   events.sort((a, b) => 0 || (a.start === b.start ? a.title.localeCompare(b.title) : 0));
   return { events, truncated: all.length > EVENTS_MAX };
 }
 
 /** How many events the calendar holds (its series and single events, not cancelled), and its next one from `now` within
- *  WINDOW_DAYS_MAX days: what a test of it says. */
-export function summaryOf(calendar: ParsedCalendar, now: number): { count: number; next?: CalendarEvent } {
+ *  WINDOW_DAYS_MAX days: what a test of it says. One read, under one work budget: past it, RepeatsError. */
+export function summaryOf(calendar: ParsedCalendar, now: number, options: ReadOptions = {}): { count: number; next?: CalendarEvent } {
+  const budget = budgetOf();
   const count = calendar.series.filter((series) => !cancelled(series.main) && !series.main.hasProperty("recurrence-id")).length;
   const window = { start: now, end: now + WINDOW_DAYS_MAX * DAY };
-  const upcoming = calendar.series.flatMap((series) => instancesOf(series, window).filter((one) => one.start >= now).map((one) => ({ one, host: series.host })));
+  const upcoming = calendar.series.flatMap((series) => instancesOf(series, window, budget).filter((one) => one.start >= now).map((one) => ({ one, host: series.host })));
   upcoming.sort((a, b) => a.one.start - b.one.start);
   const first = upcoming[0];
-  return { count, ...(first ? { next: eventOf(first.one, first.host) } : {}) };
+  return { count, ...(first ? { next: eventOf(first.one, first.host, options.scrub ?? asIs) } : {}) };
 }

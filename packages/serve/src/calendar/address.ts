@@ -1,4 +1,4 @@
-// The server's one calendar (Settings → Calendar, /v2/settings/calendar): its iCal address, which is a credential (anyone
+// The server's one calendar (saved with PUT /v2/settings/calendar, routes.ts): its iCal address, which is a credential (anyone
 // who has it reads the calendar), kept in ONE row of the one store's sealed keys (CALENDAR_ROW, beside the tool keys and
 // the email account) with the calendar's own name and time zone as the save last read them. Opened only with the seal
 // key: by the server for the settings view and the test, and by a runner for a run whose revision names calendar_events
@@ -38,8 +38,19 @@ export function addressOf(value: unknown, field = "url"): string {
   return url.href;
 }
 
-/** Every form of `url` that text may carry it in, longest first: as kept, as webcal, decoded, and its path with its
- *  query (where a provider keeps the secret part) when that is long enough to be one. What the redactors hold. */
+/** A part of an address that reads as its secret on its own: decoded, no "@" (an owner's email in the path is said in the
+ *  calendar's events as its organizer's), and a run of at least 16 letters, digits, "-" and "_" with a letter and a digit
+ *  in it: Google's private-<hex>, iCloud's and Outlook's long ids, a feed's ?token=. */
+function tokenLike(part: string): boolean {
+  if (part.includes("@")) return false;
+  const longest = (part.match(/[A-Za-z0-9_-]+/g) ?? []).reduce((a, b) => (b.length > a.length ? b : a), "");
+  return longest.length >= 16 && /[A-Za-z]/.test(longest) && /[0-9]/.test(longest);
+}
+
+/** Every form of `url` that text may carry it in, longest first: as kept, as webcal, decoded, its path with its query
+ *  (where a provider keeps the secret part) when that is long enough to be one, and each path segment and query value
+ *  that is a token on its own (tokenLike), so text that holds the address cut short holds none of its secret. What the
+ *  redactors hold. */
 export function addressForms(url: string): string[] {
   const forms = new Set<string>([url]);
   const parsed = URL.parse(url);
@@ -48,6 +59,16 @@ export function addressForms(url: string): string[] {
     if (parsed.protocol === "https:") forms.add(`webcal://${parsed.href.slice("https://".length)}`);
     const secret = `${parsed.pathname}${parsed.search}`;
     if (secret.length >= 16) forms.add(secret);
+    const decode = (part: string) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    };
+    for (const part of [...parsed.pathname.split("/"), ...[...parsed.searchParams.values()]]) {
+      for (const one of new Set([part, decode(part)])) if (tokenLike(decode(one))) forms.add(one);
+    }
     for (const one of [...forms]) {
       try {
         forms.add(decodeURIComponent(one));
@@ -97,7 +118,8 @@ export async function openCalendar(store: CalendarStore, sealKey: Buffer): Promi
 export async function calendarView(store: CalendarStore, sealKey: Buffer) {
   const kept = await openCalendar(store, sealKey);
   if (!kept) return { configured: false, host: null, name: null, time_zone: null };
-  return { configured: true, host: URL.parse(kept.url)?.host ?? null, name: kept.name, time_zone: kept.time_zone };
+  // A name saved before saves scrubbed it is scrubbed here too.
+  return { configured: true, host: URL.parse(kept.url)?.host ?? null, name: kept.name === null ? null : scrubAddress(kept.name, kept.url), time_zone: kept.time_zone };
 }
 
 /** The calendar saved whole, in one write. */

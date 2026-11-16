@@ -1,4 +1,4 @@
-// calendar_events: the events of the server's one calendar (Settings → Calendar, address.ts) in a window, read from its
+// calendar_events: the events of the server's one calendar (saved with PUT /v2/settings/calendar, address.ts) in a window, read from its
 // iCal address (fetch.ts) and expanded (parse.ts). A host tool on every harness, bound beside web_fetch and the email tools
 // (tool-list.ts `host`); the address is read in the runner, from the one store under its seal key, and is in no answer:
 // each answer, and each error's words, has every form of it cut (address.ts scrubAddress) and passes the run's one redactor.
@@ -82,7 +82,9 @@ function calendarTool(host: ToolHost): ToolRegistration {
       const given = (isObject(args) ? args : {}) as { from?: unknown; to?: unknown };
       const now = (host.now ?? new Date()).getTime();
       const { CalendarError, readCalendar } = await import("./fetch.js");
-      const { eventsIn, isoIn, serverZone, windowOf, WindowError, zoneNamed } = await import("./parse.js");
+      const { eventsIn, isoIn, RepeatsError, serverZone, windowOf, WindowError, zoneNamed } = await import("./parse.js");
+      // Each text of the calendar's has the address cut out before it is cut short (parse.ts cut), and the answer again.
+      const scrub = (text: string) => scrubAddress(text, saved.url);
       try {
         // The window read first in the zone the save found, so a window refused is refused before any request.
         windowOf(given, saved.time_zone ?? serverZone(), now);
@@ -93,12 +95,13 @@ function calendarTool(host: ToolHost): ToolRegistration {
         const window = windowOf(given, calendar.zone, now);
         let found: ReturnType<typeof eventsIn>;
         try {
-          found = eventsIn(calendar, window);
+          found = eventsIn(calendar, window, { scrub });
         } catch (error) {
+          if (error instanceof RepeatsError) return failed(error.message);
           throw new CalendarError(`the calendar's events couldn't be read (${String((error as Error)?.message ?? error).slice(0, 200)})`);
         }
         const zone = zoneNamed(calendar.zone);
-        const text = calendarText({ calendar: calendar.name ?? saved.name ?? "Calendar", time_zone: calendar.zone, from: isoIn(window.start, zone), to: isoIn(window.end, zone), events: found.events, truncated: found.truncated });
+        const text = calendarText({ calendar: scrub(calendar.name ?? saved.name ?? "Calendar"), time_zone: calendar.zone, from: isoIn(window.start, zone), to: isoIn(window.end, zone), events: found.events, truncated: found.truncated });
         return forModel(clean(text));
       } catch (error) {
         if (error instanceof CalendarError || error instanceof WindowError) return failed(error.message);
