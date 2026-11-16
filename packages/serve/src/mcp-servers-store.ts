@@ -112,6 +112,10 @@ export class McpServersOverStore {
   appOrigin = GITHUB_MCP_ORIGIN;
   private readonly sealKey: Buffer;
   private readonly signIns: McpSignIns;
+  /** This server's own origins (McpSignIns.own): never dialled on loopback, by an MCP server's request or a calendar read. */
+  get own(): string[] {
+    return this.signIns.own;
+  }
   /** The callbacks under way, which close() waits out before the server lets its data go. */
   private readonly inflight = new Set<Promise<unknown>>();
   private readonly stopped = new AbortController();

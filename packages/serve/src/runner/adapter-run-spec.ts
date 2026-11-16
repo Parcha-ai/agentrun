@@ -692,7 +692,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -1065,6 +1065,8 @@ export function buildToolHost(opts: {
   readonly toolSettings?: unknown;
   /** The run's template eval fakes, where the eval's own runner gives them (AdapterSpecDeps.evalFakes). */
   readonly fakes?: EvalFakes;
+  /** The server is a local install (AdapterSpecDeps.mcpLoopback): calendar_events may read a calendar on loopback. */
+  readonly loopback?: boolean;
 }): ToolHost {
   const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
@@ -1073,6 +1075,7 @@ export function buildToolHost(opts: {
     ...(web ? { web } : {}),
     ...(now ? { now } : {}),
     ...(email ? { emailFake: email } : {}),
+    ...(opts.loopback ? { calendarLoopback: true } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

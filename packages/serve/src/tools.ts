@@ -8,6 +8,9 @@ import { blurbOf, isHostTool } from "./tool-list.js";
 import { EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
 // The email tools' timeline lines (registerLabel), registered as this module loads.
 import "./email/labels.js";
+import { CALENDAR_EVENTS, CALENDAR_SUMMARY } from "./calendar/names.js";
+// calendar_events' timeline line (registerLabel), registered as this module loads.
+import "./calendar/labels.js";
 import { mcpNameOf } from "./tool-names.js";
 import type { TSchema } from "typebox";
 import { appendFileSync } from "node:fs";
@@ -165,6 +168,9 @@ export type ToolHost = {
   /** A template eval case's fake mail account (eval-mailbox.ts), the only account the run's email tools open: one saved
    *  elsewhere is refused. Only the eval's own runner sets it (runner/beside.ts evalFakes). */
   emailFake?: EmailFake;
+  /** The server is a local install (its operator's mcpLoopback, runner/beside.ts): calendar_events may read a calendar on
+   *  loopback, as a template eval's fake calendar is. Absent: never. */
+  calendarLoopback?: boolean;
 };
 /** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
  *  description says, which a loopback account saved as `other` would otherwise read as folders. */
@@ -712,6 +718,14 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   [EMAIL_DRAFT]: emailTool(EMAIL_DRAFT),
   [EMAIL_SEND]: emailTool(EMAIL_SEND),
   [EMAIL_FILE]: emailTool(EMAIL_FILE),
+  // The server's calendar (calendar/tools.ts, Settings → Calendar), every harness's as web_fetch is; ical.js loads at the
+  // first bind.
+  [CALENDAR_EVENTS]: {
+    summary: CALENDAR_SUMMARY,
+    needs: [],
+    nodes: false,
+    bind: async (host) => (await import("./calendar/tools.js")).bindCalendar(host),
+  },
   browser: browserTool,
   // A pi run's subagent (runner/subagent.ts): a native tool of the run's root agent, bound by the runner's pi spec
   // (adapter-run-spec.ts), never by this table; not a host tool (tool-list.ts `replay`), so another harness refuses it.

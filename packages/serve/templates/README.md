@@ -103,7 +103,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
   the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs),
   `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
-  for the case's runs).
+  for the case's runs), `calendar` (a fake calendar for the case's runs).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
   `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
@@ -165,6 +165,15 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   in_reply_to and text), the ones it moved or labelled (`message_id`, before and after, labels), and those it sent
   (SMTP). The package's `tools` must name an email tool; only the eval's own server honours `email`, so a case with
   it refuses `--server`.
+- `calendar: fixtures/work.ics`, an iCalendar file in the case: a fake calendar server on this machine's loopback serves
+  it (with an ETag, as a provider does), and its address is saved as the server's calendar (Settings → Calendar) for
+  the case's runs and removed after them, so no run reads a real calendar. `calendar_events` reads it as it reads a
+  real one: repeating events expanded in the window (RRULE, RDATE, EXDATE), a moved or cancelled instance as the file
+  says, each event in its own time zone. The window's clock is the case's `now`, so a case that asks for "this week"
+  sets `now:`; without it, the real clock. Its graders see each `calendar_events` call with its arguments and its
+  answer (the events), as any call. The package's `tools` must name `calendar_events`; only the eval's own server
+  honours `calendar`, so a case with it refuses `--server`, and `--on-data` is refused while DIR's server keeps a
+  calendar, which the fake would replace.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",
@@ -208,7 +217,7 @@ case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50
 | `--case NAME` | A case to run; repeat it. Without one, every case. |
 | `--runs N` | Runs of each case, in place of each case's `runs`. |
 | `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. |
-| `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `web`, `monid`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, and for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
+| `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `calendar`, `web`, `monid`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace, and for a calendar case when DIR's server keeps a calendar. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
 | `--grader-model PROVIDER/MODEL` | The `llm` graders' model. Absent: the server's default. |
 | `--report FILE` | The whole report as JSON: per case, per run and per grader, its pass, its reason and its cost. A summary goes to stdout either way, progress to stderr. |
 | `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
