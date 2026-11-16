@@ -215,6 +215,26 @@ test("isolation.root-runs fails where the user can write a directory on root's P
 	}
 });
 
+// --- isolation.label-file: the computer's user cannot read the labels a provider keeps in the machine ---
+
+const LABEL_ID = "isolation.label-file";
+const LABEL_FILE = "/var/lib/agentrun/labels.json";
+const runLabel = (options) => runConformance(fakeComputers(options).provider, { image: IMAGE, cases: conformanceCases.filter((c) => c.id === LABEL_ID) });
+
+test("isolation.label-file, a Core case of the isolation group that needs files, passes where the label file is absent and fails where the computer's user reads it", async () => {
+	const found = conformanceCases.filter((c) => c.id === LABEL_ID);
+	assert.equal(found.length, 1);
+	assert.equal(found[0].level, "core");
+	assert.equal(found[0].group, "isolation");
+	assert.deepEqual(found[0].needs, ["files"]);
+	const absent = await runLabel({});
+	assert.deepEqual(statuses(absent), { [LABEL_ID]: "pass" }, reasons(absent)[LABEL_ID]);
+	assert.ok(absent.results[0].observed.includes(`${LABEL_FILE}, as the computer's user: not_found`), JSON.stringify(absent.results[0].observed));
+	const readable = await runLabel({ readable: { [LABEL_FILE]: '{"agentrun.computer":"1"}' } });
+	assert.equal(statuses(readable)[LABEL_ID], "fail");
+	assert.match(reasons(readable)[LABEL_ID], /the computer's user reads \/var\/lib\/agentrun\/labels\.json, the labels the provider keeps in the machine/);
+});
+
 test("isolation.root-runs' check, run by sh: each path that is there and every directory above it, writable or closed by test -w, a missing one skipped, nothing written", () => {
 	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-"));
 	try {

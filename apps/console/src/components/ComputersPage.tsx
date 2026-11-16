@@ -1,3 +1,4 @@
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { pasteFromClipboard } from "@/lib/paste";
 import { Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
@@ -106,29 +107,31 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Computers</h1>
           <p className="mt-2 text-lead text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
-        <PairedSection v2={v2} paired={view.paired} reload={load} />
-        {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
-        {view.kinds.map((k) => (
-          <KindSection key={k.kind} kind={k} providers={k.providers.filter((p) => !pairedIds.has(p.id))} own={k.providers.filter((p) => pairedIds.has(p.id)).map((p) => p.name)}>
-            {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
-              const at = `${k.kind}/${p.id}`;
-              return (
-                <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
-                  open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
-                  onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
-                  onSave={(keys) => save(at, p, keys)}
-                  onRemove={async (name) => { const refused = await save(at, p, { [name]: null }); if (refused) setProblem({ at, words: refused.fields?.map((f) => f.message).join(" ") || refused.message }); }}
-                  onTest={() => void test(p)} />
-              );
-            })}
-          </KindSection>
-        ))}
+        <div className={settingsBodyClass}>
+          <PairedSection v2={v2} paired={view.paired} reload={load} />
+          {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
+          {view.kinds.map((k) => (
+            <KindSection key={k.kind} kind={k} providers={k.providers.filter((p) => !pairedIds.has(p.id))} own={k.providers.filter((p) => pairedIds.has(p.id)).map((p) => p.name)}>
+              {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
+                const at = `${k.kind}/${p.id}`;
+                return (
+                  <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
+                    open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
+                    onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
+                    onSave={(keys) => save(at, p, keys)}
+                    onRemove={async (name) => { const refused = await save(at, p, { [name]: null }); if (refused) setProblem({ at, words: refused.fields?.map((f) => f.message).join(" ") || refused.message }); }}
+                    onTest={() => void test(p)} />
+                );
+              })}
+            </KindSection>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -197,13 +200,16 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
   const countdown = `${Math.floor(Math.max(0, left) / 60_000)}:${String(Math.floor((Math.max(0, left) % 60_000) / 1_000)).padStart(2, "0")}`;
 
   return (
-    <section aria-label="Your computers">
-      <h2 className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="caps text-small font-semibold">Your computers</span>
-        <span className="text-small text-muted-foreground">A computer or phone of your own, attached by the driver you run on it. An agent can be given it as its computer.</span>
-      </h2>
-      {pairing
-        ? <div data-pairing className="mb-3 space-y-3 border bg-card p-4">
+    <SettingsSection label="Your computers" title="Your computers"
+      note={<p>A computer or phone of your own, attached by the driver you run on it. An agent can be given it as its computer.</p>}
+      aside={!pairing && (
+        <>
+          <Button size="sm" variant="primary" onClick={() => void make()} disabled={making}>{making ? "Making…" : "Pair a computer"}</Button>
+          {joined && <p role="status" className="text-body text-success-text">Paired {joined}.</p>}
+        </>
+      )}>
+      {pairing &&
+          <div data-pairing className="space-y-3 border bg-card p-4">
             <div className="flex flex-wrap gap-x-8 gap-y-3">
               <div>
                 <p className="caps text-label text-muted-foreground">Server address</p>
@@ -221,12 +227,8 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
               <Button size="sm" onClick={() => void make()} disabled={making}>{making ? "Making…" : "New code"}</Button>
               <Button size="sm" variant="ghost" onClick={() => setPairing(null)}>Done</Button>
             </div>
-          </div>
-        : <div className="mb-3 flex flex-wrap items-center gap-3">
-            <Button size="sm" variant="primary" onClick={() => void make()} disabled={making}>{making ? "Making…" : "Pair a computer"}</Button>
-            {joined && <p role="status" className="text-body text-success-text">Paired {joined}.</p>}
           </div>}
-      {problem && <p role="alert" className="mb-3 border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
+      {problem && <p role="alert" className="border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
       {paired.length
         ? <ul className="border">
             {paired.map((computer) => (
@@ -260,25 +262,26 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
             ))}
           </ul>
         : <p className="border p-4 text-body text-muted-foreground">None paired yet. Pair a computer, then type the server address and its code into the driver on it.</p>}
-    </section>
+    </SettingsSection>
   );
 }
 
 function KindSection({ kind: k, providers, own, children }: { kind: ComputerKindView; providers: ComputerProvider[]; own: string[]; children: ReactNode }) {
   const { label, gives } = wordsOf(k.kind);
   return (
-    <section aria-label={label}>
-      <h2 className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="caps text-small font-semibold">{label}</span>
-        {gives && <span className="text-small text-muted-foreground">{gives}</span>}
-        {!k.offered && <Chip tone="muted">Not offered here</Chip>}
-      </h2>
-      {!k.offered && k.why && <p className="mb-2 font-mono text-small text-muted-foreground">{k.why}</p>}
-      {own.length > 0 && <p className="mb-2 text-small text-muted-foreground">Also served by your computers: {own.join(", ")}.</p>}
+    <SettingsSection label={label} title={label}
+      note={(gives || !k.offered || own.length > 0) && (
+        <>
+          {gives && <p>{gives}</p>}
+          {!k.offered && <p><Chip tone="muted">Not offered here</Chip></p>}
+          {!k.offered && k.why && <p className="font-mono text-small">{k.why}</p>}
+          {own.length > 0 && <p className="text-small">Also served by your computers: {own.join(", ")}.</p>}
+        </>
+      )}>
       {providers.length
         ? <ul className="border">{children}</ul>
         : <p className="border p-4 text-body text-muted-foreground">{k.kind === "none" ? "Nothing to set up." : own.length ? "No other provider serves it on this server." : "No provider serves it on this server."}</p>}
-    </section>
+    </SettingsSection>
   );
 }
 

@@ -104,13 +104,17 @@ export function ToolsPage({ v2, choices, gates = [], harnesses, mcp = false, onS
   };
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className="p-5 md:p-8">
+        {/* A table of every tool: it takes the page's whole width, with what it is said above it, a sentence a column. */}
+        <div className="mb-6">
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Tools</h1>
-          <p className="mt-2 text-lead text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
-          {gates.length > 0 && <p className="mt-2 text-lead text-muted-foreground">Each tool's permission: <span className="font-mono text-body">allow</span> runs it, <span className="font-mono text-body">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-body">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
+          <div className="mt-2 grid gap-x-10 gap-y-2 xl:grid-cols-2">
+          <p className="text-lead text-muted-foreground">This server's provider for each tool that has a choice, and what it resolves to on each harness. A change is saved at once and applies to every run launched from then on. An agent with a provider of its own keeps it.</p>
+          {gates.length > 0 && <p className="text-lead text-muted-foreground">Each tool's permission: <span className="font-mono text-body">allow</span> runs it, <span className="font-mono text-body">ask</span> makes the run wait for your approval at each call, <span className="font-mono text-body">deny</span> refuses it and tells the agent why. A permission applies at the next call, in runs already going too. An agent's own allow or ask takes the place of this server's; deny here refuses it for every agent.</p>}
+          </div>
         </div>
+        <div className="space-y-6">
         <section aria-label="This server's providers">
           {rows.length ? (
             <ToolTable label="This server's tool settings" rows={rows} settings={own} fallbackOf={(t) => t.default_provider} issues={byTool} busy={busy} onEdit={(edit) => void save(edit)}
@@ -155,6 +159,7 @@ export function ToolsPage({ v2, choices, gates = [], harnesses, mcp = false, onS
             </ul>
           </section>
         )}
+        </div>
       </div>
     </div>
   );

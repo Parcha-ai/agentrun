@@ -223,6 +223,25 @@ test("served across reads, a call's approval row stays above the call's result o
   }
 });
 
+test("a park's rows between a call and its result read after your approval: the call, your approval, the keep, the resume, its result", () => {
+  // The park writes its keep's row as the call waits, and the resume its computer's ready row at the answer, both before
+  // the call's result. The ask came first: a person reads that the run asked, then waited, then went on.
+  const use = { id: "1:56:0", kind: "tool_use", tool_use_id: "c1", tool_name: "bash", summary: "Ran a command", text: "" };
+  const kept = { id: "1:58", kind: "phase", summary: "The desktop is kept for 10 minutes while you decide.", text: "" };
+  const ready = { id: "1:59", kind: "phase", summary: "The desktop is ready: Linux (amd64), from Agent37. It's the same desktop, as the wait left it.", text: "" };
+  const result = { id: "1:65", kind: "tool_result", tool_use_id: "c1", tool_name: "bash", summary: "Ran a command: ok", text: "PARKED", tool_status: "success" };
+  const asks = new Map([["c1", { id: "c1", call_id: "c1", tool: "bash", args_json: '{"command":"hostname"}', requested_at: "" }]]);
+  const answers = { c1: { decision: "allow", answered_at: "" } };
+  const same = (text) => text;
+  const read = (rows) => rows.map((row) => `${row.kind}: ${row.summary.split(":")[0]}`);
+  const order = ["tool_use: Ran a command", "tool_approval_requested: Asked your approval", "phase: The desktop is kept for 10 minutes while you decide.", "phase: The desktop is ready", "tool_result: Ran a command", "phase: AgentRun"];
+  assert.deepEqual(read(withApprovalRows([use, kept, ready, result], asks, answers, same)), order, "read at once");
+  // Served across reads (rows.ts RowLog): while the call waits, then once it ran.
+  const log = new RowLog(new ChangeClock());
+  log.sync(withApprovalRows([use, kept], asks, {}, same));
+  log.sync(withApprovalRows([use, kept, ready, result], asks, answers, same));
+  assert.deepEqual(read(log.rows()), order, "served across reads");
+});
 
 test("a denied call's result row alone is marked refused: the approval, the person's message and the outcome rows keep their own status", async (t) => {
   const said = "use the cached copy instead";
