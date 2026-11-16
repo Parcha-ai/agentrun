@@ -54,7 +54,7 @@ export function mailError(error: unknown, endpoint: Endpoint, protocol: "IMAP" |
   const e = (error ?? {}) as { code?: unknown; authenticationFailed?: unknown; serverResponseCode?: unknown; responseCode?: unknown; message?: unknown };
   const code = typeof e.code === "string" ? e.code : undefined;
   const words = scrub(String(e.message ?? error), password);
-  if (e.authenticationFailed === true || e.serverResponseCode === "AUTHENTICATIONFAILED" || code === "EAUTH") return new MailError("refused", `${endpoint.host} refused the sign-in (${protocol}): check the user and the app password saved with PUT /v2/settings/email.`);
+  if (e.authenticationFailed === true || e.serverResponseCode === "AUTHENTICATIONFAILED" || code === "EAUTH") return new MailError("refused", `${endpoint.host} refused the sign-in (${protocol}): check the user and the app password in Settings → Email.`);
   if (code && UNREACHABLE.has(code)) return new MailError("unreachable", `Couldn't reach ${endpoint.host}:${endpoint.port} (${protocol}, ${code}).`);
   if (code === "ETLS" || /certificate|\bTLS\b|\bSSL\b|STARTTLS/i.test(words)) return new MailError("failed", `The secure connection to ${endpoint.host}:${endpoint.port} (${protocol}) failed: ${clip(words, 300)}`);
   return new MailError("failed", `${endpoint.host} (${protocol}) answered: ${clip(words, 300)}`);

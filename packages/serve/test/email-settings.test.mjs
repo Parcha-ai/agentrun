@@ -86,7 +86,7 @@ test("GET, PUT, test and DELETE: the account's view never holds the password; pr
   assert.deepEqual((await api("GET", "/settings/email")).body, empty.body);
   const none = await api("POST", "/settings/email/test", {});
   assert.equal(none.status, 422, JSON.stringify(none.body));
-  assert.match(JSON.stringify(none.body), /save one with PUT \/v2\/settings\/email/);
+  assert.match(JSON.stringify(none.body), /Settings → Email/);
 });
 
 test("a server to anywhere but 127.0.0.1 is reached over TLS: 993 and 465 from the start, any other port with STARTTLS required, never in the clear", async () => {

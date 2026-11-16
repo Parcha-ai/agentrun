@@ -171,7 +171,7 @@ async function poll(source: EmailSource, account: OpenedAccount, cursor: Cursor 
     return { check: { ok: true, message: `Read ${source.mailbox}: ${messages(events.length)} new${more > 0 ? `, ${more} more at the next check` : ""}.` }, events, cursor: kept({ ...cursor, uid: last }) };
   }).catch((error: unknown): PollResult => {
     const failure = error instanceof MailError ? error : new MailError("failed", String((error as Error)?.message ?? error));
-    if (failure.kind === "refused") return { check: { ok: false, message: failure.message }, refused: { detail: "The mail server refused the sign-in 3 times in a row: check the account, saved with PUT /v2/settings/email, then turn this trigger on again." } };
+    if (failure.kind === "refused") return { check: { ok: false, message: failure.message }, refused: { detail: "The mail server refused the sign-in 3 times in a row: check the account in Settings → Email, then turn this trigger on again." } };
     return { check: { ok: false, message: failure.message } };
   });
 }
@@ -191,7 +191,7 @@ export const email: TriggerAdapter = {
     closedSchema(
       { kind: { const: "email" } },
       {
-        account: { const: DEFAULT_ACCOUNT, default: DEFAULT_ACCOUNT, description: "The email account it reads (saved with PUT /v2/settings/email): the server's one, \"default\"." },
+        account: { const: DEFAULT_ACCOUNT, default: DEFAULT_ACCOUNT, description: "The email account it reads (Settings → Email): the server's one, \"default\"." },
         mailbox: { type: "string", minLength: 1, maxLength: 300, default: "INBOX", description: "The mailbox it reads: INBOX, \"Drafts\" or \"Sent\" (the account's own), or a folder's name." },
         every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, default: MIN_EVERY_S, description: "How often it reads the mailbox, in seconds, on a grid from the epoch." },
         accept: { ...ACCEPT_SCHEMA, description: `The messages that start a run: each rule's event is "${EVENT}", its where reads the payload (/from, /to, /subject, /text, ...). None: every message.` },
