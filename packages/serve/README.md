@@ -1792,9 +1792,22 @@ every request to one) must be `https` and resolve to no private, loopback or lin
 refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
 by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
-and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does,
-and never at that server's own ports (where it listens, and its public address when that is on loopback), which the server
-tells it as it starts: an MCP server, a refresh's endpoint or a calendar there is refused unsent, as at a save.
+and the sign-in, in words naming the variable, and a runner never reaches one. The runner beside such a server reaches
+one. So does a runner in its own process (`agentrun-serve runner`, beside a server started with `--no-runner`) when all
+three hold:
+
+- its own environment sets `AGENTRUN_MCP_ALLOW_LOOPBACK=1` too;
+- it shares the server's data directory, where the server leaves a note as it starts (`mcp-local-install.json`: its own
+  addresses and where its loopback is);
+- its loopback is the server's: on Linux the same booted kernel and network namespace (the same container, or both on
+  the host's network); elsewhere the same host name.
+
+A runner that says it is on another host (`AGENTRUN_RUNNER_LIVE_HOST`), one in another container on a shared volume, and
+one on another machine stay refused, since loopback there is another machine. A runner reads the note at each claim and
+says on stderr, once per change, whether it takes the opt-in; a server started without the variable takes the note away.
+No runner reaches such a server at that server's own ports (where it listens, and its public address when that is on
+loopback): an MCP server, a refresh's endpoint or a calendar there is refused unsent, as at a save.
+
 An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
 the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never

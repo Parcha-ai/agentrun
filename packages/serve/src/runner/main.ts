@@ -30,6 +30,7 @@ import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { claimViewOpener } from "../computer-live.js";
 import { runnerLiveOf } from "../live-reach.js";
+import { standaloneLoopback } from "../mcp-local-install.js";
 import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
@@ -169,12 +170,17 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // mounts by where this process's Docker has the data directory (box-paths.ts), read once; a desktop's or a phone's live
   // view opened with it.
   const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
+  const local = standaloneLoopback(env, dataDir, (line) => void process.stderr.write(`agentrun-serve runner: ${line}\n`));
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
     // A run's log lines (a learning run's skipped generality check, a sweep that failed) on the runner's stderr, as its
     // warnings are.
     log: (line: string) => void process.stderr.write(`agentrun-serve runner: ${line}\n`),
+    // An MCP server on loopback: reached only when this runner's operator set AGENTRUN_MCP_ALLOW_LOOPBACK=1 and the
+    // local-install server on this data directory shares its loopback, as that server's note says at each claim
+    // (mcp-local-install.ts standaloneLoopback); never at that server's own ports. Its lines are the runner's warnings.
+    ...(local ? { mcpLocal: local } : {}),
   };
   return { createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) }), computers: computers.computerDeps, env: runs };
 }

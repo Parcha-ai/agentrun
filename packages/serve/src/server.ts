@@ -123,13 +123,14 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
-import { type ComposioDropped, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { noteLocalInstall } from "./mcp-local-install.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
-import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
+import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
@@ -428,8 +429,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
   dial: HostedDial;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
-   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
-   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). That runner is told; a
+   *  runner in its own process reads it from the server's note in the data directory, and takes it only with its own
+   *  opt-in and the same loopback (mcp-local-install.ts). Never a store's, so another host's runner on a shared store
+   *  never inherits it. */
   localInstall: boolean;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
@@ -2065,7 +2068,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const named = mcpToolOf(tool);
         if (!named || !mcpMeta.has(named.server)) return [];
         const pinned = Object.hasOwn(pin, named.server) && pin[named.server]!.tools.some((one) => one.name === named.tool);
-        return pinned ? [] : [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: save the agent again to pin it.`, tool }];
+        if (pinned) return [];
+        // Its first run could not pin it (mcp-pin-first.ts) because this server refuses its server's address: a loopback
+        // one on a server whose operator never said it is a local install. Saving again is refused the same way, so the
+        // words say the cause, as the save's refusal does (mcp-servers-store.ts reached).
+        const at = URL.parse(mcpMeta.get(named.server)!.url)?.hostname ?? "";
+        const why = options.mcpLoopback !== true && LOOPBACK.test(at) ? `its server ${named.server} can't be listed here to pin it: ${loopbackWords(at)}` : "save the agent again to pin it.";
+        return [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: ${why}`, tool }];
       });
       if (unpinned.length) throw new ApiError("agent_not_runnable", unpinned.map((one) => one.message).join(" "), { fields: unpinned.map(({ tool: _tool, ...issue }) => issue), details: { unbound: unpinned.map((one) => one.tool), missing: {} } });
     }
@@ -4430,6 +4439,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listens: a hosted container listens on loopback behind its proxy too.
   const localInstall = options.mcpLoopback === true;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
+  // The same said to a runner in its own process on this data directory (runner/main.ts): a local install leaves its note
+  // there (its own addresses, and where its loopback is), any other start takes an earlier one away (mcp-local-install.ts).
+  await noteLocalInstall(data, localInstall, mcpServers.own);
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
