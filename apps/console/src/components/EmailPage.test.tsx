@@ -25,14 +25,16 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const refused = (field: string, message: string) => json(422, { error: { code: "input_invalid", message, retryable: false, fields: [{ field, reason: "invalid", message }] } });
 
 /** A server keeping `state.account`: GET answers it, PUT keeps the body's (its password dropped, as the server seals it),
- *  DELETE forgets it, and a test answers `tested`. `put`: a PUT's answer in place of the kept account (a refusal). */
-function server(state: { account: EmailAccount }, opts: { put?: () => Response; tested?: unknown } = {}) {
+ *  DELETE forgets it, and a test answers `tested`. `put`: a PUT's answer in place of the kept account (a refusal).
+ *  `hold`: a PUT answers only once it settles (a slow save). */
+function server(state: { account: EmailAccount }, opts: { put?: () => Response; tested?: unknown; hold?: Promise<unknown> } = {}) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call: Call = { method: init?.method ?? "GET", path: new URL(String(url), "http://serve.test").pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
     if (call.path === "/v2/settings/email" && call.method === "GET") return json(200, state.account);
     if (call.path === "/v2/settings/email" && call.method === "PUT") {
+      await opts.hold;
       if (opts.put) return opts.put();
       const b = call.body!;
       const preset = String(b.preset ?? "other");
@@ -144,6 +146,58 @@ describe("EmailPage", () => {
     expect(calls.find((c) => c.path === "/v2/settings/email/test")?.body).toEqual({ preset: "gmail", address: "you@example.com", password: PASSWORD });
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
     expect(page.host.textContent).toContain("No email account is saved");
+  });
+
+  it("keeps a preset account's own sign-in name and servers: Test signs in as them, and a new password changes nothing else", async () => {
+    const own: EmailAccount = { ...GMAIL, user: "login@example.com", imap: { host: "imap.example.net", port: 993 }, smtp: { host: "smtp.example.net", port: 465 } };
+    const { v2, calls } = server({ account: own });
+    const page = await open(v2);
+    expect(page.input("user")!.value).toBe("login@example.com");
+    await page.click(/^Test$/);
+    expect(calls.find((c) => c.path === "/v2/settings/email/test")?.body).toEqual({ preset: "gmail", address: "you@example.com", user: "login@example.com", imap: own.imap, smtp: own.smtp });
+    await page.type("password", PASSWORD);
+    await page.click(/^Save$/);
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ preset: "gmail", address: "you@example.com", user: "login@example.com", password: PASSWORD, imap: own.imap, smtp: own.smtp });
+  });
+
+  it("takes a sign-in name for a preset too, and another preset's servers are the server's", async () => {
+    const { v2, calls } = server({ account: GMAIL });
+    const page = await open(v2);
+    await page.pick("fastmail");
+    await page.type("address", "me@fastmail.example");
+    await page.type("user", "me@fastmail.com");
+    await page.type("password", PASSWORD);
+    await page.click(/^Save$/);
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ preset: "fastmail", address: "me@fastmail.example", user: "me@fastmail.com", password: PASSWORD });
+  });
+
+  it("drops a test's answer once a field changes, so it never speaks for an account it didn't test", async () => {
+    const { v2 } = server({ account: GMAIL });
+    const page = await open(v2);
+    await page.click(/^Test$/);
+    expect(page.host.querySelector('[aria-label="Test"]')).not.toBeNull();
+    await page.type("password", PASSWORD);
+    expect(page.host.querySelector('[aria-label="Test"]')).toBeNull();
+    await page.click(/^Test$/);
+    expect(page.host.querySelector('[aria-label="Test"]')).not.toBeNull();
+    await page.pick("icloud");
+    expect(page.host.querySelector('[aria-label="Test"]')).toBeNull();
+  });
+
+  it("locks the fields while a save is out, so its answer can't wipe an edit made meanwhile", async () => {
+    let answer!: () => void;
+    const hold = new Promise<void>((r) => { answer = r; });
+    const { v2 } = server({ account: NONE }, { hold });
+    const page = await open(v2);
+    await page.type("address", "you@example.com");
+    await page.type("password", PASSWORD);
+    await page.click(/^Save$/);
+    expect(page.input("address")!.matches(":disabled")).toBe(true);
+    expect(page.input("password")!.matches(":disabled")).toBe(true);
+    await act(async () => { answer(); });
+    await page.settle();
+    expect(page.input("address")!.matches(":disabled")).toBe(false);
+    expect(page.host.textContent).toContain("imap.gmail.com:993");
   });
 
   it("shows a refused field under that field, and keeps what was typed", async () => {

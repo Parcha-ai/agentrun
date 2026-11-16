@@ -62,12 +62,20 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
     v2.emailAccount().then((a) => { if (n === asked.current) { shown(a); setLoadError(null); } }).catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(() => { if (writable) load(); }, [v2, writable]); // eslint-disable-line react-hooks/exhaustive-deps
-  const set = (field: keyof Form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [field]: e.target.value }));
-  /** The account as typed, the password only when one is typed. */
-  const body = (): Partial<EmailAccountBody> => ({
-    preset: form.preset, address: form.address.trim(), ...(password ? { password } : {}),
-    ...(form.preset === "other" ? { ...(form.user.trim() ? { user: form.user.trim() } : {}), imap: { host: form.imapHost.trim(), port: Number(form.imapPort) }, smtp: { host: form.smtpHost.trim(), port: Number(form.smtpPort) } } : {}),
-  });
+  // Any edit makes the last test's answer about another account, so it goes.
+  const edit = (change: (f: Form) => Form) => { setForm(change); setTested(null); };
+  const set = (field: keyof Form) => (e: { target: { value: string } }) => edit((f) => ({ ...f, [field]: e.target.value }));
+  /** The account as typed, the password only when one is typed. Other sends the servers typed; a preset kept as saved
+   *  sends the servers it was saved with (an account saved through the API may name its own), so a new password or a
+   *  Test changes nothing else; another preset's servers are the server's. A sign-in name is sent for every preset. */
+  const body = (): Partial<EmailAccountBody> => {
+    const user = form.user.trim();
+    const kept = form.preset === account?.preset && account.imap && account.smtp ? { imap: account.imap, smtp: account.smtp } : {};
+    return {
+      preset: form.preset, address: form.address.trim(), ...(user ? { user } : {}), ...(password ? { password } : {}),
+      ...(form.preset === "other" ? { imap: { host: form.imapHost.trim(), port: Number(form.imapPort) }, smtp: { host: form.smtpHost.trim(), port: Number(form.smtpPort) } } : kept),
+    };
+  };
   const act = async (title: string, work: () => Promise<void>) => {
     setProblem(null); setRefused({}); setBusy(true);
     try { await work(); } catch (e) { const fields = fieldsOf(e); if (Object.keys(fields).length) setRefused(fields); else setProblem({ title, error: apiError(e) }); } finally { setBusy(false); }
@@ -132,20 +140,23 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
           )}
         </section>
         <form className="space-y-4 border bg-card p-4" aria-label="Account" onSubmit={save}>
+          {/* Locked while a save or a test is out: a save's answer replaces the form, so an edit made meanwhile would vanish. */}
+          <fieldset disabled={busy} className="min-w-0 space-y-4">
           <Field label="Provider" group="heading" note={OUTLOOK} error={refused.preset}>
-            <Segmented name="email-preset" label="Provider" value={form.preset} onChange={(preset) => setForm((f) => ({ ...f, preset }))} options={PRESETS} />
+            <Segmented name="email-preset" label="Provider" value={form.preset} onChange={(preset) => edit((f) => ({ ...f, preset }))} options={PRESETS} />
           </Field>
           <p className="text-small text-muted-foreground">{HOW[form.preset]}</p>
           <Field label="Address" error={refused.address}>
             <Input name="address" inputMode="email" autoComplete="username" spellCheck={false} autoCapitalize="off" placeholder="you@example.com" value={form.address} onChange={set("address")} />
           </Field>
-          {other && <Field label="Sign-in name" optional note="When the server's sign-in isn't the address." error={refused.user}><Input name="user" spellCheck={false} autoCapitalize="off" value={form.user} onChange={set("user")} /></Field>}
+          <Field label="Sign-in name" optional note="When the server's sign-in isn't the address." error={refused.user}><Input name="user" spellCheck={false} autoCapitalize="off" value={form.user} onChange={set("user")} /></Field>
           <Field label={passwordLabel(form.preset)} error={refused.password}>
             <Input name="password" type="password" autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
-              placeholder={account.configured ? "Sealed on this server: type it again to save a change" : ""} value={password} onChange={(e) => setPassword(e.target.value)} />
+              placeholder={account.configured ? "Sealed on this server: type it again to save a change" : ""} value={password} onChange={(e) => { setPassword(e.target.value); setTested(null); }} />
           </Field>
           {other && hostField("imap", "IMAP", "imap.example.com")}
           {other && hostField("smtp", "SMTP", "smtp.example.com")}
+          </fieldset>
           <div className="flex flex-wrap gap-2">
             <Button type="submit" variant="solid" disabled={busy || !form.address.trim() || !password}>Save</Button>
             <Button type="button" variant="outline" disabled={busy || !form.address.trim() || (!password && !account.configured)} onClick={() => void test()}>Test</Button>
