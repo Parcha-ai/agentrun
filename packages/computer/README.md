@@ -2513,7 +2513,7 @@ core PASS 55/55 · 10 optional cases skipped, not declared · full 10/13 · moun
 ```
 
 A hosted vendor runs the exec pre-check first, with `--exec-stream --machine <id> [--quick]`: the module's
-`createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way, byte-exact stream
+`createHost(options)` and `host.exec` alone, on a machine made by hand, checked for a live, two-way stream that keeps text intact,
 with no timeout (`src/conformance/exec-stream.ts`; [the contract](../../spec/computer/provider.md#a-hosted-vendors-exec)).
 `stdout-unread` writes 4 MiB to `cat` over 10 s with its stdout left unread, then reads it: a write may wait while
 nobody reads, but must go on once stdout is read, and every byte comes back in order. After the checks, one more exec

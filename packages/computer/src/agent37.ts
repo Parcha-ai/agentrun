@@ -362,7 +362,8 @@ class Agent37Host implements MachineHost {
 	 * POST /v1/instances: the template, the type and region, the size when the spec asks one, the request's name as the
 	 * instance's name, the labels as metadata, deny-all (or allow-all where the adapter asks egress: an Archil computer's root, or the
 	 * egress proxy of a network open or a list), auto-sleep off and
-	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
+	 * no public port. It answers once the instance runs (docs: instances/create, Defaults). req.backstopAt is left:
+	 * Agent37 has no delete or stop timer to set it on, so the janitor alone ends an instance.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const bytes = Buffer.byteLength(JSON.stringify(req.labels));

@@ -1,20 +1,22 @@
 // The exec pre-check: the one thing a new vendor proves before writing anything else of its host. AgentRun installs its
 // daemon through MachineHost.exec and then talks to it over that one process's stdin and stdout for the computer's whole
-// life, so exec must be a live, two-way, byte-exact stream with no timeout (the contract is exec's doc comment in
-// ../host.ts). This runs exec alone, on a machine the vendor made by hand, and says in plain words what it did wrong:
+// life, so exec must be a live, two-way stream that keeps UTF-8 text intact, with no timeout (the contract is exec's doc
+// comment in ../host.ts). This runs exec alone, on a machine the vendor made by hand, and says in plain words what it
+// did wrong:
 //
 //   npm run conformance -w @parcha/agentrun-computer -- --provider <id | ./module.js> --exec-stream --machine <id> [--quick]
 //
 // It calls nothing but host.exec, so a host whose other members are still stubs can run it. Each check starts its own
-// process and kills it when it is done with it, pass or fail. After the checks, one more exec reads what the machine
-// offers the rest of the host (root's network namespace, /dev/fuse, the arch, the kernel, the TCP listeners): facts, each
-// with what it means for the provider, never a pass or a fail of exec.
+// process and kills it when it is done with it, pass or fail. No check ends stdin: the adapter never needs a vendor's
+// end of file, so one with none passes. After the checks, one more exec reads what the machine offers the rest of the
+// host (root's network namespace, /dev/fuse, the arch, the kernel, the TCP listeners): facts, each with what it means
+// for the provider, never a pass or a fail of exec.
 import { createHash, randomBytes } from "node:crypto";
 import type { MachineHost, MachineProcess } from "../host.js";
 import { words } from "../hosted/process.js";
 
 /** The checks, in the order they run. */
-export const EXEC_STREAM_CHECKS = ["stdout-bytes", "stdin-bytes", "large", "stdout-live", "stdin-live", "stdout-unread", "stderr", "exit-code", "kill", "no-timeout"] as const;
+export const EXEC_STREAM_CHECKS = ["stdout-text", "stdin-text", "large", "stdout-live", "stdin-live", "stdout-unread", "stderr", "exit-code", "kill", "no-timeout"] as const;
 export type ExecStreamCheckId = (typeof EXEC_STREAM_CHECKS)[number];
 
 /** What the capability probe reads, in the order the report gives it. */
@@ -51,7 +53,7 @@ export interface ExecStreamOptions {
 	longMs?: number;
 	/** How long one step waits: exec's answer, bytes coming back, wait() after the end; default 30 s. */
 	stepMs?: number;
-	/** The large check's payload, in bytes; default 8 MiB. */
+	/** The large check's payload, in bytes of random UTF-8 text; default 8 MiB. */
 	largeBytes?: number;
 	/** How long the large check may take in all; default 180 s. */
 	largeMs?: number;
@@ -90,38 +92,87 @@ export const PID_STATE_SCRIPT =
 class Problem extends Error {}
 
 const hex = (bytes: Uint8Array) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join(" ");
-const byte = (b: number) => `0x${b.toString(16).padStart(2, "0")}`;
 const secondsOf = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 const shown = (argv: readonly string[]) => argv.map((word) => (/^[\w./=:-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`)).join(" ");
-const ALL_BYTES = Uint8Array.from({ length: 256 }, (_, i) => i);
-/** printf's format for every byte value, 0 to 255, each as an octal escape: dash, bash and busybox all read it. */
-const PRINTF_ALL = [...ALL_BYTES].map((b) => `\\${b.toString(8).padStart(3, "0")}`).join("");
+const range = (from: number, to: number) => String.fromCodePoint(...Array.from({ length: to - from + 1 }, (_, i) => from + i));
 
 /**
- * Why `got` is not `sent`, in words, or undefined when they are the same bytes. `way` is where they went ("on stdout");
- * the first byte that differs is named, and the usual ways an exec mangles bytes are named for what they are.
+ * A BOM first, which a TextDecoder drops from the start of a stream unless told to keep it (ignoreBOM). Then one of
+ * each class of code point: all of ASCII but NUL (no text the adapter carries holds one: JSON escapes it), all of
+ * Latin-1, the BMP's scripts and its odd ones (the line and paragraph separators, a BOM, U+FFFD), astral ones, and
+ * combining marks and a joined emoji, which a normalizer would change. Then \r alone and \r\n, which a terminal changes.
  */
-export function bytesProblem(sent: Uint8Array, got: Uint8Array, way: string): string | undefined {
+const CODE_POINTS = `\u{feff}${range(0x01, 0x7f)}${range(0x80, 0xff)}ĀſΩЖאعह中文日本語한국어€  ﻿�𝄞😀\u{10ffff}éä\u{1f469}‍\u{1f4bb}carriage\rreturn\r\nline`;
+/** 16 KiB of text of every width (1, 2, 3 and 4 bytes a character), no newline: 64 of them are the 1 MiB line. */
+const LONG_PIECE = `${"aé€𝄞".repeat(1638)}abcd`;
+const LONG_PIECES = 64;
+/** What stdout-text and stdin-text carry: every class of code point, \r and \r\n, a line of 1 MiB, and a lone \n at the end. */
+const TEXT = Buffer.from(`${CODE_POINTS}${LONG_PIECE.repeat(LONG_PIECES)}\n`, "utf8");
+/**
+ * length bytes of random UTF-8 text: characters of 1, 2, 3 and 4 bytes at random, any code point of each width but NUL
+ * and the surrogates (which are no text).
+ */
+export function randomText(length: number): Buffer {
+	const text = Buffer.alloc(length);
+	const random = randomBytes(4 * length);
+	let r = 0;
+	const next = (bytes: number) => {
+		let value = 0;
+		for (let i = 0; i < bytes; i++) value = value * 256 + (random[r++] as number);
+		return value;
+	};
+	for (let at = 0; at < length; ) {
+		const width = Math.min(length - at, 1 + (next(1) & 3));
+		if (width === 1) text[at] = 1 + (next(1) % 0x7f);
+		else if (width === 2) text.write(String.fromCodePoint(0x80 + (next(2) % 0x780)), at, "utf8");
+		else if (width === 3) {
+			const point = 0x800 + (next(2) % 0xf000);
+			text.write(String.fromCodePoint(point >= 0xd800 ? point + 0x800 : point), at, "utf8");
+		} else text.write(String.fromCodePoint(0x10000 + (next(3) % 0x100000)), at, "utf8");
+		at += width;
+	}
+	return text;
+}
+
+/** printf's format for text: each of its UTF-8 bytes as an octal escape, which dash, bash and busybox all read. */
+const printfOf = (text: string) => [...Buffer.from(text, "utf8")].map((b) => `\\${b.toString(8).padStart(3, "0")}`).join("");
+
+/** The code point of the character the byte at i is part of, as U+XXXX, and where that character starts. */
+function characterAt(bytes: Uint8Array, i: number): { name: string; start: number } {
+	let start = i;
+	while (start > 0 && ((bytes[start] as number) & 0xc0) === 0x80) start--;
+	const point = Buffer.from(bytes.subarray(start, start + 4)).toString("utf8").codePointAt(0) ?? 0;
+	return { name: `U+${point.toString(16).toUpperCase().padStart(4, "0")}`, start };
+}
+
+/**
+ * Why `got` is not `sent`, in words, or undefined when they are the same text. Both are UTF-8; `way` is where it went
+ * ("on stdout"). The first character that differs is named, and the usual ways an exec changes text are named for what
+ * they are.
+ */
+export function textProblem(sent: Uint8Array, got: Uint8Array, way: string): string | undefined {
 	let i = 0;
 	while (i < sent.length && i < got.length && sent[i] === got[i]) i++;
 	if (i === sent.length && i === got.length) return undefined;
-	if (i === got.length) {
-		const nul = sent[i] === 0 ? ": the first missing byte is 0x00, so your exec may treat output as C strings and stop at a NUL" : "";
-		return `only ${got.length} of ${sent.length} bytes came back ${way}${nul}. Pass every byte on as it comes`;
+	if (i === got.length) return `only ${got.length} of ${sent.length} bytes of text came back ${way}. Pass every character on as it comes`;
+	if (i === sent.length) return `${got.length - sent.length} bytes came back ${way} that were never sent, after all ${sent.length} that were (${hex(got.subarray(i, i + 8))}): your exec adds output of its own (a shell's login banner, a prompt). Pass only the process's own output`;
+	const { name, start } = characterAt(sent, i);
+	const was = got.subarray(start, start + 4);
+	const said = `${name} (byte ${start}) came back ${way} as ${hex(was)}`;
+	const b = sent[start] as number;
+	if (b === 0x0a && was[0] === 0x0d && was[1] === 0x0a) return `${said}: your exec turns \\n into \\r\\n, as a terminal does. Run the process on pipes, not a terminal`;
+	if (b === 0x0d && was[0] === 0x0a) return `${said}: your exec turns \\r into \\n, as newline translation does. Pass every character on as it comes`;
+	if (b === 0x0d) return `${said}: your exec drops \\r, as newline translation does. Pass every character on as it comes`;
+	if (b >= 0x80 && was[0] === (0xc0 | (b >> 6)) && was[1] === (0x80 | (b & 0x3f))) {
+		return `${said}: your exec reads UTF-8 as Latin-1 and writes it back as UTF-8 again. Read the process's output as UTF-8`;
 	}
-	if (i === sent.length) return `${got.length - sent.length} bytes came back ${way} that were never sent, after all ${sent.length} that were (${hex(got.subarray(i, i + 8))}): your exec adds output of its own (a shell's login banner, a prompt). Pass only the process's own bytes`;
-	const b = sent[i] as number;
-	const at = got.subarray(i, i + 3);
-	const was = `byte ${byte(b)} came back ${way} as ${hex(at)}`;
-	if (b >= 0x80 && at[0] === 0xef && at[1] === 0xbf && at[2] === 0xbd) {
-		return `${was}: your exec decodes UTF-8, which turns each byte that is not UTF-8 into U+FFFD (ef bf bd). Pass the bytes on as bytes, never as text`;
+	if (name === "U+FEFF" && Buffer.from(got.subarray(start, start + 8)).equals(Buffer.from(sent.subarray(start + 3, start + 11)))) {
+		return `${said}: your exec drops a U+FEFF that starts its text, as a TextDecoder does unless given ignoreBOM: true. Keep it: it is text like any other`;
 	}
-	if (b >= 0x80 && at[0] === (0xc0 | (b >> 6)) && at[1] === (0x80 | (b & 0x3f))) {
-		return `${was}: your exec reads bytes as Latin-1 text and writes them back as UTF-8. Pass the bytes on as bytes, never as text`;
+	if (was[0] === 0xef && was[1] === 0xbf && was[2] === 0xbd) {
+		return `${said}: U+FFFD (ef bf bd), as a decoder makes of half a character: your exec decodes each piece of output as text on its own. Decode the stream as one (TextDecoder's stream: true)`;
 	}
-	if (b === 0x0a && at[0] === 0x0d && at[1] === 0x0a) return `${was}: your exec turns \\n into \\r\\n, as a terminal does. Run the process on pipes, not a terminal`;
-	if (b === 0x0d && at[0] === 0x0a) return `${was}: your exec drops \\r, as newline translation does. Pass every byte on as it comes`;
-	return `${was} (offset ${i}): your exec changes bytes. Pass every byte on as it comes, unchanged`;
+	return `${said}: your exec changes text (a terminal, a normalizer, an escape filter). Pass every character on as it comes, unchanged`;
 }
 
 /** One output stream of a process, read as it comes: its bytes so far, whether it ended, and a wait for more. */
@@ -290,17 +341,21 @@ class Session {
 	}
 
 	/**
-	 * Writes bytes to the process's stdin, in WRITE_CHUNK pieces, one after another; a refusal is a Problem. Each write
-	 * is bounded by the step, and by `by` when the check has one deadline for all of its steps.
+	 * Writes UTF-8 text to the process's stdin, in pieces of at most WRITE_CHUNK bytes, each whole characters as the
+	 * adapter's are, one after another; a refusal is a Problem. Each write is bounded by the step, and by `by` when the
+	 * check has one deadline for all of its steps.
 	 */
 	async write(run: Run, bytes: Uint8Array, what: string, by?: Deadline): Promise<void> {
-		for (let at = 0; at < bytes.length; at += WRITE_CHUNK) {
+		for (let at = 0, end = 0; at < bytes.length; at = end) {
+			end = Math.min(at + WRITE_CHUNK, bytes.length);
+			while (end < bytes.length && ((bytes[end] as number) & 0xc0) === 0x80) end--;
+			const piece = bytes.subarray(at, end);
 			const ms = by ? by.left(this.#stepMs) : this.#stepMs;
 			// Whether the deadline, not the step, set this bound. Asking by.passed() after the timeout is not enough: a
 			// timer can fire a millisecond before Date.now() reads the deadline.
 			const deadlineBound = by !== undefined && ms < this.#stepMs;
 			const written = await within(
-				Promise.resolve().then(() => run.proc.write(bytes.subarray(at, at + WRITE_CHUNK))),
+				Promise.resolve().then(() => run.proc.write(piece)),
 				ms,
 				LATE,
 				this.#signal,
@@ -311,20 +366,6 @@ class Session {
 			if (written === LATE && this.#signal?.aborted) throw new Problem(`writing ${what} was stopped, with ${at} bytes written`);
 			if (written === LATE) throw new Problem(by && (deadlineBound || by.passed()) ? `writing ${what} ran past ${secondsOf(by.ms)}, with ${at} bytes written` : `write() of ${what} did not answer within ${secondsOf(ms)}`);
 		}
-	}
-
-	/** Ends the process's stdin; a refusal is a Problem. */
-	async end(run: Run, by?: Deadline): Promise<void> {
-		const ms = by ? by.left(this.#stepMs) : this.#stepMs;
-		const ended = await within(
-			Promise.resolve().then(() => run.proc.end()),
-			ms,
-			LATE,
-			this.#signal,
-		).catch((error: unknown) => {
-			throw new Problem(`end() failed: ${words(error)}`);
-		});
-		if (ended === LATE) throw new Problem(`end() did not answer within ${secondsOf(ms)}`);
 	}
 
 	/** wait()'s exit code within ms; one that never comes, or a wait() that throws, is a Problem. */
@@ -369,49 +410,46 @@ class Deadline {
 type CheckBody = (session: Session, options: Required<Pick<ExecStreamOptions, "longMs" | "largeBytes" | "largeMs" | "unreadMs">>, earlier: Map<ExecStreamCheckId, ExecStreamCheck>) => Promise<string>;
 
 const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
-	/** Every byte value out, on stdout alone: printf in the machine writes them. */
-	async "stdout-bytes"(s) {
-		const argv = ["sh", "-c", 'printf "$1"', "sh", PRINTF_ALL];
-		const run = await s.start(argv, false);
+	/** Text of every kind out, on stdout alone: printf in the machine writes it, the 1 MiB line a piece at a time. */
+	async "stdout-text"(s) {
+		const script = `printf "$1"; i=0; while [ "$i" -lt ${LONG_PIECES} ]; do printf "$2"; i=$((i+1)); done; printf '\\n'`;
+		const run = await s.start(["sh", "-c", script, "sh", printfOf(CODE_POINTS), printfOf(LONG_PIECE)], false);
 		if (!(await run.out.end(s.stepMs, s.signal))) throw new Problem(`stdout of printf did not end within ${secondsOf(s.stepMs)} of its start`);
 		const code = await s.exit(run, s.stepMs, "printf");
-		if (code !== 0) throw new Problem(`printf of the 256 byte values exited ${code} (stderr: ${run.err.bytes().toString("utf8").trim().slice(0, 200) || "none"})`);
-		const problem = bytesProblem(ALL_BYTES, run.out.bytes(), "on stdout");
+		if (code !== 0) throw new Problem(`printf of the text exited ${code} (stderr: ${run.err.bytes().toString("utf8").trim().slice(0, 200) || "none"})`);
+		const problem = textProblem(TEXT, run.out.bytes(), "on stdout");
 		if (problem) throw new Problem(problem);
-		return "all 256 byte values printed in the machine came back unchanged on stdout";
+		return "text of every class of code point, \\r and \\r\\n, and a 1 MiB line, printed in the machine, came back unchanged on stdout";
 	},
-	/** Every byte value in on stdin and out again, through cat. */
-	async "stdin-bytes"(s, _options, earlier) {
+	/** The same text in on stdin and out again, through cat, read until it has all come back: no end of stdin. */
+	async "stdin-text"(s, _options, earlier) {
 		const run = await s.start(["cat"], true);
-		await s.write(run, ALL_BYTES, "the 256 byte values");
-		await s.end(run);
-		if (!(await run.out.end(s.stepMs, s.signal))) throw new Problem(`cat's stdout did not end within ${secondsOf(s.stepMs)} of end(): end() must close the process's stdin, so it reads end of file`);
-		await s.exit(run, s.stepMs, "cat");
-		const outOk = earlier.get("stdout-bytes")?.status === "pass";
-		const problem = bytesProblem(ALL_BYTES, run.out.bytes(), "through cat");
-		if (problem) throw new Problem(outOk ? `${problem}. stdout alone passes every byte (stdout-bytes), so they changed on the way in, on stdin` : problem);
-		return "all 256 byte values written to stdin came back unchanged through cat";
+		await s.write(run, TEXT, "the text");
+		const came = await run.out.until(() => run.out.length >= TEXT.length, s.stepMs, s.signal);
+		const got = run.out.bytes();
+		// What came back is checked as far as it goes: a character changed on the way says so, before any that never came.
+		const problem = textProblem(came ? TEXT : TEXT.subarray(0, got.length), got, "through cat");
+		if (problem) throw new Problem(earlier.get("stdout-text")?.status === "pass" ? `${problem}. stdout alone passes it (stdout-text), so it changed on the way in, on stdin` : problem);
+		if (!came) throw new Problem(`only ${got.length} of ${TEXT.length} bytes of text came back through cat within ${secondsOf(s.stepMs)} of the last write: your exec holds stdin, or drops some of it. Pass each write on as it comes`);
+		return "the same text written to stdin came back unchanged through cat";
 	},
-	/** A large random payload through cat, read while it is written, compared by sha256, all within largeMs. */
+	/** Large random text through cat, read while it is written, compared by sha256, all within largeMs. */
 	async large(s, { largeBytes, largeMs }) {
-		const payload = randomBytes(largeBytes);
+		const payload = randomText(largeBytes);
 		const started = Date.now();
 		const by = new Deadline(largeMs);
 		const run = await s.start(["cat"], true);
-		await s.write(run, payload, `${largeBytes} random bytes`, by);
-		await s.end(run, by);
-		if (!(await run.out.end(by.left(largeMs), s.signal))) {
-			throw new Problem(`${run.out.length} of ${largeBytes} bytes came back through cat within ${secondsOf(largeMs)}, and its stdout had not ended: your exec is too slow, or stops passing output on`);
+		await s.write(run, payload, `${largeBytes} bytes of random text`, by);
+		if (!(await run.out.until(() => run.out.length >= largeBytes, by.left(largeMs), s.signal))) {
+			throw new Problem(`${run.out.length} of ${largeBytes} bytes of text came back through cat within ${secondsOf(largeMs)}: your exec is too slow, or stops passing output on`);
 		}
-		await s.exit(run, by.left(s.stepMs), "cat");
-		if (by.passed()) throw new Problem(`${largeBytes} bytes through cat took ${secondsOf(Date.now() - started)}, past ${secondsOf(largeMs)}: your exec is too slow`);
 		const got = run.out.bytes();
 		const sent = createHash("sha256").update(payload).digest("hex");
 		const back = createHash("sha256").update(got).digest("hex");
 		if (sent !== back) {
-			throw new Problem(`${largeBytes} random bytes went in, ${got.length} came back with sha256 ${back.slice(0, 16)}…, not ${sent.slice(0, 16)}…: ${bytesProblem(payload, got, "through cat") ?? "they differ"}`);
+			throw new Problem(`${largeBytes} bytes of random text went in, ${got.length} came back with sha256 ${back.slice(0, 16)}…, not ${sent.slice(0, 16)}…: ${textProblem(payload, got, "through cat") ?? "they differ"}`);
 		}
-		return `${largeBytes} random bytes came back through cat with the same sha256 in ${secondsOf(Date.now() - started)}`;
+		return `${largeBytes} bytes of random text came back through cat with the same sha256 in ${secondsOf(Date.now() - started)}`;
 	},
 	/** Output comes back while the process runs: printf, then a sleep that never ends on its own. */
 	async "stdout-live"(s) {
@@ -447,11 +485,8 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 				);
 			}
 		}
-		const problem = bytesProblem(Buffer.concat(rounds), run.out.bytes(), "through cat");
+		const problem = textProblem(Buffer.concat(rounds), run.out.bytes(), "through cat");
 		if (problem) throw new Problem(problem);
-		await s.end(run);
-		const code = await s.exit(run, s.stepMs, "cat");
-		if (code !== 0) throw new Problem(`cat exited ${code} after end(), not 0`);
 		return "two writes came back through cat, each before the next was written, while stdin stayed open";
 	},
 	/**
@@ -497,12 +532,10 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 			clearTimeout(reading);
 			read();
 		}
-		await s.end(run);
-		if (!(await run.out.end(s.stepMs, s.signal))) {
-			throw new Problem(`${run.out.length} of ${written} bytes came back through cat within ${secondsOf(s.stepMs)} of stdout being read and stdin ended, and its stdout had not ended`);
+		if (!(await run.out.until(() => run.out.length >= written, s.stepMs, s.signal))) {
+			throw new Problem(`${run.out.length} of ${written} bytes came back through cat within ${secondsOf(s.stepMs)} of stdout being read`);
 		}
-		await s.exit(run, s.stepMs, "cat");
-		const problem = bytesProblem(Buffer.concat(sent), run.out.bytes(), "through cat");
+		const problem = textProblem(Buffer.concat(sent), run.out.bytes(), "through cat");
 		if (problem) throw new Problem(`${problem}; stdout was left unread ${secondsOf(unreadMs)} while stdin was written: output nobody reads yet is held until it is read, never dropped`);
 		return `${written} bytes written to cat while its stdout was left unread for ${secondsOf(unreadMs)} all came back, in order, once it was read`;
 	},
@@ -746,7 +779,7 @@ export function formatExecStream(report: ExecStreamReport): string {
 	const failed = report.checks.filter((check) => check.status === "fail").length;
 	lines.push(
 		report.pass
-			? "exec PASS: a live, two-way, byte-exact stream with no timeout. Write the rest of your host next."
+			? "exec PASS: a live, two-way stream that keeps text intact, with no timeout. Write the rest of your host next."
 			: `exec FAIL: ${failed} of ${report.checks.length} checks failed. Fix exec before you write the rest of your host: AgentRun reaches its daemon through it.`,
 	);
 	return `${lines.join("\n")}\n`;

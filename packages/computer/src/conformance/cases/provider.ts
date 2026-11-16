@@ -6,6 +6,7 @@
 // deleted computer stays gone: no call to it brings it back. prepareImage called twice answers one image and makes it once.
 import { randomBytes } from "node:crypto";
 import type { ProviderDescriptor } from "../../descriptor.js";
+import { BACKSTOP_MARGIN_MS, type MachineHost } from "../../host.js";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
 import { type ComputerConnection, type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
@@ -62,6 +63,8 @@ async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
 /** The deadline case's lifetime, and how much of it must be left once create returns: to connect and start a process. */
 const DEADLINE_LIFETIME_MS = 45_000;
 const DEADLINE_LEFT_MS = 15_000;
+/** How far a backstop host's vendor timer may read from the request's backstopAt: a timer kept in whole minutes rounds. */
+const BACKSTOP_SKEW_MS = 60_000;
 const seconds = (ms: number) => Math.round(ms / 100) / 10;
 
 /**
@@ -577,5 +580,25 @@ export const providerCases: Case[] = [
 			t.deepEqual(await names(t, labels), [], "the case's computers after it");
 		},
 		{ level: "full", timeoutMs: 300_000 },
+	),
+	// A host's backstop claim (facts.backstop, src/host.ts), read back from its vendor on the run's shared computer: get's
+	// endsAt is the request's backstopAt, which create made from the clock reading its deadline label was made from. A
+	// provider not on the machine-host adapter, or a host that claims none, has nothing to read back.
+	provider(
+		"backstop",
+		async (t) => {
+			const host = (t.provider as { host?: MachineHost }).host;
+			if (host?.facts?.backstop !== true) return t.observe(host === undefined ? "not on the machine-host adapter: no backstop to read back" : "its host claims no backstop (facts.backstop): nothing to read back");
+			const listed = t.ok(await t.provider.list(t.runLabels), "list");
+			const deadline = t.present(listed.find((info) => info.ref.name === t.ref.name)?.deadline, `${t.ref.name}'s deadline, listed`);
+			const backstopAt = deadline.getTime() - runLifetimeMs(t.spec()) + t.provider.capabilities().maxLifetimeMs + BACKSTOP_MARGIN_MS;
+			const endsAt = (await host.get(t.ref.id, { timeoutMs: t.patience, signal: t.signal }))?.endsAt;
+			const reads = endsAt instanceof Date ? endsAt.toISOString() : "none";
+			t.assert(
+				endsAt instanceof Date && Math.abs(endsAt.getTime() - backstopAt) <= BACKSTOP_SKEW_MS,
+				`${host.descriptor.label} claims backstop (facts.backstop), but its vendor timer reads ${reads}, not ${new Date(backstopAt).toISOString()}, the request's backstopAt (within ${BACKSTOP_SKEW_MS / 1000} s): set it from req.backstopAt at create, and read it back as Machine.endsAt`,
+			);
+		},
+		{ computer: "shared" },
 	),
 ];

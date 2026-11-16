@@ -109,31 +109,40 @@ test("the label script, run by sh: write replaces the file from stdin, 0600 in a
 		const file = join(root, "var", "lib", "agentrun", "labels.json");
 		const at = (argv) => [...argv.slice(0, 4), file, ...argv.slice(5)];
 		assert.equal(SCRIPTS.LABEL_FILE, LABEL_FILE, "under /var/lib, on the machine's disk");
-		assert.deepEqual(SCRIPTS.labelsCommand(true).slice(4), [LABEL_FILE, "write"]);
+		assert.deepEqual(SCRIPTS.labelsCommand(17).slice(4), [LABEL_FILE, "write", "17"]);
 		assert.deepEqual(SCRIPTS.labelsCommand().slice(4), [LABEL_FILE]);
 		const read = at(SCRIPTS.labelsCommand());
 		assert.equal(spawnSync(read[0], read.slice(1), { env }).status, 3, "no file: exit 3");
-		const write = at(SCRIPTS.labelsCommand(true));
+		const write = (text) => at(SCRIPTS.labelsCommand(Buffer.byteLength(text)));
 		const text = JSON.stringify({ [COMPUTER]: "1", [NAME]: "computer-0123456789ab" });
-		assert.equal(execFileSync(write[0], write.slice(1), { env, input: text, encoding: "utf8" }), text, "the write prints the file it wrote");
+		assert.equal(execFileSync(write(text)[0], write(text).slice(1), { env, input: text, encoding: "utf8" }), text, "the write prints the file it wrote");
 		assert.equal(statSync(join(root, "var", "lib", "agentrun")).mode & 0o777, 0o700, "the directory is root's alone");
 		assert.equal(statSync(file).mode & 0o777, 0o600, "the file is root's alone");
 		assert.equal(execFileSync(read[0], read.slice(1), { env, encoding: "utf8" }), text);
-		execFileSync(write[0], write.slice(1), { env, input: "{}", encoding: "utf8" });
+		execFileSync(write("{}")[0], write("{}").slice(1), { env, input: "{}", encoding: "utf8" });
 		assert.equal(readFileSync(file, "utf8"), "{}", "a write replaces it");
+		// Its length is read, so stdin needs no end: a write whose stdin stays open still ends, the file written.
+		const open = spawn(write(text)[0], write(text).slice(1), { env });
+		open.stdin.write(text);
+		assert.equal(await new Promise((done) => open.on("close", done)), 0, "stdin left open");
+		open.stdin.destroy();
+		assert.equal(readFileSync(file, "utf8"), text);
+		// A stdin that ends short writes nothing.
+		assert.equal(spawnSync(write(text)[0], write(text).slice(1), { env, input: text.slice(0, 10) }).status, 5, "short: exit 5");
+		assert.equal(readFileSync(file, "utf8"), text, "and the file is left as it was");
 		// Two writers at once (two instances' extends): the second starts and ends while the first is half written, and
 		// each renames in its own whole file.
-		const writer = () => {
-			const child = spawn(write[0], write.slice(1), { env });
+		const writer = (text) => {
+			const child = spawn(write(text)[0], write(text).slice(1), { env });
 			// Each prints the file it wrote: read it, so a long one never fills the pipe.
 			child.stdout.resume();
 			return { child, code: new Promise((done) => child.on("close", done)) };
 		};
 		const long = JSON.stringify({ [COMPUTER]: "1", [DEADLINE]: "a".repeat(200_000) });
-		const first = writer();
+		const first = writer(long);
 		first.child.stdin.write(long.slice(0, 100_000));
 		await pause(200);
-		const second = writer();
+		const second = writer(text);
 		second.child.stdin.end(text);
 		assert.equal(await second.code, 0, "the second writer");
 		first.child.stdin.end(long.slice(100_000));
@@ -231,8 +240,12 @@ test("a machine of the request's name with no file and no createdAt is never old
 	assert.equal(left.deleted, false);
 });
 
-test("a host that keeps no labels takes only the vendor's lifetime: a machine whose labels were never written has none the janitor lists", () => {
-	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" } }).host), /keeps no labels \(facts\.labels "machine"\), so its lifetime must be the vendor's/);
+test("a host that keeps no labels needs a vendor timer: lifetime vendor, or a janitor's backstop; a janitor without one is refused, naming both", () => {
+	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" } }).host), {
+		message:
+			'Fakehost keeps no labels (facts.labels "machine"), so a vendor timer must end its machines: a machine whose create stopped before its labels were written has none the janitor lists. Declare lifetime "vendor", or set the vendor\'s delete timer from req.backstopAt and declare backstop: true',
+	});
+	assert.doesNotThrow(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor", backstop: true } }).host));
 });
 
 test("extend rewrites the file's deadline after the vendor's timer moves; with a timer the host can't move, there is no extend", async () => {

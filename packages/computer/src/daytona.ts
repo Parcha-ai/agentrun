@@ -244,7 +244,8 @@ class DaytonaHost implements MachineHost {
 	 * no public port, and network none (block-all), the one network check() takes. A GPU
 	 * computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
 	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists,
-	 * and the adapter adopts the sandbox the name lists, as a retry does.
+	 * and the adapter adopts the sandbox the name lists, as a retry does. req.backstopAt is left: the TTL is Daytona's own
+	 * timer at the deadline (lifetime "vendor"), and autoDeleteInterval counts from a stop, not from create.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const gpu = req.gpu !== undefined;
@@ -468,7 +469,8 @@ class DaytonaHost implements MachineHost {
 			bound.clear();
 		}
 		// Input: whole lines, one call after another; the rest of a line waits for its end (or end()).
-		const utf8 = new TextDecoder();
+		// ignoreBOM: a U+FEFF that starts stdin is text, never a mark to drop.
+		const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 		let queued = "";
 		let sending: Promise<void> = Promise.resolve();
 		const send = (data: string) => {

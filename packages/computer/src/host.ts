@@ -1,9 +1,10 @@
-// The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
-// and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
-// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels, list and
-// attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and the words
-// of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven members").
+// The machine host: what a vendor writes to put computers on its machines. A host has twelve members: its descriptor
+// and its facts, five calls about its own machines (create, get, list, delete, exec), and five optional hooks (upload,
+// errorCode, extend, check, keepalive). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider
+// does: the spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels,
+// list and attach, the deadline and extend, the keepalive's timer, the wait after a delete, the sweep of a lost create,
+// the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
+// (PROVIDERS.md, "The twelve members").
 import type { ProviderDescriptor } from "./descriptor.js";
 import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -58,21 +59,25 @@ export interface MachineHost {
 	 *
 	 * exec is the whole protocol: the adapter installs and starts its daemon through it, then talks to the daemon over
 	 * one exec'd process's stdin and stdout for the computer's whole life (the stdio bridge, spec/computer/stdio.md). So:
-	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr bytes come
-	 *   back as the process writes them, while it runs. Not request and response, never held until the process exits.
-	 * - Byte-exact. Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
-	 *   nothing added or dropped. A client that hands output over as text breaks this (E2B's commands.run does).
+	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr come back as
+	 *   the process writes them, while it runs. Not request and response, never held until the process exits.
+	 * - Text intact. UTF-8 text both ways, every code point as it was: long lines, \r and \r\n kept (no terminal, no
+	 *   newline translation), nothing added or dropped. Everything the adapter sends or reads is text (the bridge's JSON
+	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this.
 	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
 	 *   on the stream, are off.
-	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process itself.
-	 * The process reads what write() gives until end(); the adapter ends stdin at once where it gives none. The exec
-	 * pre-check (conformance --exec-stream, src/conformance/exec-stream.ts) checks each of these on a machine made by
-	 * hand, with exec alone.
+	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
+	 *   machine, not only its streams.
+	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
+	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload and its label file's write read a
+	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
+	 * this from them with framedExec (./hosted/framed-exec.ts). The exec pre-check (conformance --exec-stream,
+	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
 	 */
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
 	/**
 	 * Puts bytes at path in the machine, as root. Optional: a vendor with no file API leaves it out, and the adapter
-	 * streams the file through exec's stdin.
+	 * streams the file through exec's stdin as base64 text, which root decodes (`base64 -d`, in coreutils and busybox).
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
 	/**
@@ -91,11 +96,23 @@ export interface MachineHost {
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
+	 * The vendor's cheapest call that restarts its idle timer (facts.idleMs) on the machine: Cube's or E2B's setTimeout,
+	 * Railway's heartbeat. The adapter calls it every idleMs / 3 from create, or attach, until release; one that fails is
+	 * told through onNote and the next one tries again. Required with facts.idleMs; a host with no idle timer leaves it out.
+	 */
+	keepalive?(id: string, ctx: HostCall): Promise<void>;
+	/**
 	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
 	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
 	 */
 	check?(spec: Partial<ComputerSpec>): Refusal[];
 }
+
+/**
+ * How far past the most a deadline may reach MachineRequest.backstopAt is: the janitor ends the machine first while the
+ * server runs, and the vendor's clock may be off from the server's.
+ */
+export const BACKSTOP_MARGIN_MS = 300_000;
 
 /** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
 export class HostError extends Error {
@@ -125,6 +142,12 @@ export interface MachineRequest {
 	labels: Record<string, string>;
 	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
 	lifetimeMs: number;
+	/**
+	 * An ISO time a margin past the most the machine's deadline may reach: create + maxLifetimeMs + BACKSTOP_MARGIN_MS. A
+	 * janitor's host whose vendor has a delete or stop timer of its own sets it here (facts.backstop), so the machine still
+	 * ends when the server that made it is gone. A vendor-lifetime host ignores it.
+	 */
+	backstopAt: string;
 	/**
 	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
 	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
@@ -159,7 +182,7 @@ export interface Machine {
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
 	 */
 	state: "starting" | "running" | "stopped" | "gone";
-	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
+	/** With facts.lifetime "vendor", or facts.backstop: when the vendor's timer ends it. */
 	endsAt?: Date;
 	/**
 	 * When the vendor made it, by its clock, where it says. Two creates of one request on two provider instances can each
@@ -174,9 +197,9 @@ export interface Machine {
 export interface MachineProcess {
 	stdout: AsyncIterable<Uint8Array>;
 	stderr: AsyncIterable<Uint8Array>;
-	/** Writes to its stdin, in order; rejects once the process has ended. */
+	/** Writes UTF-8 text to its stdin, in order, whole characters each; rejects once the process has ended. */
 	write(bytes: Uint8Array): Promise<void>;
-	/** Ends its stdin, so it reads end of file. */
+	/** Ends its stdin, so it reads end of file, where the vendor can; else nothing (exec's doc). */
 	end(): Promise<void>;
 	/** Its exit code once it has ended. */
 	wait(): Promise<number>;
@@ -204,8 +227,18 @@ export interface HostFacts {
 	isolation: ComputerCapabilities["isolation"];
 	/** Who ends a machine at its deadline: the vendor's timer, or the janitor by label. */
 	lifetime: "vendor" | "janitor";
+	/**
+	 * A janitor's host claims its create sets the vendor's own delete or stop timer from req.backstopAt, and get reads it
+	 * back as endsAt (the Core case provider.backstop checks it). Only this lets a janitor's host keep labels "machine".
+	 */
+	backstop?: true;
 	/** The vendor's hard cap of a machine's life; the adapter's maxLifetimeMs may only lower it. */
 	maxLifetimeMs: number;
+	/**
+	 * Where the vendor ends or pauses a machine no call reaches for a while (an idle timer that can't be switched off): that
+	 * window, in whole ms. The adapter then calls keepalive every idleMs / 3 while it holds the machine. Default none.
+	 */
+	idleMs?: number;
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
@@ -221,7 +254,7 @@ export interface HostFacts {
 	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
 	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as
 	 * JSON, what a run's output keeps (OUTPUT_MAX, ./hosted/process.ts). Only with
-	 * lifetime "vendor": a machine whose labels were never written is ended by the vendor's timer alone.
+	 * lifetime "vendor" or backstop: a machine whose labels were never written is ended by the vendor's timer alone.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**

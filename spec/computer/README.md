@@ -10,7 +10,7 @@ feedback.
 click through, a phone or a browser. The computer protocol puts every one of those behind one wire. Inside the machine
 runs a small daemon, `computerd`. It answers JSON-RPC methods (`exec.run`, `files.*`, `process.*`, `screen.*`,
 `input.actions`, `apps.*`, `ui.*`) over its stdin and stdout. Outside the machine, each vendor has a small
-`MachineHost`: eleven members that create, read, list and delete the vendor's machines, and start one process in a
+`MachineHost`: twelve members that create, read, list and delete the vendor's machines, and start one process in a
 machine. AgentRun does the rest through that one process. It installs the daemon, talks to it over that process's
 stdin and stdout, enforces deadlines, makes create safe to retry, and sweeps up leftovers. A phone or a browser has no
 daemon, so its provider answers the same methods itself.
@@ -34,9 +34,10 @@ Each choice below cost us something, and we say what.
   out, so nothing ever has to guess which methods a daemon has. *What it costs:* no mixed versions during a rollout.
   The one exception is a driver a person installs on their own device (a Mac, a phone), where only the protocol must
   match ([`attach.md`](attach.md)).
-- **Exec is byte-exact, two-way and live.** The whole protocol rides one exec stream for the computer's whole life:
-  every byte value both ways, stdin open, output as it's written, and no timeout on a silent process. *What it costs:*
-  a vendor whose exec runs a command and returns its output at the end (a one-shot REST exec) can't plug in today.
+- **Exec keeps text intact, two-way and live.** The whole protocol rides one exec stream for the computer's whole life:
+  UTF-8 text both ways, stdin open, output as it's written, and no timeout on a silent process. A text-only exec in
+  split calls fits through `framedExec`. *What it costs:* a vendor whose exec runs a command and returns its output at
+  the end (a one-shot REST exec) can't plug in today.
   There's a pre-check for this ([`provider.md`](provider.md#a-hosted-vendors-exec)).
 - **Isolation is read from inside, never taken on trust.** The agent's programs run as a non-root user, in a network
   namespace of their own. On hosted vendors today that namespace has loopback alone. After every create, `computerd`

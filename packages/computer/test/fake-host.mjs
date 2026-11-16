@@ -124,6 +124,10 @@ const START = Date.now();
  *    socketsFail: a path among them whose chmod fails;
  *  - stale: the listing reads each machine as its create made it, running, forever: it keeps a deleted machine, and
  *    shows create's end and labels after a timer moved (E2B's Sandbox.list, read live 11-14). get stays current.
+ *  - clock ({ now() }) with the vendor's own timers on it: idle, the ms after which it ends a machine no exec or
+ *    keepalive reached; backstop, the vendor's delete timer set from the request's backstopAt, read back as endsAt, which
+ *    ends the machine there (facts.backstop is the claim alone: a host claiming it without this one lies);
+ *  - keepalive: the host has keepalive, which restarts the idle timer; its first keepaliveFails calls throw.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -152,6 +156,11 @@ export function fakeHost({
 	rootOnlyFail,
 	stale = false,
 	descriptor = FAKE_DESCRIPTOR,
+	clock = { now: () => Date.now() },
+	idle,
+	backstop = false,
+	keepalive = false,
+	keepaliveFails = 0,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -163,6 +172,15 @@ export function fakeHost({
 		if (ctx?.signal?.aborted) throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
 	};
 	const gone = (m) => m === undefined || (m.deleted && !(m.lingering?.reads > 0));
+	/** The vendor's own timers, read when a call reaches m: idle, then the backstop, end it. */
+	const timers = (m) => {
+		if (m === undefined || m.deleted) return;
+		const now = clock.now();
+		const why = idle !== undefined && now - m.touched >= idle ? "idle" : backstop && m.request && now >= Date.parse(m.request.backstopAt) ? "backstop" : undefined;
+		if (why === undefined) return;
+		m.deleted = true;
+		fake.events.push({ machine: m.id, what: `ended (${why})` });
+	};
 
 	const add = ({ labels = {}, name, file, network = "none", image = "img", lifetimeMs = 600_000, state = "running", startingReads = 0, box: extra = {} } = {}) => {
 		const n = ++counter;
@@ -171,6 +189,7 @@ export function fakeHost({
 		const machine = {
 			id,
 			createdAt,
+			touched: clock.now(),
 			labels: { ...labels },
 			...(name === undefined ? {} : { name }),
 			...(file === undefined ? {} : { file: JSON.stringify(file) }),
@@ -222,6 +241,7 @@ export function fakeHost({
 			if (m.xvfb && (display === "ok" || display.startsWith("manager "))) m.displayUp = true;
 			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(m.box.helloPatch ?? {}) });
 		}
+		if (method === "ping") return result({});
 		if (method === "files.read" && params.path === "/proc/self/mounts") return result({ data: Buffer.from(mountsOf(m.box)).toString("base64"), size: 0, eof: true });
 		if (method === "mount.sync") {
 			fake.syncs.push(m.id);
@@ -367,7 +387,7 @@ export function fakeHost({
 	function run(m, argv) {
 		const script = scriptOfWords(argv);
 		const verb = script === undefined ? rootVerb(argv) : undefined;
-		const kind = verb ?? script?.kind ?? (argv[2]?.includes("cat >") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
+		const kind = verb ?? script?.kind ?? (argv[2]?.includes("base64 -d") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
 		fake.events.push({ machine: m.id, what: `run ${kind}` });
 		const proc = processOf(m, kind);
 		if (hang !== undefined && hang === kind) return proc;
@@ -391,19 +411,44 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "labels") {
-			// The label file, root's alone: written from stdin with "write", then printed; exit 3 when there is none.
-			const [path, write] = script.args;
+			// The label file, root's alone: with "write <bytes>", that many bytes of stdin replace it, end of stdin or not,
+			// then it is printed; exit 3 when there is none, 5 when stdin ends short.
+			const [path, write, bytes] = script.args;
 			const print = () => (m.file === undefined ? proc.exit(3) : (proc.out.push(m.file), proc.exit(0)));
 			fake.labelRuns = [...(fake.labelRuns ?? []), { machine: m.id, path, write: write === "write" }];
-			if (write === "write") proc.onEnd = async () => ((m.file = Buffer.concat(proc.chunks).toString("utf8")), print());
-			else queueMicrotask(print);
+			if (write === "write") {
+				let stored = false;
+				const done = async () => {
+					const got = Buffer.concat(proc.chunks);
+					if (got.length < Number(bytes) || stored) return;
+					stored = true;
+					m.file = got.subarray(0, Number(bytes)).toString("utf8");
+					print();
+				};
+				proc.onWrite = done;
+				proc.onEnd = async () => {
+					await done();
+					proc.exit(5);
+				};
+			} else queueMicrotask(print);
 			return proc;
 		}
 		if (kind === "upload") {
-			proc.onEnd = async () => {
-				m.files.set(argv[4], Buffer.concat(proc.chunks));
+			// `head -c <length> | base64 -d > <path>`: done once the base64 text's length has come, end of stdin or not.
+			const length = Number(argv[5]);
+			let stored = false;
+			const done = async () => {
+				const text = Buffer.concat(proc.chunks).toString("latin1");
+				if (text.length < length || stored) return;
+				stored = true;
+				m.files.set(argv[4], Buffer.from(text.slice(0, length), "base64"));
 				fake.uploads.push({ machine: m.id, path: argv[4], through: "exec" });
 				proc.exit(0);
+			};
+			proc.onWrite = done;
+			proc.onEnd = async () => {
+				await done();
+				proc.exit(1, "base64: invalid input\n");
 			};
 			return proc;
 		}
@@ -551,6 +596,7 @@ export function fakeHost({
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;
+				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
 				if (req.command) {
 					// The entrypoint's words: the daemon, the wait, the home, the display, the nonce, then --gate <path> or not,
@@ -585,6 +631,7 @@ export function fakeHost({
 		async get(id, ctx) {
 			const m = machines.get(id);
 			await step("get", ctx, m);
+			timers(m);
 			if (m?.deleted && m.lingering?.reads > 0) {
 				m.lingering.reads--;
 				return { ...view(m), state: m.lingering.state };
@@ -598,6 +645,7 @@ export function fakeHost({
 			await step("list", ctx);
 			// A host that keeps no labels lists every machine.
 			const matched = [...machines.values()].filter((m) => keeps() || Object.entries(labels).every(([k, v]) => m.labels[k] === v));
+			for (const m of matched) timers(m);
 			if (stale) return matched.filter((m) => m.listedAs !== undefined).map((m) => structuredClone(m.listedAs));
 			const flapped = new Set(matched.filter((m) => m.flaps?.length > 0 && m.flaps.shift() === false));
 			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0) && !flapped.has(m));
@@ -616,9 +664,23 @@ export function fakeHost({
 		async exec(id, argv, ctx) {
 			const m = machines.get(id);
 			await step(`exec ${scriptOfWords(argv)?.kind ?? rootVerb(argv) ?? "other"}`, ctx, m);
+			timers(m);
 			if (gone(m)) throw new NotFound(`machine ${id} not found`);
+			m.touched = clock.now();
 			return run(m, argv).api;
 		},
+		...(keepalive
+			? {
+					async keepalive(id, ctx) {
+						const m = machines.get(id);
+						await step("keepalive", ctx, m);
+						timers(m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						if (keepaliveFails-- > 0) throw new Error("503: the timer service is busy");
+						m.touched = clock.now();
+					},
+				}
+			: {}),
 		...(fileApi
 			? {
 					async upload(id, path, bytes, ctx) {

@@ -14,7 +14,7 @@ Conformance comes first: each step ends on a command that tells you whether it's
    through the relay you ship, once it is deployed to your own account; or, on a cloud, in the cluster, group or project
    you made first. `--machine` takes whatever your `exec` takes, the id `create` answers and `get` reads (a name is fine):
    `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
-3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
+3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the twelve members](#the-twelve-members).
 4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
    `npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>`
 5. [Open the pull request](#send-it) with the report and the sweep's last line.
@@ -35,16 +35,22 @@ AgentRun needs two things from your API:
   If your API keeps no labels, declare `labels: "machine"` in your facts. AgentRun then writes them to a file in the
   machine that only root can read, and you list by the name create gives the machine, or list every machine where your
   API takes no name. Your timer must end machines (`lifetime: "vendor"`): a machine whose create stopped before the
-  file was written carries no label the janitor can find.
+  file was written carries no label the janitor can find. A janitor host may keep labels in the machine too if it sets
+  its vendor's delete timer from `req.backstopAt` and declares `backstop: true`. Its `get` must read that timer back as
+  `endsAt`, which the Core case `provider.backstop` checks.
 
 ### Exec shapes that work
 
 Whatever carries it, your `exec` keeps five rules, and the [exec pre-check](#step-one-run-the-exec-pre-check) judges
 it by them alone:
 
-- **Bytes both ways, live.** Every byte value 0-255, in and out while the process runs: no text decoding, no terminal.
-- **stdin ends.** `end()` gives the process end of file. The daemon's bridge never calls it (it ends by `kill`), but the
-  default upload (`cat`, which a host's own `upload` replaces) and the pre-check do.
+- **Text intact both ways, live.** UTF-8 text in and out while the process runs: every code point, lines of any
+  length, `\r` and `\r\n` as they were, and no terminal (a tty turns `\n` into `\r\n`). Decode output as one stream,
+  so a character split across two pieces comes back whole. Bytes that aren't UTF-8 needn't pass: AgentRun sends its
+  daemon as base64 text.
+- **stdin needn't end.** Where your API has no end of file, `end()` may do nothing: nothing AgentRun runs waits for
+  one (the default upload reads a length, a root command's input is one line, the bridge ends by `kill`), and the
+  pre-check never ends stdin.
 - **`kill()` ends the process in the machine**, not only your streams: the pre-check reads its pid back gone. A
   wrapper that writes the pid to a file, and a kill that reads it over a second exec, is fine.
 - **stderr apart**, and `wait()` answers the process's own exit code.
@@ -53,21 +59,51 @@ it by them alone:
 | Your API gives | Your `exec` | In the tree |
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
-| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/agent37-ssh.ts`](src/agent37-ssh.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
+| Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | none yet; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
 
-Two shapes can't carry the daemon today. A request and response exec (one call runs a command and answers its output
-when it ends) can't hold a process open: it needs a relay over another stream. A text-only exec (output decoded as
-text, input as a JSON string) fails the byte checks. AgentRun has no text mode, so your `exec` writes the shim itself:
-a wrapper in the machine that encodes the bytes (base64, say) and your side that decodes them. The pre-check judges a
-shim or a relay as it judges any exec. If none of these fits, [open an issue](https://github.com/Parcha-ai/agentrun/issues)
-that says what your API offers.
+One shape can't carry the daemon today. A request and response exec (one call runs a command and answers its output
+when it ends) can't hold a process open: it needs a relay over another stream. The pre-check judges a relay as it
+judges any exec. If none of these fits, [open an issue](https://github.com/Parcha-ai/agentrun/issues) that says what
+your API offers.
+
+#### A text exec in split calls
+
+`framedExec` from `src/hosted/framed-exec.ts` takes your vendor's calls about one process and answers the
+`MachineProcess` that `exec` returns. Each `write` gets whole characters and starts once the one before it answered;
+a write that fails fails every one after it. Output is read no faster than AgentRun reads it. Without `kill`, the
+process starts under a `sh` that writes its pid and start time to stderr first, and `kill()` kills that pid and
+every process under it, only while it has that start time, so a reused pid is never hit. Without `end`, `end()` does nothing, so a command that reads to end
+of file never ends; AgentRun runs none. `rest`'s `stream` reads a response's body as it comes, with the call's
+timeout on its headers alone, and `ndjson` reads that body a line at a time. For an API whose output events are
+`{"stream":"stdout","text":"…"}` lines, then `{"exit":0}`:
+
+```ts
+const api = rest({ base, headers: () => ({ Authorization: `Bearer ${key}` }), vendor: "acme", timeoutMs: 30_000 });
+const exec = (id: string, argv: readonly string[], ctx: HostCall) =>
+	framedExec<string>(
+		{
+			start: async (argv, ctx) => (orThrow(await api.json("POST", api.url(`/machines/${id}/processes`), { json: { argv }, timeoutMs: ctx.timeoutMs })) as { id: string }).id,
+			events: async function* (pid) {
+				yield* ndjson(orThrow(await api.stream("GET", api.url(`/processes/${pid}/events`))).body) as AsyncIterable<FramedEvent>;
+			},
+			write: async (pid, text) => void orThrow(await api.call("POST", api.url(`/processes/${pid}/stdin`), { json: { text } })),
+		},
+		argv,
+		ctx,
+	);
+```
+
+An event may carry `base64` in place of `text` for output that isn't text. The tests run this host against a
+loopback vendor ([`test/fake-text-host.mjs`](test/fake-text-host.mjs)) through the pre-check and the shared adapter's
+create.
 
 ### Step one: run the exec pre-check
 
-Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
+Before you write anything else, write your host's constructor and its `exec` (see [the twelve members](#the-twelve-members)
 below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
 your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
 with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make one machine
@@ -79,10 +115,11 @@ export COMPUTER_<VENDOR>_API_KEY=<your key>
 npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>
 ```
 
-It calls `exec` and nothing else, and checks the five rules: all 256 byte values each way, 8 MiB of random bytes,
-stdin and output while the process runs, stderr, the exit code, `kill`, and a silent process of 75 seconds (`--quick`:
-5). Each failure says what your exec did wrong, such as "byte 0x80 came back on stdout as ef bf bd: your exec decodes
-UTF-8". When it prints `exec PASS`, write the rest.
+It calls `exec` and nothing else, and checks the five rules: text of every kind of code point with `\r`, `\r\n` and a
+1 MiB line each way, 8 MiB of random UTF-8 by sha256, stdin and output while the process runs, stderr, the exit code,
+`kill`, and a silent process of 75 seconds (`--quick`: 5). Each failure says what your exec did wrong, such as "U+000A
+(byte 12) came back on stdout as 0d 0a 0b 0c: your exec turns \n into \r\n, as a terminal does". When it prints
+`exec PASS`, write the rest.
 
 ### What you write
 
@@ -99,10 +136,10 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
-### The eleven members
+### The twelve members
 
-A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
-`upload`, `errorCode`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
+A host has twelve members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
+`upload`, `errorCode`, `extend`, `check` and `keepalive`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
 marks a cut. A member answers its value, or throws. AgentRun reads a thrown error's code: a `HostError(code, message)`
 (from `src/host.ts`) carries its own, and any other error goes through `errorCode`, then defaults to `"vendor"`. Each
 call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
@@ -137,8 +174,10 @@ machine, the cap is the janitor's, as Agent37's 24 hours (`DAY_MS`, `src/agent37
 
 Switch off every vendor timer that ends a quiet machine (an idle stop or sleep): a computer sits quiet for minutes, and
 the vendor would end it under the agent. Agent37's `create` sends `auto_sleep: false`, and Daytona's idle stop is off
-unless a user sets `autoStopMinutes` (`src/daytona.ts`). With `"janitor"`, where your vendor has a timer that deletes,
-set it a margin past the deadline, so a machine still ends if AgentRun's server is gone.
+unless a user sets `autoStopMinutes` (`src/daytona.ts`). Where the idle timer can't be switched off, declare its window
+as `idleMs` in `facts` and write a `keepalive`: AgentRun calls it every `idleMs / 3` while it holds the computer. With
+`"janitor"`, where your vendor has a timer that deletes or stops, set it to `req.backstopAt`, so a machine still ends if
+AgentRun's server is gone.
 
 ```ts
 	readonly facts: HostFacts = {
@@ -186,7 +225,7 @@ vendor whose size is its image's refuses them in its own `check`.
 
 - `state` is `starting`, `running`, `stopped` (there but not running, such as paused) or `gone` (being deleted,
   ended, or failed).
-- `endsAt` is when your timer ends it, with `lifetime: "vendor"`.
+- `endsAt` is when your timer ends it, with `lifetime: "vendor"` or `backstop: true`.
 - `createdAt` is when your API made it. Of two racing creates' machines, AgentRun keeps the oldest.
 - `why` is your API's words for a machine that failed to start, which is `gone`.
 
@@ -287,14 +326,17 @@ function codeOf(error: unknown): ComputerErrorCode {
 ```
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
-without it, AgentRun streams its daemon through `exec`'s stdin. `extend(id, endsAt, ctx)` moves a machine's end when
+without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, so the image needs `head` and
+`base64` (coreutils and busybox both have them). `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
 your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
 extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create.
 `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields aren't
-checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
+checked yet. `keepalive(id, ctx)` is your API's cheapest call that restarts its idle timer on the machine (a timeout
+set again, a heartbeat), required with `idleMs` and refused without it. One that throws is noted and tried again at
+the next. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
 
 ### Wire it up
