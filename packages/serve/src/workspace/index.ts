@@ -28,10 +28,12 @@ export { type LearningPlace, type LearningWorkspace, learningWorkspace, type Lea
 export { ARCHIL_MAX_EXEC_S, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type AgentComputer, type RunComputer, type RunHold, runTools, type RunTools, type ScriptComputer, withKindTools } from "./run-tools.js";
 export { NO_PROGRAMS_WORDS, portOf } from "./computer-ports.js";
+// Each provider as this server has it (the mounts its keys turn on), on a line of its own.
+export { registryHere } from "./resolve-computer.js";
 export { COMPUTER_MCP_NAME, computerMcp, type ComputerMcpAnswer, mcpAnswerOf } from "./computer-mcp.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
-  registryHere, type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
+  type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export {
