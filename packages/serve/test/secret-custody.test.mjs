@@ -267,22 +267,43 @@ const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => pr
 // A key the launcher does not name stays in the server's environment, where any process of its user reads it and any
 // child spawned with process.env inherits it: every account key serve reads is on the list, and only the server's and the
 // runner's own code reads one, so no run is handed one but a key a run's `browser` tool takes (Browserbase's, Kernel's).
-test("every computer provider's key and Archil's account key is on the launcher's list, and no run is handed one but a browser tool's", async () => {
+test("every computer provider's key and Archil's account key is on the launcher's list, and no run is handed one but a browser tool's", async (t) => {
   const { RUN_SECRETS } = await import("../dist/run-secrets.js");
   for (const name of ACCOUNT_KEYS) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
-  for (const name of ACCOUNT_KEYS.filter((one) => !TOOL_FIELDS.includes(one))) assert.ok(!RUN_SECRETS.includes(name), `${name} is the server's own: no run is handed it`);
+  const serverOnly = ACCOUNT_KEYS.filter((one) => !TOOL_FIELDS.includes(one));
+  for (const name of serverOnly) assert.ok(!RUN_SECRETS.includes(name), `${name} is the server's own: no run is handed it`);
+  // A run's environment as its claim builds it, with every account key both saved in the store and in the runner's own
+  // environment, for a run that binds the browser tool: it gets the browser tool's keys and no other account key.
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "account-keys-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  });
+  const sealKey = randomBytes(32);
+  const valueOf = (name) => `not-a-secret-${name.toLowerCase()}`;
+  for (const name of ACCOUNT_KEYS) await putSealedKey(store, sealKey, name, valueOf(name));
+  const env = await claimSecrets({ store, sealKey, env: Object.fromEntries(ACCOUNT_KEYS.map((name) => [name, valueOf(name)])) }, { kind: "agentic", body: { tools: ["browser"] } }, {});
+  assert.equal(env.BROWSERBASE_API_KEY, valueOf("BROWSERBASE_API_KEY"), "a browser run gets the browser tool's key");
+  for (const name of serverOnly) {
+    assert.equal(env[name], undefined, `a run's environment has no ${name}`);
+    assert.ok(!Object.values(env).includes(valueOf(name)), `no value in a run's environment is ${name}'s`);
+  }
 });
 
-// Started by its launcher with the Archil account key and a computer provider's key set, the server holds neither in its
-// environment, and still reads each where it was started: Archil's settings and Settings → Computers say `source: "env"`.
-test("started by its launcher with ARCHIL_API_KEY and E2B_API_KEY set, neither is in the server's environment, and Archil still reads its key from where it started", { timeout: 120_000 }, async (t) => {
+// Started by its launcher with every account key set (Archil's and each computer provider's), the server holds none in its
+// environment, and still reads each where it was started: Archil's settings say `source: "env"`.
+test("started by its launcher with every computer provider's key and ARCHIL_API_KEY set, none is in the server's environment, and Archil still reads its key from where it started", { timeout: 120_000 }, async (t) => {
   // Under --faux, as this file's other launcher starts are: the launcher's hand-over is the same, and the server reaches
   // no vendor. Archil's routes are not faux, so they read the account key as a real start does. Settings → Computers is
   // faux's under --faux, so its reader (the same withSecrets(process.env, "own") as Archil's) is not checked here.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_STORE_URL: undefined, [ARCHIL_API_KEY_ENV]: `${canary}-archil`, E2B_API_KEY: `${canary}-e2b` });
+  const keys = Object.fromEntries(ACCOUNT_KEYS.map((name) => [name, `${canary}-${name}`]));
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_STORE_URL: undefined, ...keys });
   const environ = read(`/proc/${root}/environ`).toString().split("\0");
-  for (const name of [ARCHIL_API_KEY_ENV, "E2B_API_KEY"]) assert.ok(!environ.some((entry) => entry.startsWith(`${name}=`)), `no ${name} in the server's environment`);
+  for (const name of ACCOUNT_KEYS) assert.ok(!environ.some((entry) => entry.startsWith(`${name}=`)), `no ${name} in the server's environment`);
   noSecretAnywhere(root, canary);
   const archil = await api("GET", "/workspace/archil");
   assert.equal(archil.status, 200);
