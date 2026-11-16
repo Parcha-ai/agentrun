@@ -113,20 +113,20 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     const asked = recorded.find(entry => entry.kind === "agentrun.end-of-run.turn" && entry.data.role === "person" && entry.data.requestId === compileId);
     assert.ok(asked, "a held workflow triggers the actual revision compiler");
     assert.equal(asked.data.kept?.compile_base, base, "the first paid compiler request durably pins its actual read");
-    assert.equal(requests.length, 2, "one look-back and one successful compiler request");
+    assert.equal(requests.length, 1, "no look-back (an SDK run has no owner feedback), one successful compiler request");
     assert.equal(await s.store.learning.proposal(runId), undefined, "no partial proposal is committed before the atomic end");
     let current = base;
     if (moved) { current = await land("concurrent-status"); await hold("concurrent-status"); assert.notEqual(current, base); }
     await settle(false);
-    assert.equal(requests.length, 2, "reclaim reuses both recorded answers without another paid request");
+    assert.equal(requests.length, 1, "reclaim reuses the recorded answer without another paid request");
     const kept = await s.store.learning.proposal(runId);
     assert.equal(kept.proposal.state, "proposed", JSON.stringify(kept.proposal));
     const proposal = kept.proposal.proposal;
     assert.equal(proposal.seed, seed);
     assert.equal(proposal.bases["workflows/release-status/workflow.json"], base, "the merge uses the first compiler ask's base, never the recovered main");
     assert.equal(kept.proposal.job_cost_usd, 0.25);
-    assert.ok(Math.abs(kept.proposal.look_back_usd - 0.1) < 1e-9);
-    assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd - 0.35) < 1e-9, "each learning request is charged once");
+    assert.ok(Math.abs(kept.proposal.look_back_usd - 0.05) < 1e-9);
+    assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd - 0.3) < 1e-9, "the one compiler request is charged once");
     const change = mergeChangeOf(runId, proposal, { items: [{ file: "workflows/release-status/README.md", keep: true, origin: "run" }] }, {});
     assert.equal(change.bases["workflows/release-status/workflow.json"], base);
     const folder = learningFolderOf(s.data, id);

@@ -283,10 +283,11 @@ export function onlyLearnedWorkflows(rows: readonly TimelineEvent[]): boolean {
 /** Whether a run carries its owner's feedback, the only thing a run of a job that compiles workflows is looked back on
  *  for: a grade's words its end closes (a feedback round, feedback-round.ts pendingFeedbackOf over its root `entries`),
  *  or a person's message after its first in its timeline `rows` (a follow-up, or a word while it ran: traceFrom's
- *  feedback), the end-of-run turn's own and a grade's round's rows left out. */
+ *  feedback), the end-of-run turn's own, a grade's round's and a subagent's (a child conversation's rows carry its
+ *  spawning call, parent_tool_use_id: its task prompt is the job's, not the owner's) rows left out. */
 export function ownerSaid(entries: readonly { readonly kind: string; readonly data?: unknown }[], rows: readonly TimelineEvent[]): boolean {
   if (pendingFeedbackOf(entries)) return true;
-  const messages = withoutFeedbackRounds(rows).filter((row) => row.agent_label !== LEARNING_LABEL && isMessageRow(row));
+  const messages = withoutFeedbackRounds(rows).filter((row) => row.agent_label !== LEARNING_LABEL && !row.parent_tool_use_id &&isMessageRow(row));
   return messages.slice(1).some((row) => row.kind === "user_message");
 }
 
