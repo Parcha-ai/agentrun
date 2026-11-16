@@ -636,6 +636,15 @@ test("compactStateProblems (r1, state.): \"{state.text}\" reads a real `state` k
   assert.deepEqual(compactStateProblems(flow([call("page"), fast("state", { page: "{page}" }), decide({ text: "{state.text}" })])), [], "a compact state key; the fallback key text holds no page");
 });
 
+// #3025 review (Greptile r2): a string's placeholders are the ones interpolation fills (the DSL's placeholdersOf): a
+// marked one only when it is the whole string, so "{page?}" inside text is literal and sends no page.
+test("compactStateProblems (r2, literal text): a marked placeholder inside a longer string is literal text, no page read; unmarked there, or the whole string, it reads the page", () => {
+  const { flow, call, decide } = r1;
+  assert.deepEqual(compactStateProblems(flow([call("page"), decide({ note: "Example: {page?}" })])), [], "literal text");
+  assert.deepEqual(compactStateProblems(flow([call("page"), decide({ note: "Example: {page}" })])), [COMPACT("decide", "answer", READS_PAGE)], "unmarked inside text: filled");
+  assert.deepEqual(compactStateProblems(flow([call("page"), decide({ note: "{page?}" })])), [COMPACT("decide", "answer", READS_PAGE)], "the whole string: filled");
+});
+
 test("check B on the skeleton's shape: a quote output (evidence[].quote) without a quote_missing check, or with one but no re-pick, or a re-pick blind to its draft, is refused naming what to add", () => {
   const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: [compile.EXAMPLE_TOOL], dsl }).problems.map(({ detail }) => detail);
   const skeleton = compile.compileExample(true);
@@ -732,7 +741,11 @@ test("the quote check re-picks once: a checked answer step that hands back on it
   const { state: _, ...wholeState } = ANSWER_STEP;
   assert.deepEqual(again((loop) => (loop.body = wholeState)), [NO_DRAFT("answer", "repick")], "no state map: the whole state, pages included");
   assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP })), [], "the facts and the draft as {answer?}");
-  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{state.answer.evidence?}" } })), [], "the draft's quotes, under state.");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{answer.evidence?}" } })), [], "the draft's quotes");
+  // #3025 review (Greptile r2): "{state.answer?}" reads a real `state` key's answer first (placeholderValue), and the
+  // run's input or a fast step may carry one, so it is no draft read: only a path that resolves to the answer key is.
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{state.answer.evidence?}" } })), [NO_DRAFT("answer", "repick")], "under state.: a real state key's first");
+  assert.deepEqual(again((loop) => (loop.body = { ...ANSWER_STEP, state: { facts: "{facts}", draft: "{state.answer?}" } })), [NO_DRAFT("answer", "repick")], "the whole draft under state.");
   assert.deepEqual(again((loop) => (loop.body = { node: "chain", steps: [{ node: "extract", label: "note", instructions: "Note the page.", state: { page: "{page}" }, out: "Facts", as: "note", tier: "fast" }, ANSWER_STEP] })), [], "a step in the loop not writing the answer may name its state");
   // The compile turn is told the same.
   const ref = compile.compileReference(dsl, { tools: ["web_fetch"], judges: false });
