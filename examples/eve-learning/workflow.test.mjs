@@ -27,6 +27,11 @@ test('existing native callbacks keep exact fresh data across processes and rejec
   assert.deepEqual((await readWorkflowAudit(auditPath)).map(row => row.source), ['native', 'native', 'workflow', 'workflow']);
   assert.equal(releaseWorkflowTools[0].execute, readReleaseStatus);
   assert.equal(releaseWorkflowTools[1].execute, formatReleaseBrief);
+  const beforeUnknown = await readFile(auditPath, 'utf8');
+  for (const service of ['missing-service', '__proto__', 'constructor', '', 1]) {
+    await assert.rejects(readReleaseStatus({ service }, native), /Unknown fictional service/);
+  }
+  assert.equal(await readFile(auditPath, 'utf8'), beforeUnknown, 'Unknown services must not create observed callback data.');
   const { spawnSync } = await import('node:child_process');
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import {formatReleaseBrief} from ${JSON.stringify(new URL('./agent/lib/release-tools.ts', import.meta.url).href)};
@@ -72,6 +77,11 @@ test('a real local MCP workflow calls the original callback functions and emits 
     assert.ok(parent);
     assert.ok(events.filter(event => event.name !== 'learned_workflow').every(event => event.parent_tool_use_id === parent.id));
     assert.ok(!JSON.stringify(events).includes(rows[0].result.observation), 'Private callback data must not appear in uploaded telemetry.');
+    const unknown = await client.callTool({ name: 'learned_workflow', arguments: bound.mcpArguments('release-brief', { service: 'unlisted-service' }) });
+    assert.equal(unknown.isError, true);
+    assert.deepEqual(calls, [readReleaseStatus, formatReleaseBrief, readReleaseStatus],
+      'A generic service string reaches the original read callback, whose runtime guard prevents formatting unknown data.');
+    assert.deepEqual(await readWorkflowAudit(auditPath), rows, 'The failed unknown-service read must not fabricate audit evidence.');
     await bound.close();
     assert.equal((await client.callTool({ name: 'learned_workflow', arguments: args })).isError, true);
   } finally { await client.close(); await bound.close(); await bridge.close(); }

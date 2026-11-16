@@ -65,9 +65,11 @@ export async function formatReleaseBrief(input: Record<string, unknown>, ctx: Co
 }
 
 const string = { type: 'string' };
+// Fixture records are runtime data, not a reusable workflow's closed list of service names.
+// The original callback still rejects unknown services instead of inventing release status.
 export const statusSchema = { type: 'object', additionalProperties: false,
   required: ['service', 'version', 'tests', 'ready', 'observation'], properties: {
-    service: { type: 'string', enum: Object.keys(RELEASES) }, version: string, tests: string,
+    service: string, version: string, tests: string,
     ready: { type: 'boolean' }, observation: string,
   } };
 
@@ -77,7 +79,7 @@ export const releaseWorkflowTools = [{
   name: 'mcp:release/release_status', nativeName: 'release_status',
   description: 'Read fresh fictional release data. Pass the whole result unchanged to format_release_brief.',
   input_schema: { type: 'object', additionalProperties: false, required: ['service'],
-    properties: { service: { type: 'string', enum: Object.keys(RELEASES) } } },
+    properties: { service: string } },
   output_schema: statusSchema, permission: 'allow' as const, price_usd: 0, readOnly: true as const,
   execute: readReleaseStatus,
 }, {

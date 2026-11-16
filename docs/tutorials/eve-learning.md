@@ -81,7 +81,7 @@ export default agentrun({
       description: 'Read current release status for a service.',
       input_schema: {
         type: 'object', required: ['service'], additionalProperties: false,
-        properties: { service: { type: 'string', enum: ['demo-api', 'demo-worker'] } },
+        properties: { service: { type: 'string' } },
       },
       output_schema: statusSchema,
       permission: 'allow', price_usd: 0, readOnly: true,

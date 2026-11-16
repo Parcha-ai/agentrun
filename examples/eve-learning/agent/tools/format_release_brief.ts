@@ -4,7 +4,7 @@ import { formatReleaseBrief } from '../lib/release-tools.js';
 
 const tool = defineTool({
   description: 'Format a release brief from the complete unchanged status returned by release_status in this task. Returns a brief string; no model call or deployment.',
-  inputSchema: z.object({ status: z.object({ service: z.enum(['demo-api', 'demo-worker']),
+  inputSchema: z.object({ status: z.object({ service: z.string(),
     version: z.string(), tests: z.string(), ready: z.boolean(), observation: z.string() }).strict() }).strict(),
   execute(input, ctx) { return formatReleaseBrief(input, { sessionId: ctx.session.id }); },
 });
