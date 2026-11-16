@@ -51,7 +51,7 @@ const driveAsk = ({ body }) => {
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
  *  .personWait), as the browser's is. The runner stays up so a test may resume it; its store, server and gateway are
  *  returned. */
-async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [] }) {
+async function askRun(t, { tools, personWait, beforeRelease, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [] }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -73,7 +73,10 @@ async function askRun(t, { tools, personWait, settled, loopOptions = {}, upstrea
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   const specOf = async (claim, run) => {
     const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
-    return personWait ? { ...spec, lifecycle: { ...spec.lifecycle, personWait: [personWait] } } : spec;
+    // `beforeRelease`: a tool host's release (HostLifecycle.beforeRelease, as the browser's session release is), which a
+    // park runs before its seal.
+    const lifecycle = { ...spec.lifecycle, ...(personWait ? { personWait: [personWait] } : {}), ...(beforeRelease ? { beforeRelease: [...(spec.lifecycle?.beforeRelease ?? []), beforeRelease] } : {}) };
+    return personWait || beforeRelease ? { ...spec, lifecycle } : spec;
   };
   // What each claim's loop answered each command row it was handed (`outcomes`, the caller's: the runner writes only a
   // refusal of them).
@@ -300,6 +303,60 @@ test("wait in the claim: a host that holds nothing (no browser session open) lea
   const { row } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait });
   assert.equal(row.state, "parked", JSON.stringify({ state: row.state, summary: row.summary }));
   assert.equal(wait.seen.asked.length, 1, "the host was asked");
+});
+
+/** The person's answer `sent` (or none yet), and the loop's outcome for it, from `outcomes`. */
+const answerOf = (outcomes, sent) => (sent ? outcomes.find((one) => one.id === sent.id)?.outcome : undefined);
+/** The run settled after an answer that came during its park: ended, or parked again with that answer's row taken (lost:
+ *  nothing is left to wake it), its runner gone either way. */
+const settledAfter = (box) => async (s) => {
+  box.server = s;
+  const now = await s.runs.get(RUN);
+  if (now.runner !== null || !box.sent) return undefined;
+  const taken = (await s.commands(RUN, 0)).find((row) => row.id === box.sent.id)?.takenAt != null;
+  return (now.state === "ended" || (now.state === "parked" && taken)) && now;
+};
+
+// The browser's cap case (browser-take-over.test.mjs, cap: Take over): the run's turn ends on its question, no hold of
+// the person's time fits its cap, so it parks, and the person answers while the park lets the browser's session go (its
+// host's release, before the park's seal). That answer is the resume's, never placed into a turn the seal then cuts:
+// placed so, its row was taken, the run parked with nothing left to wake it, and it read working/idle for good.
+for (const [name, personWait] of [["a host that holds nothing (no room under the cap)", () => fakeWait({ holds: false }).personWait], ["no host to hold anything", () => undefined]]) {
+  test(`park on a question, ${name}: the person's answer that lands while the park releases its host waits for the resume, and resumes the run to its end`, async (t) => {
+    const box = {};
+    const outcomes = [];
+    // Inside the park's release, before its seal: the answer sent, and the loop's answer to it awaited there.
+    const beforeRelease = async () => {
+      if (box.sent) return;
+      box.sent = await sendCommand(box.server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+      await until(() => answerOf(outcomes, box.sent), "the loop's answer to the person's message");
+    };
+    const { row, gw } = await askRun(t, { tools: ["ask_person"], personWait: personWait(), beforeRelease, outcomes, settled: settledAfter(box) });
+    const view = await viewOverStore(box.server, RUN, VIEW_DEPS);
+    assert.equal(row.state, "ended", `the answer resumed the run to its end, never lost to the park: ${row.state}, the view ${view.status}/${view.state}, the loop answered ${JSON.stringify(answerOf(outcomes, box.sent))}`);
+    assert.ok("later" in answerOf(outcomes, box.sent), "left for the resume during the park");
+    const last = modelCalls(gw).at(-1).body;
+    assert.ok((last.messages ?? []).some((message) => JSON.stringify(message.content ?? message).includes("us-west-2")), "the answer was the resumed run's turn");
+  });
+}
+
+test("park on a question with no host to hold anything: the person's answer that lands between the question's turn end and the park is its next turn, in the same claim", async (t) => {
+  const box = {};
+  // Fires once the turn ended on its question, before the park (adapter-loop's beforePersonWait): the answer lands there,
+  // placed as a steer of the idle session.
+  const beforePersonWait = async () => {
+    if (box.sent) return;
+    box.sent = await sendCommand(box.server, RUN, { kind: "steer", body: { text: "us-west-2" } });
+    await until(async () => (await box.server.commands(RUN, 0)).find((row) => row.id === box.sent.id)?.takenAt != null, "the answer taken");
+  };
+  const { row, gw } = await askRun(t, { tools: ["ask_person"], loopOptions: { beforePersonWait }, settled: settledAfter(box) });
+  const view = await viewOverStore(box.server, RUN, VIEW_DEPS);
+  assert.ok(box.sent, "the answer was sent in the window");
+  assert.equal(row.state, "ended", `the answer's turn ended the run, never cut by the park: ${row.state}, the view ${view.status}/${view.state}`);
+  const { entries } = await journalRecords(box.server.readJournal(RUN), BACKGROUND_CONTEXT);
+  assert.equal(entries.filter((entry) => entry.kind === "agentrun.person.asked").length, 0, "in the same claim: no park entry was written");
+  const last = modelCalls(gw).at(-1).body;
+  assert.ok((last.messages ?? []).some((message) => JSON.stringify(message.content ?? message).includes("us-west-2")), "the answer was the run's next turn");
 });
 
 test("wait in the claim: the person's answer that lands between the turn's end and the wait's start ends the wait at once, in the same claim, never held to its bound", async (t) => {

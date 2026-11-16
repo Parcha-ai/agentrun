@@ -28,6 +28,9 @@ const skip = !LIVE ? "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker"
 
 describe("a Docker computer whose daemon and run folder are a named volume's subpaths", { skip }, () => {
 	const name = `agentrun-test-volume-${randomBytes(6).toString("hex")}`;
+	// This run's computers, by a label of its own: teardown.docker.test.mjs runs this file in a process of its own at the
+	// same time, and its computers would be listed beside these under a label both runs share.
+	const LABELS = { "agentrun.test": name };
 	let root;
 	let work;
 	let provider;
@@ -54,7 +57,7 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 	});
 
 	it("creates the computer, the daemon running from the volume's subpath and the run's folder another of its subpaths, with no bind", async () => {
-		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", mount: { kind: "bind", path: work }, labels: { "agentrun.test": "volume" } }, newRequest("volume"));
+		const made = await provider.create({ image: IMAGE, lifetimeMs: 10 * 60_000, network: "none", mount: { kind: "bind", path: work }, labels: LABELS }, newRequest("volume"));
 		assert.equal(made.ok, true, JSON.stringify(made));
 		ref = made.value;
 		const [inspected] = JSON.parse(docker("inspect", ref.name));
@@ -87,7 +90,7 @@ describe("a Docker computer whose daemon and run folder are a named volume's sub
 		const attached = await provider.attach({ id: ref.name });
 		assert.equal(attached.ok, true, JSON.stringify(attached));
 		assert.deepEqual(attached.value.spec.mount, { kind: "bind", path: work });
-		const listed = await provider.list({ "agentrun.test": "volume" });
+		const listed = await provider.list(LABELS);
 		assert.deepEqual(listed.ok && listed.value.map((info) => info.mount), [{ kind: "bind", path: work }]);
 	});
 

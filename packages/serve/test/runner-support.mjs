@@ -147,6 +147,8 @@ export function recorder() {
     renewsHeld: 0,
     /** When set, each flush waits this long before it reaches the store (a slow disk, or a loaded machine). */
     flushDelayMs: 0,
+    /** When set (a promise), each release is recorded as asked, then waits for it before it reaches the store. */
+    holdRelease: undefined,
   };
 }
 
@@ -204,6 +206,8 @@ export function observed(store, record) {
     async release(claim, options) {
       alive();
       called("release", claim.runId);
+      // A slow store's release (a loaded Postgres): asked here, it reaches the store once record.holdRelease settles.
+      if (record.holdRelease) await record.holdRelease;
       await store.release(claim, options);
       record.ops.push(`release ${claim.runId}`);
     },
