@@ -2878,6 +2878,10 @@ export type SaveComposioServerResponse = {
   };
   connect_url?: string;
   not_served?: Array<string>;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
 };
 
 /** Save a computer provider's keys, sealed (PUT /computers/{provider}/keys). */
@@ -3035,7 +3039,7 @@ export type TestWorkspaceArchilResponse = {
 export type DeleteMcpServerResponse = {
   deleted: true;
   composio: {
-    removed: false;
+    removed: boolean;
     note: string;
   };
 };
@@ -3274,6 +3278,10 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
 };
 
 /** Read activity and token usage reported by externally running agents (GET /observations). */

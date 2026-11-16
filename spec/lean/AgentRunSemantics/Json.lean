@@ -71,8 +71,19 @@ partial def textParts (cs : List Char) (acc : String) : List TextPart :=
     | _ => textParts rest (acc.push '{')
   | c :: rest => textParts rest (acc.push c)
 
+/-- The path of a whole-string optional placeholder `"{p?}"`, if `s` is one. -/
+def optPath? (s : String) : Option Path :=
+  match s.toList with
+  | '{' :: rest =>
+    let name := rest.takeWhile isPlaceholderChar
+    if !name.isEmpty && rest.drop name.length == ['?', '}'] then some (splitPath (String.ofList name)) else none
+  | _ => none
+
 partial def tmpl : Json → Tmpl
   | .str s =>
+    match optPath? s with
+    | some p => .opt p
+    | none =>
     match textParts s.toList "" with
     | [.ref p] => .ref p
     | parts => if parts.all (fun | .lit _ => true | _ => false) then .lit (.str s) else .text parts

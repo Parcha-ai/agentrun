@@ -194,7 +194,7 @@ test("a save that wrote its entry and then failed keeps the Composio server its 
   // The save fails before writing (an older entry of the name keeps its old address): the new server is deleted.
   const refused = composioSave(body, control, async () => { throw new Error("refused"); }, "hn", undefined, async () => "https://old.example/mcp");
   await assert.rejects(refused, /refused/);
-  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpId}`, "DELETE").length, 1, "a server no entry points to is deleted");
+  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpIds[1]}`, "DELETE").length, 1, "a server no entry points to is deleted");
 });
 
 test("picked actions Composio serves none of: 422 in words naming them, never a bare 'Method not found', and the Composio server it made is deleted", async (t) => {

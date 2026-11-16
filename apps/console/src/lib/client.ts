@@ -379,15 +379,16 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     previewMcpServer: (url: string, auth: McpAuth, name?: string) => call<McpPreview>("POST", "/settings/mcp-servers/preview", { body: { url, auth, ...(name ? { name } : {}) } }),
     /** Sends no prices: the server keeps the saved ones for the tools still listed at the same address. `toolkit` only
      *  when given (null clears it); left out, the server keeps what it has. The source is never sent: what made it. */
-    saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
+    /** A change that moves a Composio server off Composio answers `composio` beside it: what it removed there. */
+    saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer & { composio?: { removed: boolean; note: string } }>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
     composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
-    saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[] }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
+    saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[]; composio?: { removed: boolean; note: string } }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
     refreshMcpServer: (name: string) => call<McpRefresh>("POST", `${mcpServer(name)}/refresh`, { body: {} }),
     /** 204 when it is gone; 200 with a note when a Composio server it made could not be removed there (the row is gone either way). */
-    deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: false; note: string } } | undefined>("DELETE", mcpServer(name)),
+    deleteMcpServer: (name: string) => call<{ deleted: true; composio?: { removed: boolean; note: string } } | undefined>("DELETE", mcpServer(name)),
     /** A saved Composio server's toolkit's events, for a trigger from an app. */
     composioEvents: (name: string) => call<ComposioEvents>("GET", `${mcpServer(name)}/composio/events`),
     /** A saved Composio server's triggers, and where its project's webhook subscription sends events. */

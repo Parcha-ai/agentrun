@@ -835,6 +835,7 @@ __all__ = [
     "SaveCalendarResponse",
     "SaveComposioServerBody",
     "SaveComposioServerResponse",
+    "SaveComposioServerResponseComposio",
     "SaveComposioServerResponseServer",
     "SaveComposioServerResponseServerAuth",
     "SaveComposioServerResponseServerOauth",
@@ -855,6 +856,7 @@ __all__ = [
     "SaveMcpServerBodyAuth",
     "SaveMcpServerResponse",
     "SaveMcpServerResponseAuth",
+    "SaveMcpServerResponseComposio",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
     "SaveToolKeyBody",
@@ -4186,6 +4188,7 @@ class _SaveComposioServerResponseRequired(TypedDict):
 class SaveComposioServerResponse(_SaveComposioServerResponseRequired, total=False):
     connect_url: str
     not_served: list[str]
+    composio: SaveComposioServerResponseComposio
 
 
 class _SaveComposioServerResponseServerRequired(TypedDict):
@@ -4247,6 +4250,11 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class SaveComposioServerResponseComposio(TypedDict):
+    removed: bool
+    note: str
 
 
 SaveComputerKeysBody: TypeAlias = "dict[str, str | None]"
@@ -4452,7 +4460,7 @@ class DeleteMcpServerResponse(TypedDict):
 
 
 class DeleteMcpServerResponseComposio(TypedDict):
-    removed: Literal[False]
+    removed: bool
     note: str
 
 
@@ -4752,6 +4760,7 @@ class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio: SaveMcpServerResponseComposio
 
 
 class _SaveMcpServerResponseAuthRequired(TypedDict):
@@ -4791,6 +4800,11 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class SaveMcpServerResponseComposio(TypedDict):
+    removed: bool
+    note: str
 
 
 class GetObservationsResponse(TypedDict):

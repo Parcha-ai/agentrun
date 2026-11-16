@@ -711,9 +711,9 @@ computer is made with the GPUs asked.
   `types: ["H100"]`, `max: 1`); another type or count needs a snapshot of its own, so it is refused. A GPU sandbox is
   made from that snapshot, with its 16 vCPUs, 100 GiB of memory and 400 GiB of disk, in region `earth`. Stopping it
   deletes it: it has no pause and no snapshot, so nothing on it outlives the run. A Daytona GPU may be preempted, so a
-  run on one can be cut short. The Daytona org needs GPU credits. No Daytona sandbox takes an Archil mount, with a GPU
-  or without (Archil's client hangs on its sandboxes), so it can't hold the run's folder: Mode 2 refuses it, and in
-  Mode 1 a sandbox runs on Docker only, so a Daytona sandbox runs on neither mode's server today.
+  run on one can be cut short. The Daytona org needs GPU credits. A Daytona GPU sandbox takes no Archil mount (its
+  GPU host gives no `/dev/fuse`), so it can't hold the run's folder: Mode 2 refuses it, and in Mode 1 a sandbox runs
+  on Docker only, so a Daytona GPU sandbox runs on neither mode's server today.
 - **Modal** declares its GPUs, but a Modal GPU sandbox runs on gVisor, and the Archil mount the run's folder needs is not
   proven there. So this server refuses a Modal sandbox with a `gpu` for now. A Modal GPU is also preemptible.
 
@@ -786,7 +786,11 @@ passes the binding's conformance cases (below) needs no change here.
   work. E2B's says `prepareImage` as well, and it answers our public box template by name
   (`<publisher>/agentrun-archil-<recipe hash>`, which the release builds and makes public), with no call, so an E2B
   sandbox and desktop are ready once the key works; the desktop mounts the folder too (it has files and exec). Docker's
-  sandbox is refused, since it cannot mount the disk, and so is Daytona's, since Archil's client hangs on its sandboxes.
+  sandbox is refused, since it cannot mount the disk. Daytona's is refused on Daytona's hosted cloud, where Archil's
+  client hangs on its sandboxes. On a self-hosted Daytona target whose sandboxes reach Archil through an Archil egress
+  relay, save the relay's address as `DAYTONA_ARCHIL_EGRESS` (Settings → Computers, beside `DAYTONA_API_KEY`) and name
+  a snapshot of `box/Dockerfile` in `AGENTRUN_DAYTONA_SNAPSHOT` (below): the Daytona sandbox then mounts the run's
+  folder and is ready. With the relay but no snapshot named, it is refused, saying to name one.
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and
@@ -851,8 +855,9 @@ the computer package's `box/Dockerfile` is built in the organization of `DAYTONA
 DAYTONA_API_KEY=... python3 packages/computer/box/build-daytona.py   # prints snapshot=agentrun-archil-<12 hex>
 ```
 
-A Daytona computer takes no Archil mount, so this server never holds a run's folder on one (see Mode 2 above). A
-Daytona [box](#sandbox) never reads it.
+A Daytona computer mounts the run's folder only where `DAYTONA_ARCHIL_EGRESS` names a self-hosted target's Archil
+egress relay (see Mode 2 above), and then it needs this snapshot. A changed recipe is a new name, so build again after
+an upgrade that changes `box/`. A Daytona [box](#sandbox) never reads it.
 
 A desktop, a phone and a browser run in either mode. The run's folder is at
 `/workspace` in every computer that mounts it: a sandbox always, and a desktop whose provider mounts the mode's folder
@@ -1679,7 +1684,7 @@ out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the ans
 action the saved server doesn't list. Both routes are the owner's
 session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
 "not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
-account are left off the server's address. Deleting the server in Settings deletes the Composio MCP server it made too, with the saved key (Composio's "already gone" is fine); if Composio refuses or does not answer, the server is still forgotten here, and the `DELETE` answers `200 {deleted: true, composio: {removed: false, note}}` saying what to remove in Composio yourself, which the console shows.
+account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
 trigger in the console, with each step's API call.
 
@@ -2643,6 +2648,7 @@ than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is
 that refuses the run's key (401) fails the run naming the key and where to set it ("OpenRouter refused
 OPENROUTER_API_KEY (401: User not found): set it where AgentRun starts, or save it in Settings → Model keys."), on every
 harness, with the provider's first sentence only.
+Every request to OpenRouter carries AgentRun's app attribution (`HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun`), so a self-hosted server's usage on its own key counts toward AgentRun's listing on OpenRouter; `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts sends none.
 
 `claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the

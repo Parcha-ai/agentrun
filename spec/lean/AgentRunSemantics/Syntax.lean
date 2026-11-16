@@ -25,10 +25,12 @@ inductive TextPart where
   deriving Repr, Inhabited
 
 /-- An interpolated value (`interpolateValue`): a whole-string placeholder `"{p}"` keeps
-the value's type; placeholders inside a longer string render as text. -/
+the value's type; one marked optional, `"{p?}"`, is null while `p` is absent; placeholders
+inside a longer string render as text. -/
 inductive Tmpl where
   | lit (v : Value)
   | ref (p : Path)
+  | opt (p : Path)
   | text (parts : List TextPart)
   | arr (xs : List Tmpl)
   | obj (kvs : List (String × Tmpl))

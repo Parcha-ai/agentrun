@@ -1987,7 +1987,7 @@ export interface operations {
     answer: {
       deleted: true;
       composio: {
-        removed: false;
+        removed: boolean;
         note: string;
       };
     };
@@ -5066,6 +5066,10 @@ export interface operations {
       };
       connect_url?: string;
       not_served?: string[];
+      composio?: {
+        removed: boolean;
+        note: string;
+      };
     };
   };
   saveComputerKeys: {
@@ -5193,6 +5197,10 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio?: {
+        removed: boolean;
+        note: string;
+      };
     };
   };
   saveToolKey: {
