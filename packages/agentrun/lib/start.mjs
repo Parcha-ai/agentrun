@@ -53,11 +53,12 @@ const within = (promise, ms) => {
 
 /** What a start, or a server command, that failed says on stderr: one line saying what happened, then the step that
  *  failed, how the server's process ended (its exit code or signal; still running past the bound and stopped; or never
- *  started), its last lines on stderr and on stdout, and the start log that holds all of its output, or why there is none.
+ *  started), its last lines on stderr and on stdout, and the start log that holds all of its output, or why there is none
+ *  (`logError`), or why it holds only the start of it (`logIncomplete`, the write that failed: a full disk, a quota).
  *  `command` names a server command (import, ...), whose output went to the terminal as it ran: no lines, no log. `sent`
  *  is the signals this command sent the server, in order; `stopped` is why it sent them unasked: "timeout" (still running
  *  `waitedMs` after it started) or "closed" (its output closed while it ran). */
-export function failureText({ command, step, error, code = null, signal = null, stopped, waitedMs, sent = [], stderrTail, stdoutTail, logPath, logError }) {
+export function failureText({ command, step, error, code = null, signal = null, stopped, waitedMs, sent = [], stderrTail, stdoutTail, logPath, logError, logIncomplete }) {
   const lead = command === undefined ? "AgentRun did not start" : `The server's ${command} command failed`;
   const subject = command === undefined ? "the server" : "it";
   const before = command === undefined ? " before it printed the address to open" : "";
@@ -83,7 +84,7 @@ export function failureText({ command, step, error, code = null, signal = null, 
     if (tail.length === 0) return [`  ${name}: nothing`];
     return [`  ${name}, last ${tail.length === 1 ? "line" : `${tail.length} lines`}:`, ...tail.map((line) => `    ${line}`)];
   };
-  const log = logPath !== undefined ? [`  log: ${logPath}`] : logError !== undefined ? [`  log: none (${logError.message})`] : [];
+  const log = logPath !== undefined ? [`  log: ${logPath}${logIncomplete !== undefined ? ` (incomplete: ${logIncomplete.message})` : ""}`] : logError !== undefined ? [`  log: none (${logError.message})`] : [];
   return [`${lead}: ${why}.`, `  step: ${step}`, `  exit: ${exit}`, ...lines("stderr", stderrTail), ...lines("stdout", stdoutTail), ...log].join("\n");
 }
 
@@ -103,6 +104,20 @@ function openStartLog(dataDir) {
   } catch (error) {
     return { error };
   }
+}
+
+/** Passes `source` (the server's stderr) on to `dest` (this command's) as it comes, at the pace `dest` is read: a slow
+ *  reader slows the server, as an inherited stderr did, and nothing piles up here. Each chunk goes to `onChunk` too (the
+ *  tail and the start log). A `dest` that fails (EPIPE: its reader went, a `| head`, a log reader restarting) never ends
+ *  this command: the passing on stops, and `source` is still read, to `onChunk` and then dropped, so the server never
+ *  blocks on a full pipe and is still stopped by this command's signals. */
+export function forward(source, dest, onChunk) {
+  source.on("data", onChunk);
+  source.pipe(dest, { end: false });
+  dest.on("error", () => {
+    source.unpipe(dest);
+    source.resume();
+  });
 }
 
 /** Keeps the last TAIL_LINES whole lines of a stream's chunks (bytes, a character split between two chunks kept whole) in
@@ -342,13 +357,26 @@ export async function main(argv, env = process.env) {
   }
   // The server's banner and request lines stay out of this terminal: one line here says where to go, the URL of the
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
-  // What it prints on stderr comes through as it is, as it prints it. Until the server prints the address, all it writes
-  // on either goes to the start log too, and the last lines of each are kept: a start that fails says them, with the step,
-  // how the server ended and the log (failureText).
+  // What it prints on stderr comes through as it is, as it prints it, at the pace this command's stderr is read (forward).
+  // Until the server prints the address, all it writes on either goes to the start log too, and the last lines of each are
+  // kept: a start that fails says them, with the step, how the server ended and the log (failureText).
   const log = openStartLog(dataDir);
   const logPath = log.fd === undefined ? undefined : join(dataDir, START_LOG);
+  // The first write to the log that failed (a full disk, a quota): the start goes on, the log keeps what it holds, and a
+  // start that fails says it is incomplete, and why.
+  let logIncomplete;
   const toLog = (chunk) => {
-    if (log.fd !== undefined) try { writeSync(log.fd, chunk); } catch {}
+    if (log.fd === undefined || logIncomplete !== undefined) return;
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    try {
+      for (let at = 0; at < bytes.length; ) {
+        const wrote = writeSync(log.fd, bytes, at, bytes.length - at);
+        if (wrote <= 0) throw new Error(`wrote ${at} of ${bytes.length} bytes`);
+        at += wrote;
+      }
+    } catch (error) {
+      logIncomplete = error;
+    }
   };
   const closeLog = () => {
     if (log.fd !== undefined) try { closeSync(log.fd); } catch {}
@@ -358,8 +386,7 @@ export async function main(argv, env = process.env) {
   let started = false;
   const errTail = [];
   const errLines = tailOf(errTail);
-  child.stderr.on("data", (chunk) => {
-    process.stderr.write(chunk);
+  forward(child.stderr, process.stderr, (chunk) => {
     if (started) return;
     toLog(chunk);
     errLines.add(chunk);
@@ -441,6 +468,7 @@ export async function main(argv, env = process.env) {
       stdoutTail: seen,
       logPath,
       logError: log.error,
+      logIncomplete,
     });
     toLog(`${failure}\n`);
     closeLog();

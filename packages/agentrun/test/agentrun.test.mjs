@@ -8,6 +8,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import { test } from "node:test";
 import * as start from "../lib/start.mjs";
 import { openLineUrl, openUrl } from "../lib/start.mjs";
@@ -161,8 +162,10 @@ test("the server is this package's one dependency, at the exact version of the s
 // The command passes its arguments through: the server's CLI picks the port and opens the browser.
 // A stand-in server installed beside a copy of this package records what it was started with.
 // `mode` is the stub launcher's (0o644: a launcher that can't be run). The command runs in the stub's own folder, so a
-// relative --data lands there.
-async function throughStub(t, args, env = {}, { mode = 0o755 } = {}) {
+// relative --data lands there. `fileBlocks` caps the size of any file the command writes (`ulimit -f`, 512-byte blocks), as
+// a full disk or a quota does. `running(child)`, when given, runs once the command has printed its line, before the test
+// sends it the SIGTERM.
+async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, running } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
   removeAtEnd(dir);
   for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
@@ -171,7 +174,7 @@ async function throughStub(t, args, env = {}, { mode = 0o755 } = {}) {
   writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
   const served = join(dir, "served.json");
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
-require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null }));
+require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, pid: process.pid }));
 if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
@@ -199,26 +202,34 @@ else if (process.env.STUB_HANG) {
   // STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
   if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
   console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
+  // STUB_STDERR_AFTER: a line on stderr every 50 ms once it has started, as a server's warnings come.
+  if (process.env.STUB_STDERR_AFTER) setInterval(() => console.error("agentrun-serve: a warning (stub)"), 50);
   if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
   setInterval(() => {}, 1000);
 }
 `);
-  chmodSync(join(serve, "launcher", "agentrun-serve"), mode);
+  const launcher = join(serve, "launcher", "agentrun-serve");
+  chmodSync(launcher, mode);
   const { home, env: base } = bare(t);
-  const child = spawn(process.execPath, [join(dir, "pkg", "bin", "agentrun.mjs"), ...args], { cwd: dir, env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const bin = join(dir, "pkg", "bin", "agentrun.mjs");
+  const command = fileBlocks === undefined ? [process.execPath, [bin, ...args]] : ["/bin/sh", ["-c", `ulimit -f ${fileBlocks} && exec "$0" "$@"`, process.execPath, bin, ...args]];
+  const child = spawn(...command, { cwd: dir, env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   // Both pipes drained: stderr comes on a pipe of its own, so it is read only once the child has closed them.
   const closed = new Promise((resolve) => child.on("close", resolve));
   t.after(() => stopChild(child, exited));
+  // A stub the command left running (it died first) is stopped too, while it still runs the stub.
+  t.after(() => { if (existsSync(served)) killIf(JSON.parse(readFileSync(served, "utf8")).pid, launcher); });
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (err += chunk));
   for (let i = 0; !out.includes("\n") && child.exitCode === null && i < 300; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+  if (running !== undefined) await running(child);
   child.kill("SIGTERM");
   const code = await exited;
   await closed;
-  return { dir, home, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
+  return { dir, home, launcher, out, err, code, ...(existsSync(served) ? JSON.parse(readFileSync(served, "utf8")) : {}) };
 }
 
 /** What a start that failed says, from its first line on: the server's own stderr, as it printed it, comes before. */
@@ -319,6 +330,67 @@ test("a server that closes its stdout and keeps running, with no Open line: the 
   const failure = failureOf(run.err);
   assert.match(failure, /^AgentRun did not start: the server closed its output without printing the address to open, so it was stopped\.$/m, run.err);
   assert.match(failure, /^ {2}exit: its output closed while it ran; stopped with SIGTERM; then signal SIGTERM$/m, run.err);
+});
+
+test("a reader of the command's stderr that goes away once it has started (a `| head`, a closed log) never ends it: the server's later stderr is dropped, and a SIGTERM to the command still stops the server", { timeout: 60_000 }, async (t) => {
+  let after;
+  const run = await throughStub(t, ["--no-open"], { STUB_STDERR_AFTER: "1" }, {
+    running: async (child) => {
+      child.stderr.destroy();
+      // The stub writes a stderr line every 50 ms: each would reach the closed pipe.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      after = { code: child.exitCode, signal: child.signalCode };
+    },
+  });
+  assert.equal(run.out, "AgentRun is running at http://127.0.0.1:7399/\n", run.err);
+  assert.deepEqual(after, { code: null, signal: null }, "the command is still running with its stderr's reader gone");
+  assert.equal(run.code, 0, "the SIGTERM it was then sent is a clean stop");
+  assert.ok(await gone(run.pid, run.launcher), "and it stopped the server: none is left running");
+});
+
+test("the server's stderr is passed on at the pace this command's stderr is read, every chunk still to the tail and the log; a stderr that fails stops the passing on, never the reading", async () => {
+  const source = new PassThrough();
+  const written = [];
+  let release;
+  // A reader that takes nothing until it is let go: each write waits.
+  const dest = new Writable({ highWaterMark: 1, write(chunk, _encoding, done) { written.push(String(chunk)); release = done; } });
+  const tapped = [];
+  start.forward(source, dest, (chunk) => tapped.push(String(chunk)));
+  for (const chunk of ["one\n", "two\n", "three\n"]) source.write(chunk);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(written, ["one\n"], "one chunk at the reader");
+  assert.equal(source.isPaused(), true, "the server's stderr waits for the reader");
+  assert.ok(dest.writableLength <= 4, `nothing piles up in this command: ${dest.writableLength} bytes held`);
+  assert.deepEqual(tapped, ["one\n"], "the tail and the log take each chunk as it is passed on");
+  for (let i = 0; written.length < 3 && i < 10; i++) {
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(written, ["one\n", "two\n", "three\n"], "in order once the reader takes them");
+  // The reader gone: no more passing on, and the server's stderr is still read (to the tail and the log), so it never
+  // blocks on a full pipe.
+  dest.destroy(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  source.write("four\n");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(tapped, ["one\n", "two\n", "three\n", "four\n"]);
+  assert.deepEqual(written, ["one\n", "two\n", "three\n"]);
+  assert.equal(source.isPaused(), false);
+});
+
+test("a start log the disk can't hold all of (a full disk, a quota): the start goes on, and a start that fails says the log is incomplete and why", { timeout: 60_000 }, async (t) => {
+  // 100 lines on stderr, about 2 kB, with the command's files capped at 512 bytes: the log takes what fits, then a write
+  // fails (EFBIG).
+  const run = await throughStub(t, ["--no-open"], { STUB_FAIL_STDERR: "1", STUB_STDERR_LINES: "100" }, { fileBlocks: 1 });
+  assert.equal(run.code, 1, run.err);
+  const failure = failureOf(run.err);
+  assert.match(failure, /^AgentRun did not start: the server exited with code 1 before it printed the address to open\.$/m, run.err);
+  assert.match(failure, /^ {2}stderr, last 20 lines:\n/m, run.err);
+  const path = startLog(run.home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(failure, new RegExp(`\\n {2}log: ${path} \\(incomplete: EFBIG: [^\\n]+\\)\\n$`), run.err);
+  const wrote = [...Array.from({ length: 100 }, (_, i) => `stub stderr line ${i + 1}\n`), "agentrun-serve: another server holds this data root (stub)\n"].join("");
+  const log = readFileSync(startLog(run.home), "utf8");
+  assert.ok(log.length > 0 && wrote.startsWith(log), `the log holds the server's first bytes, as many as fit: ${log}`);
 });
 
 test("a server launcher that can't be run: the start and a server command each say the step and the error, with no stack trace", { timeout: 60_000 }, async (t) => {

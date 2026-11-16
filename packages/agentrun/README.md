@@ -18,7 +18,8 @@ Node gets one line naming that floor.
 A start that fails says why on stderr: the step that failed, how the server ended (its exit code or signal, or still
 running after 60 seconds without printing its address, and stopped), its last lines on stderr and stdout, and
 `~/.agentrun/start.log` (in the folder `--data` names), which holds everything the server wrote in that start. Each start
-overwrites that log; it is private to you, as the server's first lines name its API token.
+overwrites that log; it is private to you, as the server's first lines name its API token. A log the disk could not hold
+all of is named with the error that cut it short.
 
 Where Docker answers on this machine, a new agent runs in a Docker box of its own with a shell, and a line on stderr,
 after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why
