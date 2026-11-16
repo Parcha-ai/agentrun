@@ -100,7 +100,7 @@ async function open(hash: string, { strict = false } = {}) {
       el!.dispatchEvent(new Event("input", { bubbles: true }));
     });
   };
-  const sidebar = (label: string) => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === label);
+  const sidebar = (label: string) => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].find((b) => b.textContent?.trim() === (label === "Agents" ? "Connected agents" : label));
   // The editor's own steps (its step rail), apart from the sidebar, which has a Settings of its own on every server.
   const step = (label: RegExp) => [...host.querySelectorAll("main ol button")].find((b) => label.test(b.textContent?.trim() ?? ""));
   const instructions = () => host.querySelector<HTMLTextAreaElement>("#agent-instructions");
