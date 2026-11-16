@@ -50,7 +50,7 @@ it by them alone:
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/agent37-ssh.ts`](src/agent37-ssh.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
-| An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts) |
+| An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
 
@@ -193,7 +193,7 @@ Some vendors have states beyond these four:
 | --- | --- |
 | recovering, restoring, temporarily unavailable | `starting` |
 | needs a person's decision before it goes on | `stopped`: create gives up on it, and the janitor still ends it |
-| stopped by the platform (an eviction, a cap) | `gone`, with the platform's words in `why` |
+| ended by the platform (an eviction, a cap) | `gone`, with the platform's words in `why`; one it stopped and still keeps (a disk, a bill) is `stopped`, so the janitor still finds and deletes it |
 | only a running flag | `running` when it is set. `create` waits until it is, within `ctx.timeoutMs`; after that, unset is `stopped` |
 
 ```ts
