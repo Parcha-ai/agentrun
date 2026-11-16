@@ -15,17 +15,20 @@ export const WINDOW_DAYS_DEFAULT = 7;
 export const WINDOW_DAYS_MAX = 62;
 /** The most events one answer holds; past it the answer says `truncated`. */
 export const EVENTS_MAX = 200;
-/** The most instances one series is expanded to inside the window: one more than an answer holds, so that `truncated` is
- *  still said (an answer is the window's first EVENTS_MAX events, and a series' first EVENTS_MAX + 1 are all it can give). */
+/** How many of a series' earliest instances in the window are read: one more than an answer holds, so that `truncated` is
+ *  still said (an answer is the window's first EVENTS_MAX events, and a series' first EVENTS_MAX + 1 are all it can give).
+ *  The earliest by start, not the first its rule reaches: a THISANDFUTURE range may move later ones earlier, so a series is
+ *  walked until no later step can place one before its SERIES_MAX-th earliest so far (parse.ts instancesOf). */
 export const SERIES_MAX = EVENTS_MAX + 1;
 /** One read's work budget, counted across every series of the calendar (parse.ts eventsIn, summaryOf): at most
  *  READ_STEPS_MAX steps of its rules (and RDATEs), and at most READ_WORK_MS whatever the steps. Past either the read stops
  *  and says TOO_MANY_REPEATS, never a partial list. On the build box a plain rule's step costs 10 to 15 µs with its
  *  instance, so the steps run out at 130 to 230 ms; READ_WORK_MS bounds the rare rule shapes whose steps cost far more in
  *  ical.js (a monthly "2nd Tuesday" with a COUNT: some 240 µs). A calendar of 200 weekly meetings, 50 daily ones and 30
- *  monthly ones, ongoing for years, reads a 62-day window in some 180 ms. */
+ *  monthly ones, ongoing for years, reads a 62-day window in some 180 ms. READ_WORK_MS is 1 s, not less: a hosted server
+ *  is slower than the build box, and holding one read for up to a second is better than refusing a real calendar there. */
 export const READ_STEPS_MAX = 15_000;
-export const READ_WORK_MS = 500;
+export const READ_WORK_MS = 1_000;
 /** A read stopped at its budget. */
 export const TOO_MANY_REPEATS = "the calendar has too many repeating events to read: they take more work to expand than one read may do. Repeating events that never end and repeat often, such as every minute, do this: end or delete the old ones in the calendar app, then read it again.";
 /** An event's description, cut at so many characters. */

@@ -10,7 +10,8 @@
 //     it names wherever it moved it (in or out of the window), and a cancelled one removes it; one with
 //     RANGE=THISANDFUTURE does so for its instance and every later one (moved by as much, its length and fields, or
 //     cancelled). An RDATE that is a PERIOD keeps its own end or duration. A cancelled series, or a cancelled single
-//     event, is left out. A series stops at SERIES_MAX instances in the window.
+//     event, is left out. A series is walked until no later step can place an instance before its SERIES_MAX-th earliest
+//     in the window (a THISANDFUTURE range may move later steps' instances earlier), and keeps those up to it.
 //   - Work: one read (eventsIn, summaryOf) has READ_STEPS_MAX rule steps (and READ_WORK_MS) to expand every series,
 //     and past them stops with words (RepeatsError, TOO_MANY_REPEATS), never a partial list. A rule whose UNTIL is
 //     before the window is not walked at all, and a plain rule (no COUNT; no BY parts, or a weekly one's BYDAY, or a monthly one's day parts) is started
@@ -375,6 +376,22 @@ function instancesOf(series: Series, window: Window, budget: Budget): Instance[]
   const replaced = new Set<number>();
   const futures: Future[] = [];
   const out: Instance[] = [];
+  // The earliest SERIES_MAX starts placed in the window so far, ascending: once there are as many, a step whose instance,
+  // and every later step's, starts after the last of them ends the walk.
+  const earliest: number[] = [];
+  const keep = (one: Instance): void => {
+    out.push(one);
+    if (earliest.length === SERIES_MAX && one.start >= earliest[SERIES_MAX - 1]) return;
+    let low = 0;
+    let high = earliest.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (earliest[mid] <= one.start) low = mid + 1;
+      else high = mid;
+    }
+    earliest.splice(low, 0, one.start);
+    if (earliest.length > SERIES_MAX) earliest.pop();
+  };
   for (const override of overrides) {
     const prop = override.getFirstProperty("recurrence-id");
     const value = prop?.getFirstValue() as Time | undefined;
@@ -393,7 +410,7 @@ function instancesOf(series: Series, window: Window, budget: Budget): Instance[]
     }
     if (cancelled(override)) continue;
     const moved = single(override, main, host, true);
-    if (moved && inWindow(moved, window)) out.push(moved);
+    if (moved && inWindow(moved, window)) keep(moved);
   }
   futures.sort((a, b) => a.from - b.from);
   // The latest THISANDFUTURE range an instance (by the instant it had) is in.
@@ -414,26 +431,23 @@ function instancesOf(series: Series, window: Window, budget: Budget): Instance[]
     }
   }
   const seen = new Set<number>();
-  let kept = 0;
   // The instance at `wall`, `own` long when it has its own length (an RDATE's PERIOD), else its range's or the series'.
-  const take = (wall: number, own?: number): boolean => {
+  // Returns the instant `wall` is, before any THISANDFUTURE range moves it.
+  const take = (wall: number, own?: number): number => {
     const at = instantOf({ ...first, wall }, host);
-    if (seen.has(at)) return true;
+    if (seen.has(at)) return at;
     seen.add(at);
-    if (replaced.has(at) || exInstants.has(at) || exDays.has(dateOf(first.date ? wall : wall + first.zone.offsetAt(at) * 60_000 - (first.utc ? 0 : first.zone.offsetAt(at) * 60_000)))) return true;
+    if (replaced.has(at) || exInstants.has(at) || exDays.has(dateOf(first.date ? wall : wall + first.zone.offsetAt(at) * 60_000 - (first.utc ? 0 : first.zone.offsetAt(at) * 60_000)))) return at;
     const future = futureAt(at);
-    if (future?.cancelled) return true;
+    if (future?.cancelled) return at;
     const placed = future ? wall + future.shift : wall;
     const stamp: Stamp = { ...first, wall: placed };
     const start = future?.shift ? instantOf(stamp, host) : at;
     const span = own ?? future?.length ?? length;
     const end = first.date ? host.zone.toInstant(placed + span) : start + span;
     const one: Instance = { start, end, startStamp: stamp, endWall: placed + span, component: future?.component ?? main, main, recurring: true, date: first.date };
-    if (inWindow(one, window)) {
-      out.push(one);
-      kept += 1;
-    }
-    return kept < SERIES_MAX;
+    if (inWindow(one, window)) keep(one);
+    return at;
   };
   // The window's edges as wall-clock times in the series' zone, and the steps that cannot reach it: one whose wall-clock
   // time is before `before` ends before the window (however long, however far a THISANDFUTURE range moves it on), and one
@@ -445,6 +459,11 @@ function instancesOf(series: Series, window: Window, budget: Budget): Instance[]
   const reachOn = -Math.min(0, ...futures.map((future) => future.shift));
   const before = window.start + Math.min(wallZone.offsetAt(window.start), wallZone.offsetAt(window.start - reachBack - DAY)) * 60_000 - reachBack;
   const after = window.end + Math.max(wallZone.offsetAt(window.end), wallZone.offsetAt(window.end + reachOn + DAY)) * 60_000 + reachOn;
+  // How much earlier than its step's own instant an instance may start: as far back as a THISANDFUTURE range moves one
+  // (reachOn), and the hours a DST change between the step's wall-clock time and the moved one may add. A rule's steps
+  // come in time order, so once a step's instant less this is past the SERIES_MAX-th earliest start, no later step's
+  // instance can come before it.
+  const earlier = reachOn + (futures.length ? 3 * HOUR : 0);
   // Each RRULE walked in wall-clock time from DTSTART, its UNTIL read as the wall-clock time of its instant.
   for (const prop of main.getAllProperties("rrule")) {
     const rule = (prop.getFirstValue() as InstanceType<typeof ICAL.Recur>).clone();
@@ -473,7 +492,8 @@ function instancesOf(series: Series, window: Window, budget: Budget): Instance[]
       const wall = wallOf(next);
       if (wall >= after) break;
       if (wall < before) continue;
-      if (!take(wall)) break;
+      const at = take(wall);
+      if (earliest.length === SERIES_MAX && at - earlier > earliest[SERIES_MAX - 1]) break;
     }
   }
   // DTSTART is an instance of a series whose rule may not reach it (RFC 5545), and each RDATE is one: a PERIOD's with its
@@ -496,7 +516,10 @@ function instancesOf(series: Series, window: Window, budget: Budget): Instance[]
       take(wallIn(stamp, prop), own);
     }
   }
-  return out;
+  // Past its SERIES_MAX-th earliest start the series' instances were not all read: those up to it are, and are kept.
+  if (earliest.length < SERIES_MAX) return out;
+  const last = earliest[SERIES_MAX - 1];
+  return out.filter((one) => one.start <= last);
 }
 
 /** A floating ical.js time of a wall-clock time. */

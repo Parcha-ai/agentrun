@@ -243,8 +243,8 @@ test("the budget's time ceiling (READ_WORK_MS) stops a read whose steps are few 
   const calendar = parsed();
   const window = windowOf({ from: "2026-11-02", to: "2026-11-30" }, calendar.zone, NOW);
   let now = 0;
-  // Each look at the clock is a second on: the ceiling (500 ms) is past at the read's first step.
-  const late = { clock: () => (now += 1_000) };
+  // Each look at the clock is two seconds on: the ceiling (1 s) is past at the read's first step.
+  const late = { clock: () => (now += 2_000) };
   assert.throws(() => eventsIn(calendar, window, { work: late }), (error) => error instanceof RepeatsError && error.by === "time" && /too many repeating events to read/.test(error.message));
   now = 0;
   assert.throws(() => summaryOf(calendar, NOW, { work: late }), (error) => error instanceof RepeatsError && error.by === "time");
