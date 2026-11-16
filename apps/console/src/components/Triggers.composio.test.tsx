@@ -48,8 +48,8 @@ type Call = { method: string; path: string; body: unknown; key: string | null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refusal = (status: number, code: string, message: string, extra: Record<string, unknown> = {}) => json(status, { error: { code, message, retryable: false, ...extra } });
 
-function server({ triggers = [NIGHTLY, ISSUES], servers = SERVERS, create, update, remove, onComposio = "on" }: {
-  triggers?: Trigger[]; servers?: unknown[]; create?: (call: Call, n: number) => Response; update?: (call: Call) => Response | undefined; remove?: () => Response; onComposio?: string;
+function server({ triggers = [NIGHTLY, ISSUES], servers = SERVERS, create, update, remove, onComposio = "on", events: listed = [ISSUE_ADDED, STAR_ADDED] }: {
+  triggers?: Trigger[]; servers?: unknown[]; create?: (call: Call, n: number) => Response; update?: (call: Call) => Response | undefined; remove?: () => Response; onComposio?: string; events?: unknown[];
 } = {}) {
   const calls: Call[] = [];
   triggers = triggers.map((t) => structuredClone(t));
@@ -60,7 +60,7 @@ function server({ triggers = [NIGHTLY, ISSUES], servers = SERVERS, create, updat
     if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
     if (call.path === "/v2/settings/mcp-servers") return json(200, { servers });
     const events = /^\/v2\/settings\/mcp-servers\/([^/]+)\/composio\/events$/.exec(call.path);
-    if (events) return json(200, { server: events[1], toolkit: "github", events: [ISSUE_ADDED, STAR_ADDED] });
+    if (events) return json(200, { server: events[1], toolkit: "github", events: listed });
     if (call.path === "/v2/settings/mcp-servers/gh/composio/triggers") return json(200, { triggers: triggers.filter((t) => t.source.kind === "composio").map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, event: (t.source as { event: string }).event, instance_id: (t.source as { instance_id: string }).instance_id, on_composio: onComposio })), subscription: { ours: true, webhook_url: ISSUES.hook_url } });
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers });
     if (call.path === "/v2/triggers" && call.method === "POST") return create ? create(call, ++creates) : json(201, { ...ISSUES, ...(call.body as object), id: "trg_new" });
@@ -380,5 +380,48 @@ describe("A trigger from an app: its page", () => {
     await t.click(/^Save filter$/);
     const { accept: _gone, ...rest } = ISSUES.source as Record<string, unknown>;
     expect(s.calls.find((c) => c.method === "PATCH")!.body).toEqual({ source: rest });
+  });
+});
+
+// A config field named like a key (serve's trigger-composio.ts sealedConfigFields) is sealed at the save: the events list
+// names such fields under `sealed`, the form takes them as a password, and a trigger's answer has "[sealed]" in their place
+// with each named in `sealed_config`, which its page shows as sealed, never as a value.
+const DEAL_STAGE = {
+  slug: "HUBSPOT_DEAL_STAGE_UPDATED_TRIGGER", name: "Deal Stage Updated", description: "Triggered when a deal's stage changes.", polled: false, sealed: ["developer_api_key"],
+  config: { type: "object", required: ["app_id", "developer_api_key"], properties: { app_id: { type: "string", title: "App Id" }, developer_api_key: { type: "string", title: "Developer Api Key" } } },
+};
+const DEALS = {
+  ...ISSUES, id: "trg_d", name: "deal stages",
+  source: { kind: "composio", server: "gh", event: DEAL_STAGE.slug, config: { app_id: "4242", developer_api_key: "[sealed]" }, sealed_config: ["developer_api_key"], instance_id: "ti_2", hook: HOOK_ID },
+} as Trigger;
+
+describe("A trigger from an app: a config field the server seals", () => {
+  it("the form takes a field the events list names as sealed as a password, and the others as text", async () => {
+    const s = server({ events: [DEAL_STAGE] });
+    const t = await open(s.v2, { trigger: null, kind: "composio" });
+    await t.choose("Composio server", "gh");
+    await t.choose("Event", DEAL_STAGE.slug);
+    expect((t.host.querySelector('[name="config-developer_api_key"]') as HTMLInputElement | null)?.type).toBe("password");
+    expect((t.host.querySelector('[name="config-app_id"]') as HTMLInputElement | null)?.type).not.toBe("password");
+  });
+
+  it("its page shows a sealed field as sealed, never as a value", async () => {
+    const t = await open(server({ triggers: [NIGHTLY, DEALS] }).v2, { trigger: "trg_d" });
+    const dl = t.host.querySelector("dl")!;
+    expect(dl.textContent).toContain("app_id: 4242");
+    expect(dl.querySelector('[data-sealed-config="developer_api_key"]')?.textContent).toMatch(/^Sealed/);
+    expect(dl.textContent).not.toContain("[sealed]");
+  });
+
+  it("Edit filter sends the source back as it came: [sealed] in place, which keeps the key", async () => {
+    const s = server({ triggers: [NIGHTLY, DEALS] });
+    const t = await open(s.v2, { trigger: "trg_d", edit: true });
+    await t.click(/^Add a condition$/);
+    await t.set("composio-where-0-pointer", "/data/stage");
+    await act(async () => { (t.host.querySelector('[name="composio-where-0-op"][value="prefix"]') as HTMLInputElement).click(); });
+    await t.set("composio-where-0-value", "closed");
+    await t.click(/^Save filter$/);
+    const patch = s.calls.find((c) => c.method === "PATCH")!;
+    expect(patch.body).toEqual({ source: { ...DEALS.source, accept: [{ event: DEAL_STAGE.slug, where: [{ pointer: "/data/stage", prefix: "closed" }] }] } });
   });
 });
