@@ -595,6 +595,47 @@ test("compactStateProblems: pages through maps, picks, composed workflows and lo
   assert.deepEqual(compactStateProblems(flow([decide("verdict")])), []);
 });
 
+// #3025 review (Greptile r1): the walk follows the runtime. A parallel merges its branches' patches and a route runs one
+// branch, so a key every path replaced with compact facts is no page after them; a loop runs until its page marks stop
+// changing, not twice; a map's failedAs rows are short errors; "{state.x}" reads a real `state` key first.
+const r1 = {
+  flow: (steps) => ({ v: 2, name: "n", schemas: {}, output: { schemaId: "V", path: "verdict" }, root: { node: "chain", steps } }),
+  call: (as) => ({ node: "call", label: `get_${as}`, via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as, deadline_s: 30 }),
+  fast: (as, state) => ({ node: "extract", label: `trim_${as}`, instructions: "Trim.", state, out: "V", as, tier: "fast" }),
+  decide: (state) => ({ node: "decide", label: "answer", instructions: "Decide.", state, out: "V", as: "verdict" }),
+};
+test("compactStateProblems (r1, branches): a key a parallel's writing branch or every route branch replaced with facts is no page after it; one left on any path is", () => {
+  const { flow, call, fast, decide } = r1;
+  const parallel = (branches) => ({ node: "parallel", label: "both", branches });
+  assert.deepEqual(compactStateProblems(flow([call("page"), parallel([fast("page", { page: "{page}" }), fast("other", { url: "{url}" })]), decide({ page: "{page}" })])), [], "the parallel's branch replaced it");
+  assert.deepEqual(compactStateProblems(flow([call("page"), parallel([fast("other", { url: "{url}" }), fast("more", { url: "{url}" })]), decide({ page: "{page}" })])), [COMPACT("decide", "answer", READS_PAGE)], "no branch wrote it: still a page");
+  assert.deepEqual(compactStateProblems(flow([call("other"), parallel([fast("page", { url: "{url}" }), call("page2")]), decide({ page2: "{page2}" })])), [COMPACT("decide", "answer", '"{page2}", a page a call step fetched')], "a branch's own fetch is a page after it");
+  const route = (a, b) => ({ node: "route", label: "kind", valuePath: "kind", branches: { a: { body: a }, b: { body: b } }, as: "picked" });
+  assert.deepEqual(compactStateProblems(flow([call("page"), route(fast("page", { page: "{page}" }), fast("page", { page: "{page}" })), decide({ page: "{page}" })])), [], "every route branch replaced it");
+  assert.deepEqual(compactStateProblems(flow([call("page"), route(fast("page", { page: "{page}" }), fast("other", { url: "{url}" })), decide({ page: "{page}" })])), [COMPACT("decide", "answer", READS_PAGE)], "one branch left it: still a page");
+});
+
+test("compactStateProblems (r1, loops): a page moving a -> b -> c across passes reaches c on the third; the walk runs until the marks stop changing, within maxIters", () => {
+  const { flow, call, decide } = r1;
+  const copy = (from, to) => ({ node: "map", label: `copy_${to}`, itemsPath: from, resultPath: "item", as: to, body: { node: "chain", steps: [] } });
+  const abc = (maxIters) => flow([{ node: "loop", label: "again", maxIters, until: { predicate: "field_true", path: "verdict.done" }, body: { node: "chain", steps: [copy("b", "c"), copy("a", "b"), call("a"), decide({ c: "{c}" })] } }]);
+  assert.deepEqual(compactStateProblems(abc(3)), [COMPACT("decide", "answer", '"{c}", a page a call step fetched')], "pass three reads c's pages");
+  assert.deepEqual(compactStateProblems(abc(2)), [], "two passes never carry the page to c");
+});
+
+test("compactStateProblems (r1, failedAs): a map's failedAs rows are short errors, never its input's pages", () => {
+  const { flow, call, fast, decide } = r1;
+  const each = { node: "map", label: "each", itemsPath: "pages", as: "read", failedAs: "errors", body: fast("gist", { page: "{item}" }) };
+  assert.deepEqual(compactStateProblems(flow([call("pages"), each, decide({ read: "{read}", errors: "{errors}" })])), []);
+});
+
+test("compactStateProblems (r1, state.): \"{state.text}\" reads a real `state` key first, as interpolateValue does, then the key after `state.`", () => {
+  const { flow, call, fast, decide } = r1;
+  assert.deepEqual(compactStateProblems(flow([call("state"), decide({ text: "{state.text}" })])), [COMPACT("decide", "answer", '"{state}", a page a call step fetched')]);
+  assert.deepEqual(compactStateProblems(flow([call("page"), decide({ text: "{state.page.text}" })])), [COMPACT("decide", "answer", READS_PAGE)]);
+  assert.deepEqual(compactStateProblems(flow([call("page"), fast("state", { page: "{page}" }), decide({ text: "{state.text}" })])), [], "a compact state key; the fallback key text holds no page");
+});
+
 test("check B on the skeleton's shape: a quote output (evidence[].quote) without a quote_missing check, or with one but no re-pick, or a re-pick blind to its draft, is refused naming what to add", () => {
   const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: [compile.EXAMPLE_TOOL], dsl }).problems.map(({ detail }) => detail);
   const skeleton = compile.compileExample(true);
