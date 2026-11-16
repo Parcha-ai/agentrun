@@ -202,12 +202,16 @@ Over a cap is refused, never cut.
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
 - Compact state. A model step off the fast tier (an agent, decide, extract or report step with no `"tier": "fast"`,
   the answering step among them) never reads a page a call step fetched: a draft is refused when such a step's
-  `state` map names a key that may hold a page (the key or a path under it, `{state.…}` read too), or, with no
-  `state` map, when the whole state it reads holds one. A page is a call's `as`; a map's collected result when its
-  body's is one (a map over pages sees `item` as one); a pick's or sift's over pages; a composed workflow's answer
-  when its own is one, its child seeing a page through an input that reads one. Steps are read in run order: a model
-  step writing a page's key ends it, a loop's body is read twice (its second pass sees its first's writes), and a
-  route's or parallel's branches are read alike. Pages reach the agent's model only through a fast-tier step's
+  `state` map reads a key that may hold a page, or, with no `state` map, when the whole state it reads holds one. A
+  placeholder is resolved by the DSL's own lookup (`placeholderValue`, which interpolation reads through: the path as
+  written, so a real `state` key first, then the path after `state.`) over a state holding only the pages, each with
+  every path. A page is a call's `as`; a map's collected result when its body's is one (a map over pages sees `item`
+  as one; its `failedAs` rows are short errors, never pages); a pick's or sift's over pages; a composed workflow's
+  answer when its own is one, its child seeing a page through an input that reads one. Steps are read in run order: a
+  model step writing a page's key ends it; a parallel's branches start from the same state and their writes merge, so
+  a key one branch replaced is no page after it; a route runs one branch, so a key stays a page unless every branch
+  replaced it; a loop's body is read pass after pass, each on every page its passes may leave, until the marks stop
+  changing, within its `maxIters`. Pages reach the agent's model only through a fast-tier step's
   output, the compiled job's cascade: on chain14b the drafts fed whole pages to the answering step (4.1 requests a
   run at ~70k cached tokens each, $0.364 a served run), where the research shape (a fast extract's compact facts
   to the answer) booked ~$0.08. Decision nodes go to a decision provider, not a tier, and are not read; nor is a
