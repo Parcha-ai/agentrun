@@ -14,7 +14,7 @@ Conformance comes first: each step ends on a command that tells you whether it's
    through the relay you ship, once it is deployed to your own account; or, on a cloud, in the cluster, group or project
    you made first. `--machine` takes whatever your `exec` takes, the id `create` answers and `get` reads (a name is fine):
    `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
-3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
+3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the twelve members](#the-twelve-members).
 4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
    `npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>`
 5. [Open the pull request](#send-it) with the report and the sweep's last line.
@@ -63,7 +63,7 @@ that says what your API offers.
 
 ### Step one: run the exec pre-check
 
-Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
+Before you write anything else, write your host's constructor and its `exec` (see [the twelve members](#the-twelve-members)
 below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
 your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
 with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make one machine
@@ -95,10 +95,10 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
-### The eleven members
+### The twelve members
 
-A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
-`upload`, `errorCode`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
+A host has twelve members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
+`upload`, `errorCode`, `extend`, `check` and `keepalive`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
 marks a cut. A member answers its value, or throws. AgentRun reads a thrown error's code: a `HostError(code, message)`
 (from `src/host.ts`) carries its own, and any other error goes through `errorCode`, then defaults to `"vendor"`. Each
 call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
@@ -132,8 +132,10 @@ machine, the cap is the janitor's, as Agent37's 24 hours (`DAY_MS`, `src/agent37
 
 Switch off every vendor timer that ends a quiet machine (an idle stop or sleep): a computer sits quiet for minutes, and
 the vendor would end it under the agent. Agent37's `create` sends `auto_sleep: false`, and Daytona's idle stop is off
-unless a user sets `autoStopMinutes` (`src/daytona.ts`). With `"janitor"`, where your vendor has a timer that deletes,
-set it a margin past the deadline, so a machine still ends if AgentRun's server is gone.
+unless a user sets `autoStopMinutes` (`src/daytona.ts`). Where the idle timer can't be switched off, declare its window
+as `idleMs` in `facts` and write a `keepalive`: AgentRun calls it every `idleMs / 3` while it holds the computer. With
+`"janitor"`, where your vendor has a timer that deletes or stops, set it to `req.backstopAt`, so a machine still ends if
+AgentRun's server is gone.
 
 ```ts
 	readonly facts: HostFacts = {
@@ -282,7 +284,9 @@ move it past its `agentrun.computer.max-deadline` label, which AgentRun writes o
 your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
 extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create.
 `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields aren't
-checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
+checked yet. `keepalive(id, ctx)` is your API's cheapest call that restarts its idle timer on the machine (a timeout
+set again, a heartbeat), required with `idleMs` and refused without it. One that throws is noted and tried again at
+the next. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
 
 ### Wire it up

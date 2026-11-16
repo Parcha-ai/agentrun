@@ -109,6 +109,13 @@ it and expects the same id refused `exists`. Both are Full.
 | `gpu`, `browser` | The GPUs `spec.gpu` may ask for; a browser's features beyond the protocol. |
 | `persistence` | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer comes back running or boots again from its disk. Absent means neither: each computer lives for one run. A provider on the shared machine-host adapter never declares it today: delete is its only release. |
 
+On the shared machine-host adapter, a host fixes two vendor timers (`packages/computer/src/host.ts`). A janitor's host
+whose vendor has a delete or stop timer of its own sets it to `MachineRequest.backstopAt`, five minutes past the most
+the deadline may reach (create + `maxLifetimeMs`), so a computer still ends when the server is gone. A vendor that ends
+or pauses a quiet machine is declared with `HostFacts.idleMs`, its window, and a `keepalive(id, ctx)`, its cheapest call
+that restarts the timer: the adapter calls it every `idleMs / 3` from create or attach until release, and refuses a host
+with `idleMs` and no `keepalive`.
+
 ## The descriptor
 
 A provider declares itself once, in a **descriptor** (`ProviderDescriptor`, `packages/computer/src/descriptor.ts`), so

@@ -170,6 +170,11 @@ const LISTED_ROUNDS = 2;
 const LISTED_POLL_MAX_MS = 1_000;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
+/**
+ * How far past the most a deadline may reach a janitor's host sets its vendor's own delete timer (MachineRequest.backstopAt):
+ * the janitor ends the machine first while the server runs, and the vendor's clock may be off from this one.
+ */
+export const BACKSTOP_MARGIN_MS = 300_000;
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The longest timeout the adapter takes: the race of a call bounded by it must still fit a Node timer. */
@@ -289,6 +294,8 @@ export class HostedProvider implements ComputerProvider {
 	readonly #requests = new CreateRequests();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
+	/** Each held computer's keepalive timer, by machine id (facts.idleMs). */
+	readonly #kept = new Map<string, ReturnType<typeof setInterval>>();
 
 	constructor(host: MachineHost, options: HostedOptions) {
 		const {
@@ -315,6 +322,11 @@ export class HostedProvider implements ComputerProvider {
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
+		}
+		const { idleMs } = host.facts;
+		if (idleMs !== undefined && (!isWhole(idleMs) || idleMs <= 0 || idleMs > MAX_TIMER_MS)) throw new Error(`facts.idleMs must be a whole number of ms above 0 and at most ${MAX_TIMER_MS}, not ${idleMs}`);
+		if (idleMs !== undefined && !host.keepalive) {
+			throw new Error(`${label} declares an idle timer (facts.idleMs ${idleMs}) and no keepalive, so a quiet computer would end under its run: give the host keepalive, the vendor's call that restarts the timer`);
 		}
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
@@ -519,6 +531,7 @@ export class HostedProvider implements ComputerProvider {
 		const launched = await this.#launch(spec, name, signal);
 		if (!launched.ok) return launched.error.code === "exists" ? this.#createOnce(spec, name, signal, launched) : launched;
 		const { ref, made } = launched.value;
+		this.#keepAlive(ref);
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept.
 		const first = await this.#converge(name, ref.id, signal);
@@ -669,6 +682,7 @@ export class HostedProvider implements ComputerProvider {
 			image: spec.image,
 			labels,
 			lifetimeMs,
+			backstopAt: new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString(),
 			// The machine has egress where its tools' network is open or a list, which init's proxy holds to the public
 			// internet (./network.ts), and where an Archil computer's root reaches Archil. Its tools' none is init's own
 			// either way, read back by the probe from inside, as the tool user.
@@ -741,8 +755,37 @@ export class HostedProvider implements ComputerProvider {
 		return `; the machine named ${name} it made: ${said.join("; ")}`;
 	}
 
+	/**
+	 * Calls the host's keepalive on the machine every idleMs / 3 (facts.idleMs), from create or attach until release or
+	 * the delete of a create that gave up, one call at a time. One that fails is told through onNote and the next tries
+	 * again; a machine the vendor no longer has stops it. The timer holds no process open.
+	 */
+	#keepAlive(ref: ComputerRef): void {
+		const { idleMs } = this.host.facts;
+		const keepalive = this.host.keepalive?.bind(this.host);
+		if (idleMs === undefined || keepalive === undefined || this.#kept.has(ref.id)) return;
+		let calling = false;
+		const timer = setInterval(async () => {
+			if (calling) return;
+			calling = true;
+			const kept = await this.#call(`the keepalive of ${ref.name}`, (ctx) => keepalive(ref.id, ctx), this.#timeouts.requestMs);
+			calling = false;
+			if (kept.ok || this.#kept.get(ref.id) !== timer) return;
+			if (kept.error.code === "not_found") this.#unkeep(ref.id);
+			else this.#onNote?.({ computer: ref.name, note: `${kept.error.message}; the next keepalive tries again in ${seconds(idleMs / 3)}` });
+		}, idleMs / 3);
+		timer.unref();
+		this.#kept.set(ref.id, timer);
+	}
+
+	#unkeep(id: string): void {
+		clearInterval(this.#kept.get(id));
+		this.#kept.delete(id);
+	}
+
 	/** The host's delete, never signalled: a delete that cleans up after an abort must outlive it. Not found is done. */
 	async #kill(id: string): Promise<Result<void>> {
+		this.#unkeep(id);
 		const killed = await this.#call(`the delete of ${id}`, (ctx) => this.host.delete(id, ctx), this.#timeouts.requestMs);
 		return killed.ok || killed.error.code === "not_found" ? ok(undefined) : killed;
 	}
@@ -1149,6 +1192,7 @@ export class HostedProvider implements ComputerProvider {
 			kind = opened.value.hello.kind;
 		} else if (archil !== undefined) found.push(`mount: ${name} is ${machine.state}, so its mount cannot be read back from inside`);
 		if (found.length > 0) return this.#fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
+		this.#keepAlive(ref);
 		return ok({
 			...ref,
 			spec: {
@@ -1316,6 +1360,7 @@ export class HostedProvider implements ComputerProvider {
 		if (how === "detach") return this.#fail("unsupported", `the ${this.#label} provider keeps no computer for an agent (it declares no persistence), so release detach is refused: release it with delete`);
 		if (how === "stop") return this.#fail("unsupported", `${a(this.#label)} computer is deleted, never stopped and kept: release it with delete`);
 		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
+		this.#unkeep(ref.id);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found;
 		if (found.value === undefined) return ok(undefined);
