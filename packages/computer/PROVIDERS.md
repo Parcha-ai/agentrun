@@ -206,8 +206,10 @@ own name where your API takes one, and answer it as `Machine.name` from `get` an
 into the machine once it runs. Without a name, a machine whose create was cut off before that write can't be traced to
 its request, so it ends only at your timer. Where your API keeps fewer or shorter labels than AgentRun writes, declare
 `labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`: your create
-stores what `packLabels` (`src/hosted/values.ts`) gives, one name to list by and the map in parts, and `get` answers
-`unpackLabels`' map. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
+stores what `packLabels` (`src/hosted/values.ts`) gives, one name to list by and the map in parts, and `get` and
+`list` both answer `unpackLabels`' map. `list` filters by `PACKED_NAME` alone, set to
+`labels["agentrun.computer.name"]` where that is asked, or lists everything: AgentRun keeps only machines whose
+unpacked labels carry what it asked. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
 `HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
