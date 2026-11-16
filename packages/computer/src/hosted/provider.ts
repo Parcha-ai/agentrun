@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import type { AttachHub, MachineTokens } from "../attach.js";
 import { isBoxImage } from "../box-image.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
@@ -140,6 +141,22 @@ export interface HostedOptions {
 	 * (isBoxImage, ../box-image.ts), and check refuses a spec of any other.
 	 */
 	image?: string;
+	/** What a host whose facts.connect is "dial" needs: create refuses without it, before any call to the vendor. */
+	dial?: HostedDial;
+}
+
+/** The server a dial host's machines reach, and what it holds of them (MachineHost facts.connect "dial"). */
+export interface HostedDial {
+	/**
+	 * The server's public address, AGENTRUN_PUBLIC_URL: https://, which the vendor's machines must reach (http:// only on
+	 * 127.0.0.1, for tests). They dial its /v2/computers/attach and fetch the daemon from its /v2/computers/daemon, which
+	 * serves the build at this provider's daemonPath. Empty or unset: create refuses, in words.
+	 */
+	url?: string;
+	/** The server's machine tokens: one minted at each create, revoked at its delete. */
+	tokens: MachineTokens;
+	/** The server's AttachHub, which the server's attach route gives each minted machine's socket. */
+	hub: Pick<AttachHub, "online" | "connection" | "revoke">;
 }
 
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
