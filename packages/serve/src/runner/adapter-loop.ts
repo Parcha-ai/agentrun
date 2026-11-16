@@ -53,7 +53,7 @@ import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutco
 import { ASKED_BECAUSE, deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
-import { approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
+import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
 import { answerOnce, HAND_BACK, handBackOf } from "./hand-back.js";
@@ -3215,10 +3215,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  end reads withdrawn: its rows said "Not run: the run ended while it waited" of a call that ran. A deny set since still
    *  refuses it first. Read from the journal once a claim: an ask written later in the claim parks it, and an answer
    *  written later is read by answerOf itself. */
-  /** The calls of `tool` the run's root journal shows now (toolCalls): run to a good end, and every one with a result. */
+  /** The calls of `tool` the run's journal shows now (toolCalls): run to a good end, and every one with a result. Read
+   *  over every agent conversation of the run (agentEntriesOf): the root's and each subagent's, so a child's calls count
+   *  on the claim after a pause as on the one they ran in. */
   async function ranOf(tool: string): Promise<ToolCalls> {
-    const conversation = await harness!.root(context);
-    return toolCalls(await entriesOf(gate!.journal, conversation.id, context), tool);
+    return toolCalls(await agentEntriesOf(gate!.journal, context), tool);
   }
 
   async function askStands(callId: string): Promise<boolean> {
