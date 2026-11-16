@@ -543,7 +543,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return got;
 				},
 				async dial() {
-					t.assert(dial !== undefined, "the provider's machines dial the server, and the run was given no server for them: pass ConformanceOptions.dial");
+					t.assert(dial !== undefined, "the provider's machines dial the server, and the run was given no server for them: a conformance module exports dialKit() (ConformanceOptions.dial)");
 					return await (dial as NonNullable<typeof dial>)();
 				},
 				async runFolder(kind) {

@@ -430,7 +430,8 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
 - **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
-- **Prove it** as below, with `ConformanceOptions.dial` for the Core case `provider.dial-token`.
+- **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
+  Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 
 ### Wire it up
 

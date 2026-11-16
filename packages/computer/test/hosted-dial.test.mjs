@@ -83,6 +83,35 @@ test("two provider instances of one server creating one request at once make one
 	made(await a.release(first, "delete"));
 });
 
+test("a create that aborts while another of its request is in flight stops waiting, and the next still waits its turn", async () => {
+	const { fake, provider: instance } = fakeDialHost({ daemon: DAEMON_BYTES, create: "hold" });
+	const [a, b, c] = [1, 2, 3].map(() => instance({ daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs: 5_000 } }));
+	const first = a.create(SPEC, { requestId: "dial-held" });
+	const abort = new AbortController();
+	const second = b.create(SPEC, { requestId: "dial-held", signal: abort.signal });
+	const third = c.create(SPEC, { requestId: "dial-held" });
+	abort.abort();
+	const stopped = await second;
+	assert.equal(stopped.ok, false);
+	assert.equal(stopped.error.code, "aborted");
+	assert.match(stopped.error.message, /another create of this request was in flight/);
+	while (fake.creates() === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+	await fake.release();
+	const [one, three] = [await first, await third].map(made);
+	assert.equal(three.id, one.id, "the third waited for the first, and found its machine");
+	assert.equal(fake.creates(), 1);
+	made(await a.release(one, "delete"));
+});
+
+test("the conformance CLI passes a module's dialKit to the run: provider.dial-token passes through it", async () => {
+	const { main } = await import("../dist/conformance/cli.js");
+	let text = "";
+	const stdout = { write: (chunk, done) => ((text += chunk), done?.(), true) };
+	await main(["--provider", "./fixtures/dial-provider.mjs", "--only", "provider.dial-token", "--json"], { stdout, cwd: new URL(".", import.meta.url).pathname });
+	const result = JSON.parse(text).results.find(({ id }) => id === "provider.dial-token");
+	assert.equal(result?.status, "pass", JSON.stringify(result));
+});
+
 test("two mints of one machine at once leave one token, and its revoke refuses both", async () => {
 	const tokens = new MemoryMachineTokens();
 	const mint = { kind: "linux", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + 60_000) };
@@ -174,5 +203,5 @@ test("provider.dial-token is said and passes for a host with exec, and fails a d
 	const exec = await runConformance(new HostedProvider(fakeHost().host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), { image: "img", cases: only });
 	assert.deepEqual(exec.results.map(({ status, observed }) => [status, observed]), [["pass", ["the provider's machines do not dial the server, so they hold no machine token"]]]);
 	const dial = await runConformance(setup().provider, { image: "img", cases: only });
-	assert.deepEqual(dial.results.map(({ status, reason }) => [status, reason]), [["fail", "the provider's machines dial the server, and the run was given no server for them: pass ConformanceOptions.dial"]]);
+	assert.deepEqual(dial.results.map(({ status, reason }) => [status, reason]), [["fail", "the provider's machines dial the server, and the run was given no server for them: a conformance module exports dialKit() (ConformanceOptions.dial)"]]);
 });

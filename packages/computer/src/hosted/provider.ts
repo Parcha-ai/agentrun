@@ -203,7 +203,7 @@ const START_POLL_MS = 500;
  */
 const UNFILED_MARGIN_MS = 300_000;
 /** The dial creates in flight per request name, keyed by the server's AttachHub (#inTurn). */
-const DIAL_TURNS = new WeakMap<object, Map<string, Promise<unknown>>>();
+const DIAL_TURNS = new WeakMap<object, Map<string, Promise<void>>>();
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The longest timeout the adapter takes: the race of a call bounded by it must still fit a Node timer. */
@@ -635,25 +635,34 @@ export class HostedProvider implements ComputerProvider {
 			// The checks #again makes of a computer listed already, made here of the spec in flight: what it gives is shared
 			// only with a create that asks the same.
 			userOf: (asked) => this.#userOf(asked),
-			make: (name) => (dialed === undefined ? this.#createOnce(spec, name, context.signal) : this.#inTurn(dialed.dial.hub, name, () => this.#createOnce(spec, name, context.signal))),
+			make: (name) => (dialed === undefined ? this.#createOnce(spec, name, context.signal) : this.#inTurn(dialed.dial.hub, name, context.signal, () => this.#createOnce(spec, name, context.signal))),
 		});
 	}
 
 	/**
 	 * A dial create of one request after any other of it on this server, whichever provider instance makes it. A
 	 * machine's token and socket go by the request's name, so two machines of one request must never dial at once: the
-	 * second create finds the first's computer instead (#createOnce). One server process is what dial asks for.
+	 * second create finds the first's computer instead (#createOnce). One server process is what dial asks for. A caller
+	 * that aborts while it waits stops waiting; the turn after it still waits for the create before it.
 	 */
-	async #inTurn<T>(hub: object, name: string, make: () => Promise<T>): Promise<T> {
-		const turns = DIAL_TURNS.get(hub) ?? new Map<string, Promise<unknown>>();
+	async #inTurn(hub: object, name: string, signal: AbortSignal | undefined, make: () => Promise<Result<CreatedComputer>>): Promise<Result<CreatedComputer>> {
+		const turns = DIAL_TURNS.get(hub) ?? new Map<string, Promise<void>>();
 		DIAL_TURNS.set(hub, turns);
-		const mine = (turns.get(name) ?? Promise.resolve()).then(make, make);
-		const settled = mine.catch(() => undefined);
-		turns.set(name, settled);
+		const before = turns.get(name) ?? Promise.resolve();
+		let done = () => {};
+		const mine = before.then(() => new Promise<void>((resolve) => (done = resolve)));
+		turns.set(name, mine);
 		try {
-			return await mine;
+			if ((await untilAborted(before.then(() => true), [signal])) === undefined) {
+				return this.#fail("aborted", "create was aborted while another create of this request was in flight");
+			}
+			return await make();
 		} finally {
-			if (turns.get(name) === settled) turns.delete(name);
+			// Once before has settled: a turn that stopped waiting holds the next one no longer than the create before it.
+			void before.then(() => done());
+			void mine.then(() => {
+				if (turns.get(name) === mine) turns.delete(name);
+			});
 		}
 	}
 

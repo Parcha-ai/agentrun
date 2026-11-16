@@ -274,7 +274,7 @@ with `labels: "machine"` (read through exec), or for kind `desktop` (the machine
   `delete` revokes the token and closes the socket before the vendor's delete.
 - The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400`, and
   after delete or past `backstopAt` it is refused. A run of a dial host passes `ConformanceOptions.dial`, the server's
-  side for the case; a host with exec passes the case, observed.
+  side for the case (through the CLI, its conformance module's `dialKit()`); a host with exec passes the case, observed.
 
 ## A new vendor
 
