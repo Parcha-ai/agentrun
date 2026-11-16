@@ -5,7 +5,7 @@
 // with every character but letters, digits, `_`, `-` and spaces dropped, spaces turned to `-`; a repeated slug gets `-1`,
 // `-2`, ...) or when the target has an `<a id>` or `<a name>` anchor of that name. A fragment link to a tracked-looking
 // .md path that is not tracked fails too. Not read: external URLs, links without a fragment, links to files that are not
-// Markdown, fenced code blocks, inline code and HTML comments.
+// Markdown, front matter, fenced code blocks (in a block quote or list item too), inline code and HTML comments.
 // `node scripts/check-doc-anchors.mjs` exits non-zero with one line per broken link; check-doc-anchors.test.mjs runs it on
 // this tree and on planted breaks.
 import { execFileSync } from 'node:child_process';
@@ -51,43 +51,89 @@ export function headingText(raw) {
     .trim();
 }
 
-/** Each line of `text` with fenced code blocks, HTML comments and inline code blanked, so line numbers stay true. */
+/**
+ * Each line of `text` with front matter, fenced code blocks (in a block quote or list item too), HTML comments and
+ * inline code blanked, so line numbers stay true.
+ */
 function proseLines(text) {
-  const lines = text.split('\n');
+  let front = text.startsWith('---\n');
   let fence = null;
   let comment = false;
-  return lines.map((line) => {
-    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  return text.split('\n').map((line, i) => {
+    if (front) {
+      if (i > 0 && line.trimEnd() === '---') front = false;
+      return '';
+    }
+    const bare = line.replace(/^(?:[ \t]*>)*[ \t]*/, '');
+    const marker = /^(`{3,}|~{3,})/.exec(bare)?.[1];
     if (fence) {
-      if (open && open[1][0] === fence[0] && open[1].length >= fence.length && /^ {0,3}[`~]+[ \t]*$/.test(line)) fence = null;
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && /^[`~]+[ \t]*$/.test(bare)) fence = null;
       return '';
     }
-    if (open) {
-      fence = open[1];
+    if (marker) {
+      fence = marker;
       return '';
     }
+    // Left to right, so the text of a code span never opens a comment, nor a comment's a code span.
     let out = '';
-    let rest = line;
-    while (rest) {
+    for (let at = 0; at < line.length; ) {
       if (comment) {
-        const end = rest.indexOf('-->');
-        if (end < 0) return out;
+        const end = line.indexOf('-->', at);
+        if (end < 0) break;
         comment = false;
-        rest = rest.slice(end + 3);
-      } else {
-        const start = rest.indexOf('<!--');
-        if (start < 0) {
-          out += rest;
-          break;
-        }
-        out += rest.slice(0, start);
-        comment = true;
-        rest = rest.slice(start + 4);
+        at = end + 3;
+        continue;
+      }
+      const next = /`+|<!--/g;
+      next.lastIndex = at;
+      const open = next.exec(line);
+      if (!open) {
+        out += line.slice(at);
+        break;
+      }
+      out += line.slice(at, open.index);
+      at = open.index + open[0].length;
+      if (open[0] === '<!--') comment = true;
+      else {
+        // A code span closes on a run of as many backticks; a run with no match is literal text.
+        const close = new RegExp(`(?<!\`)${open[0]}(?!\`)`, 'g');
+        close.lastIndex = at;
+        const end = close.exec(line);
+        if (end) at = end.index + open[0].length;
+        else out += open[0];
       }
     }
-    return out.replace(/(`+)(?:(?!\1).)+?\1/g, '');
+    return out;
   });
 }
+
+/** The destinations of a line's inline links and images, `](dest "title")`, with balanced parentheses in a dest. */
+function inlineDestinations(line) {
+  const found = [];
+  for (let at = line.indexOf(']('); at >= 0; at = line.indexOf('](', at + 2)) {
+    let start = at + 2;
+    while (line[start] === ' ' || line[start] === '\t') start += 1;
+    if (line[start] === '<') {
+      const end = line.indexOf('>', start);
+      if (end > start) found.push(line.slice(start + 1, end));
+      continue;
+    }
+    let depth = 0;
+    let end = start;
+    for (; end < line.length && !/\s/.test(line[end]); end += 1) {
+      if (line[end] === '\\') end += 1;
+      else if (line[end] === '(') depth += 1;
+      else if (line[end] === ')') {
+        if (depth === 0) break;
+        depth -= 1;
+      }
+    }
+    if (end > start && end < line.length) found.push(line.slice(start, end));
+  }
+  return found;
+}
+
+const UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
 
 /** Every fragment a Markdown text makes: its headings' slugs (ATX and setext) and its `<a id>`/`<a name>` anchors. */
 export function anchorsOf(text) {
@@ -100,9 +146,11 @@ export function anchorsOf(text) {
     // Headings are read from the raw line, so a code span in one keeps its text.
     const atx = line && /^ {0,3}#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/.exec(raw[i]);
     if (atx) anchors.add(slug(headingText(atx[1] ?? '')));
-    else if (line.trim() && /^ {0,3}(=+|-+)[ \t]*$/.test(prose[i + 1] ?? '') && !/^ {0,3}([-*+]|\d+[.)])[ \t]/.test(line) && (i === 0 || prose[i - 1].trim() === '')) {
-      // A setext heading: one paragraph line over a row of = or -. A list item or a paragraph's later line over --- is not one.
-      anchors.add(slug(headingText(raw[i].trim())));
+    else if (line.trim() && !UNDERLINE.test(line) && UNDERLINE.test(prose[i + 1] ?? '')) {
+      // A setext heading: a paragraph, of one line or more, over a row of = or -. A list item over --- is not one.
+      let start = i;
+      while (start > 0 && prose[start - 1].trim() && !UNDERLINE.test(prose[start - 1]) && !/^ {0,3}#/.test(prose[start - 1])) start -= 1;
+      if (!/^ {0,3}([-*+]|\d+[.)])[ \t]/.test(prose[start])) anchors.add(slug(headingText(raw.slice(start, i + 1).map((one) => one.trim()).join(' '))));
     }
   });
   return anchors;
@@ -112,10 +160,7 @@ export function anchorsOf(text) {
 export function relativeLinksOf(text) {
   const links = [];
   proseLines(text).forEach((line, i) => {
-    const targets = [
-      ...[...line.matchAll(/\]\(\s*(?:<([^>]*)>|([^)\s]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g)].map((m) => m[1] ?? m[2]),
-      ...[...line.matchAll(/^ {0,3}\[[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/g)].map((m) => m[1] ?? m[2]),
-    ];
+    const targets = [...inlineDestinations(line), ...[...line.matchAll(/^ {0,3}\[[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/g)].map((m) => m[1] ?? m[2])];
     for (const link of targets) if (link && !/^[a-z][a-z0-9+.-]*:|^\/\//i.test(link)) links.push({ line: i + 1, link });
   });
   return links;

@@ -26,6 +26,13 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     'A setext heading',
     '----------------',
     '',
+    'A long',
+    'wrapped heading',
+    '===============',
+    '',
+    '- a list item',
+    '---',
+    '',
     '```md',
     '## Inside a fence',
     '```',
@@ -39,6 +46,7 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     'old-name',
     'quoted-and-single-words',
     'a-setext-heading',
+    'a-long-wrapped-heading',
     'step-one-run-the-pre-check',
     'the-idle_ms-field-linked-and-bold-emphasis',
     'the-labels-machine-option',
@@ -50,9 +58,10 @@ test('a broken fragment or path fails naming the file, line, link and target; co
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const files = {
     'docs/guide.md': '# Guide\n\n## The eleven members\n\n## Set up\n',
+    'docs/report(1).md': '# Results\n',
     'docs/sub/page.md': [
       '# Page',
-      'See [members](../guide.md#the-eleven-members), [setup](/docs/guide.md#set-up) and [below](#page).',
+      'See [members](../guide.md#the-eleven-members), [setup](/docs/guide.md#set-up "Set up") and [below](#page).',
       'A [stale link](../guide.md#the-twelve-members) and [a missing section](#nowhere).',
       'A [gone file](../old.md#set-up), a [folder](../), [code](../../src/a.ts#L3) and [a site](https://example.com/x.md#y).',
       '`[inline](#not-read)`',
@@ -61,6 +70,10 @@ test('a broken fragment or path fails naming the file, line, link and target; co
       '```',
       '<!-- [commented](#also-not-read) -->',
       '[ref]: ../guide.md#set-uq',
+      'The [report](../report(1).md#results), and after a literal `<!--` a [broken](#gone) link.',
+      '> ```md',
+      '> [quoted example](not-a-real-file.md#sample)',
+      '> ```',
     ].join('\n'),
     'src/a.ts': '',
   };
@@ -73,6 +86,7 @@ test('a broken fragment or path fails naming the file, line, link and target; co
     'docs/sub/page.md:3: link #nowhere: no heading or anchor in docs/sub/page.md makes #nowhere',
     'docs/sub/page.md:4: link ../old.md#set-up: docs/old.md is not a tracked file or directory',
     'docs/sub/page.md:10: link ../guide.md#set-uq: no heading or anchor in docs/guide.md makes #set-uq',
+    'docs/sub/page.md:11: link #gone: no heading or anchor in docs/sub/page.md makes #gone',
   ]);
 });
 
