@@ -203,7 +203,7 @@ export type IcsFaux = {
 
 type Held = { text: string; etag: string; modified: Date };
 
-/** Starts the fake on 127.0.0.1 (an ephemeral port unless `port`), its own calendar served at `address`, or `text` there in
+/** Starts the fake on loopback (an ephemeral port unless `port`), its own calendar served at `address`, or `text` there in
  *  its place. */
 export async function startIcsFaux(options: { port?: number; text?: string } = {}): Promise<IcsFaux> {
   const secret = `/calendar/ical/agent%40faux.example/private-${randomBytes(16).toString("hex")}/basic.ics`;
@@ -241,7 +241,7 @@ export async function startIcsFaux(options: { port?: number; text?: string } = {
     return done(200, { ...headers, "content-type": "text/calendar; charset=utf-8" }, held.text);
   };
   const server = createServer(answer);
-  const host = "127.0.0.1";
+  const host = "127.0.0.1"; // key-gate: loopback-rule the fake calendar listens on loopback only
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(options.port ?? 0, host, () => resolve()));
   const origin = `http://${host}:${(server.address() as AddressInfo).port}`;
   return {

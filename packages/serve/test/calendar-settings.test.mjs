@@ -101,14 +101,16 @@ test("GET, PUT, test and DELETE: the view never holds the address; the test answ
 
 test("a calendar on a private address is refused, on loopback only for a local install; a save whose read fails is kept, its name and zone unknown", { timeout: 120_000 }, async (t) => {
   withEnv(t, SEAL);
+  const PRIVATE = "10.1.2.3"; // key-gate: denylist a private literal the fetch refuses
+  const METADATA = "169.254.169.254"; // key-gate: denylist the metadata address the fetch refuses
   const { api } = await serve(t, { runner: false });
-  const tested = await api("POST", "/settings/calendar/test", { url: "https://10.1.2.3/calendar/private-0123456789abcdef/basic.ics" }); // key-gate: loopback-rule a private literal the fetch refuses
+  const tested = await api("POST", "/settings/calendar/test", { url: `https://${PRIVATE}/calendar/private-0123456789abcdef/basic.ics` });
   assert.equal(tested.status, 200, JSON.stringify(tested.body));
   assert.equal(tested.body.ok, false);
-  assert.equal(tested.body.message, "The calendar at 10.1.2.3 is on a private network, refused: an owner can allow 10.1.2.3 in Settings → MCP servers.");
+  assert.equal(tested.body.message, `The calendar at ${PRIVATE} is on a private network, refused: an owner can allow ${PRIVATE} in Settings → MCP servers.`);
   assert.ok(!tested.body.message.includes("private-0123456789abcdef"));
-  const metadata = await api("POST", "/settings/calendar/test", { url: "https://169.254.169.254/latest/meta-data.ics" }); // key-gate: loopback-rule the metadata address the fetch refuses
-  assert.equal(metadata.body.message, "The calendar at 169.254.169.254 is a private address; refused.");
+  const metadata = await api("POST", "/settings/calendar/test", { url: `https://${METADATA}/latest/meta-data.ics` });
+  assert.equal(metadata.body.message, `The calendar at ${METADATA} is a private address; refused.`);
 
   // A server that is no local install never reads loopback; a save still keeps the address, its read failed.
   const faux = await calendarFaux(t);
@@ -122,27 +124,30 @@ test("a calendar on a private address is refused, on loopback only for a local i
   assert.equal(faux.requests().length, 0, "nothing reached loopback");
 });
 
-test("each hop under the server's one address rule (mcp-oauth.ts calendarAt): a private IP, a public address that redirects to link-local 169.254.169.254, a name that resolves to 10.x, and plain http on a public host are each refused before a byte is sent to them", async (t) => {
+test("each hop under the server's one address rule (mcp-oauth.ts calendarAt): a private IP, a public address that redirects to the link-local metadata address, a name that resolves to a private address, and plain http on a public host are each refused before a byte is sent to them", async (t) => {
   const { forgetCalendarsForTests, readCalendar } = await import("../dist/calendar/fetch.js");
   forgetCalendarsForTests();
   t.after(() => forgetCalendarsForTests());
   // The network the read goes through (mcp-oauth.ts OAuthNetwork): each name resolves to what the test says, and each
   // request dialled is recorded with the address it was dialled at. A public calendar's host redirects to the metadata
   // address; any other host serves the calendar.
+  const METADATA = "169.254.169.254"; // key-gate: denylist the metadata address the fetch refuses
+  const PRIVATE = "10.0.0.7"; // key-gate: denylist a private literal the fetch refuses
+  const RESOLVED_PRIVATE = "10.20.30.40"; // key-gate: denylist a private address a public name resolves to
   const dialled = [];
   const network = (resolved) => {
     const answer = (url, address) => {
       dialled.push(`${url} @ ${address}`);
-      return url.startsWith("https://calendar.example.com/moved/") ? new Response(null, { status: 302, headers: { location: "https://169.254.169.254/latest/meta-data.ics" } }) : new Response(FAUX_CALENDAR); // key-gate: loopback-rule the metadata address the fetch refuses
+      return url.startsWith("https://calendar.example.com/moved/") ? new Response(null, { status: 302, headers: { location: `https://${METADATA}/latest/meta-data.ics` } }) : new Response(FAUX_CALENDAR);
     };
     return { lookup: async () => resolved, fetch: async (url, _init, address) => answer(url, address), dial: async (url, _init, address) => answer(url, address), local: () => [] };
   };
   const refused = (url, resolved) => readCalendar(url, {}, network(resolved)).then(() => "read", (error) => error.message);
-  assert.equal(await refused("https://10.0.0.7/calendar/private-0123/basic.ics", []), "The calendar at 10.0.0.7 is on a private network, refused: an owner can allow 10.0.0.7 in Settings → MCP servers."); // key-gate: loopback-rule a private literal the fetch refuses
-  assert.equal(await refused("https://calendar.example.org/private-0123/basic.ics", ["10.20.30.40"]), "The calendar at calendar.example.org is on a private network, refused: an owner can allow calendar.example.org in Settings → MCP servers.");
+  assert.equal(await refused(`https://${PRIVATE}/calendar/private-0123/basic.ics`, []), `The calendar at ${PRIVATE} is on a private network, refused: an owner can allow ${PRIVATE} in Settings → MCP servers.`);
+  assert.equal(await refused("https://calendar.example.org/private-0123/basic.ics", [RESOLVED_PRIVATE]), "The calendar at calendar.example.org is on a private network, refused: an owner can allow calendar.example.org in Settings → MCP servers.");
   assert.equal(await refused("http://calendar.example.net/private-0123/basic.ics", ["93.184.216.34"]), "The calendar at calendar.example.net is not https; refused.");
   assert.deepEqual(dialled, [], "none of the three was dialled");
-  assert.equal(await refused("https://calendar.example.com/moved/private-0123/basic.ics", ["93.184.216.34"]), "The calendar at 169.254.169.254 is a private address; refused.");
+  assert.equal(await refused("https://calendar.example.com/moved/private-0123/basic.ics", ["93.184.216.34"]), `The calendar at ${METADATA} is a private address; refused.`);
   assert.deepEqual(dialled, ["https://calendar.example.com/moved/private-0123/basic.ics @ 93.184.216.34"], "the public hop alone, at the address checked; the metadata address never");
   // A public host is read, dialled at the address its name was checked at.
   const read = await readCalendar("https://calendar.example.com/private-0123/basic.ics", {}, network(["93.184.216.34"]));
@@ -150,8 +155,8 @@ test("each hop under the server's one address rule (mcp-oauth.ts calendarAt): a 
   assert.equal(dialled.at(-1), "https://calendar.example.com/private-0123/basic.ics @ 93.184.216.34");
   // A redirect from the fake calendar server (loopback, a local install's) to a private address is refused the same way.
   const faux = await calendarFaux(t);
-  faux.move("/hop.ics", "https://10.0.0.7/calendar/basic.ics"); // key-gate: loopback-rule a private literal the fetch refuses
-  assert.equal(await readCalendar(faux.at("/hop.ics"), { loopback: true }, network([])).then(() => "read", (error) => error.message), "The calendar at 10.0.0.7 is on a private network, refused: an owner can allow 10.0.0.7 in Settings → MCP servers.");
+  faux.move("/hop.ics", `https://${PRIVATE}/calendar/basic.ics`);
+  assert.equal(await readCalendar(faux.at("/hop.ics"), { loopback: true }, network([])).then(() => "read", (error) => error.message), `The calendar at ${PRIVATE} is on a private network, refused: an owner can allow ${PRIVATE} in Settings → MCP servers.`);
   assert.equal(dialled.length, 2, "and never dialled");
 });
 

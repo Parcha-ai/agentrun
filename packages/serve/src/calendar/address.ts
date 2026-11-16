@@ -16,7 +16,7 @@ export type CalendarStore = { sealedKeys: Pick<SealedKeys, "get" | "put" | "remo
  *  (X-WR-CALNAME) and time zone as the save read them, null when that read failed. */
 export type SavedCalendar = { url: string; name: string | null; time_zone: string | null };
 
-/** A URL's hostname on loopback as written (localhost, 127.0.0.0/8, [::1]): only there is plain http taken, for the fakes. */
+/** A loopback hostname as written: only there is plain http taken, for the fakes. */
 export const LOOPBACK_NAME = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule only a loopback fake calendar is read over plain http
 const CONTROL = /[\u0000- \u007f-\u009f]/;
 

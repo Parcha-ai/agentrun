@@ -74,7 +74,8 @@ test("a case's calendar must be an .ics file in the case, an iCalendar file, for
   assert.match(await problemsOf({ cases: { week: { ...WEEK, "fixtures/work.ics": "<html>no</html>" } } }), /fixtures\/work\.ics: is not an iCalendar file/);
   assert.match(await problemsOf({ tools: ["web_fetch"], cases: { week: WEEK } }), /calendar fakes the server's calendar, and the package's tools don't name calendar_events/);
   const dir = await calendarPackage(t, { cases: { week: WEEK } });
-  await assert.rejects(evalTemplate({ dir, server: { baseUrl: "http://127.0.0.1:9/v2", token: "t" } }), (error) => error instanceof CaseError && error.problems.some((p) => /calendar fakes the server's calendar on the eval's own server alone/.test(p))); // key-gate: loopback-rule a named server that is never reached
+  const NAMED = "http://127.0.0.1:9/v2"; // key-gate: loopback-rule a named server that is never reached
+  await assert.rejects(evalTemplate({ dir, server: { baseUrl: NAMED, token: "t" } }), (error) => error instanceof CaseError && error.problems.some((p) => /calendar fakes the server's calendar on the eval's own server alone/.test(p)));
 });
 
 test("a package naming calendar_events applies on a server with no calendar as one naming the email tools does with no account: no refusal, no warning; its run is told there is none", { timeout: 150_000 }, async (t) => {
