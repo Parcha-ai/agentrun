@@ -7,7 +7,8 @@
     "computer",
     "sandbox",
     "docker",
-    "daytona"
+    "daytona",
+    "boxd"
   ],
   "type": "module",
   "license": "Apache-2.0",
@@ -53,6 +54,10 @@
     "./morph": {
       "types": "./dist/morph.d.ts",
       "default": "./dist/morph.js"
+    },
+    "./boxd": {
+      "types": "./dist/boxd.d.ts",
+      "default": "./dist/boxd.js"
     },
     "./orgo": {
       "types": "./dist/orgo.d.ts",
@@ -105,6 +110,7 @@
     "test:daytona": "node --test --test-timeout=1800000 test/daytona/*.test.mjs",
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
     "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",
+    "test:boxd": "node --test --test-timeout=1800000 test/boxd/*.test.mjs",
     "conformance": "node dist/conformance/cli.js"
   },
   "repository": {

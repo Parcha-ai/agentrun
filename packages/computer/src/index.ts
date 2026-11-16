@@ -120,6 +120,8 @@ export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorP
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,
+	BOXD,
+	BOXD_DEFAULT_IMAGE,
 	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,
