@@ -34,7 +34,8 @@ AgentRun needs two things from your API:
 - **A list by label.** You can list your machines by a label, tag or metadata pair that AgentRun sets at create.
   If your API keeps no labels, declare `labels: "machine"` in your facts. AgentRun then writes them to a file in the
   machine that only root can read, and you list by the name create gives the machine, or list every machine where your
-  API takes no name.
+  API takes no name. Your timer must end machines (`lifetime: "vendor"`): a machine whose create stopped before the
+  file was written carries no label the janitor can find.
 
 ### Exec shapes that work
 

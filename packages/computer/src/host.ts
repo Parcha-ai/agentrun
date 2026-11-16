@@ -86,9 +86,8 @@ export interface MachineHost {
 	 * vendor's own timer (facts.lifetime "vendor"), or the janitor's deadline label (facts.lifetime "janitor"). A refusal
 	 * (a HostError limit, in words) when no end the vendor takes lands there without moving it earlier than it is or past
 	 * the most: nothing moves then. The adapter reads the end back with get (deadlineOf, the deadline label: a vendor that
-	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. Optional: a host without
-	 * it has no extend, but for one whose labels are kept in the machine under lifetime "janitor": there the adapter moves
-	 * the deadline label itself, as it does after a vendor timer moves.
+	 * keeps no label change reads its moved timer as that label), and init's deadline follows it. With facts.labels
+	 * "machine", the adapter then moves the deadline label in the machine itself. Optional: a host without it has no extend.
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
@@ -220,7 +219,8 @@ export interface HostFacts {
 	 * Absent: no bound. packed: the host stores the labels as packLabels packs them (./hosted/values.ts: one name to
 	 * list by, the map in parts of at most valueBytes each) and get answers unpackLabels' map; count and bytes are then
 	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
-	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it; no bound.
+	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it; no bound. Only with
+	 * lifetime "vendor": a machine whose labels were never written is ended by the vendor's timer alone.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**

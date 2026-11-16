@@ -81,7 +81,8 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   a read and the write, plus five minutes: 11.5 minutes on the default timeouts), another create of the request may
   still be making it. A retry that lists it waits for its labels as for a computer still starting, and a sweep of the
   name leaves it. Once it is older, a retry is refused `exists` and deletes it, as a sweep does. One whose vendor reads
-  no `createdAt` is never old enough: the vendor's timer ends it. Only a missing file reads as no labels; a read that
+  no `createdAt` is never old enough: the vendor's timer ends it, which is why such a host must declare
+  `lifetime: "vendor"`. Only a missing file reads as no labels; a read that
   fails otherwise fails the listing in words, so the janitor never misses a computer it couldn't read. The Core case
   `isolation.label-file` checks that the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for

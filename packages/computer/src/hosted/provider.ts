@@ -322,6 +322,11 @@ export class HostedProvider implements ComputerProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
+		// A machine whose create was cut off before its labels were written carries none the janitor lists: only the vendor's
+		// timer ends it.
+		if (host.facts.labels === "machine" && host.facts.lifetime !== "vendor") {
+			throw new Error(`${label} keeps no labels (facts.labels "machine"), so its lifetime must be the vendor's: a machine whose create stopped before its labels were written has none the janitor lists, and only a vendor's timer ends it`);
+		}
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
@@ -344,9 +349,8 @@ export class HostedProvider implements ComputerProvider {
 		[this.#uid, this.#gid] = [String(Number(user[1])), String(Number(user[2]))];
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
-		// Extend only where the end can follow it: the host moves its timer or its deadline label, or, with the labels in the
-		// machine and the janitor's lifetime, the adapter moves the label itself.
-		if (host.extend || (this.#keeps && host.facts.lifetime === "janitor")) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
+		// Extend only where the end can follow it: the host moves its timer or its deadline label.
+		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
 	}
 
 	/** The computer's facts, from the descriptor, the host's facts and the adapter's options alone. */
@@ -667,7 +671,7 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * The labels create gives a computer: the caller's, the adapter's own, and an Archil mount's (never its token). The
-	 * most its deadline may reach only where it can be extended, the label's one reader: a host with no extend (Modal,
+	 * most its deadline may reach only where the host can extend it, the label's one reader: a host with no extend (Modal,
 	 * Daytona) spends none of its label bytes on it (Modal's 512 hold the box image's tag beside an Archil mount's label).
 	 */
 	#labelsOf(spec: ComputerSpec, name: string, deadline: string, maxDeadline: string): Record<string, string> {
@@ -678,7 +682,7 @@ export class HostedProvider implements ComputerProvider {
 			[NAME_LABEL]: name,
 			[DEADLINE_LABEL]: deadline,
 			[IMAGE_LABEL]: spec.image,
-			...(this.extend ? { [MAX_LABEL]: maxDeadline } : {}),
+			...(this.host.extend ? { [MAX_LABEL]: maxDeadline } : {}),
 			...(network === "" ? {} : { [NETWORK_LABEL]: network }),
 			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
 			...(typeof spec.gpu?.type === "string" && typeof spec.gpu.count === "number" ? { [GPU_LABEL]: `${spec.gpu.type}:${spec.gpu.count}` } : {}),
@@ -1330,8 +1334,7 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * Moves the deadline to now + ttlMs, refusing one earlier than it is (before any vendor call), never past create's time
 	 * plus the cap (init's maximum): the host's extend first (its timer or its deadline label), and the label file where the
-	 * labels are kept in the machine, then the end it reads back
-	 * (get, deadlineOf), then init's own deadline, to that end. The deadline returned is the one init took.
+	 * labels are kept in the machine, then the end it reads back (get, deadlineOf), then init's own deadline, to that end. The deadline returned is the one init took.
 	 */
 	async #extend(ref: ComputerRef, ttlMs: number, signal?: AbortSignal): Promise<Result<{ deadline: Date }>> {
 		// Labels kept in the machine are read now: another instance may have moved the deadline.
@@ -1352,10 +1355,9 @@ export class HostedProvider implements ComputerProvider {
 		}
 		if (current !== undefined && target === current.getTime()) return ok({ deadline: current });
 		const extend = this.host.extend?.bind(this.host);
-		if (extend) {
-			const moved = await this.#call(`${this.#label}'s end of ${ref.name}`, (ctx) => extend(ref.id, new Date(target), ctx), this.#timeouts.requestMs, signal);
-			if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label} did not move ${ref.name}'s end, so nothing did: ${moved.error.message}`);
-		}
+		if (!extend) return this.#fail("unsupported", `${a(this.#label)} computer's deadline cannot move`);
+		const moved = await this.#call(`${this.#label}'s end of ${ref.name}`, (ctx) => extend(ref.id, new Date(target), ctx), this.#timeouts.requestMs, signal);
+		if (!moved.ok) return moved.error.code === "limit" ? moved : this.#fail(moved.error.code, `${this.#label} did not move ${ref.name}'s end, so nothing did: ${moved.error.message}`);
 		if (this.#keeps) {
 			const kept = await this.#keep(ref, { ...machine.labels, [DEADLINE_LABEL]: new Date(target).toISOString() }, signal);
 			if (!kept.ok) return this.#fail(kept.error.code, `${ref.name}'s deadline label did not move, nor did init's deadline: ${kept.error.message}`);

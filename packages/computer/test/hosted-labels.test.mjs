@@ -225,10 +225,13 @@ test("a machine of the request's name with no file and no createdAt is never old
 	assert.equal(left.deleted, false);
 });
 
-test("extend rewrites the file's deadline: after the vendor's timer, or alone under the janitor's lifetime, where the host has no extend", async () => {
+test("a host that keeps no labels takes only the vendor's lifetime: a machine whose labels were never written has none the janitor lists", () => {
+	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" } }).host), /keeps no labels \(facts\.labels "machine"\), so its lifetime must be the vendor's/);
+});
+
+test("extend rewrites the file's deadline after the vendor's timer moves; with a timer the host can't move, there is no extend", async () => {
 	for (const [what, options, has] of [
 		["a vendor timer", { facts: { labels: "machine" } }, true],
-		["the janitor's label", { facts: { labels: "machine", lifetime: "janitor" }, timer: "none" }, true],
 		["a vendor timer the host cannot move", { facts: { labels: "machine" }, timer: "none" }, false],
 	]) {
 		const fake = fakeHost(options);
@@ -254,17 +257,15 @@ test("extend rewrites the file's deadline: after the vendor's timer, or alone un
 
 test("a host that keeps no labels passes the provider cases a labelled host passes, case by case, the isolation of its label file among them, and leaves nothing behind", async () => {
 	const cases = conformanceCases.filter((c) => (c.group === "provider" && c.id !== "provider.deadline") || c.id === "isolation.label-file");
-	for (const lifetime of ["vendor", "janitor"]) {
-		const run = async (facts) => {
-			const report = await runConformance(provider(fakeHost({ facts: { lifetime, ...facts } }).host), { image: "img", cases, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
-			return { statuses: report.results.map(({ id, status }) => [id, status]), cleanup: report.cleanup };
-		};
-		const [labelled, kept] = [await run({}), await run({ labels: "machine" })];
-		assert.deepEqual(kept.statuses, labelled.statuses, `${lifetime}: the same results`);
-		for (const id of ["provider.create-retried", "provider.create-after-release", "provider.list", "provider.release-older", "isolation.label-file"]) {
-			assert.ok(kept.statuses.some(([one, status]) => one === id && status === "pass"), `${lifetime}: ${id} passes`);
-		}
-		assert.deepEqual(kept.cleanup.left, [], `${lifetime}: nothing left`);
-		assert.deepEqual(kept.cleanup.sweep.stillThere, [], `${lifetime}: the end-of-run sweep finds its label in the files`);
+	const run = async (facts) => {
+		const report = await runConformance(provider(fakeHost({ facts }).host), { image: "img", cases, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
+		return { statuses: report.results.map(({ id, status }) => [id, status]), cleanup: report.cleanup };
+	};
+	const [labelled, kept] = [await run({}), await run({ labels: "machine" })];
+	assert.deepEqual(kept.statuses, labelled.statuses, "the same results");
+	for (const id of ["provider.create-retried", "provider.create-after-release", "provider.list", "provider.release-older", "isolation.label-file"]) {
+		assert.ok(kept.statuses.some(([one, status]) => one === id && status === "pass"), `${id} passes`);
 	}
+	assert.deepEqual(kept.cleanup.left, [], "nothing left");
+	assert.deepEqual(kept.cleanup.sweep.stillThere, [], "the end-of-run sweep finds its label in the files");
 });
