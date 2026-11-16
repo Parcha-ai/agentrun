@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.change-alarm",
-  "version": 1,
+  "version": 2,
   "title": "Move a labelled alarm to a new time in Clock",
   "split": "heldout",
   "tags": ["clock", "edit"],
@@ -9,10 +9,10 @@
   "params": {
     "t": {
       "pick": [
-        { "from_say": "6:30 AM", "fh": "6", "fm": "30", "to_say": "6:50 AM", "th": "6", "tm": "50", "thh": "06", "tmm": "50" },
-        { "from_say": "7:15 AM", "fh": "7", "fm": "15", "to_say": "8:05 AM", "th": "8", "tm": "5", "thh": "08", "tmm": "05" },
-        { "from_say": "9:00 PM", "fh": "21", "fm": "0", "to_say": "9:45 PM", "th": "21", "tm": "45", "thh": "21", "tmm": "45" },
-        { "from_say": "5:40 AM", "fh": "5", "fm": "40", "to_say": "5:10 AM", "th": "5", "tm": "10", "thh": "05", "tmm": "10" }
+        { "from_say": "6:30 AM", "fh": "6", "fm": "30", "to_say": "6:50 AM", "th": "6", "tm": "50", "thh": "06", "tmm": "50", "f12": "6", "fmm": "30", "fap": "AM", "t12": "6", "tap": "AM" },
+        { "from_say": "7:15 AM", "fh": "7", "fm": "15", "to_say": "8:05 AM", "th": "8", "tm": "5", "thh": "08", "tmm": "05", "f12": "7", "fmm": "15", "fap": "AM", "t12": "8", "tap": "AM" },
+        { "from_say": "9:00 PM", "fh": "21", "fm": "0", "to_say": "9:45 PM", "th": "21", "tm": "45", "thh": "21", "tmm": "45", "f12": "9", "fmm": "00", "fap": "PM", "t12": "9", "tap": "PM" },
+        { "from_say": "5:40 AM", "fh": "5", "fm": "40", "to_say": "5:10 AM", "th": "5", "tm": "10", "thh": "05", "tmm": "10", "f12": "5", "fmm": "40", "fap": "AM", "t12": "5", "tap": "AM" }
       ]
     },
     "label": { "pick": ["Yoga", "Shift", "Walk dog", "Train"] }
@@ -35,6 +35,7 @@
     }
   ],
   "instruction": "In the Clock app, change the alarm labelled \"{{label}} {{nonce}}\" from {{t.from_say}} to {{t.to_say}}. Keep its label, and don't leave an alarm at the old time.",
+  "exec": "deny",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
   "sufficient": false,
   "checks": [
@@ -64,15 +65,10 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "why": "Drop the alarm at the old time (DISMISS deletes a one-time SKIP_UI alarm).",
-      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}"], "timeoutMs": 20000 }
-    },
-    {
-      "method": "exec.run",
-      "why": "Make it again at the new time with the same label.",
-      "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.SET_ALARM", "--ei", "android.intent.extra.alarm.HOUR", "{{t.th}}", "--ei", "android.intent.extra.alarm.MINUTES", "{{t.tm}}", "--es", "android.intent.extra.alarm.MESSAGE", "{{label}} {{nonce}}", "--ez", "android.intent.extra.alarm.SKIP_UI", "true"], "timeoutMs": 20000 }
-    }
+    { "method": "ui.act", "why": "The alarm's time button (named by the time alone, with Clock's hair space, U+200A, before AM or PM) opens the time picker on its hour dial.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "matches": "^{{t.f12}}:{{t.fmm}}\\s{{t.fap}}$" } } } }], "expect": { "text": "CANCEL", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The hour on the dial (a text node; the picker's own hour field is a button). 12 first: most picks keep the hour, and a press on the hour already shown changes nothing and can't be confirmed.", "params": { "steps": [{ "press": { "find": { "role": "text", "name": { "equals": "12" } } } }, { "press": { "find": { "role": "text", "name": { "equals": "{{t.t12}}" } } } }], "expect": { "text": "{{t.t12}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "The minutes field, the picker's two-digit button that is not the one-digit hour, turns the dial to minutes.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "matches": "^(?!{{t.t12}}$)\\d\\d$" } } } }], "expect": { "text": "55", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Every pick changes the minute; AM or PM stays, so its press can't be confirmed on its own.", "params": { "steps": [{ "press": { "find": { "role": "text", "name": { "equals": "{{t.tm}}" } } } }, { "press": { "find": { "role": "radio", "name": { "equals": "{{t.tap}}" } } } }], "expect": { "text": "{{t.tap}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Saved: the alarm's row is named by its new time and its label.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "{{t.t12}}:{{t.tmm}} {{t.tap}} {{label}} {{nonce}}", "timeoutMs": 8000 } } }
   ]
 }

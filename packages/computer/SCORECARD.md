@@ -1,7 +1,7 @@
 # Provider scorecard
 
 AgentRun is an open-source platform for running AI agents, and it gives each agent a computer on a vendor's machines.
-This page reads 25 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
+This page reads 26 sandbox and machine vendors against the provider contract in [PROVIDERS.md](PROVIDERS.md) and
 [spec/computer/provider.md](../../spec/computer/provider.md). For each it says whether a provider fits on the shared
 machine-host adapter, what the provider would take, and what is still open. It is for a vendor's engineer, or a
 contributor, deciding whether to write one.
@@ -23,8 +23,8 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 ## The table
 
-Of 28 rows (25 vendors; Google, Fly.io and Beam have one row per product): 0 clean, 5 fit if unverified facts hold, 13
-need a workaround, 10 are blocked.
+Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
+14 need a workaround, 11 are blocked.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -35,7 +35,9 @@ need a workaround, 10 are blocked.
 | [Beam Sandbox](https://docs.beam.cloud/v2/sandbox/overview) | disposable containers with a TTL | blocked (`exec`: no live stdin) | n/a | none |
 | [Beam VM](https://docs.beam.cloud/v2/vm/overview) | persistent microVMs | needs a workaround (`extend` rewrites the whole metadata map, or is left out) | 300-350 | [ssh-exec][se], [prepareImage][pi] |
 | [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand) | 250-280 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
-| [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (a relay Worker of ours carries create, list, exec and the timers; the image is fixed at deploy) | 250-330, plus a relay Worker | [framedExec][fe] |
+| [boxes.dev](https://boxes.dev/help) as a provider | devboxes, Firecracker VMs on E2B | blocked (no public create, exec or delete API; the CLI is tied to a signed-in user; exec is one-shot; a box sleeps after 5 minutes idle and stays awake 4 hours at most; the VMs are E2B's, which AgentRun already drives) | none | none |
+| [boxes.dev](https://boxes.dev/help) as a bring-your-own machine | the user's own devbox, with computerd dialing in | needs a workaround (Linux pairing, which is planned and not built; unverified: an open outbound connection keeps the box awake) | no provider file | [attach binding](../../spec/computer/attach.md) |
+| [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (on the dial path, a relay Worker of ours in the user's account carries create, get, list and delete, and no exec; an alarm keeps the container alive, since an open outbound socket is not activity; the image is fixed at deploy) | 250-330, plus a relay Worker | none |
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 320 | [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
 | [Fly Machines](https://docs.fly.io/machines/api/machines-resource) | KVM microVMs from an OCI image | blocked (`exec`: answers once the command ends) | n/a | none |
@@ -44,15 +46,15 @@ need a workaround, 10 are blocked.
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
 | [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packed labels][pl], [backstopAt][bs], [prepareImage][pi] |
-| [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | blocked (`get` and `list`: labels "machine" needs each sandbox's image, and the sandbox record has none, per the vendor's OpenAPI) | 230-260 if the record had the image | [framedExec][fe] with [sse][ss], [labels "machine"][lm], [prepareImage][pi] |
+| [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | blocked (the sandbox record has no name or label, per the vendor's OpenAPI, so a listing finds nothing of ours: the vendor, or our side, would have to keep the labels) | 230-260 if labels were kept | [framedExec][fe] with [sse][ss], [prepareImage][pi] |
 | [Kasm Workspaces](https://docs.kasm.com/docs/reference/developer-api) | a container session streamed to a person | blocked (`exec`: no two-way exec stream) | n/a | none |
-| [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status) | 260-300 | [framedExec][fe], [labels "machine"][lm] |
+| [Koyeb Sandboxes](https://www.koyeb.com/docs/sandboxes) | microVMs as Koyeb services | fits if (unverified: `idle_timeout` 0 never sleeps; the exec WebSocket has no idle cut and runs as root; root makes a network namespace; a taken name's status; labels kept on our side or by the vendor, since a service has the name and no label) | 260-300 | [framedExec][fe] |
 | [microsandbox](https://docs.microsandbox.dev/cloud/overview.md) | libkrun microVMs (hosted cloud in private beta) | needs a workaround (exec only through an SDK whose backend and key are process-wide) | 220-240 | [prepareImage][pi] |
 | [Morph Cloud](https://cloud.morph.so/docs) | VM instances booted from snapshots | fits if (unverified: SSH lands as root; `/ttl` counts from now; `morphvm-minimal` runs `install.sh`; root makes a network namespace) | 240-270 | [ssh-exec][se], [packed labels][pl], [prepareImage][pi] |
 | [Northflank Sandboxes](https://northflank.com/docs/v1/application/sandboxes) | microVMs as Northflank services | fits if (unverified: root makes a network namespace in the microVM; the exec proxy has no idle cut) | 280-300 | [framedExec][fe] (pid wrapper), [backstopAt][bs] |
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packed labels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [prepareImage][pi] |
-| [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | blocked (`get` and `list`: labels "machine" needs each sandbox's image, and the sandbox record has none, per the vendor's SDK; exec would also need a fifo pump of ours) | about 320 if the record had the image | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
+| [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | blocked (the sandbox record has a name but no label, per the vendor's SDK, so the labels would have to be kept on our side or by the vendor; exec would also need a fifo pump of ours) | about 320 if labels were kept | [framedExec][fe], [prepareImage][pi] |
 | [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (two SSE feeds merged by hand) | 270-290 | [framedExec][fe] with [sse][ss], [backstopAt][bs], [prepareImage][pi] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | fits if (unverified: root makes a network namespace; the SSE feed holds 75 s of silence; the `ttl` cap; the tag value limit; amd64) | 240-270 | [framedExec][fe] with [sse][ss], [packed labels][pl], [prepareImage][pi] |
 | [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | fits if (unverified: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 230-290 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
@@ -164,19 +166,42 @@ provider spec.
   (memory as a multiple of cpus) is held in the host's `check`.
 - **Open:** ours, a "vendor agent as entrypoint" image case and a size rule in `facts`. Unverified: root's network namespace, arch, listeners, the label charset.
 
+### boxes.dev
+
+- **Rents:** devboxes for coding agents, cloned from a project's template snapshot (disk and RAM). The vendor's founders
+  say the machines are Firecracker VMs on E2B ([Show HN thread](https://hn.svelte.dev/item/48399358)); the
+  [CLI](https://boxes.dev/help/agent-command-reference) is `dvb`.
+- **As a provider, blocked.** The only public REST call is the automation API, which starts an agent run
+  ([automation API](https://boxes.dev/help/automation-api)); it has no list, delete, exec or image. Create, list and
+  delete exist only in the CLI, which is bound to a signed-in user
+  ([manage devboxes](https://boxes.dev/help/manage-devboxes)). `dvb exec` is one-shot with a timeout and literal argv, so
+  there is no stdio bridge. A box sleeps after about 5 minutes idle, "Keep awake" runs 1 to 4 hours, and "nothing runs
+  while it sleeps" ([sleep, wake, recover](https://boxes.dev/help/sleep-wake-recover)). The machines are E2B's, which
+  AgentRun already drives, so a provider adds no compute.
+- **As a bring-your-own machine, needs Linux pairing, which is planned.** The user runs one command in their box and computerd
+  dials in ([attach binding](../../spec/computer/attach.md#pairing-bring-your-own-machine)), inside boxes.dev's sleep
+  and 4 hour limits. Linux pairing is planned, not built.
+- **Unverified:** whether an open outbound connection from inside the box keeps it awake. The help pages list what does:
+  an agent working, a hold an agent requests, background commands an agent starts (up to 1 hour, or a declared timeout
+  capped at 4 hours), and a person using the machine; traffic through desktop localhost forwarding does not count
+  ([sleep, wake, recover](https://boxes.dev/help/sleep-wake-recover)). Neither that page, [computer
+  access](https://boxes.dev/help/computer-access), [manage devboxes](https://boxes.dev/help/manage-devboxes) nor the
+  [agent command reference](https://boxes.dev/help/agent-command-reference) says an open connection or a bare process
+  counts. One box left idle past 5 minutes with computerd connected settles it: it stays attached, or it sleeps.
+
 ### Cloudflare Sandbox
 
 - **Rents:** containers, each in its own Firecracker microVM
   ([architecture](https://developers.cloudflare.com/containers/platform-details/architecture/)).
 - **Exec and the rest:** every container call is a binding inside a Worker's Durable Object
   ([container class](https://developers.cloudflare.com/containers/container-class/)); there is no REST call that
-  makes, lists or execs into one. A provider needs a relay Worker of ours in the user's account, with create, list,
-  exec, extend and the timers behind it.
+  makes, lists or deletes one. On the dial path a provider needs a relay Worker of ours in the user's account that
+  carries create, get, list and delete. It has no exec: computerd inside the container dials AgentRun.
 - **Lifetime:** an inactivity window of at most 6 hours, which can't be switched off
   ([lifetime](https://developers.cloudflare.com/sandbox/concepts/lifetime/)). Requests, alarms and accepted
-  WebSockets count as activity and a container's processes don't, so the relay keeps it: the exec WebSocket it holds
-  while AgentRun is connected, and its own alarm between connections, which also ends the container at its deadline.
-  That alarm, the relay's, is the only timer that outlives AgentRun.
+  WebSockets count as activity and a container's processes don't, so an open outbound socket from computerd does not
+  keep the container alive. The relay's own alarm does: it renews the window about hourly and ends the container at its
+  deadline. That alarm, the relay's, is the only timer that outlives AgentRun.
 - **Image:** fixed at Worker deploy ([image management](https://developers.cloudflare.com/containers/platform-details/image-management/)),
   so [prepareImage](PROVIDERS.md#wire-it-up) can't build or pull one at run time.
 - **Open:** ours, dial-out, or a documented vendor-hosted relay shape. The vendor's: a REST API for container instances.
@@ -288,18 +313,15 @@ provider spec.
   [framedExec](PROVIDERS.md#a-text-exec-in-split-calls) pieces. Output comes as "server-sent events"
   ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)), which `sse` reads; PROVIDERS.md's worked
   example for [server-sent events](PROVIDERS.md#output-as-server-sent-events) is this API.
-- **Labels and lifetime:** a sandbox has no name or label field ([OpenAPI](https://hyperbrowser.ai/docs/openapi.json)),
-  so [labels "machine"](PROVIDERS.md#what-your-api-needs): a listing reads the label file of each running sandbox on the
-  team. `timeoutMinutes` at create ends it ([lifecycle](https://hyperbrowser.ai/docs/sandboxes/lifecycle.md)); no call
-  moves it, so `lifetime: "vendor"` and no `extend`, as labels "machine" asks.
-- **Blocked:** labels "machine" also needs each sandbox's image from `get` and `list` (`Machine.image`,
-  [create](PROVIDERS.md#the-eleven-members)): AgentRun reads the label file only in a machine of a box image or of the
-  provider's `image` option. The sandbox record has no image: `Sandbox` and `SandboxDetail` in the
-  [OpenAPI](https://hyperbrowser.ai/docs/openapi.json) carry none, and `imageName` is a create field only.
+- **Labels and lifetime:** a sandbox has no name or label field ([OpenAPI](https://hyperbrowser.ai/docs/openapi.json)).
+  `timeoutMinutes` at create ends it ([lifecycle](https://hyperbrowser.ai/docs/sandboxes/lifecycle.md)); no call
+  moves it, so `lifetime: "vendor"` and no `extend`.
+- **Blocked:** with no name or label on the record, a listing can't tell our sandboxes from the team's others. The
+  vendor would add a label or name field, or the labels would be kept on our side.
 - **Image:** the box image built from `box/Dockerfile` on Hyperbrowser's side as a team image, found by listing the
   team's images, in [prepareImage](PROVIDERS.md#wire-it-up)
   ([custom images](https://hyperbrowser.ai/docs/sandboxes/custom-images.md)).
-- **Open:** the vendor's, the image on the sandbox record. Unverified: a process started without a timeout has none,
+- **Open:** the vendor's, a name or label on the sandbox record. Unverified: a process started without a timeout has none,
   exec runs as root, root makes a network namespace; the docs give `timeoutMs`, a process's "Maximum runtime in
   milliseconds", no default ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)). The macOS runtime
   would be a direct `ComputerProvider`, outside the adapter.
@@ -310,7 +332,7 @@ provider spec.
   ([developer API](https://docs.kasm.com/docs/reference/developer-api)).
 - **Blocked:** `exec_command_kasm` takes a command and answers the container's details and the time: no output, no
   stdin and no exit code ([developer API](https://docs.kasm.com/docs/reference/developer-api)). No two-way exec stream, so `exec` is blocked,
-  and [labels "machine"](PROVIDERS.md#what-your-api-needs) and the daemon's upload fall with it.
+  and the daemon's upload falls with it.
 - **Labels:** none on a session; one Kasm user per request name would stand in.
 - **Open:** ours, dial-out. The vendor's: a streaming exec, per-session labels.
 
@@ -321,13 +343,9 @@ provider spec.
 - **Exec:** the platform's exec WebSocket that the CLI uses
   ([koyeb-cli](https://github.com/koyeb/koyeb-cli), `pkg/koyeb/exec.go`), as
   [framedExec](PROVIDERS.md#a-text-exec-in-split-calls) pieces with a kill by pid.
-- **Labels and lifetime:** the service is named `req.name` and the labels go in the machine
-  ([labels "machine"](PROVIDERS.md#what-your-api-needs)); `delete_after_delay` counts from creation, 60 s to 24 hours
-  ([lifecycle](https://www.koyeb.com/docs/sandboxes/sandbox-lifecycle)), so `lifetime: "vendor"` and no `extend`, as
-  labels "machine" asks. Each machine's image, which labels "machine" also needs from `get` and `list`, is on the
-  service's latest deployment as `definition.docker.image`
-  ([Python SDK](https://github.com/koyeb/koyeb-python-sdk), `koyeb/api/models/deployment.py`, `docker_source.py`): one
-  more read per machine.
+- **Labels and lifetime:** the service is named `req.name`, and it has no label to list by, so the labels would be kept
+  on our side or by the vendor. `delete_after_delay` counts from creation, 60 s to 24 hours
+  ([lifecycle](https://www.koyeb.com/docs/sandboxes/sandbox-lifecycle)), so `lifetime: "vendor"` and no `extend`.
 - **Network:** the vendor's egress list takes CIDRs only ([Python SDK](https://github.com/koyeb/koyeb-python-sdk),
   `egress.py`), so `allow` is init's proxy; blocking the network is hardening.
 - **Open:** ours, a docs line on finding the exec in a vendor's CLI, and a listing hint if a rate limit bites. The
@@ -403,8 +421,7 @@ provider spec.
 - **Labels and lifetime:** the only vendor timer is an idle destroy. On the Hobby and Pro plans a create's
   `idleTimeoutMinutes: 0` switches it off, as every timer that ends a quiet machine must be
   ([create](PROVIDERS.md#the-eleven-members)); on Trial and Free it can't be (1 to 5 minutes), so Railway doesn't fit
-  on those plans ([sandboxes](https://docs.railway.com/sandboxes)). The deadline is then the janitor's, and
-  [labels "machine"](PROVIDERS.md#what-your-api-needs) needs a vendor timer (`lifetime: "vendor"`), so the labels go
+  on those plans ([sandboxes](https://docs.railway.com/sandboxes)). The deadline is then the janitor's. The labels go
   in create's variables and are read back by exec. Errors carry only a message, so they map by text.
 - **Image:** the box image built on Railway's base in [prepareImage](PROVIDERS.md#wire-it-up).
 - **Open:** the vendor's, a name or label field on a sandbox, or a delete timer a create sets. Unverified: exec user,
@@ -418,16 +435,14 @@ provider spec.
   so a fifo pump of ours writes by exec. Each write is an exec against a limit of 1,000 a minute per user
   ([limits](https://render.com/docs/sandboxes-limits)). Unverified: whether a process outlives the exec that started it,
   and the stream's idle timeout; either could block `exec`.
-- **Labels and lifetime:** a native name, the labels in the machine
-  ([labels "machine"](PROVIDERS.md#what-your-api-needs)); a timeout at create, which can't move, so
-  `lifetime: "vendor"` and no `extend` ([creating](https://render.com/docs/sandboxes-creating)), as labels "machine"
-  asks. `idleTimeoutSeconds: 0` switches the idle suspend off.
-- **Blocked:** labels "machine" also needs each sandbox's image from `get` and `list` (`Machine.image`,
-  [create](PROVIDERS.md#the-eleven-members)): AgentRun reads the label file only in a machine of a box image or of the
-  provider's `image` option. The API's `sandbox` record has a name, plan, status and timeouts but no image
-  ([SDK](https://www.npmjs.com/package/@renderinc/sdk) 1.8.0, `dist/generated/schema.d.ts`).
+- **Labels and lifetime:** a native name and no label; a timeout at create, which can't move, so
+  `lifetime: "vendor"` and no `extend` ([creating](https://render.com/docs/sandboxes-creating)).
+  `idleTimeoutSeconds: 0` switches the idle suspend off.
+- **Blocked:** the API's `sandbox` record has a name, plan, status and timeouts but no label
+  ([SDK](https://www.npmjs.com/package/@renderinc/sdk) 1.8.0, `dist/generated/schema.d.ts`), so the labels would have
+  to be kept on our side or by the vendor.
 - **Image:** imported by tag in [prepareImage](PROVIDERS.md#wire-it-up).
-- **Open:** the vendor's, the image on the sandbox record. Ours, a `framedExec` mode that builds `write` from a fifo,
+- **Open:** the vendor's, a label on the sandbox record. Ours, a `framedExec` mode that builds `write` from a fifo,
   and a row for this shape in [exec shapes](PROVIDERS.md#exec-shapes-that-work).
 
 ### Runloop Devboxes
@@ -490,7 +505,7 @@ The open gaps on our side, by how many rows they hold back:
 | One each: a per-machine credential (Freestyle); `e2b.ts` taking an API URL (Cube); an SDK that keeps keys process-wide (microsandbox) | 3 | adapter or docs |
 
 Three blocks are the vendor's to lift: DigitalOcean's auto-pause, which can't be switched off, and Hyperbrowser's and
-Render's sandbox records, which carry no image for `labels: "machine"` to read.
+Render's sandbox records, which carry no label.
 
 Dial-out is planned: computerd in the machine would connect to AgentRun, so the vendor needs no exec stream. The
 [attach binding](../../spec/computer/attach.md), a draft today, is that connection for a person's own machine.
@@ -505,7 +520,6 @@ A vendor can move its row:
 
 [fe]: PROVIDERS.md#a-text-exec-in-split-calls
 [se]: PROVIDERS.md#exec-shapes-that-work
-[lm]: PROVIDERS.md#what-your-api-needs
 [pl]: PROVIDERS.md#the-eleven-members
 [bs]: PROVIDERS.md#the-eleven-members
 [pi]: PROVIDERS.md#wire-it-up
