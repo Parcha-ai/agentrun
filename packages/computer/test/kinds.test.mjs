@@ -124,9 +124,11 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
+	// Cloudflare's containers start from the box image its relay was deployed FROM, which the relay's health names.
+	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (id !== "modal") assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["docker", "agent37", "modal", "e2b", "cloudflare"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);

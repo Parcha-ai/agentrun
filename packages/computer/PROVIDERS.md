@@ -435,6 +435,9 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
+- **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
+  (`relays/cloudflare`, `src/cloudflare.ts`): on Workers Paid, `npx wrangler secret put RELAY_TOKEN` and
+  `npx wrangler deploy` from that folder, then paste the Worker's URL and the token into Settings.
 
 ### Wire it up
 

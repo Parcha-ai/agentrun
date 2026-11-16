@@ -2,6 +2,7 @@
 // each provider module loads only when its descriptor's load() is called.
 import { AGENT37 } from "./agent37.js";
 import { BROWSERBASE } from "./browserbase.js";
+import { CLOUDFLARE } from "./cloudflare.js";
 import { DAYTONA } from "./daytona.js";
 import { DOCKER } from "./docker.js";
 import { E2B } from "./e2b.js";
@@ -11,11 +12,10 @@ import { MODAL } from "./modal.js";
 import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";
 
-export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL] as const;
+export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, CLOUDFLARE, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL] as const;
 
-export { AGENT37, BROWSERBASE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO, PHONE_HARNESS };
-export { AGENT37_BASE_TEMPLATE } from "./agent37.js";
-export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
+export { AGENT37, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, ORGO, PHONE_HARNESS };
+export { AGENT37_BASE_TEMPLATE } from "./agent37.js";export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
 export { ORGO_BASE_IMAGE } from "./orgo.js";
 export { PHONE_GROUPS, PHONE_IMAGE } from "./phone-harness.js";
 export { BROWSER_IMAGE, LINUX_DESKTOP, SANDBOX } from "./shared.js";
