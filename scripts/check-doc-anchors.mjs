@@ -1,17 +1,17 @@
-// Every relative link with a #fragment in a tracked Markdown file lands on a heading or anchor: a renamed heading once left
-// 16 links in packages/computer/SCORECARD.md pointing at a fragment nothing made. A link's target is another tracked .md
-// file (a path relative to the linking file, or to the repo root with a leading /) or, with `#fragment` alone, the same
-// file. A fragment exists when a heading in the target makes it by GitHub's slug rule (the heading's text, lower case,
-// with every character but letters, digits, `_`, `-` and spaces dropped, spaces turned to `-`; a repeated slug gets `-1`,
-// `-2`, ...) or when the target has an `<a id>` or `<a name>` anchor of that name. A fragment link to a tracked-looking
-// .md path that is not tracked fails too. Not read: external URLs, links without a fragment, links to files that are not
-// Markdown, front matter, fenced code blocks (in a block quote or list item too), inline code and HTML comments.
+// Every relative link in a tracked Markdown file lands: a renamed heading once left 16 links in
+// packages/computer/SCORECARD.md pointing at a fragment nothing made. Each file is read by marked's lexer (GitHub-flavoured
+// Markdown, as the console renders it), so code, comments and escapes are what Markdown says they are. A link's path,
+// relative to the linking file or, with a leading /, to the repo root, must be a tracked file or directory. Its #fragment,
+// in a Markdown target or the same file, must be made by a heading there, by GitHub's slug rule (the heading's text, lower
+// case, with every character but letters, digits, `_`, `-` and spaces dropped, spaces turned to `-`; a repeated slug gets
+// `-1`, `-2`, ...), or by an `<a id>` or `<a name>` anchor. Not read: links with a scheme, and front matter.
 // `node scripts/check-doc-anchors.mjs` exits non-zero with one line per broken link; check-doc-anchors.test.mjs runs it on
 // this tree and on planted breaks.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Lexer } from 'marked';
 import { isMain } from './is-main.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -31,140 +31,93 @@ export function slugger() {
   };
 }
 
-const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", nbsp: ' ' };
-
-/** A heading's text as GitHub renders it: code spans keep their content, links and images their text, tags go. */
-export function headingText(raw) {
-  return raw
-    .split(/(`+[^`]*?`+)/)
-    .map((part, i) => {
-      if (i % 2 === 1) return part.replace(/^`+|`+$/g, '');
-      return part
-        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-        .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, '$1')
-        .replace(/<[^>]+>/g, '')
-        .replace(/\\([!-/:-@[-`{-~])/g, '$1')
-        .replace(/&(#?\w+);/g, (_, name) => ENTITIES[name] ?? '')
-        .replace(/(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu, '');
-    })
-    .join('')
-    .trim();
-}
-
-/**
- * Each line of `text` with front matter, fenced code blocks (in a block quote or list item too), HTML comments and
- * inline code blanked, so line numbers stay true.
- */
-function proseLines(text) {
-  let front = text.startsWith('---\n');
-  let fence = null;
-  let comment = false;
-  return text.split('\n').map((line, i) => {
-    if (front) {
-      if (i > 0 && line.trimEnd() === '---') front = false;
-      return '';
-    }
-    const bare = line.replace(/^(?:[ \t]*>)*[ \t]*/, '');
-    const marker = /^(`{3,}|~{3,})/.exec(bare)?.[1];
-    if (fence) {
-      if (marker && marker[0] === fence[0] && marker.length >= fence.length && /^[`~]+[ \t]*$/.test(bare)) fence = null;
-      return '';
-    }
-    if (marker) {
-      fence = marker;
-      return '';
-    }
-    // Left to right, so the text of a code span never opens a comment, nor a comment's a code span.
-    let out = '';
-    for (let at = 0; at < line.length; ) {
-      if (comment) {
-        const end = line.indexOf('-->', at);
-        if (end < 0) break;
-        comment = false;
-        at = end + 3;
-        continue;
-      }
-      const next = /`+|<!--/g;
-      next.lastIndex = at;
-      const open = next.exec(line);
-      if (!open) {
-        out += line.slice(at);
-        break;
-      }
-      out += line.slice(at, open.index);
-      at = open.index + open[0].length;
-      if (open[0] === '<!--') comment = true;
-      else {
-        // A code span closes on a run of as many backticks; a run with no match is literal text.
-        const close = new RegExp(`(?<!\`)${open[0]}(?!\`)`, 'g');
-        close.lastIndex = at;
-        const end = close.exec(line);
-        if (end) at = end.index + open[0].length;
-        else out += open[0];
-      }
-    }
-    return out;
+// Numeric references and the named ones docs write; another named reference is left as written.
+const NAMED = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+const decode = (text) =>
+  text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, name) => {
+    if (name[0] !== '#') return NAMED[name] ?? whole;
+    const code = name[1] === 'x' || name[1] === 'X' ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
   });
+
+/** The text a heading's inline tokens render: code spans keep their content, links and emphasis their text, tags go. */
+function plain(tokens = []) {
+  return tokens
+    .map((token) => {
+      if (token.type === 'codespan') return decode(token.text);
+      if (token.type === 'html') return '';
+      if (token.type === 'br') return ' ';
+      if (token.type === 'image') return token.text;
+      return token.tokens ? plain(token.tokens) : decode(token.text ?? '');
+    })
+    .join('');
 }
 
-/** The destinations of a line's inline links and images, `](dest "title")`, with balanced parentheses in a dest. */
-function inlineDestinations(line) {
-  const found = [];
-  for (let at = line.indexOf(']('); at >= 0; at = line.indexOf('](', at + 2)) {
-    let start = at + 2;
-    while (line[start] === ' ' || line[start] === '\t') start += 1;
-    if (line[start] === '<') {
-      const end = line.indexOf('>', start);
-      if (end > start) found.push(line.slice(start + 1, end));
-      continue;
+/** A token's child tokens, in document order: inline tokens, list items, table cells. */
+const childrenOf = (token) => [token.tokens, token.items, token.header, token.rows?.flat()].filter(Array.isArray).flat();
+
+/** Each token of a Markdown text, depth first in document order, with the 1-based line it starts on. */
+function* tokensOf(text) {
+  // Front matter is blanked (its newlines kept), as GitHub shows it as a table and not as Markdown.
+  const front = /^---\n[\s\S]*?\n---\n/.exec(text);
+  const source = front ? front[0].replace(/[^\n]/g, '') + text.slice(front[0].length) : text;
+  const starts = [0];
+  for (let at = source.indexOf('\n'); at >= 0; at = source.indexOf('\n', at + 1)) starts.push(at + 1);
+  const lineAt = (at) => {
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (starts[mid] <= at) low = mid;
+      else high = mid - 1;
     }
-    let depth = 0;
-    let end = start;
-    for (; end < line.length && !/\s/.test(line[end]); end += 1) {
-      if (line[end] === '\\') end += 1;
-      else if (line[end] === '(') depth += 1;
-      else if (line[end] === ')') {
-        if (depth === 0) break;
-        depth -= 1;
-      }
+    return low + 1;
+  };
+  // A child's text as written (a table cell has no raw, only its text) is searched for from where its last sibling
+  // ended; one not found as written (in a block quote, whose markers its children's raw drops) takes that place's line.
+  function* walk(tokens, from) {
+    let cursor = from;
+    for (const token of tokens) {
+      const written = token.raw ?? token.text;
+      const found = written ? source.indexOf(written, cursor) : -1;
+      const at = found < 0 ? cursor : found;
+      yield { token, line: lineAt(at) };
+      yield* walk(childrenOf(token), at);
+      if (found >= 0) cursor = found + written.length;
     }
-    if (end > start && end < line.length) found.push(line.slice(start, end));
   }
-  return found;
+  yield* walk(Lexer.lex(source, { gfm: true }), 0);
 }
 
-const UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
-
-/** Every fragment a Markdown text makes: its headings' slugs (ATX and setext) and its `<a id>`/`<a name>` anchors. */
+/** Every fragment a Markdown text makes: its headings' slugs and its `<a id>`/`<a name>` anchors. */
 export function anchorsOf(text) {
   const slug = slugger();
   const anchors = new Set();
-  const raw = text.split('\n');
-  const prose = proseLines(text);
-  prose.forEach((line, i) => {
-    for (const m of line.matchAll(/<a\s[^>]*?\b(?:id|name)\s*=\s*["']([^"']+)["']/gi)) anchors.add(m[1]);
-    // Headings are read from the raw line, so a code span in one keeps its text.
-    const atx = line && /^ {0,3}#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/.exec(raw[i]);
-    if (atx) anchors.add(slug(headingText(atx[1] ?? '')));
-    else if (line.trim() && !UNDERLINE.test(line) && UNDERLINE.test(prose[i + 1] ?? '')) {
-      // A setext heading: a paragraph, of one line or more, over a row of = or -. A list item over --- is not one.
-      let start = i;
-      while (start > 0 && prose[start - 1].trim() && !UNDERLINE.test(prose[start - 1]) && !/^ {0,3}#/.test(prose[start - 1])) start -= 1;
-      if (!/^ {0,3}([-*+]|\d+[.)])[ \t]/.test(prose[start])) anchors.add(slug(headingText(raw.slice(start, i + 1).map((one) => one.trim()).join(' '))));
-    }
-  });
+  for (const { token } of tokensOf(text)) {
+    // A setext heading's line breaks render as spaces.
+    if (token.type === 'heading') anchors.add(slug(plain(token.tokens).trim().replace(/[ \t]*\n[ \t]*/g, ' ')));
+    else if (token.type === 'html') for (const m of token.raw.matchAll(/<a\s[^>]*?\b(?:id|name)\s*=\s*["']([^"']+)["']/gi)) anchors.add(m[1]);
+  }
   return anchors;
 }
 
-/** Every link in a Markdown text with no scheme (a path, a #fragment, or both): { line, link }. */
+/** Every link and image in a Markdown text with no scheme (a path, a #fragment, or both): { line, link }. */
 export function relativeLinksOf(text) {
   const links = [];
-  proseLines(text).forEach((line, i) => {
-    const targets = [...inlineDestinations(line), ...[...line.matchAll(/^ {0,3}\[[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/g)].map((m) => m[1] ?? m[2])];
-    for (const link of targets) if (link && !/^[a-z][a-z0-9+.-]*:|^\/\//i.test(link)) links.push({ line: i + 1, link });
-  });
+  for (const { token, line } of tokensOf(text)) {
+    if ((token.type === 'link' || token.type === 'image') && token.href && !/^[a-z][a-z0-9+.-]*:|^\/\//i.test(token.href)) links.push({ line, link: token.href });
+  }
   return links;
 }
+
+/** A URL's percent escapes decoded; one that isn't a valid escape is kept as written. */
+const unescapeUrl = (text) => text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+  try {
+    return decodeURIComponent(run);
+  } catch {
+    return run;
+  }
+});
 
 /**
  * One line per broken link in the Markdown files among `tracked` (every tracked path, repo-relative, under `root`),
@@ -182,14 +135,13 @@ export function brokenLinks(root, tracked) {
   const problems = [];
   for (const file of tracked.filter((path) => path.endsWith('.md') && !path.split('/').includes('node_modules'))) {
     for (const { line, link } of relativeLinksOf(readFileSync(join(root, file), 'utf8'))) {
-      const [rest, fragment = null] = link.split(/#(.*)/s);
-      const path = decodeURIComponent(rest.replace(/\?.*$/, ''));
+      const [rest, hash = null] = link.split(/#(.*)/s);
+      const path = unescapeUrl(rest.replace(/\?.*$/, ''));
+      const fragment = hash === null ? null : unescapeUrl(hash);
       const target = path ? posix.normalize(path.startsWith('/') ? path.slice(1) : posix.join(posix.dirname(file), path)).replace(/(.)\/$/, '$1') : file;
       const where = `${file}:${line}: link ${link}`;
       if (target !== '.' && !paths.has(target)) problems.push(`${where}: ${target} is not a tracked file or directory`);
-      else if (fragment !== null && target.endsWith('.md') && !anchors(target).has(decodeURIComponent(fragment))) {
-        problems.push(`${where}: no heading or anchor in ${target} makes #${decodeURIComponent(fragment)}`);
-      }
+      else if (fragment !== null && target.endsWith('.md') && !anchors(target).has(fragment)) problems.push(`${where}: no heading or anchor in ${target} makes #${fragment}`);
     }
   }
   return problems;

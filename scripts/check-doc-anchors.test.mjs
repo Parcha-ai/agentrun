@@ -20,6 +20,7 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     '## Notes',
     '### Notes',
     '## Notes ##',
+    '## &#65;PI &amp; numeric \\*escapes\\*',
     '<a id="custom-anchor"></a>',
     '<a name="old-name"></a>',
     '',
@@ -38,6 +39,7 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     '```',
   ].join('\n');
   assert.deepEqual([...anchorsOf(text)].sort(), [
+    'api--numeric-escapes',
     'custom-anchor',
     'exec--files',
     'notes',
@@ -69,11 +71,16 @@ test('a broken fragment or path fails naming the file, line, link and target; co
       '[fenced](#not-read-either)',
       '```',
       '<!-- [commented](#also-not-read) -->',
-      '[ref]: ../guide.md#set-uq',
+      'A [reference][ref] link.',
       'The [report](../report(1).md#results), and after a literal `<!--` a [broken](#gone) link.',
       '> ```md',
       '> [quoted example](not-a-real-file.md#sample)',
       '> ```',
+      '',
+      'A `code span over',
+      '[two lines](missing.md#gone)` and an [escaped](../report\\(1\\).md#results) link.',
+      '',
+      '[ref]: ../guide.md#set-uq',
     ].join('\n'),
     'src/a.ts': '',
   };
