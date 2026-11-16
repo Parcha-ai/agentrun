@@ -6,7 +6,7 @@ import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { codeOfError } from "./hosted/process.js";
-import { HostedProvider, type HostedOptions, MAX_LABEL } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf } from "./hosted/values.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
@@ -62,8 +62,6 @@ export interface BoxdProviderOptions extends HostedOptions {
 	/** A boxd size, both or neither: 1 and 4G, 2 and 8G, 4 and 16G, 8 and 32G. Unset: the org's default. */
 	vcpu?: number;
 	memory?: string;
-	/** A backstop: boxd deletes each machine 5 minutes past the most it may live, whatever the janitor does. */
-	deleteTimer?: boolean;
 }
 
 export type BoxdOptions = Omit<BoxdProviderOptions, "Boxd"> & { Boxd?: BoxdClientClass };
@@ -121,7 +119,7 @@ class BoxdHost implements MachineHost {
 	readonly facts: HostFacts = {
 		daemon: "child",
 		isolation: "microvm",
-		// boxd ends no machine on its own (deleteTimer aside), and sets no cap.
+		// boxd ends a machine only at the delete timer create sets at req.backstopAt, and sets no cap.
 		lifetime: "janitor",
 		maxLifetimeMs: 30 * DAY_MS,
 		arch: "amd64",
@@ -132,7 +130,7 @@ class BoxdHost implements MachineHost {
 		readonly machines: BoxdMachines,
 		/** For create alone: bounded by createMs, and never sent twice. */
 		readonly creator: BoxdMachines,
-		readonly options: { org?: string; size?: { vcpu: number; memory: string }; deleteTimer: boolean },
+		readonly options: { org?: string; size?: { vcpu: number; memory: string } },
 	) {}
 
 	errorCode(error: unknown): ComputerErrorCode {
@@ -146,11 +144,12 @@ class BoxdHost implements MachineHost {
 	 * clean up: it sweeps the request's name, finds this machine and deletes it. Deleted here first, the sweep would find
 	 * none and keep listing, and delete a second create's machine of the same request instead. Any other code (a
 	 * refusal, a timeout) the adapter reads as a create that made nothing, so the step deletes the machine by its id (best
-	 * effort) and throws its own error, the delete's outcome added in words.
+	 * effort) and throws its own error, the delete's outcome added in words. boxd's delete timer, written in the same call
+	 * that makes the machine, ends it at req.backstopAt, so it ends even when the server that made it is gone.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		if (req.egress) throw new HostError("invalid", "a boxd computer reaches nothing outside, and this request asks it to");
-		const { org, size, deleteTimer } = this.options;
+		const { org, size } = this.options;
 		const made = await this.creator.create({
 			name: req.name,
 			...(org === undefined ? {} : { org }),
@@ -158,7 +157,7 @@ class BoxdHost implements MachineHost {
 			isolated: true,
 			config: { autoSuspendTimeout: 0, ...size },
 			...(req.image === BOXD_DEFAULT_IMAGE ? {} : { fromSnapshot: req.image }),
-			...(deleteTimer ? { deleteAfter: Math.ceil((Date.parse(req.labels[MAX_LABEL] ?? "") - Date.now()) / 1000) + 300 } : {}),
+			deleteAfter: Math.ceil((Date.parse(req.backstopAt) - Date.now()) / 1000),
 		});
 		try {
 			await this.machines.waitUntilReady(made.id, { timeout: ctx.timeoutMs });
@@ -273,7 +272,7 @@ function codeOf(error: unknown): ComputerErrorCode {
 /** Computers that are boxd machines, on the shared adapter. A spec's image is "default" or a boxd snapshot's name. */
 export class BoxdProvider extends HostedProvider {
 	constructor(options: BoxdProviderOptions) {
-		const { apiKey, Boxd, org, region = "", baseUrl = DEFAULT_BASE_URL, vcpu, memory, deleteTimer = false, maxLifetimeMs = DAY_MS, ...rest } = options;
+		const { apiKey, Boxd, org, region = "", baseUrl = DEFAULT_BASE_URL, vcpu, memory, maxLifetimeMs = DAY_MS, ...rest } = options;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a boxd API key is required");
 		if (typeof Boxd !== "function") throw new Error("options.Boxd must be the @boxd-sh/sdk package's Boxd class");
 		if ((vcpu !== undefined || memory !== undefined) && SIZES[vcpu as number] !== memory) throw new Error(`vcpu ${String(vcpu)} with memory ${String(memory)} is not one of boxd's sizes: 1 and 4G, 2 and 8G, 4 and 16G or 8 and 32G`);
@@ -282,6 +281,6 @@ export class BoxdProvider extends HostedProvider {
 		const machines = new Boxd({ ...client, timeout: rest.timeouts?.requestMs ?? REQUEST_MS }).machines;
 		const creator = new Boxd({ ...client, timeout: rest.timeouts?.createMs ?? CREATE_MS, maxRetries: 0 }).machines;
 		const size = vcpu === undefined ? undefined : { vcpu, memory: memory as string };
-		super(new BoxdHost(machines, creator, { org, size, deleteTimer }), { ...rest, maxLifetimeMs });
+		super(new BoxdHost(machines, creator, { org, size }), { ...rest, maxLifetimeMs });
 	}
 }

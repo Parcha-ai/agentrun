@@ -70,7 +70,14 @@ function setup(options = {}, answers = {}) {
 	return { rec, provider, host: provider.host };
 }
 const ctx = { timeoutMs: 1_234 };
-const request = (labels = {}) => ({ name: "computer-0123456789ab", image: "default", labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString(), ...labels }, lifetimeMs: HOUR, egress: false });
+const request = (labels = {}) => ({
+	name: "computer-0123456789ab",
+	image: "default",
+	labels: { [NAME]: "computer-0123456789ab", [MAX_LABEL]: new Date(Date.now() + HOUR).toISOString(), ...labels },
+	lifetimeMs: HOUR,
+	backstopAt: new Date(Date.now() + 2 * HOUR).toISOString(),
+	egress: false,
+});
 
 test("the SDK gets the key, the address and the region explicitly; create has its own client, bounded by createMs and never retried", () => {
 	const { rec } = setup({ region: "nyc" });
@@ -130,18 +137,27 @@ test("check takes default or a snapshot's name, refuses a snapshot with a size, 
 	assert.deepEqual(rec.calls, []);
 });
 
-test("create asks for an isolated machine in the org with no standby, the size, the snapshot, and with deleteTimer a delete 5 minutes past the most it may live", async () => {
-	const { rec, host } = setup({ vcpu: 2, memory: "8G", deleteTimer: true }, { create: machine() });
+test("create asks for an isolated machine in the org with no standby, the size, the snapshot, and boxd's delete timer at the request's backstop", async () => {
+	const { rec, host } = setup({ vcpu: 2, memory: "8G" }, { create: machine() });
 	const req = request();
 	assert.deepEqual(await host.create({ ...req, image: "my-snapshot" }, ctx), { id: "m-1" });
 	const [[name, params]] = rec.calls;
 	assert.equal(name, "create");
 	const { deleteAfter, ...rest } = params;
 	assert.deepEqual(rest, { name: req.name, org: "acme", labels: req.labels, isolated: true, config: { autoSuspendTimeout: 0, vcpu: 2, memory: "8G" }, fromSnapshot: "my-snapshot" });
-	assert.ok(Math.abs(deleteAfter - (HOUR / 1000 + 300)) <= 2, `deleteAfter ${deleteAfter}`);
+	assert.ok(Math.abs(deleteAfter - (Date.parse(req.backstopAt) - Date.now()) / 1000) <= 2, `deleteAfter ${deleteAfter}`);
 	const plain = setup({ org: undefined }, { create: machine() });
 	await plain.host.create(req, ctx);
-	assert.deepEqual(plain.rec.calls[0][1], { name: req.name, labels: req.labels, isolated: true, config: { autoSuspendTimeout: 0 } }, "default is boxd's own image: no snapshot, no size, no timer");
+	const { deleteAfter: timer, ...bare } = plain.rec.calls[0][1];
+	assert.deepEqual(bare, { name: req.name, labels: req.labels, isolated: true, config: { autoSuspendTimeout: 0 } }, "default is boxd's own image: no snapshot, no size");
+	assert.equal(typeof timer, "number", "every machine has the backstop timer");
+});
+
+test("the provider's create gives boxd's timer the adapter's backstop: the most a computer may live and 5 minutes", async () => {
+	const { rec, provider } = setup({ maxLifetimeMs: HOUR }, { list: [], create: (params) => machine({ name: params.name, labels: params.labels }), waitUntilReady: () => Promise.reject(named("RateLimitError")) });
+	await provider.create(SPEC, { requestId: "r-backstop" });
+	const [, params] = rec.calls.find(([name]) => name === "create");
+	assert.ok(Math.abs(params.deleteAfter - (HOUR + 300_000) / 1000) <= 2, `deleteAfter ${params.deleteAfter}`);
 });
 
 test("create then waits until boxd's agent is ready, and closes egress and hibernation, in that order; a request for egress is refused", async () => {
