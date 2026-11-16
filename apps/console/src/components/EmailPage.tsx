@@ -22,6 +22,11 @@ const HOW: Record<Preset, ReactNode> = {
 };
 /** The server's own words for Outlook (email/account.ts OUTLOOK_REFUSAL). */
 const OUTLOOK = "Outlook needs Microsoft sign-in, which this server doesn't do yet.";
+/** The password field's name: a preset's provider makes an app password; Other's server may take the account's own. */
+function passwordLabel(preset: Preset): string {
+  if (preset === "other") return "Password";
+  return "App password";
+}
 const NO_ACCOUNT: EmailAccount = { configured: false, preset: null, address: null, user: null, imap: null, smtp: null, password_unreadable: false };
 
 type Form = { preset: Preset; address: string; user: string; imapHost: string; imapPort: string; smtpHost: string; smtpPort: string };
@@ -135,7 +140,7 @@ export function EmailPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; wr
             <Input name="address" inputMode="email" autoComplete="username" spellCheck={false} autoCapitalize="off" placeholder="you@example.com" value={form.address} onChange={set("address")} />
           </Field>
           {other && <Field label="Sign-in name" optional note="When the server's sign-in isn't the address." error={refused.user}><Input name="user" spellCheck={false} autoCapitalize="off" value={form.user} onChange={set("user")} /></Field>}
-          <Field label={form.preset === "other" ? "Password" : "App password"} error={refused.password}>
+          <Field label={passwordLabel(form.preset)} error={refused.password}>
             <Input name="password" type="password" autoComplete="new-password" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true"
               placeholder={account.configured ? "Sealed on this server: type it again to save a change" : ""} value={password} onChange={(e) => setPassword(e.target.value)} />
           </Field>

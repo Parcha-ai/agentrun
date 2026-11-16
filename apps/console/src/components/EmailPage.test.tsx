@@ -10,8 +10,8 @@ import type { EmailAccount } from "@/lib/v2";
 // password sealed on the server, never shown back: no answer holds it, and the page keeps no copy once it is saved.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** An obvious fake: not a password anywhere. */
-const PASSWORD = "fake-app-pass-0123";
+/** An obvious fake: not a password anywhere (a value the source export's scan knows as fake). */
+const PASSWORD = "not-a-secret";
 const NONE: EmailAccount = { configured: false, preset: null, address: null, user: null, imap: null, smtp: null, password_unreadable: false };
 const GMAIL: EmailAccount = { configured: true, preset: "gmail", address: "you@example.com", user: "you@example.com", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, password_unreadable: false };
 const SERVERS: Record<string, { imap: { host: string; port: number }; smtp: { host: string; port: number } }> = {
