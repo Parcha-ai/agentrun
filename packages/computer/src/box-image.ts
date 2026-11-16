@@ -29,17 +29,3 @@ export const BOX_E2B_PUBLISHER = "agentrun-oss";
 /** The public E2B template of the box image this package's recipe names: <publisher>/agentrun-archil-<recipe hash>. */
 export const boxE2bTemplate = (): string => `${BOX_E2B_PUBLISHER}/agentrun-archil-${boxRecipeHash()}`;
 
-const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-
-/**
- * Every name a box image goes by, a prefix and a recipe hash (12 hex): the published image
- * (ghcr.io/parcha-ai/agentrun-box:<hash>), Agent37's workspace template (agentrun-box-<hash>), the E2B template and the
- * Daytona snapshot (agentrun-archil-<hash>, the public E2B one under its publisher), and Daytona's GPU snapshots
- * (agentrun-archil-gpu-<type>-<hash>).
- */
-const BOX_IMAGE_NAME = new RegExp(
-	`^(?:${literal(BOX_IMAGE_REPOSITORY)}:|agentrun-box-|(?:${literal(BOX_E2B_PUBLISHER)}/)?agentrun-archil-(?:gpu-[a-z0-9]+-)?)[0-9a-f]{12}$`,
-);
-
-/** Whether an image is a box image by its name: this release's or an older one's, whatever the recipe hash. */
-export const isBoxImage = (image: string): boolean => BOX_IMAGE_NAME.test(image);

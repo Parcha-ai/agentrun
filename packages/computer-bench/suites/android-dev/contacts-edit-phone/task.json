@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.contacts.edit-phone",
-  "version": 1,
+  "version": 2,
   "title": "Change a contact's phone number in Contacts",
   "split": "heldout",
   "tags": ["contacts", "edit"],
@@ -58,6 +58,7 @@
     }
   ],
   "instruction": "In Contacts, change the phone number of \"{{who.first}} {{who.last}} {{nonce}}\" from {{p.old}} to {{p.new}}, and save.",
+  "exec": "deny",
   "budget": { "steps": 30, "usd": 1.5, "wall_s": 400 },
   "checks": [
     {
@@ -83,9 +84,10 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "params": { "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "set-phone", "{{who.first}} {{who.last}} {{nonce}}", "{{p.new}}"], "timeoutMs": 30000 }
-    }
+    { "method": "ui.act", "why": "Wait for the list to load the contact: a find sees only what is on screen now.", "params": { "steps": [], "expect": { "text": "{{who.first}} {{who.last}} {{nonce}}", "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "Open the contact from the list (a tap on its name: the row's own role varies).", "params": { "foreground": true, "steps": [{ "press": { "find": { "name": { "equals": "{{who.first}} {{who.last}} {{nonce}}" } } } }], "expect": { "text": "Edit", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Edit" } } } }], "expect": { "text": "Edit contact", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The first field named Phone holds the old number (the empty one for another number comes after it).", "params": { "steps": [{ "set": { "find": { "role": "textbox", "name": { "equals": "Phone" } } }, "value": "{{p.new}}" }], "expect": { "text": "{{p.new}}", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "why": "Saved: the editor closes back to the contact's page.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "SAVE" } } } }], "expect": { "text": "Edit contact", "gone": true, "timeoutMs": 8000 } } }
   ]
 }
