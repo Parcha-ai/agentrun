@@ -3270,6 +3270,7 @@ class GetLearningCostResponseSummary(TypedDict):
     takeover: GetLearningCostResponseSummaryTakeover | None
     before: GetLearningCostResponseSummaryBefore | None
     after: GetLearningCostResponseSummaryAfter | None
+    after_state: Literal["priced", "no_served_runs", "cost_unknown"]
     times_cheaper: float | None
     hand_backs: GetLearningCostResponseSummaryHandBacks | None
     withheld: GetLearningCostResponseSummaryWithheld | None

@@ -14,8 +14,9 @@ import { check, markExample } from "../harness.mjs";
 const SAMPLE = JSON.parse(readFileSync(new URL("../../src/components/CostPerRun.sample.json", import.meta.url), "utf8"));
 export const WIDTHS = [1440, 820, 390];
 const WF = "sort-invoice";
-/** The story's cheaper headline: the sample's 7.0 over the serving refit's replay (95% vs 94% on 40), which cleared the bar. */
-const CHEAPER = "About 7x cheaper at the same accuracy";
+/** The story's cheaper headline: the sample's 7.7 (its served runs only) over the serving refit's replay (95% vs 94% on
+ *  40), which cleared the bar. */
+const CHEAPER = "About 8x cheaper at the same accuracy";
 const D0 = "c0ffee00c0ffee00", D1 = "a12596c0a12596c0", D2 = "1a48d30c1a48d30c";
 const runAt = (n) => SAMPLE.runs.find((r) => r.n === n);
 const later = (n, minutes) => new Date(Date.parse(runAt(n).started_at) - minutes * 60_000).toISOString();
@@ -117,7 +118,7 @@ export default {
         const flags = await cost.locator('g[data-testid^="marker-"]').evaluateAll((els) => els.map((el) => el.getAttribute("data-testid")));
         check(flags.join() === "marker-revision,marker-hold,marker-revision,marker-promote,marker-refit", `${at}: the chart's markers are ${flags.join()}`);
         const headline = await cost.locator("h3 + p").textContent();
-        check(/^\$0\.890 a run before takeover, \$0\.128 all-in after: 7\.0x cheaper · 5% handed back since$/.test(headline ?? ""), `${at}: the headline says ${headline}`);
+        check(/^\$0\.890 a run before takeover, \$0\.116 all-in over 59 served runs after: 7\.7x cheaper · 5% handed back since$/.test(headline ?? ""), `${at}: the headline says ${headline}`);
         await shoot(cost, `loop-cost-${theme}-${width}.png`);
         // A flag's hover says its record.
         const flag = cost.locator('g[data-testid="marker-promote"] rect').first();

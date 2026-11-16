@@ -246,14 +246,17 @@ export function storyOf(input: {
   if (s?.takeover && s.withheld) {
     stages.push({ key: "cheaper", title: "Cheaper", value: "No ratio yet", detail: `${withheldWords(s.withheld)}: ${WITHHELD_NEXT}`, state: "now" });
   } else if (s?.after && s.before) {
-    const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in since`;
+    // The after side is the runs the workflow served (alone or handed back), never its replays: said with its count.
+    const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served since`;
     const ratio = s.times_cheaper;
     if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
     else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesWord(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
-    else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
+    else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
+  } else if (s?.takeover && s.after_state === "cost_unknown") {
+    stages.push({ key: "cheaper", title: "Cheaper", value: "No cost yet", detail: "no served run's cost is known yet", state: "now" });
   } else if (!notesOnly) {
-    stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "once a workflow takes over, each run's all-in cost against before", state: "later" });
+    stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "no served runs yet: once a workflow takes over, the all-in cost of the runs it serves against before (replays are checks, not served runs)", state: "later" });
   }
   const shaky = (loop?.guards ?? []).filter((g): g is typeof g & { threshold: number } => g.runs > 0 && g.threshold !== null).sort((a, b) => b.escalated / b.runs - a.escalated / a.runs)[0];
   if (back || shaky) {

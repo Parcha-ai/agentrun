@@ -27,6 +27,8 @@ const howFor = (execution: LearningExecution) => execution === "native"
   : execution === "sdk"
     ? "SDK run costs include reported backend usage and AgentRun learning. Your backend keeps launching jobs and binds the tools an accepted workflow can use."
     : HOW;
+/** The after side's base in words: the runs a learned workflow served whose cost is known (summary.after.runs). */
+const servedWord = (n: number) => `${n} served ${n === 1 ? "run" : "runs"}`;
 
 /** The chart's card for an agent, read when it shows. `quiet`: under the Learning tab's own empty state, which already
  *  says what to do, so a series under two runs (and a read that failed) shows nothing. */
@@ -91,7 +93,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
     data.unknown_path_runs ? `${data.unknown_path_runs === 1 ? "1 run's" : `${data.unknown_path_runs} runs'`} path and cost are not known: left out.` : null,
     // A learned workflow the money rule stopped: why it no longer runs first (both sides all-in, learning included), and
     // what comes next.
-    ...data.workflows.filter((w) => w.state === "needs_revision" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its last ${w.served!.runs} runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} Its next run asks the agent for a new version, which runs first again.`),
+    ...data.workflows.filter((w) => w.state === "needs_revision" && w.served && w.by_hand).map((w) => `${w.workflow} no longer runs first: ${level(w.served!.mean_usd)} a run all-in over its newest ${w.served!.runs} priced runs, at or over ${level(w.by_hand!.mean_usd)} a run by hand.${w.unknown_cost_runs ? ` ${w.unknown_cost_runs === 1 ? "1 run" : `${w.unknown_cost_runs} runs`} of unknown cost left out.` : ""} Its next run asks the agent for a new version, which runs first again.`),
   ].filter((n): n is string => !!n);
 
   if (points.length < 2) {
@@ -151,7 +153,10 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   // The headline: the server's own figure, which never flatters learning (before: the agent's own $ a run, learning left
   // out; after the takeover: all-in, learning kept in), and how often the workflow handed the run back since.
   const backWords = back ? `${pct(back.back, back.ran)} handed back since` : null;
-  const headline = s.before && s.after ? `${level(s.before.mean_usd)} a run before takeover, ${level(s.after.mean_usd)} all-in after${cheaper ? `: ${cheaper}` : ""}${backWords ? ` · ${backWords}` : ""}` : null;
+  // The after side is the runs a learned workflow served (never its replays), said with its count; with none priced yet,
+  // the headline says so in words, never a figure.
+  const afterWords = s.after ? `${level(s.after.mean_usd)} all-in over ${servedWord(s.after.runs)} after` : s.takeover && s.after_state === "cost_unknown" ? "no served run's cost known yet" : null;
+  const headline = s.before && afterWords ? `${level(s.before.mean_usd)} a run before takeover, ${afterWords}${cheaper ? `: ${cheaper}` : ""}${backWords ? ` · ${backWords}` : ""}` : null;
   const unknown = data.unknown_cost_runs + data.unknown_path_runs;
 
   const pick = (e: PointerEvent<SVGSVGElement>) => {
@@ -253,7 +258,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
             {afterFrom !== null && s.after && (
               <g>
                 <path d={`M${x(afterFrom)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
-                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>{width < 520 ? "After" : "After takeover"} {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
+                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>{width < 520 ? "Served" : `Served after takeover (${servedWord(s.after.runs)})`} {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
               </g>
             )}
             <path d={line} fill="none" className="stroke-foreground" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
@@ -415,7 +420,8 @@ function shortOf(data: LearningCost, on: boolean, execution: LearningExecution):
   if (!s.takeover && execution !== "hosted") return [howFor(execution)];
   if (!s.takeover) return [on ? "No learned workflow has finished a run alone yet. Keep running the same job: once one does, a marker shows where, and the level after it." : HOW];
   if (s.withheld) return [`${withheldWords(s.withheld)}: ${WITHHELD_NEXT}.`];
-  if (s.times_cheaper === null && s.after) return [`${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} since the workflow took over: how many times cheaper it is shows after 20.`];
+  if (s.after_state === "cost_unknown") return ["No run the workflow served has a known cost yet: a replay is a check, never a served run."];
+  if (s.times_cheaper === null && s.after) return [`${servedWord(s.after.runs)} since the workflow took over: how many times cheaper it is shows after 20.`];
   return [];
 }
 

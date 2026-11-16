@@ -294,6 +294,10 @@ export interface Learning {
   proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
   /** The agent's kept proposals (each round of a run one), newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+  /** Everything agent `agentId`'s runs' learning kept, in two reads whatever the number of its runs: every round of every
+   *  run's kept proposal (oldest round first within a run), and the rows of the learning runs they name (as runs.get
+   *  reads one; a learning run named and never written has none). An agent-wide read's, never a read a run. */
+  kept(agentId: string): Promise<{ proposals: LearningProposal[]; learningRuns: RunRow[] }>;
   /** What learning spent outside any run, in one read: each run (not imported) whose learning ended in [from, to) (ms),
    *  its agent, when its learning ended and what its grade cost (null: unknown; 0: nothing graded). A learning dropped
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
@@ -709,6 +713,9 @@ export interface Runs {
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
+  /** The launch rows of every run of agent `agentId` (no built-in learning run's), in one read: what an agent-wide read
+   *  (its cost per run, its learning view) reads of its runs at once, never a read a run. A run with none has no row. */
+  launches(agentId: string): Promise<RunLaunchRow[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;

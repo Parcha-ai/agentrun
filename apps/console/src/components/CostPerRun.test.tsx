@@ -8,7 +8,8 @@ import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMe
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
-// falling from about $0.89 by hand to about $0.13 once its learned workflow takes over at run 21.
+// falling from about $0.89 by hand to about $0.12 over the runs its learned workflow serves once it takes over at run 21
+// (the one run by hand after it is no served run).
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const sample = SAMPLE as unknown as LearningCost;
@@ -17,7 +18,7 @@ const unknownRun: LearningCost = {
   ...sample,
   runs: sample.runs.map((r) => (r.n === 44 ? { ...r, cost_usd: null, total_usd: null } : r)),
   unknown_cost_runs: 1,
-  summary: { ...sample.summary, after: { runs: 59, mean_usd: 0.127661 }, times_cheaper: null, hand_backs: { ran: 59, back: 3 }, withheld: { unknown: 1, at_most: 0 } },
+  summary: { ...sample.summary, after: { runs: 58, mean_usd: 0.115695 }, times_cheaper: null, hand_backs: { ran: 59, back: 3 }, withheld: { unknown: 1, at_most: 0 } },
 };
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
@@ -30,7 +31,7 @@ function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
 const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, cost_upper_bound: false, learning_usd: total === null ? null : 0, total_usd: total });
-const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...summary }, workflows: [] });
+const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: summary.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...summary }, workflows: [] });
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
@@ -104,9 +105,9 @@ describe("the execution mix's arithmetic", () => {
 describe("CostChart", () => {
   it("shows the drop: the levels before and after, the takeover, and how many times cheaper", () => {
     const host = draw(sample);
-    expect(text(host)).toContain("$0.890 a run before takeover, $0.128 all-in after: 7.0x cheaper · 5% handed back since");
+    expect(text(host)).toContain("$0.890 a run before takeover, $0.116 all-in over 59 served runs after: 7.7x cheaper · 5% handed back since");
     expect(text(host)).toContain("Workflow took over, run 21");
-    expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
+    expect(text(host)).toContain("Served after takeover (59 served runs) $0.116 · 7.7x cheaper");
     expect(text(host)).toContain("Before takeover $0.890");
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
@@ -127,8 +128,8 @@ describe("CostChart", () => {
   });
   it("on a phone the level's words are short enough to clear the line's drop", () => {
     const host = draw(sample, true, 390);
-    expect(text(host)).toContain("After $0.128 · 7.0x cheaper");
-    expect(text(host)).not.toContain("After takeover $0.128");
+    expect(text(host)).toContain("Served $0.116 · 7.7x cheaper");
+    expect(text(host)).not.toContain("Served after takeover");
   });
   it("carries the takeover marker down through the mix as one line on the left edge of the takeover's block, never a ring cutting a column", () => {
     const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
@@ -207,7 +208,18 @@ describe("CostChart", () => {
     const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), ...Array.from({ length: 5 }, (_, i) => run(i + 11, "workflow", 0.1))];
     const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: { runs: 5, mean_usd: 0.1 } }));
     expect(text(host)).not.toMatch(/\dx cheaper/);
-    expect(text(host)).toContain("5 runs since the workflow took over: how many times cheaper it is shows after 20.");
+    expect(text(host)).toContain("$1.00 a run before takeover, $0.100 all-in over 5 served runs after");
+    expect(text(host)).toContain("5 served runs since the workflow took over: how many times cheaper it is shows after 20.");
+  });
+  // The after side is served runs only: with a takeover but no served run's cost known, the headline and the note say so
+  // in words, never a figure.
+  it("with no served run priced, says so in words, never a level after", () => {
+    const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), run(11, "workflow", null), ...Array.from({ length: 30 }, (_, i) => run(i + 12, "replay", 0.3))];
+    const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: null, after_state: "cost_unknown", hand_backs: { ran: 1, back: 0 }, withheld: { unknown: 1, at_most: 0 } }));
+    expect(text(host)).toContain("$1.00 a run before takeover, no served run's cost known yet");
+    expect(text(host)).not.toMatch(/Served after takeover|all-in over/);
+    const none = draw(series(runs.map((r) => (r.path === "workflow" ? { ...r, path: "replay" as const, total_usd: 0.3 } : r)), { before: { runs: 10, mean_usd: 1 } }));
+    expect(text(none)).not.toMatch(/Served after takeover|all-in over|before takeover,/);
   });
   it("with a run's cost unknown or known only as at most, says why there is no times-cheaper figure, never 'after 20'", () => {
     const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", i === 3 ? null : 1)), ...Array.from({ length: 25 }, (_, i) => run(i + 11, "workflow", 0.1))];
@@ -250,12 +262,12 @@ describe("CostChart", () => {
   });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
-    expect(text(host)).toContain("After takeover $0.128 · 7.0x cheaper");
+    expect(text(host)).toContain("Served after takeover (59 served runs) $0.116 · 7.7x cheaper");
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
   it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
     const host = draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 0 }] });
-    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its last 10 runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
+    expect(text(host)).toContain("sort-invoice no longer runs first: $0.950 a run all-in over its newest 10 priced runs, at or over $0.890 a run by hand. Its next run asks the agent for a new version, which runs first again.");
     act(() => root!.unmount()); document.body.innerHTML = "";
     expect(text(draw({ ...sample, workflows: [{ workflow: "sort-invoice", digest: "0123456789abcdef", state: "needs_revision", served: { runs: 10, mean_usd: 0.95 }, by_hand: { runs: 19, mean_usd: 0.889921 }, unknown_cost_runs: 2 }] }))).toContain("at or over $0.890 a run by hand. 2 runs of unknown cost left out. Its next run");
     act(() => root!.unmount()); document.body.innerHTML = "";
@@ -282,7 +294,7 @@ describe("CostPerRun", () => {
     expect(text(host)).toContain("Workflow took over, run 21");
   });
   it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
-    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] };
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] };
     for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
       const v2 = { learningCost: async () => answer } as unknown as Client;
       const host = document.body.appendChild(document.createElement("div"));

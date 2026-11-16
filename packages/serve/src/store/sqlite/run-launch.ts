@@ -22,3 +22,9 @@ export async function readLaunch(executor: Pick<SqliteExecutor, "get">, runId: s
   if (!row) throw new StoreLaunchMissing(runId);
   return runLaunchOf(row);
 }
+
+/** The launch rows of every run of agent `agentId` that `where` (a condition on runs' columns) keeps, in one read. */
+export async function readLaunches(executor: Pick<SqliteExecutor, "all">, agentId: string, where: string): Promise<RunLaunchRow[]> {
+  const rows = await executor.all<RunLaunchRecord>(`SELECT ${RUN_LAUNCH_COLUMNS} FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${where})`, agentId);
+  return rows.map(runLaunchOf);
+}

@@ -130,7 +130,7 @@ describe("notes and the story", () => {
     expect(compiledInto("---\nname: x\n---\ncompiled_into: sort-invoice")).toBeNull();
     expect(compiledInto("no front matter")).toBeNull();
   });
-  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...over }, workflows: [] });
+  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: over.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...over }, workflows: [] });
   const base = { notes: 0, compiledNotes: 0, runs: 0, workflows: [], cost: null, promotions: [], serving: [], loop: null };
   it("champion/challenger: while a revision replays, or after its replay held it, the one promoted before keeps serving and the story says both", () => {
     const champion = record({ replay: REPLAY });
@@ -200,6 +200,16 @@ describe("notes and the story", () => {
     expect([none.value, none.detail, none.state]).toEqual(["7x cheaper", "accuracy not claimed: no replay yet", "done"]);
     const below = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 70, agent_pct: 82, cleared: false } });
     expect([below.value, below.detail]).toEqual(["7x cheaper", "accuracy not claimed: its replay was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
+  });
+  // The after side is served runs only (never a replay): its count said with its level, and no figure when none is priced.
+  it("says the after side's served runs, and in words when none is served or priced", () => {
+    const few = cheaper({ after: { runs: 5, mean_usd: 0.127 }, times_cheaper: null });
+    expect([few.value, few.detail]).toEqual(["5 served runs so far", "$0.89 a run by the agent, $0.13 all-in over the 5 runs it served since; how many times cheaper shows after 20 runs"]);
+    const unpriced = cheaper({ after: null, after_state: "cost_unknown", times_cheaper: null });
+    expect([unpriced.value, unpriced.detail, unpriced.state]).toEqual(["No cost yet", "no served run's cost is known yet", "now"]);
+    const none = storyOf({ ...base, notes: 3, runs: 80, cost: cost({ before: { runs: 18, mean_usd: 0.89 } }) }).find((s) => s.key === "cheaper")!;
+    expect([none.value, none.state]).toEqual(["Not yet", "later"]);
+    expect(none.detail).toContain("no served runs yet");
   });
   it.each([
     [{ unknown: 3, at_most: 1 }, "3 runs' cost unknown, 1 known only as at most"],
