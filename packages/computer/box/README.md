@@ -10,6 +10,14 @@ Every step of the build is `install.sh`, POSIX shell run as root on the Dockerfi
 account from a running machine (a snapshot, a blueprint, a template) boots that base, copies both files into one folder,
 runs `sh install.sh` as root and snapshots the result. A second run on the same machine ends the same.
 
+The image also serves a vendor that boots it with env but has no exec stream into it: the machine dials the server
+(`spec/computer/attach.md`). `install.sh` writes `agentrun-dial` to `/usr/local/bin`, root's, 0755, and the
+Dockerfile's `CMD` runs it when the provider's create set `AGENTRUN_ATTACH_URL`, and `sleep infinity` otherwise, so
+one image serves both. It fetches the server's `computerd` with the machine's token (`AGENTRUN_DAEMON_URL`), checks it
+against `AGENTRUN_DAEMON_SHA256` before anything runs, starts `computerd init $AGENTRUN_INIT_ARGS` in a clean
+environment, and becomes `computerd attach` with `AGENTRUN_ATTACH_URL` and `AGENTRUN_ATTACH_TOKEN` alone in its
+environment. A vendor whose own entrypoint must stay the machine's first process runs `agentrun-dial` from it.
+
 Its tag is the recipe's hash: the first 12 hex of the sha256 of `Dockerfile`, `install.sh` and `agentrun-archil`, the
 files it copies (`recipe.mjs`). A changed recipe is a new image, and the same recipe is the one built before.
 
