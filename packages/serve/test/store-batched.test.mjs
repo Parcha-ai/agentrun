@@ -2,51 +2,22 @@
 // command rows a tick (commandsOf), and one transaction renewing every held claim (renewMany), as run_live's write is one
 // for all of them. A claim another runner took is answered Fenced on its own; the others renew in the same transaction.
 import assert from "node:assert/strict";
-import { connect, createServer } from "node:net";
 import { test } from "node:test";
 import { Fenced, openPostgresStore } from "../dist/store/index.js";
 import { queued, storeOn } from "./store-helpers.mjs";
-import { PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
+import { farLink, postgresOnly, schemaOf } from "./store-target.mjs";
 
 /** Each way of the link to the test Postgres in the far tests: a database a few ms away, as a loaded host's is. */
 const LINK_MS = 5;
 /** Runs a runner holds by default (runner.ts RUNNER_LOOPS). */
 const HELD = 300;
 
-/** A loopback link to the test Postgres that holds every chunk `ms` each way before it passes it on: each round trip
- *  costs at least 2 × `ms`, whatever the database's own speed. Its URL; it and its connections close after the test. */
-async function farLink(t, ms) {
-  const target = new URL(PG_URL);
-  const sockets = new Set();
-  const server = createServer((socket) => {
-    const upstream = connect(Number(target.port || 5432), target.hostname);
-    for (const [from, to] of [[socket, upstream], [upstream, socket]]) {
-      sockets.add(from);
-      from.setNoDelay(true);
-      from.on("error", () => undefined);
-      // Timers of one length fire in the order they were set: the chunks keep their order.
-      from.on("data", (chunk) => setTimeout(() => to.writable && to.write(chunk), ms));
-      from.on("close", () => setTimeout(() => to.destroy(), ms));
-    }
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const url = new URL(PG_URL);
-  url.host = `127.0.0.1:${server.address().port}`;
-  return {
-    url: url.toString(),
-    close: () => new Promise((resolve) => {
-      for (const socket of sockets) socket.destroy();
-      server.close(resolve);
-    }),
-  };
-}
-
 /** The server's store with `HELD` queued runs, and a runner's store on the same schema reached through a link `LINK_MS`
  *  each way, its pool's first connection already made (so what is timed is the store's statements, not a connect). */
 async function farRunner(t) {
   const { store, file, clock } = await storeOn(t);
   for (let i = 0; i < HELD; i++) await queued(store, `run-${String(i).padStart(3, "0")}`);
-  const link = await farLink(t, LINK_MS);
+  const link = await farLink(LINK_MS);
   const runner = await openPostgresStore({ url: link.url, schema: schemaOf(file), role: "runner", testClock: () => clock.now });
   t.after(async () => {
     await runner.close();
