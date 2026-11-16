@@ -226,8 +226,16 @@ export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbse
   return { ...grade, ...mark };
 };
 
-/** The agent's promotion records, oldest first. */
-export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> => itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)));
+/** The agent's promotion records, oldest first. A beta.39 store may hold `decided: "superseded"` (a replay a newer draft
+ *  cancelled; beta.40 writes `skipped` for an older draft instead): read as `skipped`, `skipped_by` the draft that
+ *  superseded it, with a reason that says when. Only the read maps: the stored record is never rewritten. */
+export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> =>
+  itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))).map((one) => {
+    const { superseded_by: by, ...rest } = one as PromotionRecord & { superseded_by?: string };
+    return (one.decided as string) === "superseded"
+      ? { ...rest, decided: "skipped", reason: "a newer draft arrived while it replayed (before beta.40)", ...(by ? { skipped_by: by } : {}) }
+      : one;
+  });
 
 /** The newest record of `workflow` at `digest`, or undefined. */
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
