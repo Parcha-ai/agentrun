@@ -9,7 +9,8 @@
 //   last result says the whole answer is filed at (`in the run's files at <path>`), from the line that result names
 //   (`offset=<n>`), then again from each `offset=<n>` the read answers, until a read names none;
 // - `Answer:` and the lines after it: the final answer, with `{{last-result}}` the text of the last tool result,
-//   `{{tools}}` the names of the tools the run was given, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned),
+//   `{{tools}}` the names of the tools the run was given, `{{describe:<tool>}}` that tool's description as the run was
+//   handed it, `{{learned:<text>}}` yes or no for whether its instructions hold <text> (a seeded note's, under # Learned),
 //   `{{today}}` the day its system prompt's environment line names (environment.ts, "Today is <day> (<zone>)"), and
 //   `{{flaky:<a>|<b>}}` <a> the first time any run of this server answers it and <b> after (a count kept in the file
 //   AGENTRUN_TEST_EVAL_COUNTER names).
@@ -56,6 +57,8 @@ function flaky(first, later) {
 
 /** The names of the tools the run was given: the context's, else those its messages added. */
 const toolsOf = (context) => [...new Set([...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].map((tool) => tool.name))];
+/** The description of the run's tool `name`, as it was handed it; null when it has none. */
+const describedOf = (context, name) => [...(context.tools ?? []), ...context.messages.flatMap((m) => m.toolsAdded ?? [])].find((tool) => tool.name === name)?.description ?? null;
 
 /** Where the last result says the whole answer is filed, and the line it says to go on from. */
 const FILED = /in the run's files at (\S+?)(?=[\]:;,\s]|$)/;
@@ -112,6 +115,7 @@ export default function reply(context, faux) {
   return faux.message(answer
     .replaceAll("{{last-result}}", textOf(results.at(-1)?.content ?? ""))
     .replaceAll("{{tools}}", toolsOf(context).join(", "))
+    .replace(/\{\{describe:([^}]+)\}\}/g, (_, name) => String(describedOf(context, name)))
     .replaceAll("{{today}}", /^Today is (.+?) \([^)]+\)\./m.exec(system)?.[1] ?? "(no environment line)")
     .replace(/\{\{learned:([^}]+)\}\}/g, (_, text) => (system.includes(text) ? "yes" : "no"))
     .replace(/\{\{flaky:([^|}]*)\|([^}]*)\}\}/g, (_, a, b) => flaky(a, b)));

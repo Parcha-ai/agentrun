@@ -4,11 +4,14 @@
 // special-use flags, STATUS, SELECT and EXAMINE with UIDVALIDITY and UIDNEXT, SEARCH and UID SEARCH, FETCH and UID FETCH
 // (BODY[] and BODY.PEEK[], a part of one, HEADER.FIELDS), STORE, APPEND, CREATE (and SUBSCRIBE), UID MOVE, NOOP, CLOSE,
 // UNSELECT, LOGOUT; on the Gmail layout also X-GM-EXT-1's labels (FETCH and STORE of X-GM-LABELS: a message in INBOX
-// carries \Inbox, and one whose \Inbox is taken off leaves INBOX for [Gmail]/All Mail), and with `slowInReplyTo` Gmail's
-// slow search by In-Reply-To, which it does not index (a SEARCH naming HEADER In-Reply-To is never answered, so the client's
-// socket timeout ends it, as on a large Gmail mailbox where it takes minutes); and SMTP's EHLO, AUTH PLAIN and
+// carries \Inbox, and one whose \Inbox is taken off leaves INBOX for [Gmail]/All Mail; a label's mailbox lists every
+// message carrying the label, one message in each mailbox it shows in, so a STORE through any of them shows in all of
+// them, and a message put in a label's mailbox is one in [Gmail]/All Mail under the label), and with `slowInReplyTo`
+// Gmail's slow search by In-Reply-To, which it does not index (a SEARCH naming HEADER In-Reply-To is never answered, so the
+// client's socket timeout ends it, as on a large Gmail mailbox where it takes minutes); and SMTP's EHLO, AUTH PLAIN and
 // LOGIN, MAIL, RCPT, DATA, RSET, NOOP and QUIT; a recipient whose local part is `refuse` (refuse@faux.example) is refused
-// at RCPT with a 550, as a server refuses an address it won't deliver to, and the rest are delivered. A fetch of BODY[] without PEEK marks the message \Seen, as a
+// at RCPT with a 550, as a server refuses an address it won't deliver to, and the rest are delivered. A fetch of BODY[]
+// without PEEK marks the message \Seen, as a
 // real server does, so a test can tell a read that changes the inbox from one that does not. The test seeds the
 // mailboxes, reads them back and what SMTP received, and switches the sign-in off or the UIDVALIDITY to another. Plaintext
 // on the loopback address only: never a server anyone else reaches.
@@ -18,7 +21,8 @@ import type { AddressInfo } from "node:net";
 
 /** A message as a test seeds it: built into RFC 5322 here, or given whole as `raw`. */
 export type FauxMessage = {
-  /** Where it goes: a mailbox's name, or "Drafts"/"Sent" for the layout's own special-use folder. Default INBOX. */
+  /** Where it goes: a mailbox's name, or "Drafts"/"Sent" for the layout's own special-use folder. Default INBOX. On the
+   *  Gmail layout a label's name puts it in [Gmail]/All Mail under the label. */
   mailbox?: string;
   /** The whole message, as it would be on the wire; the fields below are then not read. */
   raw?: string;
@@ -39,6 +43,8 @@ export type FauxMessage = {
   attachments?: readonly { name: string; type?: string; content: string }[];
   /** Its flags, such as \Seen. Default none: unread. */
   flags?: readonly string[];
+  /** On the Gmail layout, its labels beside \Inbox (in INBOX), each label's mailbox made if missing and listing it. */
+  labels?: readonly string[];
 };
 
 /** A message as the fake keeps it. */
@@ -51,12 +57,16 @@ export type EmailFaux = {
   smtp: { host: string; port: number };
   user: string;
   password: string;
-  /** A message put in a mailbox, as if it had arrived: its uid there and its Message-ID. */
+  /** A message put in a mailbox (made if missing), as if it had arrived: its uid there and its Message-ID. */
   seed(message: FauxMessage): { uid: number; messageId: string | undefined; mailbox: string };
   /** A mailbox's messages, oldest first: "Drafts" and "Sent" are the layout's special-use folders. */
   messages(mailbox?: string): FauxStored[];
   /** Every mailbox's name, a CREATEd one among them, in order. */
   mailboxes(): string[];
+  /** The mailbox `name` means ("Drafts" and "Sent" the layout's special-use folders), or undefined when there is none. */
+  path(name: string): string | undefined;
+  /** The mailbox `name`, made empty as CREATE makes one when there is none (on the Gmail layout, a label's). */
+  create(name: string): void;
   /** Every message SMTP received, in order. */
   sent(): FauxSent[];
   /** Every IMAP command the fake was sent, tag left out (a LOGIN's password too). */
@@ -71,7 +81,9 @@ export type EmailFaux = {
   close(): Promise<void>;
 };
 
-type Box = { name: string; flags: string[]; selectable: boolean; uidValidity: number; uidNext: number; messages: FauxStored[] };
+/** A mailbox. On the Gmail layout a label's mailbox (`view`) holds no message of its own: it shows each message that
+ *  carries the label, each by a uid of its own, every other field the message's (by the message it shows). */
+type Box = { name: string; flags: string[]; selectable: boolean; uidValidity: number; uidNext: number; messages: FauxStored[]; view?: Map<FauxStored, FauxStored> };
 
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the fake mail servers bind loopback only
 const CRLF = "\r\n";
@@ -239,9 +251,11 @@ const quoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, '
 const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${text}`;
 
 /** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's); the Gmail
- *  layout's server says X-GM-EXT-1. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered, as Gmail's on a
- *  large mailbox (it indexes Message-ID and References, not In-Reply-To). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; slowInReplyTo?: boolean } = {}): Promise<EmailFaux> {
+ *  layout's server says X-GM-EXT-1. `now`: its clock. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered,
+ *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). */
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date; slowInReplyTo?: boolean } = {}): Promise<EmailFaux> {
+  // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
+  const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";
   const password = `faux-${randomBytes(9).toString("hex")}`;
   let refusing = false;
@@ -258,19 +272,76 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     return (special && boxes.find((box) => box.flags.includes(special))) || boxNamed(name);
   };
 
+  // ---- Gmail's labels' mailboxes -----------------------------------------------------------------------------------------
+
+  /** The message a label's mailbox shows by each of its entries. */
+  const shown = new WeakMap<FauxStored, FauxStored>();
+  /** The message itself, whichever mailbox's entry `m` is. */
+  const own = (m: FauxStored): FauxStored => shown.get(m) ?? m;
+  /** A label's mailbox's entry for `message`: its own uid, the message's flags and labels read and written through it. */
+  const entryOf = (message: FauxStored, uid: number): FauxStored => {
+    const entry: FauxStored = {
+      uid, raw: message.raw, messageId: message.messageId, subject: message.subject, internalDate: message.internalDate,
+      get flags() { return message.flags; },
+      set flags(flags: string[]) { message.flags = flags; },
+      get labels() { return message.labels; },
+      set labels(labels: string[] | undefined) { message.labels = labels; },
+    };
+    shown.set(entry, message);
+    return entry;
+  };
+  /** Every label's mailbox brought up to date, as Gmail keeps them: a message that took the label on shown last, by its
+   *  next uid; one that took it off, or went to Trash or Spam, no longer shown. */
+  const relabel = () => {
+    if (!gmail) return;
+    const held = boxes.filter((box) => !box.view && !box.flags.includes("\\Trash") && !box.flags.includes("\\Junk")).flatMap((box) => box.messages);
+    for (const box of boxes) {
+      if (!box.view) continue;
+      const under = held.filter((m) => m.labels?.includes(box.name));
+      for (const [message, entry] of box.view) {
+        if (under.includes(message)) continue;
+        box.view.delete(message);
+        box.messages.splice(box.messages.indexOf(entry), 1);
+      }
+      for (const message of under) {
+        if (box.view.has(message)) continue;
+        const entry = entryOf(message, box.uidNext++);
+        box.view.set(message, entry);
+        box.messages.push(entry);
+      }
+    }
+  };
+
+  /** A mailbox made, as CREATE makes one: on the Gmail layout, a label's. */
+  const made = (name: string): Box => {
+    const box: Box = { name, flags: ["\\HasNoChildren"], selectable: true, uidValidity: 1000 + boxes.length, uidNext: 1, messages: [], ...(gmail ? { view: new Map<FauxStored, FauxStored>() } : {}) };
+    boxes.push(box);
+    return box;
+  };
+  /** A message put in `box`; one put in a label's mailbox is in [Gmail]/All Mail under the label. Its entry in `box`. */
   const store = (box: Box, raw: string, flags: readonly string[], internalDate: Date): FauxStored => {
     const fields = headersOf(raw);
-    const stored: FauxStored = { uid: box.uidNext++, flags: [...flags], raw, messageId: fields.get("message-id"), subject: fields.get("subject"), internalDate, ...(gmail ? { labels: box.name === "INBOX" ? [INBOX_LABEL] : [] } : {}) };
-    box.messages.push(stored);
-    return stored;
+    const home = box.view ? boxNamed(ALL_MAIL)! : box;
+    const stored: FauxStored = { uid: home.uidNext++, flags: [...flags], raw, messageId: fields.get("message-id"), subject: fields.get("subject"), internalDate, ...(gmail ? { labels: home.name === "INBOX" ? [INBOX_LABEL] : box.view ? [box.name] : [] } : {}) };
+    home.messages.push(stored);
+    relabel();
+    return box.view?.get(stored) ?? stored;
   };
-  /** `message` taken out of `from` and put in `to`, a new uid there, all else kept. */
+  /** `message` taken out of `from` and put in `to`, a new uid there, all else kept (on the Gmail layout, the message itself,
+   *  so each label's mailbox goes on showing it). */
   const moved = (from: Box, message: FauxStored, to: Box): FauxStored => {
     from.messages.splice(from.messages.indexOf(message), 1);
+    if (gmail) {
+      message.uid = to.uidNext++;
+      to.messages.push(message);
+      return message;
+    }
     const kept: FauxStored = { ...message, uid: to.uidNext++, flags: [...message.flags], ...(message.labels ? { labels: [...message.labels] } : {}) };
     to.messages.push(kept);
     return kept;
   };
+  /** Where a Gmail message is kept: INBOX, one of [Gmail]/'s, never a label's mailbox. */
+  const homeOf = (message: FauxStored): Box => boxes.find((box) => !box.view && box.messages.includes(message))!;
 
   // ---- IMAP --------------------------------------------------------------------------------------------------------------
 
@@ -380,6 +451,28 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       return all.filter((m, i) => tests.every((test) => test(m, i + 1)));
     };
 
+    /** A Gmail UID MOVE: the label `box` stands for (\Inbox for INBOX) taken off and the one `to` stands for put on; a
+     *  message out of the inbox kept in [Gmail]/All Mail, and one moved to another of [Gmail]/'s (or INBOX) kept there. */
+    const moveLabelled = (tag: string, box: Box, chosen: { m: FauxStored; seq: number }[], to: Box) => {
+      const labelOf = (at: Box) => (at.view ? at.name : at.name === "INBOX" ? INBOX_LABEL : undefined);
+      const [off, on] = [labelOf(box), labelOf(to)];
+      const from = chosen.map(({ m }) => m.uid);
+      const messages = chosen.map(({ m }) => own(m));
+      for (const message of messages) {
+        const labels = (message.labels ?? []).filter((label) => label !== off);
+        message.labels = on === undefined || labels.includes(on) ? labels : [...labels, on];
+        const home = homeOf(message);
+        const into = to.view ? (home.name === "INBOX" && !message.labels.includes(INBOX_LABEL) ? boxNamed(ALL_MAIL)! : home) : to;
+        if (into !== home) moved(home, message, into);
+      }
+      relabel();
+      const uidIn = (at: Box, message: FauxStored) => (at.view ? at.view.get(message)?.uid : at.messages.includes(message) ? message.uid : undefined);
+      send(`* OK [COPYUID ${to.uidValidity} ${from.join(",")} ${messages.map((message) => uidIn(to, message)).join(",")}] moved`);
+      // Each message that left the selected mailbox, highest first, as the plain MOVE says them.
+      for (let i = chosen.length - 1; i >= 0; i--) if (uidIn(box, messages[i]!) === undefined) send(`* ${chosen[i]!.seq} EXPUNGE`);
+      send(`${tag} OK moved`);
+    };
+
     const listLine = (verb: string, box: Box) => `* ${verb} (${box.flags.join(" ")}) "/" ${quoted(box.name)}`;
     const matches = (pattern: string, name: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/%/g, "[^/]*")}$`, "i").test(name);
 
@@ -426,7 +519,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       if (verb === "CREATE") {
         const name = word(args[0]).replace(/\/$/, "");
         if (!name || boxNamed(name)) return send(`${tag} NO [ALREADYEXISTS] the mailbox is there`);
-        boxes.push({ name, flags: ["\\HasNoChildren"], selectable: true, uidValidity: 1000 + boxes.length, uidNext: 1, messages: [] });
+        made(name);
         return ok("created");
       }
       if (verb === "APPEND") {
@@ -436,7 +529,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         const flags = args[i] && "list" in args[i]! ? (args[i++] as { list: Token[] }).list.map(word) : [];
         // An optional date-time before the message.
         if (args.length - i > 1) i++;
-        const stored = store(box, word(args[i]), flags, new Date());
+        const stored = store(box, word(args[i]), flags, now());
         return ok(`[APPENDUID ${box.uidValidity} ${stored.uid}] appended`);
       }
       const uid = verb === "UID";
@@ -473,8 +566,14 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
             if (box.name === "INBOX" && !m.labels.includes(INBOX_LABEL)) {
               moved(box, m, boxNamed(ALL_MAIL)!);
               send(`* ${seq} EXPUNGE`);
+            } else if (box.view && !m.labels.includes(box.name)) {
+              // The label's own mailbox: the message leaves it at once.
+              box.view.delete(own(m));
+              box.messages.splice(box.messages.indexOf(m), 1);
+              send(`* ${seq} EXPUNGE`);
             } else if (!how.includes(".SILENT")) send(`* ${seq} FETCH (${uid ? `UID ${m.uid} ` : ""}X-GM-LABELS (${m.labels.map(quoted).join(" ")}))`);
           }
+          relabel();
           return ok();
         }
         for (const { m, seq } of chosen) {
@@ -493,6 +592,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
         const test = inSet(set, uid ? box.uidNext - 1 : box.messages.length);
         const chosen = box.messages.map((m, i) => ({ m, seq: i + 1 })).filter(({ m, seq }) => test(uid ? m.uid : seq));
         if (!chosen.length) return ok("nothing moved");
+        if (gmail) return moveLabelled(tag, box, chosen, to);
         const from = chosen.map(({ m }) => m.uid);
         const into = chosen.map(({ m }) => moved(box, m, to).uid);
         send(`* OK [COPYUID ${to.uidValidity} ${from.join(",")} ${into.join(",")}] moved`);
@@ -666,12 +766,17 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     user,
     password,
     seed(message) {
-      const box = resolve(message.mailbox ?? "INBOX");
-      if (!box || !box.selectable) throw new Error(`the fake account has no mailbox ${message.mailbox}`);
-      const date = message.date === undefined ? new Date() : new Date(message.date);
+      const box = resolve(message.mailbox ?? "INBOX") ?? made(message.mailbox!);
+      if (!box.selectable) throw new Error(`the fake account has no mailbox ${message.mailbox}`);
+      const date = message.date === undefined ? now() : new Date(message.date);
       const messageId = message.messageId === null ? undefined : angle(message.messageId ?? `${randomBytes(8).toString("hex")}@faux.example`);
       const raw = message.raw ?? compose(message, messageId, date);
       const stored = store(box, raw.replace(/\r?\n/g, CRLF), message.flags ?? [], date);
+      if (gmail && message.labels?.length) {
+        for (const label of message.labels) if (!boxNamed(label)) made(label);
+        stored.labels = [...new Set([...stored.labels!, ...message.labels])];
+        relabel();
+      }
       return { uid: stored.uid, messageId: stored.messageId, mailbox: box.name };
     },
     messages(mailbox = "INBOX") {
@@ -680,6 +785,10 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       return box.messages.map((m) => ({ ...m, flags: [...m.flags], ...(m.labels ? { labels: [...m.labels] } : {}) }));
     },
     mailboxes: () => boxes.map((box) => box.name),
+    path: (name) => resolve(name)?.name,
+    create(name) {
+      if (!resolve(name)) made(name);
+    },
     sent: () => delivered.map((m) => ({ ...m, to: [...m.to] })),
     commands: () => [...commandLog],
     hold(pattern) {
