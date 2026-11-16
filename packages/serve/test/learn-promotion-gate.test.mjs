@@ -196,6 +196,31 @@ test("two revisions claimed at once: one challenger reserved, one set of replay 
   assert.deepEqual([...created].sort(), [...replaying[0].runs].sort(), "the runs started are the ones its record reserved");
 });
 
+// Chain13 (11-15): each draft that came while the previous one's replay ran cancelled it, so no draft after the second got
+// a verdict. A running replay finishes: a newer revision queues behind it, sends no cancel and starts no run; a queued
+// one a claim pinned to an older commit lays is skipped for the newest, its record naming it.
+test("a revision that comes while another replays is queued, cancelling nothing; a queued one an older claim lays is skipped for the newest", async () => {
+  const flow = flowOf(undefined);
+  const [two, three, four] = ["two", "three", "four"].map((n) => flow.replace("Answer.", `Answer, revision ${n}.`));
+  const [TWO, THREE, FOUR] = [two, three, four].map((text) => workflowDigest({ workflow: text }));
+  const at = new Date().toISOString();
+  const running = { workflow: "answer", digest: TWO, at, decided: "replaying", source: "replay", reason: "replaying", runs: ["r-0", "r-1"], inputs: ["graded-0", "graded-1"], replay_id: "replay-two" };
+  const rows = [{ id: "r-0", state: "running", metrics: null, archivedAt: null }, { id: "r-1", state: "queued", metrics: null, archivedAt: null }];
+  const first = await replayStoreOf({ rows, records: [running], newest: THREE });
+  assert.equal(await first.gateOf()({ name: "answer", workflow: three }, THREE), undefined, "it does not serve while it waits");
+  let records = await promotionsOf(first.settings, "a");
+  assert.deepEqual(records.map(({ digest, decided }) => [digest, decided]), [[TWO, "replaying"], [THREE, "queued"]], first.logs.join("\n"));
+  assert.match(records.at(-1).reason, new RegExp(`^queued behind ${TWO}'s replay on 2 graded inputs`));
+  assert.deepEqual([first.created, first.commands], [[], []], "no replay run started, none cancelled");
+  // Revision four lands; a claim pinned to revision three's commit lays three: it is skipped for four, nothing started.
+  const second = await replayStoreOf({ rows, records: [running, records.at(-1)], newest: FOUR });
+  assert.equal(await second.gateOf()({ name: "answer", workflow: three }, THREE), undefined);
+  records = await promotionsOf(second.settings, "a");
+  assert.deepEqual(records.map(({ digest, decided }) => [digest, decided]), [[TWO, "replaying"], [THREE, "queued"], [THREE, "skipped"]], second.logs.join("\n"));
+  assert.deepEqual({ by: records.at(-1).skipped_by, reason: records.at(-1).reason }, { by: FOUR, reason: `a newer draft ${FOUR} arrived before its replay could start: only the newest queued revision replays next` });
+  assert.deepEqual([second.created, second.commands], [[], []]);
+});
+
 // A graded run a learned workflow answered alone (path workflow) has a recorded answer and a grade as an agent's run does:
 // it is a replay input, never left out for the path it took.
 test("graded runs a workflow answered alone are replayed: a new revision reserves a replay run on each", async () => {
