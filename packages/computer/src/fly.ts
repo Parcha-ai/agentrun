@@ -246,7 +246,7 @@ class FlyHost implements MachineHost {
 	}
 }
 
-/** A FlyProvider from its options alone; it reads no environment (serve passes its FLY_API_TOKEN and flyApp setting). */
+/** A FlyProvider from its options alone; it reads no environment (serve passes the saved FLY_API_TOKEN and FLY_APP). */
 export function create(options: FlyProviderOptions): FlyProvider {
 	return new FlyProvider(options);
 }
