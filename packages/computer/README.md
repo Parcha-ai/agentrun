@@ -38,7 +38,8 @@ full VM, a machine. The protocol has two layers:
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
   inside. It never runs commands itself: the daemon does. This package has five: Docker, Modal's VM runtime, Daytona,
-  E2B (desktops) and boxd (microVMs), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
+  E2B (desktops) and boxd (microVMs, contributed by Michiel Voortman), each one line of the provider registry (see
+  [Adding a computer](#adding-a-computer)).
 
 The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.2
 (`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
@@ -2539,7 +2540,6 @@ explicitly, so the SDK takes none of them from the environment.
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither | the org's default |
 | `kind` | `linux` or `desktop` | `linux` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
-| `deleteTimer` | a backstop: boxd deletes every machine 5 minutes past the most it may live, whatever the janitor does, written in the same call that makes it | `false` |
 | `daemonUser` | uid:gid the daemon runs as; never root, never the image's own user (1000) | `2510:2510` |
 | `daemonPath`, `desktop`, `timeouts`, `probeTargets` | as on E2B | |
 
@@ -2547,7 +2547,7 @@ explicitly, so the SDK takes none of them from the environment.
 
 | MachineHost | boxd |
 | --- | --- |
-| `create` | `machines.create` with the adapter's name and labels, the org, `isolated: true` (the machine joins none of the org's networks and holds no in-machine credential), `config.autoSuspendTimeout: 0` and the size; any image but `"default"` is a snapshot, restored with `fromSnapshot`; with `deleteTimer`, `deleteAfter`. Its own client, bounded by `createMs` and never sent twice. Then `machines.waitUntilReady`, `setEgressAllow(id, ["none"])` and `setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may work for a long time with none |
+| `create` | `machines.create` with the adapter's name and labels, the org, `isolated: true` (the machine joins none of the org's networks and holds no in-machine credential), `config.autoSuspendTimeout: 0` and the size; any image but `"default"` is a snapshot, restored with `fromSnapshot`; `deleteAfter` at the request's `backstopAt`, 5 minutes past the most it may live. Its own client, bounded by `createMs` and never sent twice. Then `machines.waitUntilReady`, `setEgressAllow(id, ["none"])` and `setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may work for a long time with none |
 | `get` | `machines.get`: the labels, the state and `createdAt`; a machine of another org is none |
 | `list` | `machines.list` by the labels, in the org |
 | `delete` | `machines.delete`; not found is done |
@@ -2571,7 +2571,7 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 | Capability | Declared | Why |
 | --- | --- | --- |
 | `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own |
-| `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; with `deleteTimer`, boxd also deletes it just past the most it may live |
+| `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; boxd's own delete timer ends it 5 minutes past the most it may live, even when the server that made it is gone |
 | `network` | `none` | the egress allowlist `["none"]`, and the daemon's own network namespace, read from inside by the probe |
 | `networkReadBack` | `false` | as on every vendor on the adapter |
 | `isolation` | `microvm` | a KVM microVM with its own kernel |

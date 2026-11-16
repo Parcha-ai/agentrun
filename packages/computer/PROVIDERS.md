@@ -189,6 +189,9 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
+A worked example from outside the core team: [`boxd.ts`](src/boxd.ts), a janitor-lifetime host over a vendor SDK, with
+its descriptor, conformance module and fake-SDK tests (`test/boxd-provider.test.mjs`).
+
 ### The eleven members
 
 A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
