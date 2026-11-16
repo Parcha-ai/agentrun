@@ -34,7 +34,7 @@ const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
 /** The public box template release.yml's box-e2b job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
 const BOX_TEMPLATE = `agentrun-oss/agentrun-archil-${createHash("sha256")
-	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
 	.slice(0, 12)}`;
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));

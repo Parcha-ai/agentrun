@@ -44,6 +44,7 @@ such as a refusal, a computer that is gone or a vendor that said no, is a result
 | `watch?` | The computer's live view: frames, and input on what it answers. A computer with a screen gives it. |
 | `sweepLeftovers?` | Removes what its computers left outside themselves, by labels. |
 | `testConnection?` | One account-level read with the provider's keys that never creates a computer, so it never spends. |
+| `prepareImage?` | The image its computers start from, made ready before the first create; a second call makes nothing ([below](#prepareimage)). |
 
 A computer's spec (`ComputerSpec`):
 - `image`;
@@ -147,7 +148,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its sandboxes). |
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
-| `prepareImage?` | Its providers have `prepareImage()`: the image is built or pulled before the first create. |
+| `prepareImage?` | Its providers have `prepareImage()`, which makes the image ready before the first create ([below](#prepareimage)). |
 | `imageEnv?` | The server's environment variable that, when set, names the image every computer of the provider starts from in place of `defaultImage` (Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`). The provider's `check()` still judges it. |
 | `local?` | Its computers run on this machine's container engine, so the server passes it its local host options. |
 | `ledger?` | `{ option }`: `create()` takes a ledger the server keeps for it in that option (the phone harness's sessions). |
@@ -167,6 +168,26 @@ The conformance case `health.declared` holds `capabilities()` to the declaration
 
 **Status.** Next, the contract types move to a zero-dependency package, `@parcha/agentrun-computer-protocol`
 (**draft**), and this spec is generated from there.
+
+## prepareImage
+
+A provider whose computers start from an image it makes declares `prepareImage: true`, and its provider class has
+`prepareImage(ctx)`. A server calls it before its first create and puts what it answers in `spec.image`. The image is
+the box image: `packages/computer/box/install.sh` holds every step of its build, as POSIX shell run as root on the
+Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only runs it.
+
+- A vendor that builds images in the account (a snapshot, a blueprint, a template, its own registry): `prepareImage`
+  boots the vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
+- It is idempotent by name. The name carries the box recipe's hash (`boxRecipeHash()`, which covers `install.sh`), so
+  a second call finds the image by that name and answers it, with no build and no `onWait`. A name the vendor refuses
+  as taken is another build of it: wait for that one.
+- It calls `ctx.onWait("build" | "pull", tag)` once, and only when it really builds or pulls.
+- It answers the image a create then names: ok with it, or an error in the vendor's words.
+
+The in-tree ones are the references: Agent37 registers a template from the published image (`agentrun-box-<hash>`),
+E2B answers a public template, Modal answers a public registry tag, and Docker builds from a recipe locally. The Core
+case `provider.prepare-image` calls it twice in one run: both answer the same image, and the second is told no
+`onWait`. A provider with no `prepareImage` passes it, observed.
 
 ## A hosted vendor's exec
 

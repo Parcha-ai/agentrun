@@ -1,6 +1,7 @@
-// The image a remote computer with an Archil mount starts from (box/Dockerfile, built by box/build-daytona.py,
-// box/build-modal.py and box/build-e2b.mjs, published by release.yml's box job, and registered by Agent37's prepareImage), read as
-// text: no network, no docker, no provider. It installs the root helper where the provider
+// The image a remote computer with an Archil mount starts from (box/Dockerfile, which runs box/install.sh, built by
+// box/build-daytona.py, box/build-modal.py and box/build-e2b.mjs, published by release.yml's box job, and registered by
+// Agent37's prepareImage), read as text: no network, no docker, no provider. install.sh is the whole build, so a vendor
+// that builds its image in its own account runs the same steps. It installs the root helper where the provider
 // runs it as root, the tool user computerd runs every tool as, and the archil client pinned by version and sha256. It
 // has no sudo and no sudoers file: the provider's own exec is root (the image's user is root), and the tool user has no
 // way to root at all.
@@ -17,8 +18,18 @@ const box = (name) => new URL(`../box/${name}`, import.meta.url);
 const read = (name) => readFileSync(box(name), "utf8");
 const DOCKERFILE = read("Dockerfile");
 const HELPER = read("agentrun-archil");
+/** The build's steps, as POSIX shell, continuation lines joined. */
+const INSTALL = read("install.sh").replace(/\\\n\s*/g, " ");
 /** The Dockerfile's instructions, a line each, continuation lines joined. */
 const INSTRUCTIONS = DOCKERFILE.replace(/\\\n/g, " ").split("\n").filter((line) => line.trim() && !line.startsWith("#"));
+/** The body of one of install.sh's steps, the shell function `name() { … }`. */
+const step = (name) => {
+  const body = INSTALL.match(new RegExp(`^${name}\\(\\) \\{\\n([^]*?)^\\}$`, "m"))?.[1];
+  assert.ok(body, `install.sh has the step ${name}()`);
+  return body;
+};
+/** Where the Dockerfile puts install.sh and the helper for the one RUN, which removes them. */
+const STAGE = "/tmp/agentrun-box";
 /** A fixed value the helper sets at its top (`NAME=value`). */
 const fixed = (name) => HELPER.match(new RegExp(`^${name}=(\\S+)$`, "m"))?.[1];
 /** The archil client the live checks ran. */
@@ -26,23 +37,56 @@ const ARCHIL_VERSION = "0.10.1-1793222256";
 /** What an unpinned package sum reads until its sha256 is fetched and pinned. */
 const UNPINNED = "unpinned";
 
+test("the Dockerfile's one build step is install.sh, with the helper beside it, run as root on the base; the recipe and every build's name cover it", async () => {
+  // install.sh is the build a vendor without a Docker build runs on its own base: one source, so the Dockerfile has no
+  // step of its own beyond running it.
+  assert.deepEqual(INSTRUCTIONS.slice(1), [
+    `COPY install.sh ${STAGE}/install.sh`,
+    `COPY agentrun-archil ${STAGE}/agentrun-archil`,
+    `RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}`,
+    "USER root",
+    'CMD ["sleep", "infinity"]',
+  ]);
+  const { RECIPE } = await import("../box/recipe.mjs");
+  assert.deepEqual([...RECIPE], ["Dockerfile", "install.sh", "agentrun-archil"], "a change to install.sh is a new image");
+  assert.ok(read("build-daytona.py").includes('for name in ("Dockerfile", "install.sh", "agentrun-archil")'), "and a new Daytona snapshot");
+});
+
+test("install.sh is POSIX shell that stops at the first failure, runs its steps in the Dockerfile's old order, and is safe to run twice: each step checks what it makes first", () => {
+  const script = read("install.sh");
+  assert.match(script, /^#!\/bin\/sh\n/);
+  assert.match(script, /^set -eu$/m);
+  const code = INSTALL.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+  assert.ok(!/\[\[|\bfunction\b|\$\{[A-Za-z_]+\[|<<<|\bsource\b/.test(code), "no bash: no [[, function, arrays, here-strings or source");
+  assert.ok(spawnSync("sh", ["-n", fileURLToPath(box("install.sh"))]).status === 0, "sh reads it");
+  assert.match(INSTALL, /^case "\$\*" in\n""\) packages; desktop; helper; checked ;;\nchecked\) checked ;;\n/m, "the whole build in order, or the last step alone");
+  // A vendor's snapshot flow may retry the build on the same machine: each step that makes something checks first.
+  assert.match(step("packages"), /getent group agentrun-tool >\/dev\/null \|\| groupadd /);
+  assert.match(step("packages"), /id -u agentrun-tool >\/dev\/null 2>&1 \|\| useradd /);
+  assert.match(step("packages"), /if \[ "\$\(dpkg-query -W -f '\$\{Version\}' archil 2>\/dev\/null\)" != "\$ARCHIL_VERSION" \]; then/, "the archil client is fetched only when another version, or none, is installed");
+  assert.match(step("checked"), /if dpkg -s sudo >\/dev\/null 2>&1; then /, "sudo is purged only where it is installed");
+  // It reads no network beyond what the Dockerfile read: Debian's mirrors through apt, and Archil's package.
+  assert.deepEqual([...INSTALL.matchAll(/https?:\/\/[^\s"']+/g)].map((match) => match[0]), ["https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb"]);
+});
+
 test("the image pins the archil client the live checks ran, by version and sha256, and refuses to build, in words, while a sum is unpinned", () => {
   assert.match(INSTRUCTIONS[0], /^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$/);
-  assert.ok(INSTRUCTIONS.includes(`ARG ARCHIL_VERSION=${ARCHIL_VERSION}`), "archil 0.10.1");
-  for (const arch of ["AMD64", "ARM64"]) assert.match(DOCKERFILE, new RegExp(`^ARG ARCHIL_SHA256_${arch}=(?:[0-9a-f]{64}|${UNPINNED})$`, "m"), arch);
-  assert.ok(DOCKERFILE.includes('archil_${ARCHIL_VERSION}_${arch}.deb'), "the package is the pinned version's");
-  assert.ok(DOCKERFILE.includes('echo "$sum  /tmp/archil.deb" | sha256sum -c -'), "the package is checked before it is installed");
+  assert.match(INSTALL, new RegExp(`^ARCHIL_VERSION=${ARCHIL_VERSION}$`, "m"), "archil 0.10.1");
+  for (const arch of ["AMD64", "ARM64"]) assert.match(INSTALL, new RegExp(`^ARCHIL_SHA256_${arch}=(?:[0-9a-f]{64}|${UNPINNED})$`, "m"), arch);
+  assert.ok(INSTALL.includes('archil_${ARCHIL_VERSION}_${arch}.deb'), "the package is the pinned version's");
+  assert.ok(INSTALL.includes('echo "$sum  /tmp/archil.deb" | sha256sum -c -'), "the package is checked before it is installed");
   assert.ok(
-    DOCKERFILE.includes(`case "$sum" in ${UNPINNED}) echo "archil \${ARCHIL_VERSION} for $arch has no pinned sha256 yet: set ARCHIL_SHA256_`),
+    INSTALL.includes(`case "$sum" in ${UNPINNED}) echo "archil \${ARCHIL_VERSION} for $arch has no pinned sha256 yet: set ARCHIL_SHA256_`),
     "an unpinned sum stops the build, saying which",
   );
 });
 
 test("the helper is installed root:root 0755 at the path the provider runs it from", () => {
   assert.equal(ARCHIL_HELPER, "/usr/local/sbin/agentrun-archil");
-  assert.ok(INSTRUCTIONS.includes(`COPY agentrun-archil ${ARCHIL_HELPER}`), "the Dockerfile copies the helper there");
-  assert.ok(DOCKERFILE.includes(`chown root:root ${ARCHIL_HELPER};`), "owned by root");
-  assert.ok(DOCKERFILE.includes(`chmod 0755 ${ARCHIL_HELPER};`), "mode 0755");
+  assert.match(INSTALL, new RegExp(`^HELPER=${ARCHIL_HELPER}$`, "m"));
+  assert.match(step("helper"), /cp "\$here\/agentrun-archil" "\$HELPER"/, "install.sh copies the helper beside it there");
+  assert.ok(step("checked").includes('chown root:root "$HELPER"'), "owned by root");
+  assert.ok(step("checked").includes('chmod 0755 "$HELPER"'), "mode 0755");
   assert.ok(HELPER.includes(`Install it root:root 0755 at ${ARCHIL_HELPER}`), "the helper's own words name the same path");
 });
 
@@ -50,30 +94,30 @@ test("the tool user is agentrun-tool, uid and gid 2510, and the helper's serve n
   assert.equal(ARCHIL_TOOL_USER, "agentrun-tool");
   assert.equal(ARCHIL_TOOL_UID, 2510);
   assert.equal(fixed("TOOL"), ARCHIL_TOOL_USER);
-  assert.ok(DOCKERFILE.includes(`groupadd --gid ${ARCHIL_TOOL_UID} ${ARCHIL_TOOL_USER};`));
-  assert.ok(DOCKERFILE.includes(`useradd --uid ${ARCHIL_TOOL_UID} --gid ${ARCHIL_TOOL_UID} --no-create-home --home-dir /tmp --shell /bin/sh ${ARCHIL_TOOL_USER};`));
-  assert.ok(DOCKERFILE.includes(`[ "$ids" = "${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}" ]`), "the build reads the ids back");
+  assert.ok(INSTALL.includes(`groupadd --gid ${ARCHIL_TOOL_UID} ${ARCHIL_TOOL_USER}\n`));
+  assert.ok(INSTALL.includes(`useradd --uid ${ARCHIL_TOOL_UID} --gid ${ARCHIL_TOOL_UID} --no-create-home --home-dir /tmp --shell /bin/sh ${ARCHIL_TOOL_USER}\n`));
+  assert.ok(INSTALL.includes(`[ "$ids" = "${ARCHIL_TOOL_UID}:${ARCHIL_TOOL_UID}" ]`), "the build reads the ids back");
 });
 
 test("no sudo: the image installs none and has no sudoers file, its user is root, and the build checks that the tool user has no way to root", () => {
-  const installed = INSTRUCTIONS.flatMap((line) => [...line.matchAll(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null/g)].map((match) => match[1]));
+  const installed = [...INSTALL.matchAll(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null/g)].map((match) => match[1]);
   assert.ok(installed.length >= 2, "the base's packages and the desktop's");
   assert.ok(!/\bsudo\b/.test(installed.join(" ")), "no sudo package");
   assert.ok(!INSTRUCTIONS.some((line) => line.startsWith("COPY") && line.includes("sudoers")), "no sudoers file is copied");
-  assert.ok(!/\bdaytona\b/.test(INSTRUCTIONS.join("\n")), "no daytona user, and nothing granted to one");
+  assert.ok(!/\bdaytona\b/.test(INSTRUCTIONS.join("\n") + INSTALL), "no daytona user, and nothing granted to one");
   const users = INSTRUCTIONS.filter((line) => line.startsWith("USER "));
   assert.deepEqual(users, ["USER root"], "the provider's own exec is root");
-  assert.ok(DOCKERFILE.includes("! command -v sudo >/dev/null 2>&1 || { echo \"the image has sudo\" >&2; exit 1; };"), "the build fails if a base brings sudo");
-  assert.ok(DOCKERFILE.includes("[ ! -e /etc/sudoers ] && [ ! -e /etc/sudoers.d ] || { echo \"the image has a sudoers file\" >&2; exit 1; };"), "and if a base brings sudoers");
+  const checked = step("checked");
+  assert.ok(checked.includes("! command -v sudo >/dev/null 2>&1 || { echo \"the image has sudo\" >&2; exit 1; }\n"), "the build fails if a base brings sudo");
+  assert.ok(checked.includes("[ ! -e /etc/sudoers ] && [ ! -e /etc/sudoers.d ] || { echo \"the image has a sudoers file\" >&2; exit 1; }\n"), "and if a base brings sudoers");
   assert.ok(!HELPER.includes("NOPASSWD") && !HELPER.includes("sudoers"), "the helper's words grant nothing through sudo");
   // The E2B live run: E2B's template builder adds sudo to the base before the recipe's steps, and the guard refused the
   // build. The recipe takes away any sudo a base brought (the package where apt has it, and every sudoers file), then
   // the guard checks that none is left, for any provider's base.
-  const purge = DOCKERFILE.indexOf("apt-get purge -y -qq sudo");
-  const sudoers = DOCKERFILE.indexOf("rm -rf /etc/sudoers /etc/sudoers.d");
-  const guard = DOCKERFILE.indexOf("! command -v sudo >/dev/null 2>&1");
+  const purge = checked.indexOf("apt-get purge -y -qq sudo");
+  const sudoers = checked.indexOf("rm -rf /etc/sudoers /etc/sudoers.d");
+  const guard = checked.indexOf("! command -v sudo >/dev/null 2>&1");
   assert.ok(purge > 0 && sudoers > 0 && purge < guard && sudoers < guard, "sudo and sudoers are taken away before the guard checks there are none");
-  assert.ok(DOCKERFILE.includes("dpkg -s sudo >/dev/null 2>&1"), "the package is purged only where it is installed");
   assert.equal(INSTRUCTIONS.at(-1), 'CMD ["sleep", "infinity"]');
 });
 
@@ -81,16 +125,16 @@ test("the image has every program the helper runs, at the helper's paths, and an
   for (const name of ["ARCHIL", "MOUNT", "CHOWN"]) {
     const path = fixed(name);
     assert.ok(path, `the helper fixes ${name}`);
-    assert.match(DOCKERFILE, new RegExp(`for x in [^;]*${path.replace(/\//g, "\\/")}[ ;]`), `the build checks ${path}`);
+    assert.match(step("checked"), new RegExp(`for x in [^;]*${path.replace(/\//g, "\\/")}[ ;]`), `the build checks ${path}`);
   }
-  assert.match(DOCKERFILE, /apt-get install [^;]* fuse3[ ;>]/);
+  assert.match(step("packages"), /apt-get install [^;]* fuse3[ ;>]/);
   // No firewall: the tools' network is init's own namespace (computerd init --own-network), not the image's rules.
-  assert.ok(!/iptables|ip6tables/.test(INSTRUCTIONS.join("\n")), "the image installs and checks no iptables");
+  assert.ok(!/iptables|ip6tables/.test(INSTALL), "the image installs and checks no iptables");
   assert.equal(fixed("MP"), "/workspace");
-  assert.ok(DOCKERFILE.includes("install -d -o root -g root -m 0755 /workspace"));
+  assert.ok(step("packages").includes("install -d -o root -g root -m 0755 /workspace"));
   assert.equal(fixed("COMPUTERD"), DAEMON_IN_COMPUTER, "serve runs the daemon the provider installs");
   assert.equal(fixed("SOCK"), ARCHIL_SYNC_SOCKET);
-  assert.ok(!DOCKERFILE.includes(ARCHIL_SYNC_SOCKET.slice(0, ARCHIL_SYNC_SOCKET.lastIndexOf("/"))), "the image makes no sync folder: serve makes it, root's");
+  assert.ok(!INSTALL.includes(ARCHIL_SYNC_SOCKET.slice(0, ARCHIL_SYNC_SOCKET.lastIndexOf("/"))), "the image makes no sync folder: serve makes it, root's");
 });
 
 test("each build names what it made, and the Daytona snapshot's name covers every file the image copies", () => {
@@ -99,7 +143,7 @@ test("each build names what it made, and the Daytona snapshot's name covers ever
   assert.ok(daytona.includes('print(f"snapshot={name}")'));
   assert.ok(modal.includes('print(f"image={image.object_id}")'));
   const copied = INSTRUCTIONS.filter((line) => line.startsWith("COPY ")).map((line) => line.split(/\s+/)[1]);
-  assert.deepEqual(copied, ["agentrun-archil"]);
+  assert.deepEqual(copied, ["install.sh", "agentrun-archil"]);
   const hashed = daytona.match(/for name in \(([^)]*)\)/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
   assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
 });
@@ -137,15 +181,17 @@ test("the recipe is the Dockerfile and every file it copies, and its hash is the
   assert.equal(printed, `${hash}\n`);
 });
 
-test("on the published image, the E2B template runs the Dockerfile's sudo guard again, as root, and keeps its USER and CMD; a tag that is not the recipe's is refused", async () => {
+test("on the published image, the E2B template runs install.sh's last step again, as root (sudo taken away, every check), and keeps the Dockerfile's USER and CMD; a tag that is not the recipe's is refused", async () => {
   const { onImage, recipeHash } = await import("../box/recipe.mjs");
   const image = `ghcr.io/parcha-ai/agentrun-box:${recipeHash()}`;
   const dockerfile = onImage(image);
   const lines = dockerfile.replace(/\\\n/g, " ").split("\n").filter(Boolean);
-  assert.equal(lines[0], `FROM ${image}`);
-  const guard = INSTRUCTIONS.find((line) => line.startsWith("RUN ") && line.includes("dpkg -s sudo"));
-  assert.deepEqual(lines.slice(1), [guard, "USER root", 'CMD ["sleep", "infinity"]'], "the guard as the Dockerfile has it, then root, then the same first process");
-  assert.ok(guard.includes("rm -rf /etc/sudoers /etc/sudoers.d") && guard.includes("! command -v sudo"), "the guard takes sudo away and checks it gone");
+  assert.deepEqual(
+    lines,
+    [`FROM ${image}`, `COPY install.sh ${STAGE}/install.sh`, `RUN sh ${STAGE}/install.sh checked && rm -rf ${STAGE}`, "USER root", 'CMD ["sleep", "infinity"]'],
+    "install.sh's checked step, then root, then the same first process",
+  );
+  assert.ok(step("checked").includes("rm -rf /etc/sudoers /etc/sudoers.d") && step("checked").includes("! command -v sudo"), "the step takes sudo away and checks it gone");
   // Refused before the SDK or the key is read, so this runs with neither.
   const script = fileURLToPath(box("build-e2b.mjs"));
   const run = (args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", env: { PATH: process.env.PATH } });
@@ -183,7 +229,7 @@ test("build-e2b.mjs --image --public builds from the image, makes the template p
   // A copy of box/ beside a fake e2b package, which the script finds by its name, as it finds the root's.
   const dir = mkdtempSync(join(tmpdir(), "box-e2b-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  for (const name of ["Dockerfile", "agentrun-archil", "build-e2b.mjs", "recipe.mjs"]) copyFileSync(box(name), join(dir, name));
+  for (const name of ["Dockerfile", "install.sh", "agentrun-archil", "build-e2b.mjs", "recipe.mjs"]) copyFileSync(box(name), join(dir, name));
   mkdirSync(join(dir, "node_modules", "e2b"), { recursive: true });
   writeFileSync(join(dir, "node_modules", "e2b", "package.json"), JSON.stringify({ name: "e2b", type: "module", exports: "./index.js" }));
   writeFileSync(join(dir, "node_modules", "e2b", "index.js"), FAKE_E2B);
@@ -195,7 +241,7 @@ test("build-e2b.mjs --image --public builds from the image, makes the template p
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(ok.stdout, `public=parcha/agentrun-archil-x,agentrun-archil-x\ntemplate=agentrun-archil-${recipeHash()}\n`);
   const [template, build, patch] = entries("ok.log");
-  assert.equal(template.dockerfile, onImage(image), "the template is the image with the Dockerfile's guard, USER and CMD");
+  assert.equal(template.dockerfile, onImage(image), "the template is the image with install.sh's last step, and the Dockerfile's USER and CMD");
   assert.deepEqual(build, { build: `agentrun-archil-${recipeHash()}`, cpuCount: 2, memoryMB: 4096 });
   assert.deepEqual(patch, { patch: "/v2/templates/{templateID}", init: { params: { path: { templateID: "tpl_0123" } }, body: { public: true } }, apiKey: "fake-test-key" });
   assert.ok(!ok.stderr.includes("fake-test-key") && !ok.stdout.includes("fake-test-key"), "the key is never printed");
@@ -255,12 +301,12 @@ const KEY_MATERIAL = [
   /\bxox[abpr]-[A-Za-z0-9-]{10,}/,
 ];
 
-test("a build's context is box/, the files the npm package ships there, and the image takes the helper alone from it", () => {
+test("a build's context is box/, the files the npm package ships there, and the image takes install.sh and the helper alone from it", () => {
   const copied = INSTRUCTIONS.filter((line) => /^(COPY|ADD) /.test(line)).map((line) => line.split(/\s+/).slice(1, -1));
-  assert.deepEqual(copied, [["agentrun-archil"]], "one COPY, of the helper, with no flags (no --from, no remote ADD)");
-  // No .dockerignore: everything here is public already (the package ships box/ whole), and the image copies the helper
-  // alone. A new file here is read for what it is before this list takes it.
-  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "recipe.d.mts", "recipe.mjs"]);
+  assert.deepEqual(copied, [["install.sh"], ["agentrun-archil"]], "a COPY of the build and one of the helper, with no flags (no --from, no remote ADD)");
+  // No .dockerignore: everything here is public already (the package ships box/ whole), and the image copies install.sh
+  // and the helper alone. A new file here is read for what it is before this list takes it.
+  assert.deepEqual(BOX_FILES.sort(), ["Dockerfile", "README.md", "agentrun-archil", "build-daytona.py", "build-e2b.mjs", "build-modal.py", "install.sh", "recipe.d.mts", "recipe.mjs"]);
 });
 
 test("box/ holds no file named like a key or a credential and no key material, and the Dockerfile takes no secret", () => {
@@ -273,7 +319,8 @@ test("box/ holds no file named like a key or a credential and no key material, a
   for (const line of INSTRUCTIONS.filter((line) => /^(ARG|ENV) /.test(line))) {
     assert.doesNotMatch(line.split(/\s+/)[1].split("=")[0], /KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE/i, `${line}: a build argument or variable named like a secret`);
   }
-  assert.deepEqual(INSTRUCTIONS.filter((line) => line.startsWith("ARG ")).map((line) => line.slice(4).split("=")[0]), ["ARCHIL_VERSION", "ARCHIL_SHA256_AMD64", "ARCHIL_SHA256_ARM64"]);
+  assert.deepEqual(INSTRUCTIONS.filter((line) => /^(ARG|ENV) /.test(line)), [], "the pins are install.sh's, so a vendor's build has them too");
+  assert.doesNotMatch(INSTALL, /\$\{?[A-Z_]*(KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE)/, "install.sh reads no variable named like a secret");
   // The patterns catch what they are for.
   assert.match("id_ed25519", CREDENTIAL_NAME);
   assert.match("deploy.pem", CREDENTIAL_NAME);
@@ -333,13 +380,12 @@ test("the release publishes the box image beside agentrun-server, amd64, by the 
 test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, each checked, with no sudo", async () => {
   const { WINDOW_MANAGER } = await import("../dist/desktop.js");
   const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
-  const desktop = INSTRUCTIONS.find((line) => line.startsWith("RUN ") && line.includes("xvfb"));
-  assert.ok(desktop, "the Dockerfile installs the desktop");
-  const packages = desktop.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null;/)?.[1].trim().split(/\s+/) ?? [];
+  const desktop = step("desktop");
+  const packages = desktop.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null\n/)?.[1].trim().split(/\s+/) ?? [];
   for (const name of ["xvfb", "xfwm4", "x11-xserver-utils", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(packages.includes(name), name);
   assert.ok(!packages.some((name) => /vnc|sudo/.test(name)), "no VNC server and no sudo");
   assert.ok(!INSTRUCTIONS.some((line) => /^(CMD|ENTRYPOINT) /.test(line) && /Xvfb|xfwm4/.test(line)), "nothing of the desktop starts with the image");
-  assert.ok(INSTRUCTIONS.indexOf(desktop) < INSTRUCTIONS.findIndex((line) => line.startsWith("RUN ") && line.includes("dpkg -s sudo")), "the sudo guard runs after the desktop's packages");
+  assert.ok(INSTALL.indexOf("desktop() {") < INSTALL.indexOf("checked() {") && /packages; desktop; helper; checked/.test(INSTALL), "the sudo guard runs after the desktop's packages");
   const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
   // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
@@ -349,8 +395,8 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
     assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
     assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
   }
-  const checked = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
-  assert.ok(checked.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
+  const apps = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
+  assert.ok(apps.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
   // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
 });
