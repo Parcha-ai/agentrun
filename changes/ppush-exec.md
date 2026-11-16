@@ -1,5 +1,5 @@
 ---
-packages: "@parcha/agentrun-computer"
+packages: @parcha/agentrun-computer
 kind: breaking
 ---
 
