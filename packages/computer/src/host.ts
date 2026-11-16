@@ -1,9 +1,10 @@
-// The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
-// and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
-// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels, list and
-// attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and the words
-// of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven members").
+// The machine host: what a vendor writes to put computers on its machines. A host has twelve members: its descriptor
+// and its facts, five calls about its own machines (create, get, list, delete, exec), and five optional hooks (upload,
+// errorCode, extend, check, keepalive). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider
+// does: the spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels,
+// list and attach, the deadline and extend, the keepalive's timer, the wait after a delete, the sweep of a lost create,
+// the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
+// (PROVIDERS.md, "The twelve members").
 import type { ProviderDescriptor } from "./descriptor.js";
 import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
@@ -91,11 +92,23 @@ export interface MachineHost {
 	 */
 	extend?(id: string, endsAt: Date, ctx: HostCall): Promise<void>;
 	/**
+	 * The vendor's cheapest call that restarts its idle timer (facts.idleMs) on the machine: Cube's or E2B's setTimeout,
+	 * Railway's heartbeat. The adapter calls it every idleMs / 3 from create, or attach, until release; one that fails is
+	 * told through onNote and the next one tries again. Required with facts.idleMs; a host with no idle timer leaves it out.
+	 */
+	keepalive?(id: string, ctx: HostCall): Promise<void>;
+	/**
 	 * The vendor's own rules of a spec, over the adapter's shared ones: an image name it takes, a GPU's image. No call. The
 	 * spec is an object, as the caller gave it: its fields are not checked yet (an image may be a number).
 	 */
 	check?(spec: Partial<ComputerSpec>): Refusal[];
 }
+
+/**
+ * How far past the most a deadline may reach MachineRequest.backstopAt is: the janitor ends the machine first while the
+ * server runs, and the vendor's clock may be off from the server's.
+ */
+export const BACKSTOP_MARGIN_MS = 300_000;
 
 /** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
 export class HostError extends Error {
@@ -125,6 +138,12 @@ export interface MachineRequest {
 	labels: Record<string, string>;
 	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
 	lifetimeMs: number;
+	/**
+	 * An ISO time a margin past the most the machine's deadline may reach: create + maxLifetimeMs + BACKSTOP_MARGIN_MS. A
+	 * janitor's host whose vendor has a delete or stop timer of its own sets it here (facts.backstop), so the machine still
+	 * ends when the server that made it is gone. A vendor-lifetime host ignores it.
+	 */
+	backstopAt: string;
 	/**
 	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
 	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts). Its tools' own network
@@ -159,7 +178,7 @@ export interface Machine {
 	 * janitor still ends it; gone: being deleted, ended, or failed (why says how).
 	 */
 	state: "starting" | "running" | "stopped" | "gone";
-	/** With facts.lifetime "vendor": when the vendor's timer ends it. */
+	/** With facts.lifetime "vendor", or facts.backstop: when the vendor's timer ends it. */
 	endsAt?: Date;
 	/**
 	 * When the vendor made it, by its clock, where it says. Two creates of one request on two provider instances can each
@@ -204,8 +223,18 @@ export interface HostFacts {
 	isolation: ComputerCapabilities["isolation"];
 	/** Who ends a machine at its deadline: the vendor's timer, or the janitor by label. */
 	lifetime: "vendor" | "janitor";
+	/**
+	 * A janitor's host claims its create sets the vendor's own delete or stop timer from req.backstopAt, and get reads it
+	 * back as endsAt (the Core case provider.backstop checks it). Only this lets a janitor's host keep labels "machine".
+	 */
+	backstop?: true;
 	/** The vendor's hard cap of a machine's life; the adapter's maxLifetimeMs may only lower it. */
 	maxLifetimeMs: number;
+	/**
+	 * Where the vendor ends or pauses a machine no call reaches for a while (an idle timer that can't be switched off): that
+	 * window, in whole ms. The adapter then calls keepalive every idleMs / 3 while it holds the machine. Default none.
+	 */
+	idleMs?: number;
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
@@ -221,7 +250,7 @@ export interface HostFacts {
 	 * the packed labels'. "machine": the vendor keeps no labels, so the adapter writes them as JSON to a root-only file in
 	 * the machine (LABEL_FILE, ./hosted/scripts.ts) right after it runs, and reads them back from it: at most 64 KiB as
 	 * JSON, what a run's output keeps (OUTPUT_MAX, ./hosted/process.ts). Only with
-	 * lifetime "vendor": a machine whose labels were never written is ended by the vendor's timer alone.
+	 * lifetime "vendor" or backstop: a machine whose labels were never written is ended by the vendor's timer alone.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } } | "machine";
 	/**
