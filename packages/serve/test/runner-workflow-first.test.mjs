@@ -794,9 +794,9 @@ test("held by its replay: the agent takes the run, and the compile turn asks for
   // Exactly one revise: the hold's own compile turn, asked alone (no look-back: no feedback on the run).
   assert.equal(compileAsked(gateway).filter((request) => askedForCompile(lastOf(request.body)) === true).length, 1, "the hold asks one revise");
   assert.equal(lookBackAsked(gateway).length, 0, "no look-back");
-  // A hold of an older revision: main's is a new digest, decided on its own (here on its dry run: no graded input), and
-  // nothing asks for a revision.
-  const older = await piRun(t, { promotions: [{ ...held, digest: "fedcba9876543210" }] });
+  // A hold of an older revision: main's is a new digest, decided on its own (here its check promoted it), and nothing
+  // asks for a revision.
+  const older = await piRun(t, { promotions: [{ ...held, digest: "fedcba9876543210" }, ...checkedOf(FLOWS)] });
   assert.equal(older.row.metrics?.path, "workflow", JSON.stringify(older.row.metrics));
   assert.ok(!older.gateway.requests.some((request) => /One more turn: revise your learned workflow/.test(textOf(request.body))), "an older revision's hold asks nothing");
 });
