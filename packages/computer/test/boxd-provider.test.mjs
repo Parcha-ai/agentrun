@@ -338,21 +338,30 @@ function ran(code, stderr = "") {
 /** A snapshot as boxd reads one. */
 const snapshot = (patch = {}) => ({ name: boxdDesktopSnapshot(), status: "ready", archived: false, storage: "local", ...patch });
 
-/** A build's answers: no snapshot until snapshots.create, then ready; the build machine gone once deleted. */
+/**
+ * A build's answers: no snapshot until snapshots.create, then ready; the build machine listed by its name (with another
+ * machine of the org) until deleted, then gone. answers.create may take the name and throw, as a create whose reply was lost.
+ */
 function building(answers = {}) {
 	let taken = false;
 	let deleted = false;
+	let named_ = null;
+	const { create = (params) => machine({ id: "b-1", name: params.name, labels: {} }), ...rest } = answers;
 	return {
 		"snapshots.get": () => (taken ? snapshot() : Promise.reject(named("NotFoundError"))),
 		"snapshots.create": () => {
 			taken = true;
 			return { name: boxdDesktopSnapshot(), status: "pending" };
 		},
-		create: (params) => machine({ id: "b-1", name: params.name, labels: {} }),
+		create: (params) => {
+			named_ = params.name;
+			return create(params);
+		},
+		list: () => [machine({ id: "m-9", name: "someone-else" }), ...(named_ === null || deleted ? [] : [machine({ id: "b-1", name: named_, labels: {} })])],
 		get: () => (deleted ? Promise.reject(named("NotFoundError")) : machine({ id: "b-1" })),
 		delete: () => void (deleted = true),
 		streamExec: () => ran(0),
-		...answers,
+		...rest,
 	};
 }
 
@@ -399,11 +408,56 @@ test("prepareImage: a desktop's snapshot is built once from boxd's own image: th
 	assert.match(exec[2].command, /^sudo -n sh -c '[^']*apt-get install -y -qq --no-install-recommends mousepad[^']*org\.xfce\.mousepad\.desktop[^']*'$/);
 	assert.deepEqual(
 		rest.map(([call]) => call),
-		["waitUntilReady", "streamExec", "snapshots.create", "snapshots.get", "delete", "get"],
-		"ready, the recipe, the capture, read until ready, then the machine deleted and read gone",
+		["waitUntilReady", "streamExec", "snapshots.create", "snapshots.get", "list", "delete", "get"],
+		"ready, the recipe, the capture, read until ready, then the machine found by its name in the org's list, deleted and read gone",
 	);
 	assert.deepEqual(rest.find(([call]) => call === "snapshots.create").slice(1), ["b-1", name]);
-	assert.deepEqual(rest.find(([call]) => call === "delete"), ["delete", "b-1"]);
+	assert.deepEqual(rest.find(([call]) => call === "list").slice(1), [{ org: "acme", labels: {} }], "the org's whole list: the build machine has no label");
+	assert.deepEqual(rest.filter(([call]) => call === "delete"), [["delete", "b-1"]], "the build machine alone");
+});
+
+test("prepareImage: a cancelled request makes no build machine, and a cancel while one starts deletes it at once", async () => {
+	const cancelled = setup({ kind: "desktop" }, building());
+	const already = new AbortController();
+	already.abort();
+	const told = [];
+	const refused = await cancelled.provider.prepareImage({ signal: already.signal, onWait: (...said) => told.push(said) });
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "aborted");
+	assert.deepEqual([cancelled.rec.calls, told], [[], []], "no read, no machine, no word of a build");
+
+	const starting = setup({ kind: "desktop" }, building({ waitUntilReady: () => new Promise(() => {}) }));
+	const cancel = new AbortController();
+	const answer = starting.provider.prepareImage({ signal: cancel.signal });
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	cancel.abort();
+	const failed = await answer;
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "aborted", "boxd's own wait for a ready machine is not the caller's to sit through");
+	assert.deepEqual(starting.rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
+	assert.equal(starting.rec.calls.some(([call]) => call === "streamExec" || call === "snapshots.create"), false);
+});
+
+test("prepareImage: a build machine whose create reply was lost is found by its name and deleted; the create's error is the answer", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building({ create: () => Promise.reject(named("APIConnectionError")) }));
+	const failed = await provider.prepareImage();
+	assert.equal(failed.ok, false);
+	assert.match(failed.error.message, /^boxd's desktop snapshot agentrun-desktop-[0-9a-f]{12}: APIConnectionError$/);
+	assert.deepEqual(rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
+	assert.equal(rec.calls.some(([call]) => call === "waitUntilReady"), false);
+});
+
+test("prepareImage: a build machine that cannot be deleted is said, after a build that passed or with the error of one that failed", async () => {
+	const stuck = () => Promise.reject(named("RateLimitError"));
+	const passed = await setup({ kind: "desktop" }, building({ delete: stuck })).provider.prepareImage();
+	assert.equal(passed.ok, false);
+	assert.match(
+		passed.error.message,
+		/^boxd's desktop snapshot (agentrun-desktop-[0-9a-f]{12}): the boxd snapshot \1 is ready, but its build machine agentrun-desktop-build-[0-9a-f]{8} could not be deleted \(.*RateLimitError.*\), and boxd's delete timer ends it within 2 h: call again to start from the snapshot$/,
+	);
+	const failed = await setup({ kind: "desktop" }, building({ delete: stuck, streamExec: () => ran(100, "E: Unable to locate package mousepad\n") })).provider.prepareImage();
+	assert.equal(failed.error.code, "vendor");
+	assert.match(failed.error.message, /exited with 100: E: Unable to locate package mousepad; its build machine agentrun-desktop-build-[0-9a-f]{8} could not be deleted \(.*RateLimitError.*\), and boxd's delete timer ends it within 2 h$/);
 });
 
 test("prepareImage: a recipe that fails fails in its own words, and the build machine is deleted; no snapshot is taken", async () => {

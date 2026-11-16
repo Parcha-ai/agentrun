@@ -53,13 +53,14 @@ export const pause = (ms: number, signal?: AbortSignal) =>
 
 /**
  * done() asked until it answers a value, pollMs apart: for an image build's waits (a build machine, a snapshot), all
- * held to one end (epoch ms). Past the end is a timeout, the caller's abort aborted, each a HostError in words.
+ * held to one end (epoch ms). Past the end is a timeout, the caller's abort aborted, each a HostError in words; an
+ * abort is read before each ask, so a cancelled caller is never answered a value it would act on.
  */
 export async function until<T>(what: string, { end, pollMs, signal }: { end: number; pollMs: number; signal?: AbortSignal | undefined }, done: () => Promise<T | undefined>): Promise<T> {
 	for (;;) {
+		if (signal?.aborted) throw new HostError("aborted", `the wait for ${what} was aborted`);
 		const value = await done();
 		if (value !== undefined) return value;
-		if (signal?.aborted) throw new HostError("aborted", `the wait for ${what} was aborted`);
 		if (Date.now() > end) throw new HostError("timeout", `${what} was not ready by ${new Date(end).toISOString()}`);
 		await pause(pollMs, signal);
 	}

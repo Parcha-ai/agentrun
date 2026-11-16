@@ -7,7 +7,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
-import { codeOfError, runChecked, until } from "./hosted/process.js";
+import { CALL_SLACK_MS, codeOfError, orThrow, race, runChecked, until } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, mayHaveMade } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf } from "./hosted/values.js";
@@ -141,6 +141,20 @@ const BUILD_MS = 30 * 60_000;
 const BUILD_TTL_S = 2 * 60 * 60;
 /** The pause between two reads of something boxd is making or deleting. */
 const BUILD_POLL_MS = 2_000;
+/** The most a build machine's cleanup waits for it to read gone. */
+const GONE_MS = 120_000;
+
+/** The error with words added to its message (one that cannot be written stays as it was): the error is what the caller gets. */
+function withWords(error: unknown, words: string): unknown {
+	if (error instanceof Error) {
+		try {
+			error.message = `${error.message}${words}`;
+		} catch {
+			// A read-only message: the error goes on as it is.
+		}
+	}
+	return error;
+}
 
 /** A machine as the adapter reads one: its labels, its state, and when boxd made it. */
 function machineOf(machine: BoxdMachine): Machine {
@@ -223,14 +237,7 @@ class BoxdHost implements MachineHost {
 		} catch (failed) {
 			outcome = `the machine ${id} it made could not be deleted (${failed instanceof Error ? failed.message : String(failed)})`;
 		}
-		if (error instanceof Error) {
-			try {
-				error.message = `${error.message}; ${outcome}`;
-			} catch {
-				// A message that cannot be written stays as it was: the error itself is what the caller gets.
-			}
-		}
-		return error;
+		return withWords(error, `; ${outcome}`);
 	}
 
 	/** machines.get takes an id alone, so a machine of another org is none of this provider's. Not found is none (adapter). */
@@ -283,34 +290,50 @@ class BoxdHost implements MachineHost {
 	 * (`building` told first). A build makes an isolated machine of boxd's own image with no labels (a restore carries a
 	 * snapshot's labels over to every machine made from it) and boxd's delete timer at BUILD_TTL_S, runs DESKTOP_RECIPE
 	 * as root through the image user's passwordless sudo, captures the machine under the name, and waits until the
-	 * capture is ready. The machine is deleted after, pass or fail, and waited gone, so a sweep after the build finds none
-	 * of it. The snapshot stays: it is the org's image for every desktop. One that failed, or that boxd archived, is
-	 * refused in words: delete it, then call again.
+	 * capture is ready. A cancelled caller makes no machine, and stops waiting for one to start. The machine is deleted
+	 * after, pass, fail or cancel, and waited gone, so a sweep after the build finds none of it; one that can't be is said
+	 * (after the build's own error, when it failed). The snapshot stays: it is the org's image for every desktop. One that
+	 * failed, or that boxd archived, is refused in words: delete it, then call again. Two first builds that race (two
+	 * servers, one org) each pay for a build machine, and both captures land under the one name (boxd keeps the latest).
 	 */
 	async desktopSnapshot(name: string, building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		const end = Date.now() + BUILD_MS;
 		const found = await this.#snapshot(name, end, signal);
 		if (found !== null) return found;
+		if (signal?.aborted) throw new HostError("aborted", `the build of the boxd snapshot ${name} was aborted before its machine was made`);
 		building();
+		// Named before the create, so a create whose reply is lost leaves a machine the cleanup still finds.
+		const machine = `agentrun-desktop-build-${randomBytes(4).toString("hex")}`;
+		let built: { name: string } | { error: unknown };
+		try {
+			built = { name: await this.#build(machine, name, end, signal) };
+		} catch (error) {
+			built = { error };
+		}
+		const left = await this.#gone(machine);
+		if ("error" in built) throw left === undefined ? built.error : withWords(built.error, `; ${left}`);
+		if (left !== undefined) throw new HostError("vendor", `the boxd snapshot ${name} is ready, but ${left}: call again to start from the snapshot`);
+		return built.name;
+	}
+
+	/** The build itself, on a machine of this name: made, started (a cancel stops the wait), the recipe, the capture read ready. */
+	async #build(machine: string, name: string, end: number, signal: AbortSignal | undefined): Promise<string> {
 		const { org } = this.options;
 		const made = await this.creator.create({
-			name: `agentrun-desktop-build-${randomBytes(4).toString("hex")}`,
+			name: machine,
 			...(org === undefined ? {} : { org }),
 			isolated: true,
 			config: { autoSuspendTimeout: 0 },
 			deleteAfter: BUILD_TTL_S,
 		});
-		try {
-			await this.machines.waitUntilReady(made.id, { timeout: Math.max(1, end - Date.now()) });
-			const what = `the desktop recipe (mousepad) on the build machine ${made.id}`;
-			await runChecked(this, made.id, ["sudo", "-n", "sh", "-c", DESKTOP_RECIPE], { ms: Math.max(1, end - Date.now()), signal, what });
-			await this.snapshots.create(made.id, name);
-			const ready = await this.#snapshot(name, end, signal);
-			if (ready === null) throw new HostError("vendor", `boxd took the snapshot ${name} of ${made.id}, then read none by that name`);
-			return ready;
-		} finally {
-			await this.#gone(made.id, signal);
-		}
+		const ms = Math.max(1, end - Date.now());
+		orThrow(await race(this, this.machines.waitUntilReady(made.id, { timeout: ms }), `the build machine ${made.id}'s start`, ms + CALL_SLACK_MS, signal));
+		const what = `the desktop recipe (mousepad) on the build machine ${made.id}`;
+		await runChecked(this, made.id, ["sudo", "-n", "sh", "-c", DESKTOP_RECIPE], { ms: Math.max(1, end - Date.now()), signal, what });
+		await this.snapshots.create(made.id, name);
+		const ready = await this.#snapshot(name, end, signal);
+		if (ready === null) throw new HostError("vendor", `boxd took the snapshot ${name} of ${made.id}, then read none by that name`);
+		return ready;
 	}
 
 	/** The snapshot's name once boxd reads it ready (a pending one waited for), null when boxd has none by it; failed or archived throws in words. */
@@ -331,20 +354,40 @@ class BoxdHost implements MachineHost {
 		});
 	}
 
-	/** A build machine deleted and waited gone, two minutes at most; a failure leaves it to its delete timer and never hides the build's outcome. */
-	async #gone(id: string, signal: AbortSignal | undefined): Promise<void> {
+	/**
+	 * Every machine of the build's name in the org's list (it has no label to list it by), each deleted once and read gone
+	 * through get, until the list shows none left, GONE_MS at most. Not the caller's to cancel: a cancelled build is
+	 * cleaned up too. Undefined once none is left, else what is left in words (boxd's delete timer, set at create, ends it).
+	 */
+	async #gone(machine: string): Promise<string | undefined> {
+		const { org } = this.options;
+		const asked = new Set<string>();
 		try {
-			await this.delete(id);
-			await until(`the build machine ${id}'s delete`, { end: Date.now() + 120_000, pollMs: BUILD_POLL_MS, signal }, async () => {
-				try {
-					return STATES[(await this.machines.get(id)).status] === "gone" ? true : undefined;
-				} catch (error) {
-					if (codeOf(error) === "not_found") return true;
-					throw error;
+			await until(`the build machine ${machine}'s delete`, { end: Date.now() + GONE_MS, pollMs: BUILD_POLL_MS }, async () => {
+				const listed = await this.machines.list({ ...(org === undefined ? {} : { org }), labels: {} });
+				let left = 0;
+				for (const { id } of [...listed].filter((one) => one.name === machine)) {
+					if (!asked.has(id)) {
+						asked.add(id);
+						await this.delete(id);
+					}
+					if (!(await this.#readGone(id))) left += 1;
 				}
+				return left === 0 ? true : undefined;
 			});
-		} catch {
-			// boxd's delete timer, set at create, ends it within BUILD_TTL_S.
+			return undefined;
+		} catch (error) {
+			return `its build machine ${machine} could not be deleted (${error instanceof Error ? error.message : String(error)}), and boxd's delete timer ends it within ${BUILD_TTL_S / 3600} h`;
+		}
+	}
+
+	/** Whether get reads the machine gone: not found, or in a state that is gone. */
+	async #readGone(id: string): Promise<boolean> {
+		try {
+			return STATES[(await this.machines.get(id)).status] === "gone";
+		} catch (error) {
+			if (codeOf(error) === "not_found") return true;
+			throw error;
 		}
 	}
 

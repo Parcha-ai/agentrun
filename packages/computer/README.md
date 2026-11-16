@@ -2569,7 +2569,13 @@ key's org has none, it builds it once, telling `onWait` "build" first:
 2. the recipe as root through the image user's passwordless sudo: `apt-get install mousepad` (Ubuntu's universe), its
    `org.xfce.mousepad.desktop` checked;
 3. `snapshots.create` under the name, read until boxd says `ready`;
-4. the build machine deleted and read gone, pass or fail.
+4. the build machine deleted and read gone, pass, fail or cancel. It is found by its name in the org's list, so a
+   create whose reply was lost is cleaned up too. One that can't be deleted within 2 minutes fails the call in words
+   (after the build's own error, when it failed), and boxd's delete timer ends it.
+
+A cancelled call makes no build machine, and a cancel while one starts stops the wait. Two servers that build the
+first snapshot of an org at once each pay for a build machine; both captures land under the one name, and boxd keeps
+the latest.
 
 The snapshot stays in the org: it is the image of every boxd desktop, and the next `prepareImage()` finds it with no
 build. One that failed, or that boxd archived (it makes no machine from an archived snapshot), is refused in words:
