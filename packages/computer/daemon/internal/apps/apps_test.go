@@ -26,23 +26,55 @@ import (
 // helperWindow is the argument that makes this test binary an app with one window: apps-test-window <instance> <class>.
 const helperWindow = "apps-test-window"
 
-// TestMain runs the guard when process.start starts this binary as one, as computerd does, and the test app.
+// helperSingle makes this test binary an app that runs once, as Firefox does: apps-test-single <dir> <class> <second>
+// [url]. The first instance holds <dir>/lock and shows a window. A later one finds the lock and, by <second>: "hand"
+// writes its url to <dir>/handed and ends, as a launcher that hands the url to the instance that runs; "dialog" shows a
+// dialog of its own, "Close <class>", and runs on, as Firefox's "already running" box when its second launch can't
+// reach the first.
+const helperSingle = "apps-test-single"
+
+// TestMain runs the guard when process.start starts this binary as one, as computerd does, and the test apps.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == execrun.GuardCommand {
 		os.Exit(execrun.Guard())
 	}
 	if len(os.Args) == 4 && os.Args[1] == helperWindow {
-		if err := showWindow(os.Args[2], os.Args[3]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		os.Exit(0)
+		os.Exit(exit(showWindow(os.Args[2], os.Args[3], false)))
+	}
+	if len(os.Args) >= 5 && os.Args[1] == helperSingle {
+		os.Exit(single(os.Args[2], os.Args[3], os.Args[4], os.Args[5:]))
 	}
 	os.Exit(m.Run())
 }
 
-// showWindow is the test app: a window that is the app's, by its WM_CLASS and _NET_WM_PID, on $DISPLAY, until TERM.
-func showWindow(instance, class string) error {
+func exit(err error) int {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// single is the app helperSingle names.
+func single(dir, class, second string, url []string) int {
+	lock := filepath.Join(dir, "lock")
+	if f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600); err == nil {
+		_ = f.Close()
+		defer os.Remove(lock)
+		return exit(showWindow(strings.ToLower(class), class, false))
+	}
+	switch second {
+	case "hand":
+		return exit(os.WriteFile(filepath.Join(dir, "handed"), []byte(strings.Join(url, " ")), 0o600))
+	case "dialog":
+		return exit(showWindow(strings.ToLower(class), class, true))
+	}
+	return 2
+}
+
+// showWindow is the test app: a window that is the app's, by its WM_CLASS and _NET_WM_PID, on $DISPLAY, until TERM. A
+// dialog is one by its EWMH type (_NET_WM_WINDOW_TYPE_DIALOG), named "Close <class>".
+func showWindow(instance, class string, dialog bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 	c, err := x11.Dial(os.Getenv("DISPLAY"))
@@ -63,6 +95,20 @@ func showWindow(instance, class string) error {
 	}
 	if err := c.ChangeProperty(id, pidAtom, x11.AtomCardinal, 32, le32(uint32(os.Getpid()))); err != nil {
 		return err
+	}
+	if dialog {
+		atoms := map[string]uint32{}
+		for _, name := range []string{"ATOM", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DIALOG"} {
+			if atoms[name], err = c.InternAtom(name, false); err != nil {
+				return err
+			}
+		}
+		if err := c.ChangeProperty(id, atoms["_NET_WM_WINDOW_TYPE"], atoms["ATOM"], 32, le32(atoms["_NET_WM_WINDOW_TYPE_DIALOG"])); err != nil {
+			return err
+		}
+		if err := c.ChangeProperty(id, x11.AtomWMName, x11.AtomString, 8, []byte("Close "+class)); err != nil {
+			return err
+		}
 	}
 	if err := c.MapWindow(id); err != nil {
 		return err
@@ -90,6 +136,8 @@ type world struct {
 	conn    *x11.Conn
 	table   *process.Table
 	call    func(method string, params any) (any, error)
+	// locks is each helperSingle app's folder, by its second launch's way: "hand" or "dialog".
+	locks map[string]string
 }
 
 // running are the processes of the table that still run, by their program.
@@ -118,6 +166,18 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	write(t, filepath.Join(dir, "test.window.desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Test Window\nExec=%q %s test TestWindow\nStartupWMClass=TestWindow\n", self, helperWindow))
 	write(t, filepath.Join(dir, "quiet.desktop"), "[Desktop Entry]\nType=Application\nName=Quiet\nExec=sleep 60\n")
+	// Two apps that run once (helperSingle), each with a folder of its own for its lock: one that hands a later launch's
+	// url to the instance that runs, one that shows a dialog instead.
+	locks := map[string]string{}
+	for _, second := range []string{"hand", "dialog"} {
+		lock := filepath.Join(t.TempDir(), second)
+		if err := os.Mkdir(lock, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		locks[second] = lock
+		class := "Single" + strings.ToUpper(second[:1]) + second[1:]
+		write(t, filepath.Join(dir, "single."+second+".desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=%s\nExec=%q %s %q %s %s %%u\nStartupWMClass=%s\n", class, self, helperSingle, lock, class, second, class))
+	}
 	d := desktop.New(display)
 	t.Cleanup(d.Close)
 	table := process.NewTable(process.Options{})
@@ -127,7 +187,7 @@ func setup(t *testing.T, window time.Duration) *world {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	w := &world{t: t, display: display, conn: conn, table: table}
+	w := &world{t: t, display: display, conn: conn, table: table, locks: locks}
 	w.call = func(method string, params any) (any, error) {
 		raw, err := json.Marshal(params)
 		if err != nil {
@@ -139,7 +199,7 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	// Whatever a test left running ends with it.
 	t.Cleanup(func() {
-		for _, id := range []string{"test.window", "quiet"} {
+		for _, id := range []string{"test.window", "quiet", "single.hand", "single.dialog"} {
 			_, _ = w.call("apps.terminate", map[string]any{"id": id})
 		}
 	})
@@ -244,6 +304,49 @@ func TestAppsListLaunchAndTerminateOnADesktop(t *testing.T) {
 	}
 	if _, err := w.call("apps.terminate", map[string]any{"id": "test.window"}); err != nil {
 		t.Fatalf("apps.terminate of an app that is not running: %v", err)
+	}
+}
+
+// A url for an app that runs is handed over by a second launch. One whose launcher passes it to the instance that runs
+// and ends (Chromium's, or Firefox's with a session bus) opened it: the call answers, and no window more shows.
+func TestAppsLaunchAURLIntoARunningAppThatTakesIt(t *testing.T) {
+	w := setup(t, 5*time.Second)
+	self, _ := os.Executable()
+	if _, err := w.call("apps.launch", map[string]any{"id": "single.hand"}); err != nil {
+		t.Fatalf("apps.launch single.hand: %v", err)
+	}
+	if _, err := w.call("apps.launch", map[string]any{"id": "single.hand", "url": "https://example.com/two"}); err != nil {
+		t.Fatalf("apps.launch single.hand with a url, its launcher handing it over: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(w.locks["hand"], "handed")); err != nil || string(b) != "https://example.com/two" {
+		t.Fatalf("the running instance was handed %q (%v), not the url", b, err)
+	}
+	if n, ran := w.shown("SingleHand"), w.running(self); n != 1 || ran != 1 {
+		t.Fatalf("after the hand-over, %d windows show and %d launches run, not 1 and 1", n, ran)
+	}
+}
+
+// Firefox runs once a profile, and its second launch hands a url to the first over a session bus only, which an app here
+// has none of: the launch shows Firefox's "already running" box and runs on. That launch opened nothing, so the call
+// fails in words, naming the box, and the launch is ended (its box goes); the app that ran runs on, its window as it was.
+func TestAppsLaunchAURLIntoARunningAppThatShowsADialogInstead(t *testing.T) {
+	w := setup(t, 5*time.Second)
+	self, _ := os.Executable()
+	if _, err := w.call("apps.launch", map[string]any{"id": "single.dialog"}); err != nil {
+		t.Fatalf("apps.launch single.dialog: %v", err)
+	}
+	got, err := w.call("apps.launch", map[string]any{"id": "single.dialog", "url": "https://example.com/two"})
+	if err == nil {
+		t.Fatalf("apps.launch with a url into the running app answered %v (opened), though its launch showed only its own dialog", got)
+	}
+	if kindOf(err) != rpc.KindUnsupported || !strings.Contains(err.Error(), `"Close SingleDialog"`) || !strings.Contains(err.Error(), "did not hand it the url") {
+		t.Fatalf("apps.launch with a url into the running app: %v (%q), want unsupported naming its dialog", err, kindOf(err))
+	}
+	if n, ran := w.shown("SingleDialog"), w.running(self); n != 1 || ran != 1 {
+		t.Fatalf("after the refused hand-over, %d windows show and %d launches run, not 1 and 1: the dialog's launch was left", n, ran)
+	}
+	if f := w.foreground(); f != "single.dialog" {
+		t.Fatalf("the app in front after the refused hand-over is %q, not single.dialog", f)
 	}
 }
 

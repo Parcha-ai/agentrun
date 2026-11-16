@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -215,6 +216,51 @@ func ownerByPid(byPid map[int]string, pid int) string {
 		pid = parentOf(pid)
 	}
 	return ""
+}
+
+// dialogOf is a dialog the launch whose process is pid showed: a window of the app's that is new (not in had), made by
+// that process or one it started, whose EWMH type is a dialog (_NET_WM_WINDOW_TYPE_DIALOG). Its title (WM_NAME) and id;
+// 0 for none.
+func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, pid int) (string, uint32, error) {
+	c, err := g.display.Conn()
+	if err != nil {
+		return "", 0, err
+	}
+	typ, err := c.InternAtom("_NET_WM_WINDOW_TYPE", true)
+	if err != nil {
+		return "", 0, g.display.Gone(c, err)
+	}
+	dialog, err := c.InternAtom("_NET_WM_WINDOW_TYPE_DIALOG", true)
+	if err != nil {
+		return "", 0, g.display.Gone(c, err)
+	}
+	if typ == 0 || dialog == 0 {
+		return "", 0, nil
+	}
+	for _, w := range s.of(app) {
+		if had[w.id] || !descends(w.pid, pid) {
+			continue
+		}
+		if p, err := c.GetProperty(w.id, typ); err == nil && slices.Contains(p.Cardinals(), dialog) {
+			name, _ := c.GetProperty(w.id, x11.AtomWMName)
+			return string(name.Value), w.id, nil
+		}
+	}
+	if c.Err() != nil {
+		return "", 0, g.display.Gone(c, c.Err())
+	}
+	return "", 0, nil
+}
+
+// descends is whether process pid is root or one root started, from /proc.
+func descends(pid, root int) bool {
+	for step := 0; step < 32 && pid > 1; step++ {
+		if pid == root {
+			return true
+		}
+		pid = parentOf(pid)
+	}
+	return false
 }
 
 // parentOf is a process's parent, from /proc/<pid>/stat; 0 when it is gone.
