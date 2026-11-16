@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.do-not-disturb",
-  "version": 1,
+  "version": 2,
   "title": "Turn Do Not Disturb on or off in Settings",
   "split": "heldout",
   "tags": ["settings", "toggle"],
@@ -9,8 +9,8 @@
   "params": {
     "mode": {
       "pick": [
-        { "say": "on", "start": "off", "want": "^[123]$", "solve": "priority" },
-        { "say": "off", "start": "priority", "want": "^0$", "solve": "off" }
+        { "say": "on", "start": "off", "want": "^[123]$", "button": "TURN ON NOW", "after": "TURN OFF NOW" },
+        { "say": "off", "start": "priority", "want": "^0$", "button": "TURN OFF NOW", "after": "TURN ON NOW" }
       ]
     }
   },
@@ -32,6 +32,7 @@
     }
   ],
   "instruction": "Using the Settings app, turn Do Not Disturb {{mode.say}}.",
+  "exec": "deny",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
@@ -50,6 +51,12 @@
     }
   ],
   "oracle": [
-    { "method": "exec.run", "params": { "argv": ["cmd", "notification", "set_dnd", "{{mode.solve}}"], "timeoutMs": 20000 } }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list until Sound & vibration shows.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Sound & vibration", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Sound & vibration" } } } }], "expect": { "text": "Media volume", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Swipe the Sound page up 300 points (600 screen pixels), slowly (no fling), past the volume sliders.", "params": { "actions": [{ "type": "swipe", "path": [[360, 1000], [360, 700], [360, 400]], "ms": 900 }] } },
+    { "method": "ui.act", "params": { "steps": [], "expect": { "text": "Do Not Disturb", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Do Not Disturb" } } } }], "expect": { "text": "{{mode.button}}", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "{{mode.button}}" } } } }], "expect": { "text": "{{mode.after}}", "timeoutMs": 8000 } } }
   ]
 }

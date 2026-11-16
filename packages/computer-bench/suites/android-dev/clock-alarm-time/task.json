@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.alarm-time",
-  "version": 1,
+  "version": 2,
   "title": "Read the time of a labelled alarm in Clock",
   "split": "dev",
   "tags": ["clock", "info", "answer"],
@@ -9,10 +9,10 @@
   "params": {
     "t": {
       "pick": [
-        { "h": "7", "m": "20", "dh": "8", "dm": "40", "re": "(?<![\\d:])(?:0?7[:.]20\\s*a\\.?\\s?m|07[:.]20(?!\\s*p))" },
-        { "h": "18", "m": "5", "dh": "6", "dm": "5", "re": "(?<![\\d:])(?:18[:.]05|0?6[:.]05\\s*p\\.?\\s?m)" },
-        { "h": "5", "m": "50", "dh": "17", "dm": "50", "re": "(?<![\\d:])(?:0?5[:.]50\\s*a\\.?\\s?m|05[:.]50(?!\\s*p))" },
-        { "h": "21", "m": "35", "dh": "9", "dm": "35", "re": "(?<![\\d:])(?:21[:.]35|0?9[:.]35\\s*p\\.?\\s?m)" }
+        { "h": "7", "m": "20", "dh": "8", "dm": "40", "re": "(?<![\\d:])(?:0?7[:.]20\\s*a\\.?\\s?m|07[:.]20(?!\\s*p))", "shown": "7:20 AM" },
+        { "h": "18", "m": "5", "dh": "6", "dm": "5", "re": "(?<![\\d:])(?:18[:.]05|0?6[:.]05\\s*p\\.?\\s?m)", "shown": "6:05 PM" },
+        { "h": "5", "m": "50", "dh": "17", "dm": "50", "re": "(?<![\\d:])(?:0?5[:.]50\\s*a\\.?\\s?m|05[:.]50(?!\\s*p))", "shown": "5:50 AM" },
+        { "h": "21", "m": "35", "dh": "9", "dm": "35", "re": "(?<![\\d:])(?:21[:.]35|0?9[:.]35\\s*p\\.?\\s?m)", "shown": "9:35 PM" }
       ]
     },
     "lab": {
@@ -51,6 +51,7 @@
     }
   ],
   "instruction": "In the Clock app, find the alarm labelled \"{{lab.say}} {{nonce}}\". What time is it set for? Give the time with AM or PM, or in 24-hour form, in your final answer. Don't change any alarm.",
+  "exec": "deny",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {
@@ -71,5 +72,8 @@
       "why": "Dismiss the decoy alarm the same way.",
       "params": { "argv": ["am", "start", "-W", "-a", "android.intent.action.DISMISS_ALARM", "--es", "android.intent.extra.alarm.SEARCH_MODE", "android.label", "--es", "android.intent.extra.alarm.MESSAGE", "{{lab.decoy}} {{nonce}}"], "timeoutMs": 20000 }
     }
+  ],
+  "oracle": [
+    { "method": "ui.act", "why": "The alarm list shows the alarm's row, named by its time (with Clock's hair space, U+200A, before AM or PM) and its label: the answer is on screen. The answer check still wants it in words.", "params": { "steps": [], "expect": { "text": "{{t.shown}} {{lab.say}} {{nonce}}", "timeoutMs": 8000 } } }
   ]
 }

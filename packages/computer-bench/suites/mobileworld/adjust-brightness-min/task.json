@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.adjust-brightness-min",
-  "version": 1,
+  "version": 2,
   "title": "Set the screen brightness to the minimum",
   "split": "heldout",
   "source": {
@@ -31,6 +31,7 @@
     }
   ],
   "instruction": "Set the brightness to the minimum level.",
+  "exec": "deny",
   "budget": { "steps": 20, "usd": 1, "wall_s": 240 },
   "checks": [
     {
@@ -50,10 +51,10 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "why": "Write the minimum, as dragging the slider to the start does.",
-      "params": { "argv": ["settings", "put", "system", "screen_brightness", "1"], "timeoutMs": 20000 }
-    }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list until Display shows.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Display", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Display" } } } }], "expect": { "text": "Brightness level", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "Brightness level opens the system brightness slider over the page.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Brightness level" } } } }], "expect": { "text": "Display brightness", "timeoutMs": 8000 } } },
+    { "method": "input.actions", "why": "Drag the slider (80 points down the screen) to its left end. No expect on the slider's 0% follows: \"0%\" is also in 50% and 100%, so it can't tell the drag worked; the check reads the setting.", "params": { "actions": [{ "type": "swipe", "path": [[360, 160], [120, 160], [0, 160]], "ms": 700 }, { "type": "wait", "ms": 800 }] } }
   ]
 }
