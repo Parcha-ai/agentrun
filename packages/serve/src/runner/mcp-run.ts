@@ -1,7 +1,7 @@
 // A claimed run's remote MCP servers on the runner (tl-mcp's note, sections 4 to 6). A spec builder calls mcpForClaim once
 // per claim, inside the adapter loop's spec step: after the loop's Gate and Harness are open, before its session. It runs
-// the claim step (mcp-claim.ts: the pin made at the first claim or read as written, checked against the meta tools known
-// now, the pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
+// the claim step (mcp-claim.ts: the pin its revision's save made, read and checked against the meta tools known now, the
+// pinned servers' credentials opened into this claim's memory) and builds ONE gateway (mcp-gateway.ts) for the
 // claim, never shared with another, reading those credentials live. The builder puts what it returns in its spec
 // (AdapterRunSpec.mcp); the loop does the rest:
 // - one host tool per pinned tool (`tools`), under its wire name with the pinned description and schema, for every
@@ -21,9 +21,11 @@ import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
-import { type ApprovalPrice, mcpToolName } from "../tool-gate.js";
+import { mcpNameOf } from "../tool-names.js";
+import { type ApprovalPrice, mcpToolName, permissionKeys, pinnedEffect, type ToolEffect } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
+import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
@@ -34,8 +36,9 @@ export interface McpForClaimOptions {
   /** The claim this pass holds: the pin is written under its fence, and a refresh is confirmed against its epoch. */
   readonly claim: Claim;
   /** The one store: the registry's rows, the run's pin row and its run row (the epoch), the GitHub App's settings, and
-   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it). */
-  readonly store: Pick<Store, "mcp" | "runs" | "settings" | "triggerSettings" | "where">;
+   *  where it is (Store.where: the claims waiting on a server's refresh lease meet by it); for a run whose revision has
+   *  no pin, its revision and the registry a listing reads (its sign-in state, flush). */
+  readonly store: Pick<Store, "mcp" | "mcpOauth" | "runs" | "settings" | "triggerSettings" | "where" | "agents" | "flush">;
   /** The runner's seal key (the server's): always present (seal-key.ts boots one before any claim), so the claim's sealed
    *  credentials always open; there is no no-seal-key path here (E6). */
   readonly sealKey: Buffer;
@@ -56,6 +59,10 @@ export interface McpForClaimOptions {
   /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): only a runner
    *  beside a local-install server is. Absent, never. */
   readonly loopback?: boolean;
+  /** The own addresses of the local-install server beside this runner (AdapterSpecDeps.mcpOwn, Serve.own): a loopback
+   *  URL on one of their ports is refused, as the server refuses it, so a run never reaches that server through an MCP
+   *  server's address, its authorization server's or a pin's listing. */
+  readonly own?: readonly string[];
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -74,8 +81,17 @@ export interface ClaimMcp {
   readonly tools: readonly HostTool[];
   /** A pinned tool's catalog name (`mcp:<server>/<tool>`) by its wire name; undefined for any other tool. */
   catalogOf(tool: string): string | undefined;
-  /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"); undefined otherwise. */
+  /** The top-level arguments a pinned tool's listing declares (its inputSchema's `properties`, as the run's pin holds it
+   *  and offers it to the model), by its catalog name (`mcp:<server>/<tool>`): what the gate closes a call of a tool with
+   *  a pin in any layer to (tool-gate.ts pinRefusal). Undefined for a listing with no `properties` object, and for any
+   *  other tool. */
+  argumentsOf(name: string): ReadonlySet<string> | undefined;
+  /** What an asked call of a pinned tool costs on its card (main's: its price, else "not metered"; a monid endpoint priced
+   *  by usage, "priced by usage", never read from monid before the person answers); undefined otherwise. */
   priceOf(name: string): ApprovalPrice | undefined;
+  /** A pinned tool's effect (`mcp:<server>/<tool>`), by its annotations as the pin holds them (tool-gate.ts toolEffect):
+   *  what the gate's "allow reads" and a destructive call's card read; never a later listing. Undefined for any other. */
+  effectOf(name: string): ToolEffect | undefined;
   /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
    *  confirmed: before a resumed loop's next model request. */
   fresh(): Promise<void>;
@@ -83,7 +99,13 @@ export interface ClaimMcp {
   release(): void;
 }
 
-/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a pin that cannot be made,
+/** The wire names a subagent's `grant` gives of the run's MCP and monid tools, by the gate's keys; else the grant's own. */
+export function catalogSessionNames(catalog: Pick<ClaimMcp, "tools" | "catalogOf"> | undefined, grant: string): string[] {
+  const given = (catalog?.tools ?? []).flatMap((tool) => (permissionKeys(catalog!.catalogOf(tool.name) ?? "").includes(grant) ? [tool.name] : []));
+  return given.length ? given : [wireName(grant)];
+}
+
+/** The run's MCP for one claim: undefined when it grants no MCP tool. Throws McpClaimRefused (a granted tool its pin lacks,
  *  a pinned tool that is a meta tool now: the loop ends the run in those words, before its session opens) or Fenced (the
  *  claim lost while a refresh was awaited: the loop ends interrupted). A builder calls it before it takes anything it
  *  would have to let go, since a throw here leaves its spec unbuilt and its release uncalled. */
@@ -100,9 +122,12 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       grants: options.grants,
       sealKey: options.sealKey,
       signal: held.signal,
+      // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),
+      ...(options.own ? { own: options.own } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
@@ -125,9 +150,10 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
     // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
     // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
-    // one host's local install never opens loopback for another host's runner on a shared store.
+    // one host's local install never opens loopback for another host's runner on a shared store; and never at that
+    // server's own ports (options.own).
     reach: async (url, signal) => {
-      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true });
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
     beforeCall: step.beforeCall,
@@ -137,12 +163,15 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
   });
   const catalog = new Map<string, string>();
+  const declared = new Map<string, ReadonlySet<string>>();
   const tools: HostTool[] = [];
   for (const [server, pinned] of Object.entries(pin)) {
     for (const tool of pinned.tools) {
       const name = mcpToolName(server, tool.name);
       const wire = wireName(name);
       catalog.set(wire, name);
+      const properties = (tool.inputSchema as { properties?: unknown } | undefined)?.properties;
+      if (typeof properties === "object" && properties !== null && !Array.isArray(properties)) declared.set(name, new Set(Object.keys(properties)));
       tools.push({
         name: wire,
         description: tool.description || tool.title || `${tool.name}, a tool of the MCP server ${server}.`,
@@ -159,12 +188,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   return {
     tools,
     catalogOf: (tool) => catalog.get(tool),
+    argumentsOf: (name) => declared.get(name),
     priceOf(name) {
-      const parsed = /^mcp:([^/]+)\/(.+)$/.exec(name);
-      const pinned = parsed && Object.hasOwn(pin, parsed[1]!) ? pin[parsed[1]!] : undefined;
-      if (!pinned?.tools.some((tool) => tool.name === parsed![2])) return undefined;
-      return pinned.prices && Object.hasOwn(pinned.prices, parsed![2]!) ? pinned.prices[parsed![2]!]! : "not metered";
+      const parsed = mcpNameOf(name);
+      const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
+      if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
+      return pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool) ? pinned.prices[parsed!.tool]! : "not metered";
     },
+    effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };

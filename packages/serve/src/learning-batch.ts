@@ -103,8 +103,8 @@ export type Header = {
   /** The rows' total $ (job and learning) of the rows finished, and how many of them cost nothing known. */
   spent_usd: number;
   unknown_cost_rows: number;
-  /** Rows finished by the path their run took. */
-  paths: Record<RunPath, number>;
+  /** Rows finished by the path their run took (a batch's run is never a replay run: runner/promotion.ts starts those). */
+  paths: Record<Exclude<RunPath, "replay">, number>;
   /** What the batch's learning kept, each name once, and the merges that touched workflows: [{row, commit, workflows}]. */
   lessons: Lessons;
   revisions: { row: number; commit: string | null; workflows: string[] }[];
@@ -536,9 +536,9 @@ export class LearningBatches {
       const key = ROW_KEY(h.id, row.n);
       let runId: string | undefined;
       try {
-        // Capped at what the batch has left, strict (cap.ts: every input token priced uncached), so no request of the run, a
-        // cache miss included, passes it: the batch's cap holds its runs, whatever the agent's own cap_mode.
-        runId = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: usd(h.max_cost_usd - h.spent_usd), cap_mode: "strict", ...(h.effort ? { effort: h.effort } : {}) }, key);
+        // Capped at what the batch has left: no request of the run, a cache miss included, passes it, so the batch's cap
+        // holds its runs.
+        runId = await this.host.start(h.agent_id, { input: { content: contentOf(h.inputs, row.input) }, max_cost_usd: usd(h.max_cost_usd - h.spent_usd), ...(h.effort ? { effort: h.effort } : {}) }, key);
       } catch (error) {
         // A start that failed after its run was made is that run's start: found by the key, the row is its.
         runId = await this.host.find(key);
@@ -622,7 +622,7 @@ export class LearningBatches {
       else if (row.right === false) next.wrong++;
       if (row.run_id && (row.total_usd === null || row.total_usd === undefined)) next.unknown_cost_rows++;
       spent += row.total_usd ?? 0;
-      if (row.path) next.paths[row.path]++;
+      if (row.path && row.path !== "replay") next.paths[row.path]++;
       for (const kind of ["notes", "skills", "workflows"] as const) for (const name of row.learned?.[kind] ?? []) if (!next.lessons[kind].includes(name)) next.lessons[kind].push(name);
       for (const r of row.revisions ?? []) next.revisions.push({ row: row.n, commit: r.commit, workflows: r.workflows });
     }

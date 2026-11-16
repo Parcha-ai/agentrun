@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { openSqliteStore, RunFinal } = await import("../dist/store/index.js");
+const { openSqliteStore, RunFinal, StoreLaunchMissing } = await import("../dist/store/index.js");
 const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun, stop, WAITS_ON_A_PERSON } = await import("../dist/runs-over-store.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { momentOverStore } = await import("../dist/store-view.js");
@@ -127,6 +127,20 @@ test("a message to a completed agentic run, its moment as the view reads it, is 
   assert.equal(answer.mode, "follow_up");
   assert.equal((await store.runs.get("run-1")).state, "running", "the store reopened it");
   assert.deepEqual((await commandsOf(store, "run-1")).map((one) => [one.kind, one.body.text, one.takenAt]), [["steer", "again", null]]);
+});
+
+test("a message to a working claude-agent run, its moment as the view reads it, is a steer; to a working codex run, a follow-up", async () => {
+  const store = await freshStore();
+  for (const harness of ["claude-agent", "codex"]) {
+    await store.agents.create({ id: `a-${harness}`, name: harness }, { id: `r-${harness}`, kind: "agentic", body: { instructions: "Answer.", harness } });
+    await store.runs.create({ id: `run-${harness}`, agentId: `a-${harness}`, revisionId: `r-${harness}` });
+  }
+  const steered = await momentOverStore(store, "run-claude-agent");
+  assert.deepEqual([steered.working, steered.steers], [true, true], "claude-agent steers mid-turn");
+  assert.equal((await message(store, steered, "check the totals")).mode, "steer");
+  const followed = await momentOverStore(store, "run-codex");
+  assert.deepEqual([followed.working, followed.steers], [true, false], "codex takes no message mid-turn");
+  assert.equal((await message(store, followed, "check the totals")).mode, "follow_up");
 });
 
 /** `id` (queued first) claimed and ended with `patch`. */
@@ -585,22 +599,23 @@ test("startRun names the run's ready files in its launch, in order, for the runn
   assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).files, ["f-2", "f-1"]);
 });
 
-test("startRun takes the agent's default cap and cap mode when the body names none", async () => {
+test("startRun takes the agent's default cap when the body names none; a stored revision's old cap mode is not read", async () => {
   const store = await freshStore();
+  // A revision stored before the one mode can still hold capMode: it is ignored on read, never carried to the launch.
   const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2, capMode: "expected" }), version: 1 }) });
   const run = await startRun(store, deps, entryOf(), { input: { content: "hi" } });
-  const launch = readLaunchBody((await store.runs.launch(run.id)).body);
-  assert.equal(launch.maxCostUsd, 2);
-  assert.equal(launch.capMode, "expected");
+  const stored = (await store.runs.launch(run.id)).body;
+  assert.equal(readLaunchBody(stored).maxCostUsd, 2);
+  assert.equal("cap_mode" in stored, false);
+  assert.equal("capMode" in readLaunchBody(stored), false);
 });
 
-test("startRun keeps the body's cap mode over the agent's default", async () => {
+test("startRun keeps the body's cap over the agent's default", async () => {
   const store = await freshStore();
-  const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2, capMode: "expected" }), version: 1 }) });
-  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, max_cost_usd: 5, cap_mode: "strict" });
+  const deps = startDeps({ pinnedOf: async () => ({ revision: revisionOf({ maxCostUsd: 2 }), version: 1 }) });
+  const run = await startRun(store, deps, entryOf(), { input: { content: "hi" }, max_cost_usd: 5 });
   const launch = readLaunchBody((await store.runs.launch(run.id)).body);
   assert.equal(launch.maxCostUsd, 5);
-  assert.equal(launch.capMode, "strict");
 });
 
 test("startRun refuses an invalid body with its field issues, nothing written", async () => {
@@ -630,14 +645,6 @@ test("a trigger run with no cap and no agent default is refused (every trigger r
     (e) => e.code === "input_invalid" && /Every run a trigger starts is capped/.test(e.message),
   );
   assert.equal((await store.runs.list({ agentId: "a1" })).length, 0);
-});
-
-test("a cap mode with no cap is refused", async () => {
-  const store = await freshStore();
-  await assert.rejects(
-    () => startRun(store, startDeps(), entryOf(), { input: { content: "hi" }, cap_mode: "strict" }),
-    (e) => e.code === "input_invalid" && /cap_mode says how a run's cap prices its requests, and this run has no cap/.test(e.message),
-  );
 });
 
 test("startRun under an origin key starts one run; a retry under the same key gets that run", async () => {
@@ -808,5 +815,35 @@ test("every command this module writes is one the runner's parser accepts", asyn
   await sendCommand(store, "cancel-run", { kind: "cancel", body: {} });
   for (const id of ["steer-run", "steer-trg", "deny-run", "approve-run", "raise-run", "stop-run", "cancel-run"]) {
     assert.equal((await commandsOf(store, id)).length, 1);
+  }
+});
+
+// A control's optional runtime metadata is absent on older rows; their command contract still holds.
+test("launchless run controls preserve message, stop and cancel commands", async () => {
+  const store = await freshStore();
+  for (const action of ["message", "stop", "cancel"]) {
+    const id = await queuedRun(store, `legacy-${action}`);
+    await assert.rejects(store.runs.launch(id), StoreLaunchMissing);
+    if (action === "message") assert.equal((await message(store, moment({ id }), "Keep going.")).mode, "steer");
+    else if (action === "stop") assert.equal(await stop(store, id), true);
+    else assert.equal(await cancel(store, moment({ id })), true);
+    const rows = await commandsOf(store, id);
+    assert.deepEqual(rows.map(({ kind, body }) => [kind, body]), [action === "message" ? ["steer", { text: "Keep going." }] : [action, {}]]);
+  }
+});
+
+test("control launch reads propagate storage errors and write no command", async () => {
+  const store = await freshStore();
+  const failure = new Error("launch storage read failed");
+  // A failure with the same name is not the store's typed missing-row result.
+  failure.name = "StoreLaunchMissing";
+  const failing = { ...store, runs: { ...store.runs, launch: async () => { throw failure; } } };
+  for (const action of ["message", "stop", "cancel"]) {
+    const id = await queuedRun(store, `failed-${action}`);
+    await assert.rejects(
+      () => action === "message" ? message(failing, moment({ id }), "Keep going.") : action === "stop" ? stop(failing, id) : cancel(failing, moment({ id })),
+      (error) => error === failure,
+    );
+    assert.deepEqual(await commandsOf(store, id), []);
   }
 });

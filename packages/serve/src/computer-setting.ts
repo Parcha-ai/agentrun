@@ -20,9 +20,9 @@ export type ComputerKind = (typeof COMPUTER_KINDS)[number];
 /** A sandbox's GPUs: a type its provider declares (GET /v2/computers lists each provider's) and how many. */
 export type GpuSetting = { readonly type: string; readonly count: number };
 
-/** How an agent drives a desktop or a phone: "code", by scripts alone (its harness's code mode, else computer_script);
- *  "tools", by the per-step tools alone (computer_observe, computer_act, computer_screenshot). The hand-over is in both;
- *  absent, both (run-tools.ts surfaceKeeps). */
+/** How an agent drives a desktop or a phone: "code", by scripts alone (codemode, or its harness's own code mode, whose
+ *  nested calls reach computer_observe, computer_act and computer_screenshot, which are not listed); "tools", by those
+ *  step tools, listed. The hand-over is listed in both; absent, as "tools" (run-tools.ts scriptsOnly). */
 export const COMPUTER_SURFACES = ["code", "tools"] as const;
 export type ComputerSurface = (typeof COMPUTER_SURFACES)[number];
 
@@ -57,10 +57,10 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
   persistent: {
     check: (value, field) => (typeof value === "boolean" ? [] : [{ field, reason: "wrong_type", message: `${field} is true (this agent keeps its own computer between runs) or false (a fresh one for each run)` }]),
   },
-  // How the agent drives its desktop or phone (run-tools.ts surfaceKeeps): by scripts alone, or by the step tools alone.
+  // How the agent drives its desktop or phone (run-tools.ts scriptsOnly): by scripts alone, or by the step tools.
   surface: {
     kinds: ["desktop", "phone"],
-    check: (value, field) => ((COMPUTER_SURFACES as readonly unknown[]).includes(value) ? [] : [{ field, reason: "not_an_option", message: `${field} is "code" (the agent drives the computer by scripts alone) or "tools" (by its step tools alone); absent, both` }]),
+    check: (value, field) => ((COMPUTER_SURFACES as readonly unknown[]).includes(value) ? [] : [{ field, reason: "not_an_option", message: `${field} is "code" (the agent drives the computer by codemode scripts alone) or "tools" (by its step tools, listed); absent, as "tools"` }]),
   },
   // false: the agent's computer runs no program of its own (run-tools.ts runHands): no shell, no processes, no bash.
   exec: {

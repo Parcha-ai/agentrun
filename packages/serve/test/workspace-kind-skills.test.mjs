@@ -32,13 +32,34 @@ test("the kind skills are the repo's own SKILL.md files, by the names their fron
   for (const skill of Object.values(KIND_SKILLS)) assert.match(skill.text, new RegExp(`^---\\nname: ${skill.name}\\ndescription: `));
 });
 
-test("the kind skills teach the registry's computer tools, by name, and no other tool", () => {
+test("the kind skills teach the registry's computer tools by name and scripting through codemode's `computer`, with no other tool and no computer_script", () => {
   for (const skill of Object.values(KIND_SKILLS)) {
     const named = new Set(skill.text.match(/\b(?:computer|desktop|phone)_[a-z_]+\b/g));
     assert.deepEqual([...named].filter((name) => !COMPUTER_TOOLS.includes(name)), [], skill.name);
-    for (const tool of ["computer_observe", "computer_act", "computer_screenshot", "computer_script"]) assert.ok(named.has(tool), `${skill.name} teaches ${tool}`);
+    for (const tool of ["computer_observe", "computer_act", "computer_screenshot"]) assert.ok(named.has(tool), `${skill.name} teaches ${tool}`);
+    assert.ok(!named.has("computer_script"), `${skill.name} names no computer_script`);
+    // computer_op is how a script reaches the computer's other ops: codemode's `computer` calls it, and Codex, whose own
+    // code mode has no `computer`, calls it by name. The skill names it in its Codex part alone.
+    const codex = skill.text.split("**On Codex**")[1]?.split("\n\n")[0] ?? "";
+    assert.match(codex, /\bcomputer_op\(\{op: "apps\.open"/, `${skill.name} tells Codex how to reach the apps`);
+    // Live (11-15): a model wrote a top-level `return` in 5 of 9 Codex scripts, a SyntaxError that ran nothing; told this, it did not.
+    assert.match(codex.replace(/\s+/g, " "), /has no top-level `return`.*a script's output goes through `text\(\.\.\.\)`/, `${skill.name} tells Codex a script's output goes through text()`);
+    assert.equal(skill.text.replace(codex, "").match(/\bcomputer_op\b/g), null, `${skill.name} names computer_op only for Codex`);
+    assert.match(skill.text, /\bcodemode\b/, `${skill.name} teaches codemode`);
+    assert.equal((skill.text.match(/```(?:js|javascript)\n/g) ?? []).length, 1, `${skill.name} has one short script example`);
     assert.match(skill.text, /observe again before you act/, `${skill.name} says what the hand-back's refusal says`);
   }
+});
+
+// What a live phone run proved (the phone after-run, 11-15): a scroll is a swipe, the phone's own input, refused unless
+// its call passes foreground: true; and About phone's "Android version" is below the fold, so an expect on it stays
+// unmet. The skill teaches the forms that worked.
+test("the phone skill's scrolls pass foreground: true, and its script expects nothing below the fold", () => {
+  const phone = KIND_SKILLS.phone.text;
+  const scrolls = phone.split("\n").filter((line) => /\bscroll\b/.test(line) && /\{scroll:|\.scroll\(/.test(line));
+  assert.ok(scrolls.length >= 2, `the step table and the script both scroll: ${JSON.stringify(scrolls)}`);
+  for (const line of scrolls) assert.match(line, /foreground: true/, `a scroll passes foreground: true: ${line}`);
+  assert.doesNotMatch(phone, /expect: \{ ?text: "Android version" ?\}/, "no expect on a row below the fold");
 });
 
 test("a desktop or phone run's claim lays its kind's skill beside the agent's own", async () => {

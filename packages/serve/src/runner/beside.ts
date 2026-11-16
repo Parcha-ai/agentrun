@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { runnerCloseBoundMs } from "./runner.js";
+import { type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -31,13 +31,14 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  caller hands its own: the template eval's in-process server, its faux's). `loops` and `drainMs`: the runner's
  *  (RunnerOptions), the CLI start's from the server's flags (besideRunnerOptions). `janitor`: run the computer janitor
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
- *  holds each paired computer's socket in this process, so a run here takes one. Returns the runner and a close() that
- *  stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, mcpLoopback, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; mcpLoopback?: boolean; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
-  const { startRunner } = await import("./runner.js");
+ *  holds each paired computer's socket in this process, so a run here takes one. `dial`: the server's (Serve.dial), which
+ *  a remote provider's create takes, so a machine that dials the server lands in this process's hub. Returns the runner
+ *  and a close() that stops both and closes its store. */
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+  const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
-  const { openRunnerStore, runEnv, runnerComputers } = await import("./main.js");
+  const { openRunnerStore, runEnv, runnerComputers, troubleLine } = await import("./main.js");
   // The server's store, the runner's one way in (main.ts openRunnerStore, store/open.ts): Postgres when this process's
   // AGENTRUN_STORE_URL secret names one, else SQLite in the data directory; a schema it does not know is RunnerRefused.
   const { store } = await openRunnerStore(dataDir, process.env, (message) => void process.stderr.write(`agentrun-serve runner: ${message}\n`), undefined);
@@ -62,20 +63,36 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
   const { hostCommandRefusals } = await import("../computers.js");
-  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}) });
+  const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}), ...(dial ? { dial } : {}) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
-  // loopback; any other runner's runs never do. A run's log lines (a learning run's skipped generality check) go to
-  // stderr with the runner's other lines.
-  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
+  // loopback; any other runner's runs never do. `mcpOwn`: that server's own addresses (Serve.own), whose ports a run's
+  // loopback read never goes to. A run's log lines (a learning run's skipped generality check) go to
+  // stderr with the runner's other lines. `evalFakes`: the template eval's fakes (EvalFakes: a case's web, now, monid and
+  // email), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
+  // claim's first-use install installs with (the eval's sharedInstaller, which the server beside it takes too).
+  const { installForClaim } = await import("../harness-install.js");
+  const createLoop = dispatchRunner({ env: runs, data: dataDir, journal: (claim) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(mcpOwn ? { mcpOwn } : {}), ...(evalFakes ? { evalFakes } : {}), ...(harnessInstall ? { installForClaim: (entry, dir, pins, given) => installForClaim(entry, dir, pins, { ...given, install: harnessInstall }) } : {}), log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // It claims by the host's memory as well as by --max-runs (memory-claim.ts): a heavy harness's run waits queued for room.
   const { runnerMemory } = await import("./memory-claim.js");
   // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts).
   const { sweepEndedScratch } = await import("./scratch-sweep.js");
   await sweepEndedScratch(store, dataDir, { log: (line) => console.error(`agentrun-serve runner: ${line}`) });
   // Its run start and end lines go where the server's lines do (print.ts runLine), the one stdout; `onLine` is where a
-  // launcher in this process (a test) reads them instead.
+  // launcher in this process (a test) reads them instead. A claim it lost and an error (a renew or a stop that failed)
+  // are said in its name as the runner subcommand says them (main.ts troubleLine: a lost claim on stdout, an error on
+  // stderr), so a lapse of its claims shows its cause.
   const { runLine } = await import("../print.js");
-  const runner = startRunner({ store, createLoop, memory: runnerMemory(store), onEvent: (event) => { const line = runLine(event); if (line) (onLine ?? console.log)(line); }, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  const name = runnerName();
+  const said = (event: RunnerEvent) => {
+    const trouble = troubleLine(name, event);
+    if (trouble) return void (onLine ?? (event.type === "error" ? console.error : console.log))(trouble);
+    const line = runLine(event);
+    if (line) (onLine ?? console.log)(line);
+  };
+  // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
+  const { runEndComputers } = await import("../workspace/run-end-computers.js");
+  const runEnded = runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`) });
+  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store), onEvent: said, runEnded, ...(loops !== undefined ? { loops } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");
@@ -95,7 +112,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const { besideRunEnv } = await import("./main.js");
   const { loops, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, mcpLoopback: serve.localInstall, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

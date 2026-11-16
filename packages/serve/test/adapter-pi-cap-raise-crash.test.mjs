@@ -232,7 +232,7 @@ test("a raised run whose runner is lost while its follow-up's request is out: th
   const followUps = sent.filter((body) => followUpsIn(body) > 0);
   assert.equal(followUps.length, 2, `the lost request and the next claim's, no more: ${JSON.stringify(sent.map((body) => body.messages))}`);
   for (const body of followUps) assert.equal(followUpsIn(body), 1, `the follow-up is in the conversation once: ${JSON.stringify(body.messages)}`);
-  // On the run's books: the lost request booked cut, at its hold and bound, beside the one that was answered.
+  // On the run's books: the lost request booked cut, at its hold (its worst case), beside the one that was answered.
   const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
   const { createModels } = await import("@earendil-works/pi-ai/models");
   const { createRegistry, Harness } = await import("@earendil-works/pi-durable");

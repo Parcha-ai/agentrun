@@ -14,7 +14,7 @@ function Loading({ label, className, children }: { label: string; className?: st
 /** Mission Control to come: the heading, six tiles, the analytics and the two lists. */
 export function MissionSkeleton() {
   return (
-    <Loading label="Loading Mission Control" className="mx-auto max-w-[1600px] space-y-8 px-6 py-8">
+    <Loading label="Loading Mission Control" className="space-y-8 p-5 md:p-8">
       <Bone className="h-8 w-56" />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {Array.from({ length: 6 }, (_, i) => <div key={i} className="border p-4"><Bone className="h-3 w-16" /><Bone className="mt-3 h-6 w-12" /></div>)}

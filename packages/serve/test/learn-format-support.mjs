@@ -41,8 +41,9 @@ export const workflow = ({ name = "find-policies", tools = [], node = "agent" } 
   root: { node, label: "find", instructions: "Find the store's refund policy from its public pages.", out: "Policies", as: "policies", tools },
 }, null, 2);
 
-/** A draft with a model node, a call node on `tool` and a model node that reads the page; with `judge`, a judge node in
- *  its place (which a learned workflow cannot run); with `code`, a code node in the first model node's place. */
+/** A draft with a model node, a call node on `tool`, a fast-tier model node that reads the page into compact facts and
+ *  a model node that answers from those facts alone (compact state); with `judge`, a judge node in the last one's place
+ *  (which a learned workflow cannot run); with `code`, a code node in the first model node's place. */
 export const richWorkflow = ({ tool = "web_fetch", code, judge = false } = {}) => JSON.stringify({
   v: 2,
   name: "find-policies",
@@ -50,6 +51,7 @@ export const richWorkflow = ({ tool = "web_fetch", code, judge = false } = {}) =
     Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
     Target: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
     Page: { type: "object" },
+    Facts: { type: "object", properties: { policy_lines: { type: "array", items: { type: "string" } } }, required: ["policy_lines"] },
     Verdict: { type: "object", properties: { states_refunds: { type: "boolean", description: "Does the page state the store's refund policy?" } }, required: ["states_refunds"] },
   },
   input: { schemaId: "Store" },
@@ -59,9 +61,10 @@ export const richWorkflow = ({ tool = "web_fetch", code, judge = false } = {}) =
       ? { node: "extract", label: "prep", instructions: "Name the path where this store keeps its policies.", out: "Target", as: "target", tools: [] }
       : { node: "code", label: "prep", code },
     { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
+    { node: "extract", label: "facts", instructions: "Copy the lines of the page that state the store's refund policy.", state: { page: "{page}" }, out: "Facts", as: "facts", tools: [], tier: "fast" },
     judge
       ? { node: "judge", label: "refund", state: { page: "{page}" }, out: "Verdict", as: "verdict" }
-      : { node: "extract", label: "refund", instructions: "Say whether the page {page} states the store's refund policy.", out: "Verdict", as: "verdict", tools: [] },
+      : { node: "extract", label: "refund", instructions: "Say whether the policy lines state the store's refund policy.", state: { facts: "{facts}" }, out: "Verdict", as: "verdict", tools: [] },
   ] },
 }, null, 2);
 

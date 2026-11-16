@@ -10,7 +10,7 @@ import { after } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
-import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
+import { atTestEnd, dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
 
 const { openPostgresStore, openSqliteStore } = await import("../dist/store/index.js");
 
@@ -64,57 +64,61 @@ export async function until(check, what, ms = 5_000) {
   }
 }
 
-// Stores close and their files go once the file's tests are done: node:test runs a test's after-hooks in the order they
-// were added, so a store closed by a hook added before a runner's close would close under the runner.
+// Stores close and their files go at the end of the test that opened them, after every after-hook of the test's own (its
+// runners' close: store-target.mjs's atTestEnd), and on Postgres no connection of theirs may outlive the test. A store
+// opened outside a test (a before-hook) closes once the file's tests are done.
 const opened = [];
 after(async () => {
-  for (const { stores, dir, schema } of opened.splice(0)) {
-    for (const store of stores) await store.close().catch(() => undefined);
-    rmSync(dir, { recursive: true, force: true });
-    if (schema) await dropSchema(schema);
-  }
+  for (const entry of [...opened]) await closeEntry(entry);
 });
 
 /** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
-const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now }));
+const openAt = ({ file, schema }, role, now, busyTimeoutMs) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now, ...(busyTimeoutMs === undefined ? {} : { busyTimeoutMs }) }));
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
- * Every store's clock is real time plus `clock.skewMs`, so a test can move the store's now (as a clock that jumped).
+ * Every store's clock is `time()` plus `clock.skewMs` (real time by default), so a test can move its deadlines explicitly.
+ * A fixed time source keeps an intermediate backoff observable however long its assertion is scheduled after it.
  */
-export async function stores({ runners = 1 } = {}) {
+export async function stores({ runners = 1, time = () => Date.now(), busyTimeoutMs } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-"));
   const schema = onPostgres ? await freshSchema() : undefined;
   const file = schema ? `pg:${schema}` : join(dir, "store.sqlite");
   const clock = { skewMs: 0 };
-  const now = () => Date.now() + clock.skewMs;
+  const now = () => time() + clock.skewMs;
   const entry = { stores: [], dir, schema };
   opened.push(entry);
-  const server = await openAt({ file, schema }, "server", now);
+  atTestEnd(() => closeEntry(entry));
+  const server = await openAt({ file, schema }, "server", now, busyTimeoutMs);
   entry.stores.push(server);
   const forRunners = [];
   for (let i = 0; i < runners; i++) {
-    const store = await openAt({ file, schema }, "runner", now);
+    const store = await openAt({ file, schema }, "runner", now, busyTimeoutMs);
     entry.stores.unshift(store);
     forRunners.push(store);
   }
   await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
-  return { server, runners: forRunners, clock, file };
+  return { server, runners: forRunners, clock, file, now };
 }
 
 /**
- * Closes what `stores()` opened now, instead of at the file's end: its stores, their files, and on Postgres its schema.
- * Call it after the test's runners are closed (one after-hook: `await runner.close(); await release(opened)`). A file of
- * many cases on Postgres otherwise holds every case's connections until it ends, beside the other files' (too many
- * clients).
+ * Closes what `stores()` opened now: its stores, their files, and on Postgres its schema. Call it after the test's runners
+ * are closed (one after-hook: `await runner.close(); await release(opened)`). On Postgres the test's end closes them
+ * anyway; on SQLite they otherwise stay open until the file's end.
  */
 export async function release({ server }) {
-  const at = opened.findIndex((entry) => entry.stores.includes(server));
+  const entry = opened.find((each) => each.stores.includes(server));
+  if (entry) await closeEntry(entry);
+}
+
+/** Closes one stores() entry, once: its stores, its directory, and on Postgres its schema. */
+async function closeEntry(entry) {
+  const at = opened.indexOf(entry);
   if (at === -1) return;
-  const [{ stores: these, dir, schema }] = opened.splice(at, 1);
-  for (const store of these) await store.close().catch(() => undefined);
-  rmSync(dir, { recursive: true, force: true });
-  if (schema) await dropSchema(schema);
+  opened.splice(at, 1);
+  for (const store of entry.stores) await store.close().catch(() => undefined);
+  rmSync(entry.dir, { recursive: true, force: true });
+  if (entry.schema) await dropSchema(entry.schema);
 }
 
 /** A queued run on the server's store. */
@@ -143,6 +147,8 @@ export function recorder() {
     renewsHeld: 0,
     /** When set, each flush waits this long before it reaches the store (a slow disk, or a loaded machine). */
     flushDelayMs: 0,
+    /** When set (a promise), each release is recorded as asked, then waits for it before it reaches the store. */
+    holdRelease: undefined,
   };
 }
 
@@ -200,6 +206,8 @@ export function observed(store, record) {
     async release(claim, options) {
       alive();
       called("release", claim.runId);
+      // A slow store's release (a loaded Postgres): asked here, it reaches the store once record.holdRelease settles.
+      if (record.holdRelease) await record.holdRelease;
       await store.release(claim, options);
       record.ops.push(`release ${claim.runId}`);
     },

@@ -1,6 +1,8 @@
-// Makes an H.264 movie from mini-demos.py's frames (each already cut to the demo's window by window-frames.swift), at a
-// steady 30 frames a second: each frame shown from its time until the next, the window centered on a dark backdrop
-// with its shadow, the task's title above it and the current step's caption below. A still stretch past its first
+// Makes an H.264 movie from mini-demos.py's frames (each already cut to the demo's window by window-frames.swift), 1920
+// by 1080 at a steady 30 frames a second: each frame shown from its time until the next, the window centered on a dark
+// backdrop with its shadow, the task's title above it and the current step's caption below. The window is scaled to
+// fill the space between the two (at most 2×, one scale for the whole movie), so its text reads at the movie's size: a
+// window drawn at its own pixels on a 1080p screen showed 11 point text 6 px tall. A still stretch past its first
 // second plays at 4× with a mark saying so. AVFoundation only, so a Mac with Xcode has all it needs.
 //
 //   swift frames-to-movie.swift TIMELINE.txt OUT.mp4
@@ -49,6 +51,23 @@ guard !frames.isEmpty else { fail("no frames in \(arguments[1])") }
 frames.sort { $0.at < $1.at }
 captions.sort { $0.at < $1.at }
 
+// The task's own frames and captions. A frame from well before the start is the setup's (Notes' welcome sheet, answered
+// before the task, or its window before the fixture sized it), and one after the end the teardown's (Notes' window put
+// back to its own size): the movie starts at the task's first frame instead, ends at its end, and sizes its window by
+// the task's frames alone.
+var start = from ?? frames[0].at
+let last = end > start ? end : frames.last!.at + 1.2
+// A caption from before the start is the setup's, not the task's.
+captions.removeAll { $0.at < start }
+if let first = frames.firstIndex(where: { $0.at >= start - 0.5 }) {
+	frames.removeFirst(first)
+	start = max(start, frames[0].at)
+} else {
+	frames = [frames.last!]
+}
+// The movie shows no frame after its end; the first frame stays, so there is one.
+frames = [frames[0]] + frames.dropFirst().filter { $0.at <= last }
+
 func image(_ path: String) -> CGImage? {
 	guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
 	return CGImageSourceCreateImageAtIndex(source, 0, nil)
@@ -63,16 +82,20 @@ func size(_ path: String) -> (Int, Int)? {
 	return (w, h)
 }
 
-// The window's place: as large as its largest frame, so a window that grows is never scaled down mid-movie.
+// The movie's size, its bands and the window's place. The scale fits the largest frame, so a window that grows is never
+// scaled down mid-movie.
 let sizes = frames.compactMap { size($0.path) }
 guard !sizes.isEmpty else { fail("cannot read \(frames[0].path)") }
 let windowW = sizes.map { $0.0 }.max()!
 let windowH = sizes.map { $0.1 }.max()!
-let pad = max(28, windowW / 22)
-let fontSize = CGFloat(max(15, min(26, windowW / 46)))
+let width = 1920
+let height = 1080
+let pad = 40
+let fontSize: CGFloat = 34
 let band = Int(fontSize * 2.6)
-let width = (windowW + pad * 2 + 1) & ~1
-let height = (windowH + pad * 2 + band * (title.isEmpty ? 1 : 2) + 1) & ~1
+let placeW = width - pad * 2
+let placeH = height - band * 2 - pad
+let scale = min(2, min(Double(placeW) / Double(windowW), Double(placeH) / Double(windowH)))
 let fps = 30.0
 
 let output = URL(fileURLWithPath: arguments[2])
@@ -136,11 +159,10 @@ func draw(_ picture: CGImage, caption: String) -> CVPixelBuffer {
 		context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: height), options: [])
 	}
 	// CoreGraphics' origin is the bottom left: the caption's band, then the window's place, then the title's band.
-	let place = CGRect(x: pad, y: band + pad, width: windowW, height: windowH)
-	let fit = min(1, min(Double(windowW) / Double(picture.width), Double(windowH) / Double(picture.height)))
-	let (w, h) = (Double(picture.width) * fit, Double(picture.height) * fit)
+	let place = CGRect(x: pad, y: band + pad / 2, width: placeW, height: placeH)
+	let (w, h) = (Double(picture.width) * scale, Double(picture.height) * scale)
 	let rect = CGRect(x: place.midX - w / 2, y: place.midY - h / 2, width: w, height: h).integral
-	let corners = CGPath(roundedRect: rect, cornerWidth: 12, cornerHeight: 12, transform: nil)
+	let corners = CGPath(roundedRect: rect, cornerWidth: 12 * scale, cornerHeight: 12 * scale, transform: nil)
 	context.saveGState()
 	context.setShadow(offset: CGSize(width: 0, height: -10), blur: 36, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.6))
 	context.addPath(corners)
@@ -150,39 +172,28 @@ func draw(_ picture: CGImage, caption: String) -> CVPixelBuffer {
 	context.saveGState()
 	context.addPath(corners)
 	context.clip()
+	context.interpolationQuality = .high
 	context.draw(picture, in: rect)
 	context.restoreGState()
 	let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
 	let muted = CGColor(red: 0.78, green: 0.82, blue: 0.9, alpha: 1)
 	let textWidth = CGFloat(width - pad * 2)
 	if !title.isEmpty {
-		write(title, font: bold, color: white, centerX: CGFloat(width) / 2, midY: CGFloat(height - band / 2 - pad / 3), maxWidth: textWidth, in: context)
+		write(title, font: bold, color: white, centerX: CGFloat(width) / 2, midY: CGFloat(height - band / 2 - 6), maxWidth: textWidth, in: context)
 	}
 	if !caption.isEmpty {
-		write(caption, font: regular, color: muted, centerX: CGFloat(width) / 2, midY: CGFloat(band / 2 + pad / 3), maxWidth: textWidth, in: context)
+		write(caption, font: regular, color: muted, centerX: CGFloat(width) / 2, midY: CGFloat(band / 2 + 4), maxWidth: textWidth, in: context)
 	}
 	return buffer
 }
 
 // Every 1/30 s from the start (the task's, else the first frame's) to the end: the latest frame and caption at that
-// time. A frame from well before the start is the setup's (Notes' welcome sheet, answered before the task): the movie
-// starts at the task's first frame instead.
-var start = from ?? frames[0].at
-let last = end > start ? end : frames.last!.at + 1.2
-// A caption from before the start is the setup's, not the task's.
-captions.removeAll { $0.at < start }
-if let first = frames.firstIndex(where: { $0.at >= start - 0.5 }) {
-	frames.removeFirst(first)
-	start = max(start, frames[0].at)
-} else {
-	frames = [frames.last!]
-}
-// A still stretch (no new frame, no new caption) plays at `fast` times its speed after its first `still` seconds, with a
+// time (the frames and captions were cut to the task's own, above). A still stretch (no new frame, no new caption) plays at `fast` times its speed after its first `still` seconds, with a
 // mark in the corner saying so: an agent's turns wait on its model, and a window that does not change for ten seconds
 // shows nothing. The movie's time is the run's elsewhere.
 let still = 1.0
 let fast = 4.0
-let small = CTFontCreateWithName("Helvetica Neue Medium" as CFString, fontSize * 0.8, nil)
+let small = CTFontCreateWithName("Helvetica Neue Medium" as CFString, 20, nil)
 var index = 0
 var caption = 0
 var picture = image(frames[0].path)!
@@ -206,9 +217,9 @@ while t <= last {
 			data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height, bitsPerComponent: 8,
 			bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: space, bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
 		) {
-			// Above the window's top right corner, in the gap between it and the title.
+			// In the top right corner, above the title's line.
 			write("\(Int(fast))× while nothing changes", font: small, color: CGColor(red: 0.6, green: 0.65, blue: 0.75, alpha: 1),
-				centerX: CGFloat(width - pad) - 150, midY: CGFloat(height - band - pad / 2), maxWidth: 300, in: context)
+				centerX: CGFloat(width - pad) - 130, midY: CGFloat(height - 18), maxWidth: 260, in: context)
 		}
 		CVPixelBufferUnlockBaseAddress(buffer, [])
 	}

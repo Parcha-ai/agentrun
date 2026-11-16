@@ -71,8 +71,19 @@ partial def textParts (cs : List Char) (acc : String) : List TextPart :=
     | _ => textParts rest (acc.push '{')
   | c :: rest => textParts rest (acc.push c)
 
+/-- The path of a whole-string optional placeholder `"{p?}"`, if `s` is one. -/
+def optPath? (s : String) : Option Path :=
+  match s.toList with
+  | '{' :: rest =>
+    let name := rest.takeWhile isPlaceholderChar
+    if !name.isEmpty && rest.drop name.length == ['?', '}'] then some (splitPath (String.ofList name)) else none
+  | _ => none
+
 partial def tmpl : Json → Tmpl
   | .str s =>
+    match optPath? s with
+    | some p => .opt p
+    | none =>
     match textParts s.toList "" with
     | [.ref p] => .ref p
     | parts => if parts.all (fun | .lit _ => true | _ => false) then .lit (.str s) else .text parts
@@ -106,6 +117,10 @@ partial def pred (j : Json) : P Pred := do
     | some (.arr xs) => pure (.isIn path (← xs.toList.mapM scalar))
     | _ => throw "in needs values"
   | "field_type" => pure (.fieldType path (strD j "type"))
+  | "quote_missing" => match get? j "pages" with
+    | some (.arr xs) => pure (.quoteMissing path ((get? j "field").bind fun | .str s => some (splitPath s) | _ => none)
+        (xs.toList.filterMap fun | .str s => some (splitPath s) | _ => none))
+    | _ => throw "quote_missing needs pages"
   | "not" => pure (.not (← pred ((get? j "of").getD .null)))
   | "ask" => pure (.ask ((get? j "gte").bind fun | .num n => some (toRat n) | _ => none)
       ((get? j "state").map tmpl))

@@ -172,19 +172,19 @@ isn't the JSON, then says unknown.
 `computer-bench report <out>` writes `report.md` and `report.json`. Arms are in bench.json's order (the arms file's): the
 first is the baseline every other is compared against, in every table.
 
-For a reader first, one table per platform (the tasks' os and kind: android phone, linux desktop, macos desktop), a row
-per arm: passed / scored, success, the paired difference against the first arm with its 95% CI and the tasks it pairs
-over, median computer steps, median model turns, median wall seconds, and $ per pass; then that platform's tasks (exec
-allow or deny, passed / scored per arm). Then "How we measured", a paragraph made from the run: how many tasks on which
-platforms, the seeds, the grader, what counts as infra and how often it is re-run, and which tasks deny exec.
+An arm has one summary, stated for the whole run and for each platform (the tasks' os and kind: android phone, linux
+desktop, macos desktop): passed / scored, success with a 95% interval clustered by task (the task is the unit; never
+narrower than Wilson's at the task count), the paired difference against the first arm over the task × seed pairs both
+arms scored, tasks passed on every seed (pass^k), median computer steps, median model turns, median wall seconds, $ per
+pass, budget stops, infra re-runs and final, refusals, the queue, the route mix (semantic, page, background,
+foreground, raw input, error), stale steps per run, no-op acts and verified steps, the passes that ran a program
+(exec.run, a process, a shell tool, counted once it started: a command its timeout cut or a shell call that failed ran
+one, a call refused or stopped before it started did not), and the failure loci.
 
-Then per arm: success with a 95% interval clustered by task (the task is the unit; never narrower than Wilson's at the
-task count), tasks passed on every seed (pass^k), mean steps and turns, $ per run and per success, wall time, budget
-stops, infra re-runs and final, refusals, the queue, the route mix (semantic, page, background, foreground, raw input,
-error), stale steps per run, no-op acts and verified steps; the passes that ran a program (exec.run, a process, a
-shell tool, counted once it started: a command its timeout cut or a shell call that failed ran one, a call refused or
-stopped before it started did not); each arm's paired difference against the first, over the task × seed pairs both arms scored; the failure
-loci; and a table per task.
+For a reader first, one table per platform, a row per arm, then that platform's tasks (exec allow or deny, passed /
+scored per arm). Then "How we measured", a paragraph made from the run: how many tasks on which platforms, the seeds,
+the grader, what counts as infra and how often it is re-run, and which tasks deny exec. Then the same table over every
+arm, the route mix, the passes that ran a program, the failure loci, and what was out of budget, not scored or queued.
 
 ## Suites
 
@@ -207,8 +207,8 @@ first is the baseline. On serve, the arm is an agent definition: `harness` and `
 `thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
 `options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
 alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
-is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec (and step budget, on pi): its id is
-`<bench>-<arm>-<kind>-<surface>[-ui][-s<steps>]`, `-ui` where exec is denied.
+is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
+`<bench>-<arm>-<kind>-<surface>[-ui]`, `-ui` where exec is denied.
 
 ```json
 [
@@ -246,8 +246,7 @@ missing.
    answer the checks read is the Timeline's `final_answer` row, there once the agent ends, before the release.
 6. Budgets: the money budget is the run's `max_cost_usd`. The step budget is computer calls: on every harness the bench
    counts the computer calls on the Timeline's tool rows and cancels the run past it, which lets the computer go, so the
-   checks after a cancel find it gone. On pi the agent's `max_tool_calls` is the budget too, a backstop (one agent per
-   budget there). Labels are gone: the bench's agent ids say which bench run made them.
+   checks after a cancel find it gone. Labels are gone: the bench's agent ids say which bench run made them.
 7. An agent's computer takes `surface` ("code" or "tools") and `exec: false` (no exec or processes group, no shell),
    which the bench sets from the arm and the task.
 

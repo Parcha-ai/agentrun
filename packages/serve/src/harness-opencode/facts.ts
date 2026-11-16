@@ -3,6 +3,7 @@
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { OPENCODE_VERSION } from "./binary.js";
 import { openCodePolicy } from "./host/policy.js";
+import { OPENCODE_BASE_INPUT_TOKENS } from "./versions.js";
 
 export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   id: "opencode",
@@ -24,7 +25,9 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // The server is named first, as the other lines name a package beside it: OpenCode's CLI is an optional peer of the
   // server's own.
   install: Object.freeze({ npmLine: `npm install @parcha/agentrun-serve opencode-ai@${OPENCODE_VERSION}`, spec: `opencode-ai@${OPENCODE_VERSION}`, codes: Object.freeze({ install: "OPENCODE_NOT_INSTALLED", pins: "OPENCODE_PIN_MISMATCH" }) }),
-  // Its client calls a session's MCP tool `<server>_<tool>` too.
-  toolAlias: /^([a-z][a-z0-9-]*)_(.+)$/,
+  // The adapter's tools reach the model as `hands_<host tool>`.
+  hostName: (given: string) => given.replace(/^hands_/, ""),
+  // Its first request's own input before the agent's prompt, measured on the pinned binary (versions.ts).
+  baseInputTokens: OPENCODE_BASE_INPUT_TOKENS,
   policy: (options) => openCodePolicy({ model: options.model, tools: options.tools, ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

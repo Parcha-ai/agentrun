@@ -3,19 +3,27 @@
 // The runner's claim reads them (runner/claim-secrets.ts).
 import type { Revision } from "./agent-rows.js";
 import { harnessModelKeys } from "./adapters.js";
+import { COMPUTER_KEY_NAMES } from "./computer-keys.js";
 import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
 import { GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, type Tier, workflowNodes } from "./model.js";
 import { DECISION_KEYS, SECRET_NAMES } from "./secrets.js";
-import { TOOL_KEYS } from "./tool-keys.js";
+import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
 import { workflowTools } from "./tools.js";
+import { ARCHIL_API_KEY_ENV } from "./workspace/archil-key.js";
 
+/** The computer providers' account keys a run never gets: every computer key (computer-keys.ts COMPUTER_KEY_NAMES) but
+ *  a tool key's field (Browserbase's and Kernel's, which a run's `browser` tool takes when its revision binds it). Only
+ *  the server's and the runner's computer providers read one, at a claim or a Settings test. */
+const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.includes(name));
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
- *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), and the remote boxes' keys
- *  (place-offers.ts BOX_KEYS), which only the server's computer providers use. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS]);
+ *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), the remote boxes' keys
+ *  (place-offers.ts BOX_KEYS) and every other computer provider's account key, which only the server's and the runner's
+ *  computer providers use, and the Archil account key (archil-key.ts), from which the claim mints each run's own mount
+ *  credential. */
+const SERVER_ONLY: ReadonlySet<string> = new Set(["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS, ...COMPUTER_ACCOUNT_KEYS, ARCHIL_API_KEY_ENV]);
 /** The secrets a run may be handed: every one but the server's own and the decision keys, which go apart. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 type KeyRow = { kind: string; fields: readonly string[]; unlocks: readonly string[] };
@@ -55,8 +63,7 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
  *  sends for the revision's model (adapters.ts' harnessModelKeys). Read at each claim, so a key saved with no restart
  *  counts at the next. */
 export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
-  const named = new Set(needs.tools);
-  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((name) => named.has(name))).flatMap((row) => row.fields));
+  const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((unlock) => needs.tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
   const entry = harnessOf(env, needs.harness);
   const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));

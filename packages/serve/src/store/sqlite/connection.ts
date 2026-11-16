@@ -19,8 +19,19 @@ export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
 /** The interactive transactions open in this process, on any of its connections: each with where it was opened and when
  *  it began. A transaction's StoreDeadline, and a begin's StoreBusy, name them in their stack (never their message, which
  *  an answer may carry), so a log says who held the store: the deadline's own transaction, or another of this process's
- *  (an in-process runner's) holding the lock a begin waited on. */
-const OPEN = new Set<{ readonly opened: Error; readonly began: number }>();
+ *  (an in-process runner's) holding the lock a begin waited on. `where`: its database (Connection.where), so a wait for
+ *  the write lock knows a holder of this process on the same database (lockWait). */
+const OPEN = new Set<{ readonly opened: Error; readonly began: number; readonly where: string }>();
+/** The interactive transactions of this process whose begin is with its worker, not yet answered: each on its database
+ *  (`where`). Such a begin may hold the write lock already, its answer waiting for the event loop, and after a hold-up
+ *  the answers of two workers come back in no set order, so a wait that ran out then can be read before that begin's
+ *  answer adds it to OPEN (lockWait). */
+const BEGINNING = new Set<{ readonly where: string }>();
+/** How many interactive transactions of this process have ended on each database (`where`), counted once the worker has
+ *  answered their commit or rollback. A wait whose busy answer is read after a holder of this process let go (its
+ *  commit's answer read first: two workers' answers come back in no set order) finds it in neither set, yet that holder
+ *  held the lock through the wait: the count moved since the wait was sent says so (lockWait). */
+const ENDED = new Map<string, number>();
 
 /** `opened`'s frames: where a transaction was asked for, without the Error line itself. */
 const framesOf = (opened: Error): string => (opened.stack ?? "").split("\n").slice(1).join("\n");
@@ -151,8 +162,8 @@ function whereOf(file: string): string {
 
 /** The flags the store's worker is given when this process was started with code on its command line: this process's
  *  less those that apply only to that code (`--input-type`, `-e`/`--eval` and `-p`/`--print` with their code). A worker
- *  from a file refuses them ("--input-type can only be used with string input via --eval"), and the server's launcher
- *  starts Node exactly so (`node --input-type=module -e '…'`), so a store opened under it would have no worker. Undefined
+ *  from a file refuses them ("--input-type can only be used with string input via --eval"), and a process started
+ *  so (`node --input-type=module -e '…'`, as a test or a server's own `--` command may be) would have no worker. Undefined
  *  when there are none to drop: the worker then inherits this process's flags as Node gives them, untouched (a list given
  *  to Worker is checked flag by flag, and one a worker may not take, a process-wide one, is refused). */
 export function workerExecArgv(given: readonly string[]): string[] | undefined {
@@ -258,8 +269,47 @@ export class Connection implements SqliteDatabase, StoreConnection {
     return run;
   }
 
-  #stmt(sql: string, params: readonly SqliteValue[], mode: Mode): Promise<unknown> {
-    return this.#send({ op: "stmt", statement: { sql, params: cleaned(params) }, mode });
+  #stmt(sql: string, params: readonly SqliteValue[], mode: Mode, busyMs?: number): Promise<unknown> {
+    return this.#send({ op: "stmt", statement: { sql, params: cleaned(params) }, mode, ...(busyMs !== undefined ? { busyMs } : {}) });
+  }
+
+  /** `send`, a request that takes the database's write lock (a transaction's begin, a write, a statement outside a
+   *  transaction), given how long it may wait for it (`busyMs`; undefined, the connection's own busy wait). A wait that
+   *  ran out on a transaction of this process on the same database (another of its connections: the server's and its
+   *  in-process runner's) while this process was held up (its event loop held by other work, the machine holding it) is
+   *  sent again, with the held-up time given back: that holder's statements wait for the same event loop, and its deadline
+   *  counts only the time this process could run (store/deadline.ts runnableDeadline), so the wait for it counts the same
+   *  way, and the holder, once it runs again, commits or meets its deadline. A wait on another process's write, or one
+   *  this process could run through, ends StoreBusy as ever.
+   *  Every wait is measured, and the holder looked for when it runs out, never when it is sent: a holder's begin posted
+   *  in the same turn may take the lock before its answer makes it known. A holder that ended while the wait was out
+   *  counts too: its commit's answer may be read before the wait's busy answer. `self`: this request's own begin
+   *  (BEGINNING), never its own holder. */
+  async #lockWait<T>(send: (busyMs: number | undefined) => Promise<T>, self?: { readonly where: string }): Promise<T> {
+    let left = this.#busyTimeoutMs;
+    for (;;) {
+      const clock = runnableDeadline(left, () => {});
+      const sent = performance.now();
+      const ended = ENDED.get(this.#where) ?? 0;
+      try {
+        return await send(left < this.#busyTimeoutMs ? left : undefined);
+      } catch (error) {
+        if (!(error instanceof StoreBusy)) throw error;
+        const held = clock.held();
+        if (held === 0 || !(this.#heldHere(self) || (ENDED.get(this.#where) ?? 0) !== ended)) throw error;
+        left -= performance.now() - sent - held;
+        if (left <= 0) throw error;
+      } finally {
+        clock.clear();
+      }
+    }
+  }
+
+  /** A transaction of this process on this database is open, or its begin is with its worker (other than `self`). */
+  #heldHere(self?: { readonly where: string }): boolean {
+    for (const open of OPEN) if (open.where === this.#where) return true;
+    for (const beginning of BEGINNING) if (beginning !== self && beginning.where === this.#where) return true;
+    return false;
   }
 
   /** The executor that sends straight to the worker: a transaction's handle, valid while `live()` says so. */
@@ -282,10 +332,10 @@ export class Connection implements SqliteDatabase, StoreConnection {
     return this.#queued(async () => void (await this.#send({ op: "exec", sql })));
   }
   run(sql: string, ...params: SqliteValue[]): Promise<void> {
-    return this.#queued(async () => void (await this.#stmt(sql, params, "run")));
+    return this.#queued(async () => void (await this.#lockWait((busyMs) => this.#stmt(sql, params, "run", busyMs))));
   }
   runCounted(sql: string, ...params: SqliteValue[]): Promise<number> {
-    return this.#queued(async () => (await this.#stmt(sql, params, "count")) as number);
+    return this.#queued(async () => (await this.#lockWait((busyMs) => this.#stmt(sql, params, "count", busyMs))) as number);
   }
   get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {
     return this.#queued(async () => ((await this.#stmt(sql, params, "get")) ?? undefined) as T | undefined);
@@ -297,7 +347,10 @@ export class Connection implements SqliteDatabase, StoreConnection {
   /** One write transaction of fixed statements: in order; an expectation miss or an error rolls all of them back. `full`: a
    *  FULL commit, durable against a lost box together with every commit before it. */
   write(statements: readonly Statement[], { full = false }: { full?: boolean } = {}): Promise<StatementResult[]> {
-    return this.#queued(async () => (await this.#send({ op: "write", statements: statements.map(cleanStatement), full })) as StatementResult[]);
+    return this.#queued(async () => {
+      const cleanedStatements = statements.map(cleanStatement);
+      return (await this.#lockWait((busyMs) => this.#send({ op: "write", statements: cleanedStatements, full, ...(busyMs !== undefined ? { busyMs } : {}) }))) as StatementResult[];
+    });
   }
 
   /** A write transaction (BEGIN IMMEDIATE) the callback steps through its handle, deciding each statement from the ones
@@ -321,13 +374,21 @@ export class Connection implements SqliteDatabase, StoreConnection {
       // Its wait for the database's lock (another process's write) bounded by what the deadline leaves: a lock still held
       // when that runs out is the deadline's end, not the connection's own busy wait.
       const busyMs = until !== undefined ? Math.max(0, until - Date.now()) : undefined;
+      // Until its begin is answered, it may hold the lock unknown to OPEN: another wait that runs out meanwhile finds it.
+      const beginning = { where: this.#where };
+      BEGINNING.add(beginning);
       try {
-        await this.#send({ op: "begin", full, ...(read ? { read } : {}), ...(busyMs !== undefined ? { busyMs } : {}) });
+        // Counted from its call, its wait is the deadline's, the wall clock's; else its wait for a holder of this process
+        // gives back the time this process was held up (lockWait).
+        if (busyMs !== undefined) await this.#send({ op: "begin", full, ...(read ? { read } : {}), busyMs });
+        else await this.#lockWait((wait) => this.#send({ op: "begin", full, ...(read ? { read } : {}), ...(wait !== undefined ? { busyMs: wait } : {}) }), beginning);
       } catch (error) {
         if (error instanceof StoreBusy && busyMs !== undefined && busyMs < this.#busyTimeoutMs) throw holderNamed(new StoreDeadline(deadlineMs), { opened });
         throw error instanceof StoreBusy ? holderNamed(error, { opened }) : error;
+      } finally {
+        BEGINNING.delete(beginning);
       }
-      const open = { opened, began: Date.now() };
+      const open = { opened, began: Date.now(), where: this.#where };
       OPEN.add(open);
       try {
         let live = true;
@@ -374,6 +435,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
       } finally {
         // Kept until the worker has answered the commit or rollback: until then this transaction still holds the lock.
         OPEN.delete(open);
+        ENDED.set(open.where, (ENDED.get(open.where) ?? 0) + 1);
       }
     });
     if (until === undefined) return run;

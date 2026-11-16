@@ -39,6 +39,20 @@ export type RunLearning = {
   skills?: LearnedFileRef[];
   workflows?: LearnedFileRef[];
 } | null;
+/** GET /v2/runs/{id}/learning. Unlike the list's summary, this carries the actual grader decision,
+ * validation problems and commit provenance. Null means this run has no recorded learning. Missing counters
+ * remain unknown; grading input excludes both cache reads and cache writes. */
+export type RunLearningResultData = NonNullable<RunLearning> & {
+  run: string;
+  seed: string | null;
+  merged: string | null;
+  verdict: { merge: boolean; reason: string; items: { file: string; keep: boolean; why: string; pending?: boolean; origin?: string; question?: string }[] } | null;
+  problems: NoteProblem[];
+  /** Compiler refusals recorded separately from reflection validation; absent on older servers. */
+  draft_errors?: readonly string[];
+  cost_usd: { grade: number | null };
+  tokens: { grade: { input: number; output: number; cache_read: number; cache_write: number } | null };
+};
 /** A skill or a workflow a run kept: its file (a SKILL.md, a workflow.json), its name, and whether it waits. */
 export type LearnedFileRef = { file: string; name: string; pending?: true };
 /** A skill or a workflow the agent learned, as GET .../learning lists it: its name, its file (a
@@ -218,14 +232,20 @@ export const costsShown = (i: NonNullable<Impact>) => typeof i.before.median_cos
 /** The median cost of learning itself on the after side, when the server says. */
 export const learningCost = (i: NonNullable<Impact>) => i.after.median_learning_usd;
 /** The before and after in one line, as the card says it and a screen reader reads it, whichever way the numbers went:
- *  "Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning
+ *  "Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning
  *  itself $0.0080 est. a run". */
 export function impactWords(i: NonNullable<Impact>): string {
   const parts = [`answers in ${took(i.after.median_duration_s)} instead of ${took(i.before.median_duration_s)}`];
   if (costsShown(i)) parts.push(`${money(i.after.median_cost_usd!)} instead of ${money(i.before.median_cost_usd!)} a run`);
   const learning = learningCost(i);
   if (learning !== null) parts.push(`learning itself ${money(learning)} a run`);
-  return `Since it learned (on ${runsWord(i.after.runs)}): ${parts.join(" · ")}`;
+  return `Since it learned (${impactBase(i)}): ${parts.join(" · ")}`;
+}
+
+/** The tile's base said plainly: medians over the runs that started from anything learned, a note included, which is
+ *  another set than the cost card's served runs (a learned workflow ran them). */
+export function impactBase(i: NonNullable<Impact>): string {
+  return `medians of ${runsWord(i.after.runs)} started from what it learned`;
 }
 /** Whether an impact the server sent is whole enough to show: both sides, two runs each, a duration each. */
 export const shownImpact = (i: unknown): i is NonNullable<Impact> => {

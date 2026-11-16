@@ -5,7 +5,11 @@ export function createProvider() {
 	return fakeComputers({ id: "noted-module" }).provider;
 }
 
+/** How many times the CLI asked for the image: a module's may make or register it, so a run with --image never asks. */
+export const asked = { image: 0 };
+
 export function conformanceImage() {
+	asked.image += 1;
 	return "module-image";
 }
 

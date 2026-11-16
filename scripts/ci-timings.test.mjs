@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
-import { fileOf, readLog, timingsOf } from './ci-timings.mjs';
+import { carriedOver, fileOf, readLog, timingsOf } from './ci-timings.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-timings-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -77,4 +77,12 @@ test("the timings are each file's median over the logs, each suite's file total 
   // Totals 6/2, 10/4 and 16/3: the median of 3, 2.5 and 5.33.
   assert.deepEqual(timings.parallelism['@x/a'], 3);
   assert.deepEqual(timings.walls, { 'test:viewer': 6 });
+});
+
+test('a refresh keeps the weight of a file the logs did not measure while the file exists, and drops a file that is gone', () => {
+  const previous = { 'a/sweep.test.mjs': 52, 'a/fast.test.mjs': 1, 'a/gone.test.mjs': 30 };
+  const measured = { 'a/fast.test.mjs': 2, 'a/new.test.mjs': 5 };
+  const exists = (path) => path !== 'a/gone.test.mjs';
+  assert.deepEqual(carriedOver(previous, measured, exists), { 'a/fast.test.mjs': 2, 'a/new.test.mjs': 5, 'a/sweep.test.mjs': 52 });
+  assert.deepEqual(carriedOver(undefined, measured, exists), measured);
 });

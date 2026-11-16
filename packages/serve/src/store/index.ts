@@ -3,15 +3,15 @@ export { AgentArchived, AnswerTaken, CommandTaken, endedReason, ExternalBodyConf
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpRemoved, McpOauth, McpOauthPendingRow, McpPinRow,
-  McpServerRow, McpServerStamp, McpServerWrite, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
+  McpServerRow, McpServerStamp, McpServerWrite, MintedTokenRow, MintedTokens, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
-  TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
+  TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunLabels, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
 export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunMcpAuth, type RunMcpAuth, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunMcpAuth, unsealColumn } from "./seal.js";
 export {
   AgentBodyInvalid, type AgenticBody, bodyOf, canonical, isObject, isSkillPath, type PromptVariant,
-  type ModelTiers, type RevisionBodyInput, type RevisionComputer, type RevisionPlace, sha256, type ToolSettings, type WorkflowBody,
+  type ModelTiers, type MonidPinBody, type RevisionBodyInput, type RevisionComputer, type RevisionPlace, sha256, type ToolSettings, type WorkflowBody,
 } from "./agent-body.js";
 export { checkPrompts, OTHER_OPTION, PromptsInvalid } from "./prompts.js";
 export { DDL, PI_DDL, PI_TABLE, PI_TABLES, SCHEMA_VERSION, STORE_DDL } from "./schema.js";

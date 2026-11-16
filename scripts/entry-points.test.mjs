@@ -24,8 +24,11 @@ const reviewed = new Map([
   ['packages/serve/test/secret-custody.test.mjs', childScript],
   ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
+  ['packages/serve/test/launcher-worker.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
   ['packages/serve/test/store-target.mjs', label],
+  ['packages/serve/test/native-fixtures/cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
+  ['packages/serve/test/native-fixtures/feedback-cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');
@@ -66,9 +69,14 @@ const bare = new Map([
   ['examples/research-live.mjs', copiedOut],
   ['examples/run-rank-candidates.mjs', copiedOut],
   ['examples/run-support-answer.mjs', copiedOut],
+  ['examples/sdk-learning/claude.mjs', copiedOut],
+  ['examples/sdk-learning/codex.mjs', copiedOut],
+  ['examples/sdk-learning/release-mcp.mjs', copiedOut],
+  ['examples/sdk-learning/workflow-claude.mjs', copiedOut],
+  ['examples/sdk-learning/workflow-codex.mjs', copiedOut],
+  ['packages/serve/src/native/remote-worker-bridge.ts', 'a package-local worker command, also imported by tests: its package requires Node >=24.22.3, which sets import.meta.main, and the installed bridge cannot import repository scripts/'],
   ['packages/dsl/test/fixtures/graph/generate.mjs', ownPackage],
   ['packages/dsl/test/fixtures/graph/record.mjs', ownPackage],
-  ['packages/computer/box/build-agent37.mjs', ownPackage],
 ]);
 const readsMain = (source) => source.includes('import.meta.main');
 const unasked = (sources) => sources.filter(([file, source]) => readsMain(source) && !bare.has(file)).map(([file]) => file);

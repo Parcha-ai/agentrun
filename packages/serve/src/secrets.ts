@@ -11,6 +11,7 @@ import { closeSync, existsSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { keyShaped } from "./secret-cut.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { secretValues } from "./api-token.js";
 
 /** The pipe and how many bytes of it are the secrets: the launcher's, or serve's to a run's process. */
 export const SECRETS_FD_ENV = "AGENTRUN_SECRETS_FD";
@@ -103,7 +104,8 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
  *  whitespace aside, matches too much text by chance to be refused, and is left out. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
-  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys()];
+  // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
+  const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };
@@ -124,6 +126,24 @@ export function holdSealKey(text: string): () => void {
     if (left > 0) sealKeys.set(text, left);
     else sealKeys.delete(text);
   };
+}
+
+/** Tokens this process read that no environment names (a ChatGPT sign-in's access and refresh tokens), newest last, for
+ *  redaction alone: kept after they rotate, since text written before a renewal can still hold the old one. */
+const heldTokens = new Set<string>();
+const HELD_TOKENS = 64;
+
+/** Lists each of `texts` among this process's secrets, for redaction alone. */
+export function holdSecret(...texts: string[]): void {
+  for (const text of texts) {
+    if (!text) continue;
+    heldTokens.delete(text);
+    heldTokens.add(text);
+  }
+  for (const oldest of heldTokens) {
+    if (heldTokens.size <= HELD_TOKENS) break;
+    heldTokens.delete(oldest);
+  }
 }
 
 /** A secret this process was started with: as handed over, else (no launcher) as its environment has it now. */

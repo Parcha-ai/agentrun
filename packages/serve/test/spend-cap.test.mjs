@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, follow, responsesEndpoint, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, follow, journalOf, responsesEndpoint, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
 /** The gateway models' max output tokens (model.ts), which the requests below send as max_output_tokens. */
@@ -59,10 +59,11 @@ test("a request the cap refuses never reaches the model: the run's second reques
   const calls = join(await scratch(t), "calls.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_CALLS: calls });
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-recorded.mjs", import.meta.url).pathname });
-  // The ask is small and cheap; the answer's 20,000 characters (about 5,700 tokens at $100 per million, $0.57) pass the cap
-  // alone. The cap is above the wrap-up line at step 0 (three times a request's least, $0.31): under it the run is told to
-  // finish and never asks.
-  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 0.35 }, { tools: ["ask_person"] });
+  // The ask is small and cheap; the answer's 20,000 characters (read by their bytes, about $2 at $100 per million) pass the
+  // cap alone. The cap is above the wrap-up line at step 0 (twice a request's least, its input read by its bytes with the
+  // host's tools_search, tools_call and codemode among its tools: near $1.05): under it the run is told to finish and never
+  // asks.
+  const run = await start(api, "region", "Pick a region.", { max_cost_usd: 1.2 }, { tools: ["ask_person"] });
   await follow(api, run.run_id, ["input_required"]);
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu ".repeat(6_666) })).body.mode, "answer");
   const view = await ended(api, run.run_id);
@@ -123,19 +124,46 @@ test("a run cancelled while its request answers costs unknown (the request may h
   }
 });
 
-test("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a run with no request costs $0", async (t) => {
-  const { api } = await serve(t, { faux: new URL("./fixtures/faux-unpriced.mjs", import.meta.url).pathname });
+/** `runId`'s model requests as its journal books them: each admitted (`runner.request`), and each booked (`runner.turn`). */
+const bookingsOf = (data, runId) => {
+  const entries = journalOf(data, runId);
+  return { requests: entries.filter((e) => e.kind === "runner.request"), turns: entries.filter((e) => e.kind === "runner.turn").map((e) => e.data) };
+};
+
+test("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a cancelled run costs what its records show it sent", async (t) => {
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-unpriced.mjs", import.meta.url).pathname });
   const run = await ended(api, (await start(api, "unpriced", "What is six times seven?")).run_id);
   assert.deepEqual([run.status, run.cost.usd], ["completed", null], JSON.stringify(run.cost));
   assert.equal((await api("GET", "/runs?agent=unpriced")).body.runs[0].cost.usd, null);
+  // Cancelled at once: the cancel may land before its first request, while it is admitted (never sent: $0), or once the
+  // model has it (this model has no price, and the request is cut: unknown). Every request it admitted is booked by its
+  // end, never left open; what its records say was sent decides its cost, never the race.
   const none = await start(api, "none", "Take your time.");
   await api("POST", `/runs/${none.run_id}/cancel`);
-  assert.equal((await ended(api, none.run_id, ["cancelled"])).cost.usd, 0, "no request: $0");
+  const cancelled = await ended(api, none.run_id, ["cancelled"]);
+  const { requests, turns } = bookingsOf(data, none.run_id);
+  assert.equal(turns.length, requests.length, `every request it admitted is booked by its end: ${JSON.stringify(turns)}`);
+  const reached = turns.filter((turn) => turn.usd !== 0);
+  assert.equal(cancelled.cost.usd, reached.length ? null : 0, `${reached.length ? "a request reached a model with no price: unknown" : "no request reached the model: $0"}: ${JSON.stringify({ cost: cancelled.cost, turns })}`);
+  const unpricedRuns = reached.length ? 2 : 1;
   for (const usage of await usages(api)) {
-    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [0, 1], JSON.stringify(usage));
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [0, unpricedRuns], JSON.stringify(usage));
     assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));
-    assert.equal(usage.lines.reduce((n, line) => n + line.unpriced_runs, 0), 1, JSON.stringify(usage));
+    assert.equal(usage.lines.reduce((n, line) => n + line.unpriced_runs, 0), unpricedRuns, JSON.stringify(usage));
   }
+});
+
+test("a run cancelled before any request costs $0, and /usage counts it priced", async (t) => {
+  // No runner: the run is never claimed, so nothing can send a request before the cancel.
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-unpriced.mjs", import.meta.url).pathname, runner: false });
+  const none = await start(api, "none", "Take your time.");
+  assert.equal((await api("POST", `/runs/${none.run_id}/cancel`)).status < 300, true);
+  // A queued run's cancel is the server's own: its row says it at once (no runner writes its timeline's end).
+  const cancelled = (await api("GET", `/runs/${none.run_id}`)).body;
+  assert.equal(cancelled.status, "cancelled", JSON.stringify(cancelled));
+  assert.deepEqual(bookingsOf(data, none.run_id).requests, [], "nothing was sent");
+  assert.equal(cancelled.cost.usd, 0, `no request: $0: ${JSON.stringify(cancelled.cost)}`);
+  for (const usage of await usages(api)) assert.deepEqual([usage.total_usd, usage.unpriced_runs], [0, 0], JSON.stringify(usage));
 });
 
 test("a refused request is final: one refusal, never retried, the model is never called for it, and the run pauses at its cap", async (t) => {

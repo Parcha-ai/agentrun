@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
-import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
+import { defersCatalog, type GateAnswer, type GateCall } from '@parcha/agentrun-kernel';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   askGate,
@@ -175,6 +175,9 @@ export interface ClaudeCodeHarnessOptions {
    * none.
    */
   tools?: HostTool[];
+  /** The host's verdict on whether the catalog tools are deferred (SessionSpec.deferCatalog), which turns the CLI's own
+   *  tool search on or off; absent, the tools' names decide (claudeToolSearch). */
+  deferCatalog?: boolean;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -259,10 +262,12 @@ export interface ClaudeCodeHarnessOptions {
   gate?: (call: GateCall) => Promise<GateAnswer>;
   /** The clock a user turn's day is read from (dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone the day is read in (dateLine). Default UTC. */
+  zone?: string;
 }
 
 /**
- * The line a user turn starts with when the session's model was not yet told its day: today's date, in UTC.
+ * The line a user turn starts with when the session's model was not yet told its day: today's date, in `zone` (UTC by default).
  *
  * The CLI records a session's system prompt at its first request and every resume sends that record, so a date the
  * host put there (serve's environment line) stays the first day's. Re-rendering it (`snapshot: false`) records nothing
@@ -270,11 +275,13 @@ export interface ClaudeCodeHarnessOptions {
  * not been told carries this line, in the CLI's transcript only (the host's log keeps the person's words). The
  * session's first launch sends no line on its first day: its fresh system prompt is the one recorded.
  */
-export function dateLine(now: Date): string {
-  return `Today is ${dayOf(now)} (UTC).`;
+export function dateLine(now: Date, zone = 'UTC'): string {
+  return `Today is ${dayOf(now, zone)}.`;
 }
 
-const dayOf = (now: Date) => now.toISOString().slice(0, 10);
+/** `now`'s day as a person in `zone` reads it, the zone's name after it ("Sunday 15 November 2026 (America/Los_Angeles)"). */
+const dayOf = (now: Date, zone = 'UTC') =>
+  `${new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(now).replace(',', '')} (${zone})`;
 
 /** The effect a user message that told its model the day is recorded under (`date:<message uuid>`, input `{ day }`). */
 const DATE_EFFECT = 'date';
@@ -287,6 +294,13 @@ export const TOOLS_NOTE = `Your only tools are this app's, the mcp__${MCP_SERVER
 
 /** `TOOLS_NOTE` with WebSearch on (`providerTools: ['web_search']`) and the other built-ins off. */
 export const WEB_SEARCH_NOTE = `Your only tools are this app's (the mcp__${MCP_SERVER}__ tools, if it has any) and WebSearch; you have no shell, file or fetch tools of your own.`;
+
+/**
+ * What follows the tools note when the session has skills. The notes above say the app's tools are the model's only ones,
+ * and Skill is not one of those: a model that reads them has no reason to reach for it. This names Skill as its tool and
+ * says when to use it, as the on-demand listing does for a harness that reads its skills' files (serve's ON_DEMAND).
+ */
+export const SKILLS_NOTE = `The Skill tool is also yours: it loads one of this app's skills, listed to you as agentrun:<name> with what each is for. When a skill fits the step you are on, or your instructions name one, load it with Skill before you act on that step, and follow it; read its other files with read_skill_file.`;
 
 /** `TOOLS_NOTE` for a session with no tools at all (built-ins off, no `tools`). */
 export const NO_TOOLS_NOTE = 'You have no tools in this session: no shell, file, search or web tools. Answer from the conversation.';
@@ -342,6 +356,20 @@ export const CLAUDE_BUILTINS = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit',
 
 /** Built-ins that only read: "safe to repeat" after a crash, and no flush before their outcome. Everything else: "may have taken effect". */
 export const CLAUDE_SAFE_BUILTINS = ['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'ToolSearch', 'Skill'];
+
+/**
+ * ENABLE_TOOL_SEARCH for a session whose tools are `toolNames` (the host's names): when the run's catalog tools are
+ * deferred (the kernel's defersCatalog: more than DEFER_CATALOG_OVER of them; the host's own tools_search and tools_call
+ * are never offered beside it), `true`: the CLI's own tool search is on, its ToolSearch among its tools, and those tools are
+ * deferred (served through `hands`, the rest of the session's tools listed to load always: tool-server.ts listedTools),
+ * each sent to the model once ToolSearch finds it. Without, `false`. The pinned CLI (2.1.286) leaves it off behind a
+ * proxy unless told, and its `auto` defers only past a tenth of the model's context (on a 1M-token model, never in
+ * practice); set either way, so a CLI that changes that default changes nothing here. The session's proxy admits what the
+ * CLI sends with it on (anthropicPolicy `toolSearch`).
+ */
+export const claudeToolSearch = (toolNames: readonly string[], deferCatalog?: boolean): 'true' | 'false' => ((deferCatalog ?? defersCatalog(toolNames)) ? 'true' : 'false');
+/** The CLI's own tool that finds a deferred tool: it only reads the CLI's list of the session's tools. */
+export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
 
 /** The default `builtinReplay`. */
 export const claudeBuiltinReplay = replayBy(CLAUDE_SAFE_BUILTINS);
@@ -426,8 +454,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
   const webSearch = providerTools.includes('web_search');
-  // A run's remote MCP tools (`mcp__<server>__<tool>`), host tools like any other, served with them.
-  const remoteMcp = tools.some((tool) => tool.name.startsWith('mcp__'));
+  /** The CLI's own tool search is on: a run's MCP servers' tools deferred behind its ToolSearch (claudeToolSearch). */
+  const toolSearch = claudeToolSearch(tools.map((tool) => tool.name), options.deferCatalog) === 'true';
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -534,14 +562,17 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // The host's gate before the intent, so a refused or parked call leaves nothing of its own written. The assistant
         // line that made the call is in the log before the gate is asked: a park ends the claim, and the resume finds the
         // call it held dangling in the transcript, under the same id (resumeDanglingCalls, resumeDanglingSearches).
-        const gated = gate ? async (call: GateCall) => (await store.barrier(call.callId, barrierMs), gate(call)) : undefined;
+        // A call a tool makes inside its own (tools_call, codemode) has the id `<tool_use id>/<key>`: no line of the
+        // transcript names it, so it waits on the line that made the call it runs inside.
+        const logged = (callId: string) => store.barrier(callId.split('/')[0]!, barrierMs);
+        const gated = gate ? async (call: GateCall) => (await logged(call.callId), gate(call)) : undefined;
         /** The WebSearch calls the gate held and a person let run that no search has taken up yet (releasedSearches, read
          *  from the transcript at the resume): the model's next search with one's input is put to the gate under its id. */
         const released: { callId: string; key: string }[] = [];
         const bridge = toolBridge(ctx, tools, {
           ...(gated ? { gate: gated } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
-          beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
+          beforeNever: ({ callId }) => logged(callId),
         });
         // The built-ins: each call an intent before it runs, its outcome after (the hooks below).
         const builtins = new BuiltinCalls(ctx, { replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true });
@@ -613,8 +644,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
-                    // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs.
-                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch')) return deny("Not run: this session's only tools are its own.");
+                    // WebSearch, when on, takes the built-ins' path below: its intent recorded before it runs. So does
+                    // ToolSearch with the tool search on: it reads only the CLI's list of the session's own tools.
+                    if (!builtinsOn && !(webSearch && hook.tool_name === 'WebSearch') && !(toolSearch && hook.tool_name === CLAUDE_TOOL_SEARCH)) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');
                     // The host's gate decides every native search, as it does a host tool's call, before anything of it
                     // is written: a deny refuses it in the gate's words, an ask holds it until the person answers (the
@@ -712,8 +744,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).
           mcpOutputTokens: MCP_OUTPUT_TOKENS,
         });
-        // A run's MCP tools are offered whole, never deferred behind the CLI's tool search, which the session's proxy does not carry.
-        if (remoteMcp) vmEnv.ENABLE_TOOL_SEARCH = 'false';
+        // The CLI's own tool search: on with MCP servers among the session's tools, off without (claudeToolSearch).
+        vmEnv.ENABLE_TOOL_SEARCH = toolSearch ? 'true' : 'false';
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
@@ -737,7 +769,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
         // never recorded: every other day reaches the model in its turn (dateLine).
         const now = options.now ?? (() => new Date());
-        const recordedDay = !store.hasSession ? dayOf(now()) : undefined;
+        const recordedDay = !store.hasSession ? dayOf(now(), options.zone) : undefined;
         /** A message the CLI's transcript holds told the model `day`. */
         const told = (day: string) =>
           ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
@@ -748,7 +780,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // Built-ins on: the allowed ones (less those whose state the log does not carry), each let through by
           // the PreToolUse hook once its intent is in the log. Off: the bridged tools are the only ones. Either
           // way nothing is asked of a user, and nothing else is permitted.
-          ...(allowed !== undefined ? { tools: [...allowed, ...(skills ? ['Skill'] : []), ...(webSearch && !allowed.includes('WebSearch') ? ['WebSearch'] : [])] } : {}),
+          ...(allowed !== undefined ? { tools: [...allowed, ...(skills ? ['Skill'] : []), ...(webSearch && !allowed.includes('WebSearch') ? ['WebSearch'] : []), ...(toolSearch && !allowed.includes(CLAUDE_TOOL_SEARCH) ? [CLAUDE_TOOL_SEARCH] : [])] } : {}),
           // The session's skills, from its own plugin: listed to the model and loadable, and no other.
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,
@@ -767,7 +799,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : webSearch ? WEB_SEARCH_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, skills ? SKILLS_NOTE : undefined, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
@@ -815,11 +847,16 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // The first message on a day the model was not told carries that day (dateLine), the session's recorded first
           // day aside. Recorded under the message's uuid: the day counts as told once the transcript holds the message.
           const at = now();
-          const day = dayOf(at);
+          const day = dayOf(at, options.zone);
           if (!told(day)) {
-            if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
+            if (day !== recordedDay) text = `${dateLine(at, options.zone)}\n\n${text}`;
             await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
           }
+          // Once the transcript holds the message (its own user entry, or the `queued_command` attachment a steer becomes
+          // when the CLI takes it at its next step), the host hears which submissions reached the model: a steer's record is
+          // written there, after the tool call it was sent during, never when it was only queued.
+          const carried = [...placed.map((p) => p.id), ...(how.covers ?? [])];
+          if (carried.length) void store.whenUser(uuid).then(() => ctx.live({ type: 'message_taken', ids: carried }));
           outstanding.add(uuid);
           input.push({
             type: 'user',
@@ -828,6 +865,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             uuid: uuid as UserMessage['uuid'],
             ...(how.priority ? { priority: how.priority } : {}),
           });
+          // The CLI has the message now: a steer() waiting on it returns (the session keeps this to itself).
+          if (placed.length) ctx.live({ type: 'message_sent', ids: placed.map((p) => p.id) });
         };
 
         /**

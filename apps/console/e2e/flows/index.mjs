@@ -28,6 +28,7 @@ import askDone from "./ask-done.mjs";
 import secretsWriteOnly from "./secrets-write-only.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
+import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
 import watchLive from "./watch-live.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
@@ -38,6 +39,9 @@ import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import workflowReplay from "./workflow-replay.mjs";
+import replayButton from "./replay-button.mjs";
+import learningLoop from "./learning-loop.mjs";
+import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 
@@ -53,6 +57,7 @@ export const flows = [
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
   templateApply,
   templateUnattended,
+  templateUnattendedNavigation,
   runToEnd,
   reportJson,
   watchLive,
@@ -69,6 +74,9 @@ export const flows = [
   agentCardFooter,
   costPerRun,
   workflowReplay,
+  replayButton,
+  learningLoop,
+  gradeRun,
   toolCards,
   ...narrowLayouts,
 ];

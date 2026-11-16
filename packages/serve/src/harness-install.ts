@@ -17,14 +17,15 @@
 // is the one every run and save that needs it waits for; a server that stops stops its npm (runNpm). An install lands
 // whole or not at all: npm writes into a fresh directory beside `<data>/harnesses/<harness>`, the result is checked there
 // (the entry's `lacking`), and only then is it renamed into place and made read-only. A crash or a kill part way leaves
-// that directory, never a half install, and the next install removes it; a tree that is not whole (an install by hand
-// cut short) is never loaded, and the next install replaces it.
+// that directory, never a half install, which the next install removes, or, when it can't be removed then (a crashed
+// server's npm still writing in it), the next look at the installed harness (HarnessInstall); a tree that is not whole
+// (an install by hand cut short) is never loaded, and the next install replaces it.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
@@ -269,11 +270,11 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
   const alone = (deps: Record<string, string> | undefined) => deps?.[entry.package] === version && Object.keys(deps).length === 1;
   if (!alone(root?.dependencies) || !alone(named)) throw fail(`its lock (${lock}) is not for ${entry.package}@${version} alone`);
   const parent = dirname(dir);
-  const prefix = `.${basename(dir)}-`;
   await mkdir(parent, { recursive: true });
-  // What an earlier install left part way: never read, removed now.
-  for (const name of await readdir(parent)) if (name.startsWith(prefix)) await writable(join(parent, name), true).then(() => rm(join(parent, name), { recursive: true, force: true }));
-  const staging = await mkdtemp(join(parent, prefix));
+  // What an earlier install left part way: never read, removed now if it can be (this install works in a fresh directory
+  // of its own, so one that can't be stays for a later sweep: HarnessInstall's look at an installed harness).
+  await sweepLeftovers(dir);
+  const staging = await mkdtemp(join(parent, leftoverPrefix(dir)));
   try {
     await copyFile(manifest, join(staging, "package.json"));
     await copyFile(lock, join(staging, "package-lock.json"));
@@ -288,11 +289,31 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
     // Read-only once in place: a write into it by mistake fails. (The server's own uid could change that back; each CLI's
     // sha256 is checked at every run.)
     await writable(dir, false);
-    if (old) await writable(old, true).then(() => rm(old, { recursive: true, force: true }));
+    // The install is in: the one it replaced goes now if it can, else it stays aside (its name the sweep's) for later.
+    if (old) await removeLeftover(old);
   } catch (error) {
-    await rm(staging, { recursive: true, force: true });
+    // Why the install failed is the error, never why its staging stayed.
+    await removeLeftover(staging);
     throw error instanceof HarnessNotInstalled ? error : fail((error as Error).message);
   }
+}
+
+/** `path` and all under it made writable, then removed (retried a few times: a file can still be closing). One that can't
+ *  be removed now (an orphaned npm of a crashed server still writing into it, a folder that can't be read) stays: removing
+ *  what an install leaves is housekeeping, and never fails an install or hides why one failed. */
+async function removeLeftover(path: string): Promise<void> {
+  await writable(path, true).then(() => rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })).catch(() => undefined);
+}
+
+/** The prefix of every directory an install into `dir` works in beside it (its staging, and the install it replaces). */
+const leftoverPrefix = (dir: string): string => `.${basename(dir)}-`;
+
+/** What installs into `dir` left beside it (a staging directory of an install cut short, an install replaced), each
+ *  removed if it can be now (removeLeftover). Only under the install's hold (takeHold): an install that runs works in a
+ *  directory of that very prefix. Never fails. */
+async function sweepLeftovers(dir: string): Promise<void> {
+  const prefix = leftoverPrefix(dir);
+  for (const name of await readdir(dirname(dir)).catch(() => [] as string[])) if (name.startsWith(prefix)) await removeLeftover(join(dirname(dir), name));
 }
 
 
@@ -435,6 +456,9 @@ export async function installSettled(entry: HarnessInstallEntry, dir: string, pi
  *  that install. npm's staging directories beside `dir` are each install's own, and an install removes what an earlier one
  *  left there, so two at once would undo each other. */
 export const installHoldOf = (dir: string): string => `${installMarkOf(dir)}.hold`;
+/** The most a look at an installed harness (HarnessInstall's needed, ensure) waits for its sweep of what earlier installs
+ *  left: the sweep goes on past it, and a run never waits on housekeeping longer. */
+const SWEEP_WAIT_MS = 1_000;
 /** How young a hold that cannot be read is still taken as held (none is ever written part way: one left unreadable is a
  *  copy cut short, or a file of another's that this bound lets go of in time). */
 const HOLD_WRITING_MS = 10_000;
@@ -565,6 +589,7 @@ export async function releaseHold(dir: string, token: string): Promise<void> {
  *  install this server made, and how long it took. */
 export class HarnessInstall {
   private running?: Promise<void>;
+  private sweeping?: Promise<void>;
   private done = false;
   private readonly stopping = new AbortController();
 
@@ -579,67 +604,98 @@ export class HarnessInstall {
     return installingWords(this.entry.label);
   }
 
-  /** Whether a run must wait for an install: false once the harness is installed whole (read once, then kept). */
+  /** Whether a run must wait for an install: false once the harness is installed whole (read once, then kept). Found
+   *  installed, it sweeps what earlier installs left beside it (swept). */
   async needed(): Promise<boolean> {
     if (this.done) return false;
     if (this.running) return true;
     this.done = this.entry.lacking(this.dir, await this.pins()) === undefined;
+    if (this.done) await this.swept();
     return !this.done;
   }
 
   ensure(): Promise<void> {
     if (this.done) return Promise.resolve();
     if (this.stopping.signal.aborted) return Promise.reject(new Error("the server is stopping"));
-    this.running ??= (async () => {
-      // One installer at a time on this data: while another process holds the install, wait for it to settle, then look
-      // again (installed: done; failed while this waited on it: so is this; let go with nothing in: take the hold). A
-      // failure read at once, with no wait, is the last install's: its holder may be retrying it and not yet have written
-      // its own mark, so this looks again rather than failing in that old install's words.
-      let token: string | undefined;
-      while (!(token = await takeHold(this.dir))) {
-        if (this.stopping.signal.aborted) throw new Error("the server is stopping");
-        let waited = false;
-        const settled = await installSettled(this.entry, this.dir, await this.pins(), { signal: this.stopping.signal, onWait: () => (waited = true) });
-        if (settled === "installed") return void (this.done = true);
-        if (typeof settled === "object" && waited) throw new Error(settled.failed);
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-      try {
-        // The mark a run's claim reads, in this process or a runner's own (installSettled): installing now, then gone once
-        // it is in, or why it failed. Written first, before anything is read, so a claim made as this install starts (a run
-        // started just after the save that started it) finds it; gone at once when the harness is installed already.
-        await writeMark(this.dir, { host: hostname(), pid: process.pid, startedAt: Date.now() });
-        const pins = await this.pins().catch(async (error: unknown) => {
-          await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
-          throw error;
-        });
-        if (this.entry.lacking(this.dir, pins) === undefined) {
-          await rm(installMarkOf(this.dir), { force: true });
-          return void (this.done = true);
-        }
-        const started = performance.now();
-        try {
-          await this.install(this.entry, this.dir, pins, this.stopping.signal);
-        } catch (error) {
-          // Why it failed, for the runs that waited on it; a server that stops leaves no mark (its npm was stopped, not refused).
-          if (this.stopping.signal.aborted) await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
-          else await writeMark(this.dir, { failed: (error as Error).message, at: Date.now() }).catch(() => undefined);
-          throw error;
-        }
-        await rm(installMarkOf(this.dir), { force: true });
-        this.done = true;
-        this.onInstalled?.(Math.round(performance.now() - started));
-      } finally {
-        await releaseHold(this.dir, token).catch(() => undefined);
-      }
-    })().finally(() => (this.running = undefined));
+    this.running ??= this.settle().then((found) => (found ? this.swept() : undefined)).finally(() => (this.running = undefined));
     return this.running;
   }
 
-  /** Stops an install that runs (its npm gets SIGTERM, then SIGKILL) and waits for it to end; none starts after. */
+  /** ensure()'s work: the harness found installed (true), or installed by this server (false), or a rejection with why not. */
+  private async settle(): Promise<boolean> {
+    // One installer at a time on this data: while another process holds the install, wait for it to settle, then look
+    // again (installed: done; failed while this waited on it: so is this; let go with nothing in: take the hold). A
+    // failure read at once, with no wait, is the last install's: its holder may be retrying it and not yet have written
+    // its own mark, so this looks again rather than failing in that old install's words.
+    let token: string | undefined;
+    while (!(token = await takeHold(this.dir))) {
+      if (this.stopping.signal.aborted) throw new Error("the server is stopping");
+      let waited = false;
+      const settled = await installSettled(this.entry, this.dir, await this.pins(), { signal: this.stopping.signal, onWait: () => (waited = true) });
+      if (settled === "installed") return (this.done = true);
+      if (typeof settled === "object" && waited) throw new Error(settled.failed);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    try {
+      // The mark a run's claim reads, in this process or a runner's own (installSettled): installing now, then gone once
+      // it is in, or why it failed. Written first, before anything is read, so a claim made as this install starts (a run
+      // started just after the save that started it) finds it; gone at once when the harness is installed already.
+      await writeMark(this.dir, { host: hostname(), pid: process.pid, startedAt: Date.now() });
+      const pins = await this.pins().catch(async (error: unknown) => {
+        await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
+        throw error;
+      });
+      if (this.entry.lacking(this.dir, pins) === undefined) {
+        await rm(installMarkOf(this.dir), { force: true });
+        return (this.done = true);
+      }
+      const started = performance.now();
+      try {
+        await this.install(this.entry, this.dir, pins, this.stopping.signal);
+      } catch (error) {
+        // Why it failed, for the runs that waited on it; a server that stops leaves no mark (its npm was stopped, not refused).
+        if (this.stopping.signal.aborted) await rm(installMarkOf(this.dir), { force: true }).catch(() => undefined);
+        else await writeMark(this.dir, { failed: (error as Error).message, at: Date.now() }).catch(() => undefined);
+        throw error;
+      }
+      await rm(installMarkOf(this.dir), { force: true });
+      this.done = true;
+      this.onInstalled?.(Math.round(performance.now() - started));
+      return false;
+    } finally {
+      await releaseHold(this.dir, token).catch(() => undefined);
+    }
+  }
+
+  /** What earlier installs left beside the harness, swept once it is found installed here (needed, ensure), once per
+   *  installer: an install's own sweep comes before its npm, so a leftover it could not remove then (a crashed server's
+   *  orphaned npm still writing into it) would otherwise stay on the disk for good, since no install runs again until the
+   *  pin changes. That npm is never killed here (its pid may be another process's by now); it finishes, and this look,
+   *  at this server's start or the next one's, removes what it left. Under the install's hold alone: while another process
+   *  holds it, its npm may work in a directory of that very prefix, and this sweep is skipped (that installer's own sweep,
+   *  or a later look, covers it). Best effort: it never fails anything, a caller waits for it at most SWEEP_WAIT_MS, and
+   *  stop() waits for it whole. */
+  private swept(): Promise<void> {
+    this.sweeping ??= this.stopping.signal.aborted ? Promise.resolve() : (async () => {
+      const token = await takeHold(this.dir);
+      if (!token) return;
+      try {
+        await sweepLeftovers(this.dir);
+      } finally {
+        await releaseHold(this.dir, token);
+      }
+    })().catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    const bound = new Promise<void>((resolve) => (timer = setTimeout(resolve, SWEEP_WAIT_MS)).unref());
+    return Promise.race([this.sweeping, bound]).finally(() => clearTimeout(timer));
+  }
+
+  /** Stops an install that runs (its npm gets SIGTERM, then SIGKILL) and waits for it to end, and for a sweep under way;
+   *  none starts after. */
   async stop(): Promise<void> {
     this.stopping.abort();
     await this.running?.catch(() => undefined);
+    await this.sweeping;
   }
 }
 
@@ -694,6 +750,45 @@ export async function installForClaim(entry: HarnessInstallEntry, dir: string, p
 
 /** The stops of the claims' installs under way (installForClaim). */
 const claimStops = new Set<Promise<void>>();
+
+/** What installs a harness into `dir` (npmInstall, by default): a server's first use (HarnessInstall) and a run's claim
+ *  (installForClaim) each take one. */
+export type HarnessInstaller = (entry: HarnessInstallEntry, dir: string, pins: HarnessPins, signal: AbortSignal) => Promise<void>;
+
+/** An installer that installs each harness's pin once under `root`, for every data directory it installs into: whole, by
+ *  `install` (npmInstall: staged, renamed into place, read-only), into `<root>/harnesses/<harness>@<version>-<platform>`,
+ *  one installer at a time across processes (the hold on that directory, installForClaim); then `dir` is made a link to
+ *  it. The checks take the link as they are (a package counts by where its link points, inTree; each CLI's sha256 is
+ *  checked at every run), so the data directory holds the link alone, and removing it never touches the shared install.
+ *  For the template eval's scratch servers (template-eval.ts): each would install half a gigabyte of Claude Code again.
+ *  A root that is not this user's alone (a link, another's, or one others may write to: a shared TMPDIR's planted tree
+ *  would be loaded and run) is never read: the install goes into `dir` itself, as a server's does. */
+export function sharedInstaller(root: string, install?: HarnessInstaller): HarnessInstaller {
+  const base = resolve(root);
+  return async (entry, dir, pins, signal) => {
+    if (!(await ownAlone(base))) return (install ?? ((entry, dir, pins, signal) => npmInstall(entry, dir, pins, { signal })))(entry, dir, pins, signal);
+    const shared = installDirOf(base, `${entry.id}@${pins.version}-${pins.platform}`);
+    // Always through the server's own installer on that directory, installed or not: its hold makes two evals at once
+    // share one install, and found installed, it sweeps what an install cut short left beside it.
+    await installForClaim(entry, shared, async () => pins, { signal, ...(install ? { install } : {}) });
+    // The link made beside `dir`, then renamed over it, so a look at `dir` finds the install or nothing.
+    await mkdir(dirname(dir), { recursive: true });
+    const next = `${dir}.link-${randomUUID()}`;
+    await symlink(shared, next, "dir");
+    await rename(next, dir).catch(async (error: unknown) => {
+      await rm(next, { force: true });
+      throw error;
+    });
+  };
+}
+
+/** Whether `root` is a directory of this user's that no one else may write to, made so when it is not there. */
+async function ownAlone(root: string): Promise<boolean> {
+  await mkdir(root, { recursive: true, mode: 0o700 }).catch(() => undefined);
+  const st = await lstat(root).catch(() => undefined);
+  const uid = process.getuid?.();
+  return Boolean(st?.isDirectory() && (uid === undefined || st.uid === uid) && (st.mode & 0o022) === 0);
+}
 
 /** Resolves once every install a claim let go of has stopped (its npm ended, SIGTERM then SIGKILL past its grace, its
  *  staging directory and hold gone): a runner's close waits for it before the process can end, so no npm outlives it. */

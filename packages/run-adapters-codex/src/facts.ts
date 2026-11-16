@@ -3,7 +3,7 @@
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { codexPolicy } from "./host/policy.js";
 import { codexSchemaProblems } from "./schema.js";
-import { CODEX_INSTALL, CODEX_VERSION } from "./versions.js";
+import { CODEX_BASE_INPUT_TOKENS, CODEX_INSTALL, CODEX_VERSION } from "./versions.js";
 
 export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   id: "codex",
@@ -22,6 +22,8 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   // Codex's own live search, booked per call.
   webSearch: "live",
   ownModel: false,
+  // Its own code mode runs the model's scripts, each nested call one of the host's tools through its bridge.
+  ownCodemode: true,
   normalizeModel: (model: { provider: string; modelId: string }) => model,
   install: Object.freeze({ npmLine: CODEX_INSTALL, spec: `@openai/codex@${CODEX_VERSION}`, codes: Object.freeze({ install: "CODEX_NOT_INSTALLED", pins: "CODEX_PIN_MISMATCH" }) }),
   // The shapes Codex drops or retypes in a host tool's schema (a run's MCP tool's among them), measured on the pinned
@@ -29,5 +31,9 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   schemaProblems: codexSchemaProblems,
   // Codex's own tools, each the host's table tool it is.
   nativeTools: Object.freeze({ web_search: "web_search", shell: "bash" }),
+  // A run's MCP tool reaches Codex as `mcp_<server>__<tool>` (adapter.ts codexToolName): the host's is `mcp__<server>__<tool>`.
+  hostName: (given: string) => given.replace(/^mcp_(?!_)/, "mcp__"),
+  // Its first request's own input before the agent's prompt, from a Codex run's billing (versions.ts).
+  baseInputTokens: CODEX_BASE_INPUT_TOKENS,
   policy: (options) => codexPolicy({ model: options.model, tools: options.tools, ...(options.webSearch === "live" ? { webSearch: "live" as const } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}) }),
 });

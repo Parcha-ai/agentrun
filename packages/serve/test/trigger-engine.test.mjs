@@ -674,16 +674,20 @@ test("a firing claimed before its agent's archive starts no run after it: one wa
   assert.equal((await triggers.get(raced.id)).failures_in_a_row, 0, "no failure counted");
 });
 
-test("a create or a PATCH answers once its timer is armed: the clock moved right after the answer fires the trigger", async (t) => {
+test("a PATCH that moves a schedule's time fires it at the new time and not the old: its timer is read armed for the new time first, the clock then passes the old time with nothing fired, and the new time fires it once", async (t) => {
   const { clock, triggers } = await engine(t, {});
   const made = await triggers.create(body({ at: "2026-06-01T00:05:00Z" }));
-  // No wait for the timer: the answer is the schedule in effect.
-  clock.to("2026-06-01T00:05:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 1, "the create's time fired");
-  // A one-time schedule turned itself off once it fired: on again, at its new time.
-  await triggers.update(made.id, { source: { kind: "schedule", at: "2026-06-01T00:09:00Z" }, enabled: true });
+  await until(() => clock.timer?.at === Date.parse("2026-06-01T00:05:00Z"), "armed for the created time");
+  await triggers.update(made.id, { source: { kind: "schedule", at: "2026-06-01T00:09:00Z" } });
+  // The timer's own state, never the answer's race: the old time's timer is replaced by the new time's.
+  await until(() => clock.timer?.at === Date.parse("2026-06-01T00:09:00Z"), "armed for the PATCH's time");
+  clock.to("2026-06-01T00:06:00Z");
+  assert.equal((await triggers.firings(made.id)).firings.length, 0, "past the old time, nothing fired");
   clock.to("2026-06-01T00:09:00Z");
-  await until(async () => (await triggers.firings(made.id)).firings.length === 2, "the PATCH's time fired");
+  // A due row is written before the start is driven: wait for the run to start, not for a row to exist.
+  await until(async () => (await triggers.firings(made.id)).firings.some((f) => f.status === "started"), "the PATCH's firing started");
+  const fired = (await triggers.firings(made.id)).firings;
+  assert.deepEqual(fired.map((f) => [f.nominal_at, f.status]), [["2026-06-01T00:09:00Z", "started"]], "one firing, at the new time, started, none at the old time");
 });
 
 test("run now with the same Idempotency-Key twice answers the first firing and its run, and starts one run", async (t) => {
@@ -788,4 +792,51 @@ test("a source whose connection is not there refuses a trigger of its kind made 
   await assert.rejects(triggers.update(kept.id, { enabled: true }), (error) => error === refusal, "turned on");
   await triggers.update(kept.id, { name: "renamed" });
   assert.deepEqual(asked, ["schedule", "schedule"], "asked only when it would be on");
+});
+
+test("an edit of a polled source that lands while an old poll writes its cursor keeps the trigger on: the old poll's stop, read on the old source, turns nothing off, and the edit's poll says what holds", async (t) => {
+  // A polled source no other code knows of: its polls answer in turn, and the test holds a cursor write open.
+  const answers = [
+    { check: { ok: true, message: "Watching a." }, cursor: { at: "1" } },
+    { check: { ok: false, message: "a is gone." }, stop: { detail: "every feed it read is gone" }, cursor: { at: "2" } },
+    { check: { ok: true, message: "Watching b." }, cursor: { at: "3" } },
+  ];
+  const polled = [];
+  const step = 60_000;
+  const probe = {
+    id: "probe", label: "probe trigger", delivery: "clock", owner: false, describe: '{kind: "probe", url}', fires: "a probe", schemas: [],
+    parse: (value) => ({ kind: "probe", url: value.url }),
+    wellFormed: (source) => typeof source.url === "string",
+    clock: () => ({ next: (after) => (Math.floor(after / step) + 1) * step, latest: (first, now) => first + Math.floor((now - first) / step) * step, step }),
+    poll: async (source) => (polled.push(source.url), answers[polled.length - 1] ?? answers.at(-1)),
+  };
+  const kept = new Map();
+  let gate;
+  const settings = {
+    mint: () => "unused",
+    get: (trigger, field) => kept.get(`${trigger}\n${field}`),
+    remove: async (trigger) => [...kept.keys()].filter((key) => key.startsWith(`${trigger}\n`)).forEach((key) => kept.delete(key)),
+    set: async (trigger, field, value) => {
+      if (field === "at" && value === "2") {
+        gate = held();
+        await gate.promise;
+      }
+      kept.set(`${trigger}\n${field}`, value);
+    },
+  };
+  const { clock, triggers } = await engine(t, { adapters: [probe], settings: () => settings });
+  const made = await triggers.create({ name: "probe", source: { kind: "probe", url: "a" }, target: { kind: "start_run", agent_id: "a", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  assert.deepEqual(polled, ["a"], "its first poll takes its start");
+  await armed(clock, "2026-06-01T00:01:00Z");
+  clock.to("2026-06-01T00:01:00Z");
+  await until(() => gate !== undefined, "the old poll writing its cursor");
+  // The owner points it at another feed while the old poll's cursor write is out.
+  const edited = await triggers.update(made.id, { source: { kind: "probe", url: "b" } });
+  assert.equal(edited.enabled, true);
+  gate.resolve();
+  await until(() => polled.length === 3, "the edit's poll");
+  await until(async () => /Watching b/.test(JSON.stringify((await triggers.get(made.id)).last_check)), "the edit's check");
+  const view = await triggers.get(made.id);
+  assert.deepEqual([view.enabled, view.disabled, view.source.url], [true, null, "b"], "on, on the edited source: the old poll's stop was the old source's");
+  assert.equal(view.last_check.message, "Watching b.");
 });

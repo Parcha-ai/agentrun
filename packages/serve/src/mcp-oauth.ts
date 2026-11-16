@@ -11,6 +11,7 @@ import type { OAuthClientMetadata, OAuthClientProvider, OAuthDiscoveryState, OAu
 import { ApiError } from "./errors.js";
 import { hostKey } from "./mcp-meta.js";
 import { localAddresses, PRIVATE_HOSTS_PAGE, privateAllowed } from "./mcp-private-hosts.js";
+import type { SourceRecord } from "./mcp-sources.js";
 
 /** The authorization server sends the owner's browser back here; it holds no credential, so it takes none. */
 export const OAUTH_CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
@@ -34,7 +35,9 @@ export type ClientKind = "pre-registered" | "metadata-document" | "dynamic";
 export type TokenSet = { tokens: OAuthTokens; obtained_at: string; expires_at?: string; client: StoredOAuthClientInformation; kind: ClientKind; discovery: OAuthDiscoveryState; resource?: string };
 /** `keptFor`: the authorization server (its issuer) a client kept from an earlier sign-in was registered at; the client is
  *  used again only when discovery finds that same one (else it is dropped, and the sign-in registers anew). */
-export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; keptFor?: string; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; expires: number };
+/** `source`: what the start said the server is (its source and toolkit, mcp-sources.ts), written for the row the sign-in
+ *  saves. */
+export type Pending = { name: string; url: string; was: string | null; scope?: string; kind: ClientKind; client?: StoredOAuthClientInformation; keptFor?: string; verifier?: string; discovery?: OAuthDiscoveryState; resource?: string; source?: SourceRecord; expires: number };
 
 /** The authorization server a discovery found, by its issuer (its metadata's, else its URL). */
 export const issuerOf = (state: { authorizationServerUrl?: string; authorizationServerMetadata?: { issuer?: string } } | undefined): string | undefined => state?.authorizationServerMetadata?.issuer ?? state?.authorizationServerUrl;
@@ -101,6 +104,22 @@ export const systemNetwork: OAuthNetwork = {
     }
   },
 };
+
+/** The authorization endpoints, by host, that give a refresh token only when the sign-in asks for offline access in
+ *  their own words, and the parameters that ask: Google's, which gives one only with access_type=offline, and on a
+ *  sign-in again only with prompt=consent. The page the owner opens there carries them (askingOffline); any other
+ *  authorization server's is the SDK's, unchanged. */
+const OFFLINE_ACCESS: Readonly<Record<string, Readonly<Record<string, string>>>> = { "accounts.google.com": { access_type: "offline", prompt: "consent" } };
+
+/** `url`, the authorization page the owner opens (the discovered authorization endpoint, as the SDK builds it), with
+ *  what its host asks for a refresh token (OFFLINE_ACCESS), each once; any other host's, as it is. */
+function askingOffline(url: URL): URL {
+  const asks = Object.hasOwn(OFFLINE_ACCESS, url.hostname) ? OFFLINE_ACCESS[url.hostname] : undefined;
+  if (!asks) return url;
+  const out = new URL(url);
+  for (const [key, value] of Object.entries(asks)) out.searchParams.set(key, value);
+  return out;
+}
 
 /** A request the address check refused before anything was sent (checked's words): no try again reaches it. */
 export class EndpointRefused extends Error {
@@ -207,7 +226,7 @@ function loopbackAllowed(url: string | URL, mcpUrl: string, own: readonly string
  *  link-local, unspecified, multicast or broadcast, never this machine's (`network.local`) nor this server's own
  *  (`reach.own`). Every address its name resolves to must pass, and the one dialled is one checked. An unlisted host
  *  whose private addresses the list could allow is refused in words that name it and where to allow it. */
-async function checked(subject: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string }> {
+async function checked(subject: string, url: string, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}, plain = false): Promise<{ refused: string; unresolved?: true } | { address: string }> {
   let at: URL;
   try {
     at = new URL(url);
@@ -233,12 +252,25 @@ async function checked(subject: string, url: string, signal: AbortSignal, networ
   if (inside.length) {
     const own = [...(network.local ?? localAddresses)(), ...(reach.own ?? []).map((one) => URL.parse(one)?.hostname.replace(/^\[|\]$/g, "") ?? "")];
     if (!inside.every((address) => privateAllowed(address, own))) return { refused: `${subject} is a private address; refused` };
+    // Plain http is for a public address alone: a private host, allowed or not, is read over https.
+    if (plain && at.protocol === "http:") return { refused: `${subject} is a private address; refused` };
     const named = hostKey(at.hostname);
     // Allowing it helps only an https endpoint: a plain-http one keeps the private-address words.
     if (!(reach.allowed ?? []).includes(named)) return { refused: at.protocol === "https:" ? `${subject} is on a private network, refused: an owner can allow ${named} in ${PRIVATE_HOSTS_PAGE}` : `${subject} is a private address; refused` };
   }
-  if (at.protocol !== "https:") return { refused: `${subject} is not https; refused` };
+  if (at.protocol !== "https:" && !(plain && at.protocol === "http:")) return { refused: `${subject} is not https; refused` };
   return { address: addresses[0]! };
+}
+
+/** Where a feed trigger's read of `url` (feed/fetch.ts readFeed, each redirect again) may go, before anything is sent:
+ *  `checked`'s rule, an MCP server's, with plain http allowed on a public address alone (a feed is public text, and many
+ *  are served over http; a private host the owner allows, `reach.allowed`, is read over https). A URL on loopback as
+ *  written where `reach.loopback` allows it (a local install, as for an MCP server) on any port but this server's own:
+ *  `address` undefined, dialled as written. A URL that isn't http(s) is refused. */
+export async function feedAt(url: URL, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string | undefined }> {
+  if (url.protocol !== "http:" && url.protocol !== "https:") return { refused: `the feed at ${url.href.slice(0, 200)} is not http or https; refused` };
+  if (reach.loopback && loopbackAllowed(url, url.href, reach.own ?? [])) return { address: undefined };
+  return checked(`the feed at ${url.host}`, url.href, signal, network, reach, true);
 }
 
 /** Where a request to the MCP server at `url` may go, before anything is sent to it: the preview, the save, the tools'
@@ -326,12 +358,15 @@ export class McpSignIns {
   /** Whether this server is a local install (McpServersOverStore.attach): only then may a loopback MCP server's
    *  authorization server be on loopback too. */
   loopback = false;
+  /** A runner's registry (mcp-pin-first.ts registryListing), which listens nowhere: the own addresses of the
+   *  local-install server beside it (Serve.own), held to as this server's own are. Set by McpServersOverStore.attach. */
+  beside: readonly string[] = [];
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
    *  and its public address too when that is on loopback (a local https proxy on another port, in front of the
-   *  listener, reaches this server). */
+   *  listener, reaches this server); on a runner, the server's beside it. */
   get own(): string[] {
     const base = URL.parse(this.base);
-    return [this.listening, ...(base && LOOPBACK.test(base.hostname) ? [this.base] : [])].filter(Boolean);
+    return [this.listening, ...(base && LOOPBACK.test(base.hostname) ? [this.base] : []), ...this.beside].filter(Boolean);
   }
 
   /** CIMD only from a public https address: an authorization server must be able to fetch the document. */
@@ -384,10 +419,10 @@ export class McpSignIns {
   }
 
   /** Discovery, the client, PKCE and the state: the URL the owner opens to say yes. */
-  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string }): Promise<string> {
+  async start(name: string, url: URL, options: { was: string | null; scope?: string; client?: StoredOAuthClientInformation; kind?: ClientKind; keptFor?: string; source?: SourceRecord }): Promise<string> {
     const now = Date.now();
     const state = randomBytes(32).toString("base64url");
-    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), expires: now + STATE_MS };
+    const entry: Pending = { name, url: url.href, was: options.was, ...(options.scope ? { scope: options.scope } : {}), kind: options.kind ?? "dynamic", ...(options.client ? { client: options.client } : {}), ...(options.keptFor ? { keptFor: options.keptFor } : {}), ...(options.source ? { source: options.source } : {}), expires: now + STATE_MS };
     let opened: URL | undefined;
     const seen: Seen = {};
     const reach: Reach = { own: this.own, allowed: await this.allowed(), loopback: this.loopback };
@@ -466,7 +501,7 @@ export class McpSignIns {
       saveClientInformation: (client) => void (entry.client = client),
       tokens: () => undefined,
       saveTokens: (tokens) => hooks.saved?.(tokens),
-      redirectToAuthorization: (url) => hooks.redirect?.(url),
+      redirectToAuthorization: (url) => hooks.redirect?.(askingOffline(url)),
       saveCodeVerifier: (verifier) => void (entry.verifier = verifier),
       codeVerifier: () => entry.verifier ?? "",
       // Checked before anything discovery found is used: registration, the page the owner opens, the code exchange.

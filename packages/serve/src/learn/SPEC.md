@@ -124,6 +124,15 @@ The notes the section gives neither way are left out, and the run's log names th
 
 ## What a run may propose
 
+Which runs are asked: a run of an agent whose learning is `"notes"` is asked its end-of-run turn at every end. A run of
+an agent with `learning: true` (one that compiles workflows) is asked it only when its owner gave feedback on the run (a
+grade's words, or a message after its first); without it nothing is asked and $0 is spent looking back, and a compile
+turn that is due is asked alone. An SDK task carries no owner feedback, so its runs learn through the compile turn
+alone. The compile turn asks for the first workflow when the notes and runs say it is due, and
+for a revision of one only when its promotion record holds it (a replay under the bar, or graded runs under the agent's
+accuracy), once per hold. A hand-back, a stop by the money rule and a wrong grade of a served run ask for none: each is
+one sample, and the hold reads it among the workflow's others.
+
 When a run ends, its end-of-run turn answers with the notes it would keep, one ` ```note <file>.md ` block each
 (`reflectPrompt`, `parseReflection`), and, only when the work repeats, one skill in a ` ````skill <name> ` block (four
 backticks, so a code block inside it stays in it) and one workflow draft in a ` ````workflow <name> ` block: front
@@ -190,7 +199,7 @@ Over a cap is refused, never cut.
 | `skill_outcome` | a skill from a run whose job did not complete |
 | `too_many_skills` | a skill added or changed past the first |
 | `too_many_workflows` | a workflow draft added or changed past the first |
-| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, a README that does not name its folder or has no description, or one of the two files without the other |
+| `workflow` | a draft the workflow DSL refuses (a tool off the list among it), one not JSON, one whose answering step (the model node writing the key `output.path` reads) names tier `fast`, one whose model step off the fast tier reads a page it fetched (compact state, below), one whose answer carries quotes of pages it fetched with no code quote check (below), a README that does not name its folder or has no description, or one of the two files without the other |
 | `no_tool_list` | a draft that names a tool, checked with no tool list |
 | `executable_node` | a draft with a `code` node, or a call via shell or executor |
 
@@ -200,6 +209,71 @@ Over a cap is refused, never cut.
 - Text shaped like a secret: well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web
   tokens, Standard Webhooks signing secrets (`whsec_`), URLs with a password, and PEM private-key headers. A value the host holds counts as written, as JSON writes
   it, percent or form encoded, in base64 or in hex. A skill's or a draft's folder name is read as its file's name is.
+- Compact state. A model step off the fast tier (an agent, decide, extract or report step with no `"tier": "fast"`,
+  the answering step among them) never reads a page a call step fetched: a draft is refused when such a step's
+  `state` map reads a key that may hold a page, or, with no `state` map, when the whole state it reads holds one. A
+  string's placeholders are the ones interpolation fills (the DSL's `placeholdersOf`: a marked `{x?}` only as the
+  whole string, literal text inside a longer one), each resolved by the DSL's own lookup (`placeholderValue`, which
+  interpolation reads through: the path as written, so a real `state` key first, then the path after `state.`) over a
+  state holding only the pages, each with every path. A page is a call's `as`; a map's collected result when its body's is one (a map over pages sees `item`
+  as one; its `failedAs` rows are short errors, never pages); a pick's or sift's over pages; a composed workflow's
+  answer when its own is one, its child seeing a page through an input that reads one. Steps are read in run order: a
+  model step writing a page's key ends it; a parallel's branches start from the same state and their writes merge, so
+  a key one branch replaced is no page after it; a route runs one branch, so a key stays a page unless every branch
+  replaced it; a loop's body is read pass after pass, each on every page its passes may leave, until the marks stop
+  changing, within its `maxIters`. Pages reach the agent's model only through a fast-tier step's
+  output, the compiled job's cascade: on chain14b the drafts fed whole pages to the answering step (4.1 requests a
+  run at ~70k cached tokens each, $0.364 a served run), where the research shape (a fast extract's compact facts
+  to the answer) booked ~$0.08. Decision nodes go to a decision provider, not a tier, and are not read; nor is a
+  draft for the SDK bridge, whose `runNode` picks every model itself. One line a step, in words the compile retry
+  acts on. The dry run gets no byte budget: it runs on placeholder values its schemas synthesize, never a run's
+  pages, so its state's size says nothing of a served run's.
+- The quote check is code. A draft whose output schema has a `quote` or `quotes` property (its `#/definitions` refs
+  read as the DSL reads them, its own inline definitions before the catalog; items and `anyOf`/`oneOf`/`allOf` read) and which fetches pages (a call step, under any chain, branch or body) must
+  check each place in its answer holding quotes with an escalate whose `when` is the DSL's `quote_missing` reading
+  them: its `path` and `field` the list and the field the schema puts them at. A quote key's schema is read shape by
+  shape (each `anyOf`/`oneOf` branch, each kind a `type` list names; `allOf` members are one value, read together),
+  each shape a place of its own, so
+  `quotes: string | [{quote}]` needs a check reading `quotes` and one reading `quotes` with `field` `quote`. Quotes no
+  one `path` and `field` read (under two lists, in a map, in records with no `quote` key) are refused whatever checks
+  run, as `quote_missing` would read none of them. The escalate is a step of the top-level chain after the last
+  step writing the answer's key, the one path every run takes: a check in one route branch, or before the answer is
+  written, misses the answer of another run. Each of its `pages` must be a key holding a page as fetched: a call's
+  `as`, a map's whose item result (its `resultPath`, else its body's `as`; never its whole item state, which carries
+  the state around it) is a call's, a composed workflow's whose
+  answer is a call's result, and no step writing that key writes anything else. A model's summary of a page is no
+  page, nor is the key a model step writes it back to. A composed workflow node writing the whole answer whose own
+  workflow passes this rule in its own state has checked the places its own schema declares; any other place the
+  parent's schema declares is the parent's to check. An answer schema holding quotes in more than 8 places, nesting
+  past 16 keys, or recurring around them (a definition used again inside itself), is refused rather than read in part. Otherwise the draft is refused, the detail naming the predicate
+  to write. The predicate reads each page string alone, so no quote runs from one page into the next. A judge or an
+  `ask` asked whether the quotes are verbatim is never the check: on H5, Jev's
+  question flagged 149 of 170 answers while 416 of 429 quotes were in the fetched pages, and it could not tell the 8
+  answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
+  straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
+  are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
+  reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
+  Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
+  `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
+  `pages`), its body the step that answers, which reads the compact facts and its failed draft through its `state`
+  map, the draft as the DSL's optional placeholder `"draft": "{answer?}"`: null on the first pass, before any draft
+  exists, and the failed draft on the second. The DSL sends a step with a map only the keys it names, each pass a
+  fresh model session, so a map without the draft never sees it; naming it unmarked (`"{answer}"`) fails the first
+  pass; and a step with no map reads the whole state, the pages included (compact state, above). The draft is exactly the
+  whole marked answer key, `"{answer?}"`: no path is validated, so none below the key (`"{answer.x?}"`, which the answer
+  may not hold) or under `state.` (`"{state.answer?}"`, which reads a real `state` key first) counts. A draft whose model
+  step writing the answer in the loop does not read it so is refused. A quote found first costs no
+  re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. The check
+  is a step of the top-level chain after the loop, never inside it: a `quote_missing` escalate anywhere in the loop's
+  body (a composed workflow's included) hands back on the first draft's miss, so the loop never re-picks, and a draft
+  with one there is refused. A loop exit is kept in the call's journal entry even when no node ended. A loop's
+  `until` is one predicate and none joins two, so the answer's quotes have one check: a draft whose quotes need two
+  different checks (`quotes: string | [{quote}]`, or quotes in two places) is refused, since a loop watching one would
+  let the other hand back with no re-pick; the detail asks for one place one check reads. On H5d
+  (preregistered, 259 dead-site merchants) the check fired on 31; the answer step once more over the run's pages kept
+  26, right 76.9% against the drafts' 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost
+  21.7%. Each loop exit is a row of the run's metrics (`loops`: `{node, iterations, met, workflow}`), so a re-pick
+  (`iterations` 2) and whether it found its quotes (`met`) are counted; its request is booked as any node's.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 - A problem is its item's alone: the note, skill or draft (both its files) it names is left out, the rest is checked

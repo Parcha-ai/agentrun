@@ -2,12 +2,14 @@
 // process a run; it reads a request a line on stdin and answers a line on stdout, both JSON:
 //
 //   {"op": "where", "window": "1234"}
-//     -> {"bounds": [x, y, w, h], "above": [[x, y, w, h], ...], "who": [...], "changes": N}   the window on screen, in
-//        points, and every window in front of it that overlaps it: another app's, or one of its own app's ordinary
-//        windows (not its menus, popovers or field editors, which are the demo's own; not the pointer). "who" names each
-//        one painted, by owner, layer and size. {"bounds": null, ...} when the window is not on screen. From the
-//        first where on, the window list is read every 10 ms for that window, and changes counts each time what it
-//        answers changed: a window that came and went between two wheres shows there, though the two answers match.
+//     -> {"bounds": [x, y, w, h], "above": [[x, y, w, h], ...], "who": [...], "changes": N, "key": true}   the window
+//        on screen, in points, and every window in front of it that overlaps it: another app's, or one of its own app's
+//        ordinary windows (not its menus, popovers or field editors, which are the demo's own; not the pointer). "who"
+//        names each one painted, by owner, layer and size. "key": its app is the one in front and it is that app's
+//        front ordinary window, so it is drawn as the key window, not greyed. {"bounds": null, ...} when the window is
+//        not on screen. From the first where on, the window list is read every 10 ms for that window, and changes
+//        counts each time what it answers changed: a window that came and went between two wheres shows there, though
+//        the two answers match.
 //   {"op": "crop", "jpeg": BASE64, "bounds": [...], "above": [...], "out": PATH, "quality": 70}
 //     -> {"width": W, "height": H}   the screen frame cut to the bounds, each overlapping window painted black, written
 //        to PATH as a JPEG. The frame covers the main display, at any scale.
@@ -20,6 +22,7 @@
 // The window list gives bounds and ids without Screen Recording, so this needs no grant of its own.
 //
 //   swift window-frames.swift
+import AppKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -76,6 +79,24 @@ func locate(_ id: Int) -> [String: Any] {
 		}
 	}
 	return ["bounds": list(bounds), "above": above, "who": who]
+}
+
+/// Whether the window is drawn as the key window: its app is the one in front, and no other ordinary window of that app
+/// is in front of it (its own small ones inside it, Finder's name field say, are the window's). NSWorkspace learns of a
+/// change of front app on the main run loop, which this process otherwise never runs (it waits on stdin): the loop
+/// first takes what came in.
+func key(_ id: Int) -> Bool {
+	let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+	guard let index = windows.firstIndex(where: { number($0, kCGWindowNumber) == id }), let owner = number(windows[index], kCGWindowOwnerPID),
+		let dict = windows[index][kCGWindowBounds as String] as? NSDictionary,
+		let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary)
+	else { return false }
+	for info in windows[..<index] where number(info, kCGWindowOwnerPID) == owner && number(info, kCGWindowLayer) == 0 {
+		guard let d = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: d as CFDictionary) else { continue }
+		if !(bounds.contains(r) && r.width * r.height * 4 < bounds.width * bounds.height) { return false }
+	}
+	RunLoop.main.run(mode: .default, before: Date())
+	return NSWorkspace.shared.frontmostApplication.map { Int($0.processIdentifier) == owner } ?? false
 }
 
 func crop(_ request: [String: Any]) throws -> [String: Any] {
@@ -176,6 +197,7 @@ while let line = readLine(strippingNewline: true) {
 		let changes = watch.count(id)
 		var place = locate(id)
 		place["changes"] = changes
+		place["key"] = key(id)
 		answer(place)
 	case "front":
 		// An agent's task names no window: the app's frontmost ordinary window (layer 0) on screen that is at least a

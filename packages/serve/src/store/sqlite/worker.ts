@@ -9,12 +9,13 @@
 //                                         server per store file): an exclusive lock on `<file>.owner`, held until close,
 //                                         let go by the OS when the process dies
 //   exec {sql}                            SQL text, maybe several statements, no bindings
-//   stmt {statement, mode}                one statement: run, count (its changes), get (first row) or all. Outside a
+//   stmt {statement, mode, busyMs}        one statement: run, count (its changes), get (first row) or all. Outside a
 //                                         transaction, a run or count is its own BEGIN IMMEDIATE transaction
-//   write {statements, full}              one transaction: BEGIN IMMEDIATE, each statement in order, COMMIT; `full` makes it
+//   write {statements, full, busyMs}      one transaction: BEGIN IMMEDIATE, each statement in order, COMMIT; `full` makes it
 //                                         a FULL commit (flush). A statement's `expect` checks it changed a row; a miss
 //                                         rolls the whole transaction back with its `miss` (fenced, or a final run)
-//   begin {full} / commit / rollback      an interactive transaction (connection.ts transaction()), its statements sent
+//   begin {full, busyMs} / commit / rollback
+//                                         an interactive transaction (connection.ts transaction()), its statements sent
 //                                         as stmt, or as step (one statement, its changes and rows, its `expect` checked)
 //                                         in between
 //   close
@@ -32,8 +33,8 @@ export type Mode = "run" | "count" | "get" | "all";
 export type Request =
   | { op: "open"; file: string; busyTimeoutMs: number; owner: boolean }
   | { op: "exec"; sql: string }
-  | { op: "stmt"; statement: Statement; mode: Mode }
-  | { op: "write"; statements: readonly Statement[]; full?: boolean }
+  | { op: "stmt"; statement: Statement; mode: Mode; busyMs?: number }
+  | { op: "write"; statements: readonly Statement[]; full?: boolean; busyMs?: number }
   | { op: "begin"; full?: boolean; read?: boolean; busyMs?: number }
   | { op: "step"; statement: Statement }
   | { op: "commit" }
@@ -93,8 +94,9 @@ function step(statement: Statement): StatementResult {
 let busyTimeout = 0;
 
 /** A transaction: BEGIN IMMEDIATE for a write; for `read`, a deferred one that takes no writer lock (one snapshot).
- *  `busyMs`: the most this begin waits for the database's write lock, when the transaction's deadline leaves less than
- *  the connection's own busy wait (Connection.transaction's `fromCall`); the connection's own is set back after it. */
+ *  `busyMs`: the most this begin waits for the database's write lock, when less than the connection's own busy wait is
+ *  left (a `fromCall` transaction's deadline, or a wait sent again with its held-up time given back: connection.ts
+ *  lockWait); the connection's own is set back after it. */
 function begin(full: boolean, read = false, busyMs?: number): void {
   const conn = opened();
   if (full) conn.exec(FULL);
@@ -134,10 +136,11 @@ function end(commit: boolean): void {
   }
 }
 
-/** `work` inside its own BEGIN IMMEDIATE transaction when none is open; inside the open one otherwise. */
-function written<T>(work: () => T): T {
+/** `work` inside its own BEGIN IMMEDIATE transaction when none is open (its begin waiting `busyMs` at most, as begin's);
+ *  inside the open one otherwise. */
+function written<T>(work: () => T, busyMs?: number): T {
   if (inTx) return work();
-  begin(false);
+  begin(false, false, busyMs);
   try {
     const value = work();
     end(true);
@@ -201,10 +204,10 @@ function handle(request: Request): unknown {
         const prepared = opened().prepare(statement.sql);
         return mode === "all" ? prepared.all(...(statement.params ?? [])) : (prepared.get(...(statement.params ?? [])) ?? null);
       }
-      return written(() => step(statement).changes);
+      return written(() => step(statement).changes, request.busyMs);
     }
     case "write": {
-      begin(request.full === true);
+      begin(request.full === true, false, request.busyMs);
       try {
         const results = request.statements.map(step);
         end(true);

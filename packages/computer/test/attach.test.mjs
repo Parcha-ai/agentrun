@@ -76,7 +76,10 @@ test("a drop fails the calls in flight with gone; a redial is a fresh connection
 	const driver = new Mac();
 	const hub = new AttachHub();
 	const paired = pairedFor(driver);
+	const dialed = Date.now();
 	const first = await dial(hub, paired, driver);
+	const since = hub.since(paired.id);
+	assert.ok(since instanceof Date && since.getTime() >= dialed && since.getTime() <= Date.now(), `live since its hello: ${since}`);
 	const before = hub.connection(paired.id);
 	await before.client.call("apps.launch", { id: APP });
 	const seen = await before.client.call("ui.observe", {});
@@ -87,6 +90,7 @@ test("a drop fails the calls in flight with gone; a redial is a fresh connection
 	assert.equal(dropped.ok, false);
 	assert.equal(dropped.error.code, "gone");
 	assert.equal(hub.online(paired.id), false);
+	assert.equal(hub.since(paired.id), undefined, "not live, so no since");
 	assert.equal(hub.connection(paired.id), undefined);
 	await dial(hub, paired, driver);
 	const after = hub.connection(paired.id);

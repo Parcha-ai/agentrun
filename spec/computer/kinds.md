@@ -44,7 +44,8 @@ computer's `hello` repeats them. A group is offered only when declared there, an
 | `downloads` | The files a browser saved (the provider's). |
 
 `cdp`, `stream` and `downloads` are the provider's, not the daemon's: a daemon's `hello` never lists them. The full
-list, in order, is `groups` in [`protocol.json`](protocol.json).
+list, in order, is `groups` in [`protocol.json`](protocol.json). A desktop whose vendor has no stream of its own leaves
+`stream` out: its live view comes through the daemon (`screen.watch`).
 
 ## Setting kinds: what an agent is given
 
@@ -74,7 +75,7 @@ What Core requires depends on the kind and the daemon mode:
 | Kind | Core requires |
 | --- | --- |
 | any, with computerd (`pid1` or `child`) | `exec`, `files` and `processes`, and network `none`, read from inside: nothing answers |
-| any, with daemon `child` | the ports of the vendor's own agent declared (`capabilities().vendorAgentPorts`), and none of them reachable from the computer's programs |
+| any, with daemon `child` | the TCP ports of the vendor's own agent declared (`capabilities().vendorAgentPorts`, `[]` where none listens on TCP), and none of them reachable from the computer's programs |
 | `desktop` | `screen`, `input.pointer`, `input.keys` |
 | `android`, `ios` | `screen`, `input.touch` |
 | `browser` | `cdp` |

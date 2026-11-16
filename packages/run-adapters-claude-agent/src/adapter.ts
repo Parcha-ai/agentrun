@@ -14,12 +14,12 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
-import { type ClaudeAgentSdk, claudeCodeHarness, lostPrompts } from "./harness.js";
+import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
@@ -139,6 +139,8 @@ export interface ClaudeAgentAdapterOptions {
   fetch?: typeof fetch;
   /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
+  zone?: string;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -300,34 +302,22 @@ class CallsInFlight {
   }
 }
 
-/** The kernel's tool for a host tool. The host hears of the call (`tool_start`) once its intent is in the session's
- *  records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
-function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    replay: tool.replay,
-    async execute(input, effect) {
-      // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
-      const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      // The step's attempt: above 0 when a crash cut an earlier attempt and the kernel runs the call again.
-      const attempt = Number(/#(\d+)$/.exec(effect.stepId ?? "")?.[1] ?? 0);
+/** The bridge's tool for a host tool (bridgeTool). The host hears of the call (`tool_start`) once its intent is in the
+ *  session's records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
+function claudeTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
+  return bridgeTool(tool, {
+    start: ({ callId, args }) => {
       // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
       // waits for this call rather than refusing it.
-      calls.begin(callId);
+      // A tool that nests calls has no intent of its own to wait for (each of its calls begins here as its own): a pause
+      // never waits on it, so a nested call that parks the run does not hold the pause.
+      if (!tool.nests) calls.begin(callId);
       // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
-      io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      const result = await tool.call(input, { callId, signal: effect.signal, attempt });
-      if (result.isError) throw new Error(result.text);
-      if (!result.images?.length) return result.text;
-      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
-      const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
-      if (wrong) throw new Error(wrong);
-      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
+      io.onEvent({ type: "tool_start", callId, name: tool.name, args });
     },
-  };
+    imageProblems: (images) => toolImageProblems(tool.name, images, maxImageBytes),
+  });
 }
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
@@ -405,6 +395,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
+          // What the CLI sends with its own tool search on, which the harness turns on as this does (claudeToolSearch).
+          ...(claudeToolSearch(tools.map((t) => t.name), spec.deferCatalog) === "true" ? { toolSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -424,7 +416,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // No command of its own: the CLI reaches nothing but its model proxy (a web search, when on, is the provider's).
           network: "deny-all",
         },
-        tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
+        tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
+        ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
@@ -441,15 +434,20 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
+        ...(options.zone ? { zone: options.zone } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown; ids?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The model's message ended inside the turn (the CLI resumes a cut answer itself): what it said so far is one message.
         if (e?.type === "text_end") io.onEvent({ type: "text_end" });
+        // The CLI took these submissions (its transcript holds the message that carried them): a steer reached the model.
+        if (e?.type === "message_taken" && Array.isArray(e.ids)) io.onEvent({ type: "message_taken", ids: e.ids.filter((id): id is string => typeof id === "string") });
+        // The harness handed these submissions to the CLI: a steer() waiting on one returns. Not the host's to hear.
+        if (e?.type === "message_sent" && Array.isArray(e.ids)) for (const id of e.ids) if (typeof id === "string") sentWaiters.get(id)?.();
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
@@ -478,9 +476,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
 
       let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
       let closed = false;
+      // A turn is in flight: set as run() starts it, cleared only right after the drive's last look at the inbox (below),
+      // with nothing awaited between, so a submission written meanwhile is either sent by this turn or starts the next.
+      let turning = false;
+      /** steer() calls waiting for the harness to hand their message to the CLI, by submission id. */
+      const sentWaiters = new Map<string, () => void>();
+      /** A submission written while no turn was in flight, still unsent: it starts one. */
+      const kick = () => {
+        if (!turning && !closed && pendingSubmissions(drive.state()).length > 0) void run();
+      };
       const run = () => {
         const before = turnsIn(drive).length;
         state = "idle";
+        turning = true;
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string } | undefined;
           // A turn whose final answer the model cut at its output limit, the CLI's recovery of it spent, says so on its
@@ -490,6 +498,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             const current = drive;
             try {
               await harness.drive(current);
+              // A steer written as the drive's inbox closed (the turn was ending) is pending, and no turn of the drive
+              // sends it: the turn goes on with it, as the harness's own steer placed while a turn ends does.
+              while (!current.signal.aborted && pendingSubmissions(current.state()).length > 0) await harness.drive(current);
               const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
               if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
@@ -507,16 +518,21 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
             }
           }
+          turning = false;
           io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
-        })();
+        })().catch((error: unknown) => {
+          turning = false;
+          throw error;
+        });
         return running;
       };
       // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
       // writer (the adapter never opens the session itself).
       const ready = async () => {
         if (closed) throw new Error("agentrun-harness-claude: the session is closed");
-        if (running) await running;
+        // A turn a steer started meanwhile is waited for too.
+        while (turning && running) await running;
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
@@ -559,7 +575,42 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new turn");
           await ready();
           await drive.submit({ id: randomUUID(), kind: "prompt", text });
-          void run();
+          // Sent by the turn a steer started meanwhile, if one did; else a turn of its own.
+          kick();
+        },
+        // A person's message: mid-turn, sent by the harness's steering loop at priority `next`, so the CLI hands it to the
+        // model at its next step (after the tool calls in flight finish), in the same turn; with no turn in flight, a turn of
+        // its own. Placed under the host's id once: the same id again (a runner lost after the placement hands the row on
+        // again) places nothing, and says the model has it when the transcript already does.
+        async steer(text, id, mode = "steer", _options) {
+          if (closed) throw new Error("agentrun-harness-claude: the session is closed");
+          if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new message");
+          const submissionId = id ?? randomUUID();
+          if (drive.state().submissions.some((s) => s.id === submissionId)) {
+            const folded = drive.state();
+            const placed = folded.effectOrder.some((e) => e.name === "place" && e.placed.includes(submissionId));
+            if (placed) {
+              const transcript = new JournalSessionStore(new NativeJournal(drive), { records: await new NativeJournal(drive).read() });
+              if (lostPrompts(folded, [submissionId], transcript).length === 0) io.onEvent({ type: "message_taken", ids: [submissionId] });
+            }
+            kick();
+            return;
+          }
+          // A drive an interrupt halted is opened again before anything is written through it.
+          if (!turning) await ready();
+          // steer() returns once the CLI has the message (the turn in flight then takes it at its next step), or once the
+          // turn that would have sent it is over: a host that lets the work go on after steer() returns has not raced it.
+          let wake!: () => void;
+          const sent = new Promise<void>((resolve) => (wake = resolve));
+          sentWaiters.set(submissionId, wake);
+          try {
+            await drive.submit({ id: submissionId, kind: mode === "followUp" ? "followUp" : "steer", text });
+            kick();
+            const turn = running;
+            await Promise.race([sent, ...(turn ? [turn.then(() => undefined, () => undefined)] : [])]);
+          } finally {
+            sentWaiters.delete(submissionId);
+          }
         },
         async recover() {
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
@@ -582,8 +633,12 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           state = "idle";
         },
         async turnEnd() {
-          if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
-          return running;
+          if (running) return running;
+          // No turn ran in this session: the last turn the session's records hold, ended before it opened (a lost runner's
+          // steer the model already answered, placed again here, starts no turn). None at all: there is no turn to wait for.
+          const last = turnsIn(drive).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+          if (last?.status && !holdsTurn(drive.state())) return { status: last.status, ...(last.error ? { error: last.error } : {}) };
+          throw new Error("agentrun-harness-claude: no turn is in flight");
         },
         async interrupt(interruptOptions = {}) {
           const drainMs = interruptOptions.drainMs ?? 0;

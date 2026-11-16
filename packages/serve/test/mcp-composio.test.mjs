@@ -3,6 +3,7 @@
 // toolkit's actions; PUT .../{name}/composio makes the managed MCP server and saves its URL. The key never appears in an
 // answer, a log line or the store's bytes, and only the owner's session writes it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { secretWritePath, serve, serverLog, storeBytes } from "./support.mjs";
@@ -46,6 +47,28 @@ test("the tools route lists a toolkit's actions and says whether it needs no sig
   const none = await s.api("POST", "/settings/mcp-servers/composio/tools", { api_key: s.composio.apiKey, toolkit: "hackernews" });
   assert.equal(none.body.no_auth, true);
   holdsNoKey(s, res.body, none.body);
+});
+
+test("a request on the fakes' ports that the server never sent is not one of its Composio or MCP calls", async (t) => {
+  // A loopback port takes requests from more than the server under test: a port prober on the host GETs / on each new
+  // listener within seconds, and another test process's client may still call a port it freed, which a fake then took.
+  // Neither carries the key; counted as the server's, they read as the server sending a call without it.
+  const s = await setup(t);
+  const stray = async (url) => (await fetch(url)).arrayBuffer();
+  const origin = new URL(s.composio.baseUrl).origin;
+  // Unique paths: a prober's GET / can land here too, so the test checks that these two are kept apart, not how many strays came.
+  const mine = [`/stray-${randomBytes(4).toString("hex")}`, `/api/v3/tools/stray-${randomBytes(4).toString("hex")}`];
+  for (const path of mine) await stray(`${origin}${path}?toolkit_slug=github`);
+  const res = await s.api("POST", "/settings/mcp-servers/composio/tools", { api_key: s.composio.apiKey, toolkit: "github" });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.ok(s.composio.calls.length > 0 && s.composio.calls.every((call) => call.keyOk), "every Composio call sent the key as x-api-key");
+  const strayPaths = s.composio.strays.map((stray) => stray.path);
+  for (const path of mine) assert.ok(strayPaths.includes(path), `the request to ${path} it never sent is kept apart`);
+
+  const saved = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["add"] });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  await stray(`${new URL((await s.api("GET", "/settings/mcp-servers/hn")).body.url).origin}/`);
+  assert.equal(sentTo(s).pathname, `/v3/mcp/${s.composio.mcpId}/mcp`, "the MCP endpoint's last call is the server's, not the stray");
 });
 
 test("a no-auth toolkit saves as an MCP server: no auth config, the URL ends in /mcp with no helper tools, the key sealed, the tools listed", async (t) => {
@@ -171,5 +194,27 @@ test("a save that wrote its entry and then failed keeps the Composio server its 
   // The save fails before writing (an older entry of the name keeps its old address): the new server is deleted.
   const refused = composioSave(body, control, async () => { throw new Error("refused"); }, "hn", undefined, async () => "https://old.example/mcp");
   await assert.rejects(refused, /refused/);
-  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpId}`, "DELETE").length, 1, "a server no entry points to is deleted");
+  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpIds[1]}`, "DELETE").length, 1, "a server no entry points to is deleted");
+});
+
+test("picked actions Composio serves none of: 422 in words naming them, never a bare 'Method not found', and the Composio server it made is deleted", async (t) => {
+  const s = await setup(t, { noTools: true });
+  const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"] });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.match(res.body.error.message, /Composio's hackernews server doesn't serve GITHUB_STAR_REPO, GITHUB_LIST_ISSUES: pick another action/);
+  assert.equal(res.body.error.fields[0].field, "tools");
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "nothing is saved");
+  assert.equal(s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE").length, 1, "the server Composio made is deleted");
+  holdsNoKey(s, res.body);
+});
+
+test("Composio's MCP server down while its tools are listed is the 424 it is, not 'none served': the server it made is still deleted", async (t) => {
+  const s = await setup(t, { listStatus: 500 });
+  const res = await s.api("PUT", "/settings/mcp-servers/hn/composio", { api_key: s.composio.apiKey, toolkit: "hackernews", tools: ["GITHUB_STAR_REPO"] });
+  assert.equal(res.status, 424, JSON.stringify(res.body));
+  assert.equal(res.body.error.code, "upstream_failed");
+  assert.doesNotMatch(res.body.error.message, /doesn't serve/);
+  assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "nothing is saved");
+  assert.equal(s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELETE").length, 1, "the server Composio made is deleted");
+  holdsNoKey(s, res.body);
 });

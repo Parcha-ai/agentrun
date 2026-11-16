@@ -52,7 +52,7 @@ const FILES = {
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'test-affected-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   for (const [path, text] of Object.entries(FILES)) {
     mkdirSync(join(root, dirname(path)), { recursive: true });
     writeFileSync(join(root, path), text);
@@ -182,7 +182,7 @@ test('the command line: commands per package from its test script, --json with r
 
 test('with no paths given it reads git: every path changed since the merge base with --base, untracked ones too', (t) => {
   const root = fixture(t);
-  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   git('init', '-q', '-b', 'main');
   git('add', '-A');
   git('commit', '-q', '-m', 'base');

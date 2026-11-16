@@ -33,7 +33,7 @@ computer, and the provider writes requests to its stdin and reads replies from i
 | Mode | Who runs `computerd init` | When init exits |
 | --- | --- | --- |
 | `pid1` | The computer runs it as its main process (an image's entrypoint). | The computer ends. |
-| `child` | The vendor's own agent is the main process; the provider uploads `computerd` and starts init at boot. | The computer goes on; the provider no longer hands it out. |
+| `child` | The vendor starts the provider's processes through its exec; the provider uploads `computerd` and starts init that way at boot. | The computer goes on; the provider no longer hands it out. |
 | `none` | No `computerd init` runs. Something else answers the methods: the provider itself (over adb, the vendor's API, CDP), or a driver on the machine (an attached Mac's Computerd, a phone's agent). | (no init) |
 
 A provider declares its mode in `capabilities().daemon` (see [`kinds.md`](kinds.md)). The mode says only whether
@@ -53,7 +53,7 @@ These hold in every mode where init runs, and the conformance suite checks them 
   it ends, it is signalled, or the computer shuts down.
 - On shutdown (a signal, or the computer's deadline), init stops taking new programs, sends every program SIGTERM, then
   SIGKILL 2 s later, and exits.
-- In `child` mode, where the vendor's own agent runs beside the programs, init moves itself into a network namespace of
+- In `child` mode, where a vendor's agent may run beside the programs, init moves itself into a network namespace of
   its own, so no program reaches that agent's ports on any address.
 
 ## A provider's side of the binding

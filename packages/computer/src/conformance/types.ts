@@ -131,10 +131,14 @@ export interface CaseContext {
 	readonly declared: readonly KindCapabilities[] | undefined;
 	/** The provider built with planted secrets (ConformanceOptions.planted); skips the case when none was given. */
 	planted(): Promise<PlantedProvider>;
+	/** The server a dial host's machines reach (ConformanceOptions.dial); fails the case when none was given. */
+	dial(): Promise<DialKit>;
 	/** A fresh run's folder for this mount kind, closed when the case ends; skips the case when the run can make none. */
 	runFolder(kind: MountKind): Promise<RunFolder>;
 	/** The GPU the run pays for (options.gpu, the CLI's --gpu); skips the case when the run names none. */
 	gpu(): GpuSpec;
+	/** Skips the case, saying what makes it long, unless the run takes long cases (options.long, the CLI's --long). */
+	long(what: string): void;
 	/**
 	 * Starts the run's fixture in the case's computer and waits until it is up: an app that logs each input event it
 	 * gets, so a case checks what an action did with no model. It is stopped when the case ends. Skips the case when the
@@ -249,6 +253,11 @@ export interface ConformanceReport {
 	 * live sweep of the run's label at its end (conformance/sweep.ts): nothing left behind is stillThere empty.
 	 */
 	cleanup: { deleted: string[]; left: string[]; errors: string[]; late: string[]; sweep?: { swept: number; gone: number; stillThere: string[]; leftAlone: number } };
+	/**
+	 * The most computers the run had alive at once, each counted from its create's call until it was released or its
+	 * create made none, and the cap the run was given (concurrency), when it was.
+	 */
+	computers: { peak: number; cap?: number };
 	/** What the provider module says of its configuration, for whoever reads the report; absent when it says nothing. */
 	notes?: string[];
 	/**
@@ -292,6 +301,21 @@ export interface ComputerDaemon {
 	fence?: NetworkFence;
 }
 
+/**
+ * The server a dial host's machines reach (MachineHost facts.connect "dial"), as the run stands it up: its machine
+ * tokens and its attach route, for provider.dial-token.
+ */
+export interface DialKit {
+	/** The machine (computer name) a token is good for at a time, as the server's attach route reads it; undefined: refused. */
+	check(token: string, at: Date): Promise<string | undefined> | string | undefined;
+	/** The token a computer's machine was given at its create (its AGENTRUN_ATTACH_TOKEN). */
+	token(ref: ComputerRef): string | undefined;
+	/** Dials the server's attach route with a token and answers its hello with this one: the code the socket closed with. */
+	dialAs(token: string, hello: HelloResult): Promise<number | undefined>;
+	/** The same provider with no public address, and how many creates its host has been asked for since. */
+	unreachable(): { provider: ComputerProvider; creates(): number };
+}
+
 /** A provider built with planted secrets, and the values planted: none of them may show in anything it answers. */
 export interface PlantedProvider {
 	provider: ComputerProvider;
@@ -314,8 +338,8 @@ export interface ConformanceOptions {
 	/** The same provider with a daemon that reports another version, for the drift cases. */
 	drifted?: () => Promise<ComputerProvider> | ComputerProvider;
 	/**
-	 * What the provider declares of itself, each configuration's kind and groups, for health.declared: its descriptor
-	 * (until the descriptor lands, its PROVIDERS entry, or its module's CAPABILITIES). Without it, that case skips.
+	 * What the provider declares of itself, each configuration's kind and groups, for health.declared: its descriptor's
+	 * capabilities. Without it (a provider module given by path), that case skips.
 	 */
 	declared?: readonly KindCapabilities[];
 	/**
@@ -323,6 +347,8 @@ export interface ConformanceOptions {
 	 * values, for health.no-key-in-errors. Without it (a provider that takes no secret), that case skips.
 	 */
 	planted?: () => Promise<PlantedProvider> | PlantedProvider;
+	/** The server a dial host's machines reach, for provider.dial-token: a dial host's run fails that case without it. */
+	dial?: () => Promise<DialKit> | DialKit;
 	/**
 	 * A fresh run's folder for a mount kind, for the mount cases: the provider's conformance module makes it (a folder on
 	 * the Docker host for a bind), or gives undefined for a kind it cannot make. Without it, those cases skip in words.
@@ -339,6 +365,12 @@ export interface ConformanceOptions {
 	/** The longest each cleanup call (release, the sweep, list) may take; default 60 s. */
 	cleanupTimeoutMs?: number;
 	/**
+	 * The most computers alive at once, for a vendor plan or rate limit that keeps fewer: a create waits for one to be
+	 * released, the run's computer is deleted while a case that doesn't use it needs room (and made again for the next
+	 * case that does), and a case that needs more at once than this fails in words. Default no cap.
+	 */
+	concurrency?: number;
+	/**
 	 * The fixture on this machine, for the cases that check what input did: computerd-fixture for a desktop, the
 	 * fixture APK for an Android phone. Without it those cases skip, and Core cannot pass where kind requires them.
 	 */
@@ -348,6 +380,11 @@ export interface ConformanceOptions {
 	 * the one it pays for; without it the case skips in words.
 	 */
 	gpu?: GpuSpec;
+	/**
+	 * Run the long cases, which wait minutes on a vendor's timer (lifetime.idle leaves a computer quiet 6 min): the CLI's
+	 * --long, which the live sweep gives. Without it they skip in words.
+	 */
+	long?: boolean;
 	/** fetch for screen.stream; default the global one. */
 	fetch?: CaseContext["fetch"];
 	/** How the browser cases open a CDP socket; default a WebSocket (dialCdp). Tests give a fake browser's. */

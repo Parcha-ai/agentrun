@@ -14,7 +14,10 @@ import { SECRET_NAMES } from "../dist/secrets.js";
 import { PROVIDER_KEYS } from "../dist/model.js";
 import { keyShaped } from "../dist/secret-cut.js";
 import { BOX_KEYS } from "../dist/place-offers.js";
+import { TOOL_FIELDS } from "../dist/tool-keys.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
+import { ARCHIL_API_KEY_ENV } from "../dist/workspace/archil-key.js";
+import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
 import { openSqliteStore } from "../dist/store/index.js";
 import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { processAlive } from "@parcha/agentrun-kernel/host";
@@ -26,6 +29,7 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
 import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 // A run's served answer has no held secret in it, so what a custody run's process reported is read as it wrote it
 // (fixtures/custody-report.mjs), never from the answer.
 process.env.CUSTODY_REPORT_DIR ??= mkdtempSync(join(tmpdir(), "custody-reports-"));
@@ -36,9 +40,9 @@ const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pat
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const CONFINED = existsSync("/usr/bin/setpriv");
-/** The server's own: its token, the seal key its tool keys are kept under, and the boxes' keys, which only its box
+/** The server's own: its tokens (the token and the token list), the seal key its tool keys are kept under, and the boxes' keys, which only its box
  *  providers read (boxes.ts). */
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_TOKENS", "AGENTRUN_API_KEY", "AGENTRUN_SEAL_KEY", "AGENTRUN_STORE_URL", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
@@ -137,12 +141,12 @@ function descriptors(pid) {
 function canaries() {
   for (const name of READ) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
   // Short, each its own: every secret set at once goes over the launcher's pipe, which holds 4096 bytes for sure, and
-  // the list grows with pi-ai's providers. The token's is the API's, 32 characters or more.
+  // the list grows with pi-ai's providers. The tokens' are the API's, 32 characters or more.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
   // canary: the canary is base64url, padded to a key's length.
   const sealKey = (value) => (assert.ok(value.length <= 43, value), value.padEnd(43, "k"));
-  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-${name}` : name === "AGENTRUN_TOKENS" ? `rotation:${canary}-${name}` : name === "AGENTRUN_SEAL_KEY" ? sealKey(`${canary}-${i}`) : `${canary}-${i}`])) };
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.
@@ -256,6 +260,56 @@ test("started by its launcher, no process of its user holds a secret in its envi
   noSecretAnywhere(root, canary);
 });
 
+/** The account keys serve reads for its computer providers and for Archil, by the modules that name them: each key a
+ *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), and Archil's. */
+const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV])];
+
+// A key the launcher does not name stays in the server's environment, where any process of its user reads it and any
+// child spawned with process.env inherits it: every account key serve reads is on the list, and only the server's and the
+// runner's own code reads one, so no run is handed one but a key a run's `browser` tool takes (Browserbase's, Kernel's).
+test("every computer provider's key and Archil's account key is on the launcher's list, and no run is handed one but a browser tool's", async (t) => {
+  const { RUN_SECRETS } = await import("../dist/run-secrets.js");
+  for (const name of ACCOUNT_KEYS) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
+  const serverOnly = ACCOUNT_KEYS.filter((one) => !TOOL_FIELDS.includes(one));
+  for (const name of serverOnly) assert.ok(!RUN_SECRETS.includes(name), `${name} is the server's own: no run is handed it`);
+  // A run's environment as its claim builds it, with every account key both saved in the store and in the runner's own
+  // environment, for a run that binds the browser tool: it gets the browser tool's keys and no other account key.
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "account-keys-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  });
+  const sealKey = randomBytes(32);
+  const valueOf = (name) => `not-a-secret-${name.toLowerCase()}`;
+  for (const name of ACCOUNT_KEYS) await putSealedKey(store, sealKey, name, valueOf(name));
+  const env = await claimSecrets({ store, sealKey, env: Object.fromEntries(ACCOUNT_KEYS.map((name) => [name, valueOf(name)])) }, { kind: "agentic", body: { tools: ["browser"] } }, {});
+  assert.equal(env.BROWSERBASE_API_KEY, valueOf("BROWSERBASE_API_KEY"), "a browser run gets the browser tool's key");
+  for (const name of serverOnly) {
+    assert.equal(env[name], undefined, `a run's environment has no ${name}`);
+    assert.ok(!Object.values(env).includes(valueOf(name)), `no value in a run's environment is ${name}'s`);
+  }
+});
+
+// Started by its launcher with every account key set (Archil's and each computer provider's), the server holds none in its
+// environment, and still reads each where it was started: Archil's settings say `source: "env"`.
+test("started by its launcher with every computer provider's key and ARCHIL_API_KEY set, none is in the server's environment, and Archil still reads its key from where it started", { timeout: 120_000 }, async (t) => {
+  // Under --faux, as this file's other launcher starts are: the launcher's hand-over is the same, and the server reaches
+  // no vendor. Archil's routes are not faux, so they read the account key as a real start does. Settings → Computers is
+  // faux's under --faux, so its reader (the same withSecrets(process.env, "own") as Archil's) is not checked here.
+  const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
+  const keys = Object.fromEntries(ACCOUNT_KEYS.map((name) => [name, `${canary}-${name}`]));
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_STORE_URL: undefined, ...keys });
+  const environ = read(`/proc/${root}/environ`).toString().split("\0");
+  for (const name of ACCOUNT_KEYS) assert.ok(!environ.some((entry) => entry.startsWith(`${name}=`)), `no ${name} in the server's environment`);
+  noSecretAnywhere(root, canary);
+  const archil = await api("GET", "/workspace/archil");
+  assert.equal(archil.status, 200);
+  assert.deepEqual([archil.body.secret.set, archil.body.secret.source], [true, "env"], "Archil reads the account key the server was started with");
+});
+
 // The store URL holds a database password: it reaches the server over the launcher's pipe, so no process of the user holds it in
 // its environment or command line, and the store it names opens. On Postgres only (CI's Postgres job, `npm run test:pg`): a role of
 // its own with a password of its own (the test database's is a well-known one), a schema of its own, both gone after.
@@ -333,9 +387,11 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
-  assert.deepEqual(await secretsOf(agentic(["monid.run"])), without(...BROWSER));
+  // A monid endpoint, or a provider's every endpoint, is unlocked by monid's key (its row's monid:*).
+  assert.deepEqual(await secretsOf(agentic(["monid:faux/person/enrich"])), without(...BROWSER));
   assert.deepEqual(await secretsOf(agentic(["read", "browser"])), without("MONID_API_KEY"));
-  assert.deepEqual(await secretsOf(agentic(["monid.discover", "browser"])), without());
+  assert.deepEqual(await secretsOf(agentic(["monid:apollo/*", "browser"])), without());
+  assert.deepEqual(await secretsOf(agentic(["monid.run", "monidx:faux/x"])), without(...TOOL_KEYS), "a name only like monid's unlocks nothing");
   assert.deepEqual(await secretsOf(agentic(["read", "web_fetch", "ask_person"])), without(...TOOL_KEYS));
   assert.deepEqual(await secretsOf(agentic([])), without(...TOOL_KEYS));
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
@@ -350,9 +406,9 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   // definition lists, nor data shaped like a node.
   const browsing = answerFlow();
   browsing.root.steps[0].tools = ["browser"];
-  assert.deepEqual(await secretsOf(workflow(browsing, ["browser", "monid.run"])), without("MONID_API_KEY"));
+  assert.deepEqual(await secretsOf(workflow(browsing, ["browser", "monid:faux/person/enrich"])), without("MONID_API_KEY"));
   const calling = answerFlow();
-  calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid.run", args: { q: "{item}" }, out: "Answer", as: "answer", deadline_s: 20 } });
+  calling.root.steps.unshift({ node: "map", label: "each", itemsPath: "question", as: "found", resultPath: "found", maxConcurrency: 1, body: { node: "call", label: "find", via: "tool", tool: "monid:faux/person/enrich", args: { body: { name: "{item}" } }, out: "Answer", as: "answer", deadline_s: 20 } });
   assert.deepEqual(await secretsOf(workflow(calling)), without(...BROWSER));
   const shaped = answerFlow();
   shaped.root.steps[0].state = { example: { node: "extract", tools: ["browser"] } };
@@ -587,8 +643,8 @@ async function heldGateway(t) {
   const held = new Promise((resolve) => (release = resolve));
   t.after(() => release());
   const server = createServer(async (req, res) => {
-    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    // Only the API's own paths count (fixtures/stranger.mjs).
+    if (stranger(req, res, { own: (path) => path.startsWith("/v1/") })) return;
     for await (const _ of req);
     seen.push({ path: req.url, authorization: req.headers.authorization });
     await held;

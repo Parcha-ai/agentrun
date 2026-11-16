@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -277,8 +279,8 @@ func TestInitRefusesAnEgressSocketThatIsNotOneAbsolutePath(t *testing.T) {
 }
 
 // --own-network takes no value, once, and only with --user (init must start as root to make the namespace) and with no
-// --egress (a remote computer's network is none). That it then leaves init and its programs their own loopback alone is
-// internal/isolate's tests and the Docker live tests'.
+// --egress (a remote computer's way out is the proxy --network starts). That it then leaves init and its programs their
+// own loopback alone is internal/isolate's tests and the Docker live tests'.
 func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, args := range [][]string{
@@ -293,6 +295,63 @@ func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "--own-network") {
 			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
+// --network names the form of the proxy init starts: open, or allow: and a list the Docker computer's would take; once,
+// and only with --own-network, whose programs reach the proxy through init's relay. That the proxy serves it is
+// internal/egress's tests and the hosted live checks'.
+func TestInitRefusesANetworkThatIsNotAFormOrWithoutOwnNetworkOrTwice(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, test := range []struct {
+		args  []string
+		words string
+	}{
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--network", "open"}, "with --own-network"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "none"}, "--network takes open"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:"}, "no entry"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:10.0.0.0/8"}, "refused range 10.0.0.0/8"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:localhost"}, "two labels"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--network", "open"}, "given once"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network"}, "--network takes open"},
+		{[]string{"init", "--deadline", deadline, "--user", "65534:2510", "--own-network", "--network", "open"}, "--user may be neither"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:65534", "--own-network", "--network", "open"}, "--user may be neither"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, test.args...)
+		if code != 2 {
+			t.Errorf("computerd %q: exit %d; want 2, a refusal", test.args, code)
+		}
+		if !strings.Contains(stderr, test.words) {
+			t.Errorf("computerd %q: stderr does not say %q: %q", test.args, test.words, stderr)
+		}
+	}
+}
+
+func TestInitWithANetworkMustStartAsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: init would start a proxy and drop this test's privileges; the start is a live case")
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	code, stderr := computerd(t, 30*time.Second, "init", "--own-network", "--network", "open", "--user", "2510:2510", "--deadline", deadline)
+	if code != 1 || !strings.Contains(stderr, "root") {
+		t.Fatalf("init --own-network --network open as uid %d: exit %d, stderr %q; want a refusal that says init must start as root", os.Geteuid(), code, stderr)
+	}
+}
+
+// The proxy init starts runs only as another user than root, and only as init starts it.
+func TestEgressProxyRefusesArgumentsInitDoesNotGive(t *testing.T) {
+	until := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"egress-proxy"},
+		{"egress-proxy", "--network", "open", "--until", until},
+		{"egress-proxy", "--network", "none", "--until", until, "--parent", "1"},
+		{"egress-proxy", "--network", "open", "--until", "soon", "--parent", "1"},
+		{"egress-proxy", "--network", "open", "--until", until, "--parent", "0"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 || !strings.Contains(stderr, "egress-proxy takes") {
+			t.Errorf("computerd %q: exit %d, stderr %q; want 2 and the words egress-proxy takes", args, code, stderr)
 		}
 	}
 }
@@ -577,5 +636,42 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 		if code != 2 || stdout != "" || !strings.Contains(stderr, "--diagnose") {
 			t.Errorf("computerd %q: exit %d, stdout %q, stderr %q; want exit 2, nothing on stdout and a refusal that names --diagnose", args, code, stdout, stderr)
 		}
+	}
+}
+
+// attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
+// when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
+func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
+	token := "art_" + strings.Repeat("ab", 32)
+	t.Setenv("AGENTRUN_ATTACH_URL", "")
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
+	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {
+		t.Fatalf("with no URL: exit %d, %s", code, stderr)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token || r.URL.Path != "/v2/computers/attach" {
+			t.Errorf("the upgrade %s with %d bytes of Authorization", r.URL.Path, len(r.Header.Get("Authorization")))
+		}
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "the token is unknown", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	t.Setenv("AGENTRUN_ATTACH_URL", "ws"+strings.TrimPrefix(server.URL, "http")+"/v2/computers/attach")
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token[:len(token)-1])
+	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_TOKEN") || strings.Contains(stderr, token[:len(token)-1]) {
+		t.Fatalf("with a short token: exit %d, %s", code, stderr)
+	}
+	// attach dials only while init listens: a listener stands in for it.
+	socket := filepath.Join(t.TempDir(), "computerd.sock")
+	initListener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initListener.Close()
+	t.Setenv(daemon.SocketEnv, socket)
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
+	code, _, stderr := computerdOut(t, 30*time.Second, "attach")
+	if code != 3 || !strings.Contains(stderr, "refused the upgrade: 401 the token is unknown") || strings.Contains(stderr, token) {
+		t.Fatalf("refused: exit %d, %s", code, stderr)
 	}
 }

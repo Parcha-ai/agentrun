@@ -1,5 +1,5 @@
 // The conformance suite on real Modal, one test per case. It is skipped unless AGENTRUN_COMPUTER_LIVE_MODAL=1 and both
-// COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET are in the environment: a key the lead has OKed by name, never
+// COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET are in the environment: a key for an account you can bill, never
 // set by a test or a script. MODAL_TOKEN_ID and MODAL_TOKEN_SECRET never count: a host may hold a production token under
 // those names. It also needs COMPUTER_MODAL_APP, the modal package installed where Node finds it, `npm run build` and
 // `npm run build:daemon` (the daemon is uploaded into each sandbox), and Go on PATH (the drift case builds a daemon of
@@ -17,7 +17,7 @@ const IMAGE = "debian:bookworm-slim";
 
 describe(
 	"the conformance suite on Modal (VM runtime)",
-	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_MODAL=1 with COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET (a key the lead OKed) to run on real Modal" },
+	{ skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_MODAL=1 with COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET (for an account you can bill) to run on real Modal" },
 	() => {
 		let report;
 		let provider;

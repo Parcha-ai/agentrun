@@ -8,8 +8,10 @@ import { SYSTEM_ONE_LIMITS } from "./system-one.js";
 import {
   WORKFLOW_NODE_KINDS, NODE_FIELDS, WORKFLOW_PREDICATES, PREDICATE_FIELDS, MECHANICAL_PREDICATES, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
-  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, type WorkflowNodeKind,
+  GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type WorkflowNodeKind,
 } from "./vocabulary.js";
+import { GUARD_QUESTION_MAX } from "./workflow.js";
+import { QUOTE_MIN_CHARS } from "./predicates.js";
 
 /** What a host adds to the author contract. It names the host's own vocabulary and rules and never
  *  restates or changes the language: the package renders it once, after the language section. */
@@ -45,6 +47,7 @@ const PREDICATE_SHAPES: { readonly [Name in typeof WORKFLOW_PREDICATES[number]]:
   empty: "holds when the value at `path` is an empty array, an empty string, null or absent",
   no_new_items: "takes `key`, not `path`; holds when that state key is an empty array or falsy",
   field_type: `holds when the value at \`path\` is of \`type\`, one of ${FIELD_TYPES.join(", ")}; a number only when finite, and an absent value is of no type`,
+  quote_missing: `the quote check, in code: holds when a quote at \`path\` (a string, or a list of them; with \`field\`, a list of records each holding its quote at \`field\`) is in none of the pages at \`pages\` (state paths holding what this run's call steps fetched; every string under each is page text). Both sides are compared lowercased, with curly quotes straight, dashes as "-" and whitespace runs as one space, then once more as their letters and digits alone; a quote under ${QUOTE_MIN_CHARS} characters is not checked. \`{"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}\` on an escalate hands back an answer quoting text no fetched page holds. Check quotes with it, never with a judge or an \`ask\``,
   not: "holds when `of`, one mechanical predicate (never `ask`), does not; `{\"predicate\": \"not\", \"of\": {\"predicate\": \"field_type\", \"path\": \"score\", \"type\": \"number\"}}` holds when score is absent or not a finite number",
   ask: "a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)",
 };
@@ -68,7 +71,7 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 - ${code("output.schemaId")} validates the final value; ${code("output.path")} selects it from state and must name an input key or a key an earlier node wrote.
 - State is one object. Each step writes its result under one key: its ${code("as")}, or, for an agent, decide, extract or code node without ${code("as")}, its label. A report writes ${code("report_markdown")}. A code node without ${code("as")} that returns an object merges that object's top-level fields instead.
 - Keys that hold a ${code("$")} are engine-owned: ${code("$host")} (host state), ${code("<as>$answers")} (raw judge answers and confidences) and ${code("<as>$verify")} (verifier results). Read them; never write one. No ${code("as")} may hold a ${code("$")}, and neither may the label of an agent, decide, extract or code node without ${code("as")}.
-- ${code("{dot.path}")} placeholders are replaced from state in ${code("state")} maps (including ${code("verify.state")} and ${code("ask.state")}), call ${code("args")}, ${code("input")}, ${code("env")} and ${code("produces")}, a child workflow's ${code("input")}, and ${code("escalate.summary")}; ${code("pick")} and ${code("sift")} ${code("describe")} templates also see ${code("{item...}")}. A placeholder that is the whole string keeps its value's type. Every key a state map, call or child input interpolates must be produced upstream. ${code("instructions")}, ${code("code")} and ${code("command")} are literal and never interpolated.
+- ${code("{dot.path}")} placeholders are replaced from state in ${code("state")} maps (including ${code("verify.state")} and ${code("ask.state")}), call ${code("args")}, ${code("input")}, ${code("env")} and ${code("produces")}, a child workflow's ${code("input")}, and ${code("escalate.summary")}; ${code("pick")} and ${code("sift")} ${code("describe")} templates also see ${code("{item...}")}. A placeholder that is the whole string keeps its value's type. Every key a state map, call or child input interpolates must be produced upstream, except through a whole-string placeholder marked optional, such as ${code("\"{draft?}\"")}: it is null while its path is absent (a loop's first pass, before the step that writes it ran), and the path's value once present. Only a whole string may be marked. ${code("instructions")}, ${code("code")} and ${code("command")} are literal and never interpolated.
 
 ## Node kinds
 
@@ -130,6 +133,15 @@ Typed questions answered by the host's judge in one request each: no tools, no s
   - ${code("retry")} {attempts: an integer >= 1, backoff_s?: a number >= 0, on?: [${[...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES].join(", ")}]}. ${code("where")} accepts only "sandbox".
   - ${code("poll")} {until, fail_when?, interval_s: >= 0.1 (a busy-loop guard), deadline_s: at least the call's deadline_s (no maximum)} repeats the call until ${code("until")} holds on its own result; ${code("fail_when")} fails it at once. Both are mechanical predicates whose paths are relative to the result and lie in its declared shape.
   - Validation and dry runs never perform effects: they synthesize the declared result, and a shell result's stdout is "{}".
+
+### Step guards
+
+A ${code("guard")} on a step (${GUARDED_NODE_KINDS.join(", ")}) checks the step once it ran: below its threshold, the run hands the job back (it escalates, kind ${code("guard")}, at the step, with the state it reached), so an uncertain step never answers alone.
+- ${code("guard")} is {"signal": ${alternatives(GUARD_SIGNALS)}, "threshold": a number between 0 and 1 (exclusive), "question"?: text, "fit"?: {"w", "b", "n", "fitted_at"}}.
+- ${code("self")} reads the step's own confidence: ${SELF_CONFIDENCE_KINDS.join(", ")} nodes only. An agent or decide node with it submits a ${code("confidence")} field (0 to 1) beside its record, which lands at ${code("<key>$confidence")}, never in its value; its ${code("out")} is an object schema. A judge, pick or sift reads its weakest answer's confidence.
+- ${code("jev")} asks Jev one yes/no question over what the step saw and what it wrote: ${code("question")} (at most ${GUARD_QUESTION_MAX} characters), or by default whether the output is right for the input. Every guarded kind may use it; it is the only signal for ${GUARDED_NODE_KINDS.filter((kind) => !(SELF_CONFIDENCE_KINDS as readonly string[]).includes(kind)).join(", ")} nodes.
+- ${code("both")} combines the two: through ${code("fit")} when it has one, else the lower of the two.
+- ${code("fit")} is the host's, written when it fits the threshold on graded runs: {"w": one weight per signal ([self, jev] for both), "b", "n": the runs it was fitted on, "fitted_at": an ISO time}. Never write or change one yourself. A raw confidence is not a calibrated probability: without a fit, set a threshold the host has measured, or leave the guard to the host.
 
 ## Predicates
 

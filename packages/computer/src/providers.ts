@@ -6,11 +6,10 @@
 // A provider is built from its options alone, create(options), its key included: the library reads no environment
 // (README, Settings). The caller owns its settings' names: serve passes its own (DAYTONA_API_KEY, MODAL_TOKEN_ID, ...),
 // and the conformance CLI's modules read their COMPUTER_<ID>_* names and pass them in.
-import type { RunFolder } from "./conformance/types.js";
+import type { DialKit, RunFolder } from "./conformance/types.js";
 import type { ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MachineHost } from "./host.js";
-import type { KindCapabilities } from "./kinds.js";
 import type { MountKind } from "./mount.js";
 import type { ComputerProvider } from "./provider.js";
 
@@ -20,7 +19,7 @@ export type ProviderEnv = Readonly<Record<string, string | undefined>>;
 /**
  * What a conformance module exports, the CLI's contract for a module given by path too: createProvider(), and optionally
  * createDriftedProvider() for the drift case, conformanceImage() for a run that names no image, conformanceNotes for
- * the report, mountFor() for the mount cases, and settingsFromEnv(env), the provider's options it reads from the
+ * the report, mountFor() for the mount cases, dialKit() for a dial host, and settingsFromEnv(env), the provider's options it reads from the
  * environment by its COMPUTER_<ID>_* names, with ENV, those names by role. The CLI passes each function its options,
  * which a module may ignore.
  */
@@ -29,8 +28,11 @@ export interface ConformanceModule {
 	createDriftedProvider?(options?: object): ComputerProvider | Promise<ComputerProvider>;
 	/** A fresh run folder for a mount kind the provider declares, with its outside; undefined for a kind it cannot make. */
 	mountFor?(kind: MountKind, options?: object): RunFolder | undefined | Promise<RunFolder | undefined>;
-	conformanceImage?(options?: object): string | Promise<string>;
+	/** The run's image when --image names none; `signal` is the run's own (Ctrl-C), for one that makes or registers it. */
+	conformanceImage?(options?: object, context?: { signal?: AbortSignal }): string | Promise<string>;
 	conformanceNotes?: string[];
+	/** For a host whose machines dial (facts.connect "dial"): the server they dial, for provider.dial-token. */
+	dialKit?(options?: object): DialKit | Promise<DialKit>;
 	/**
 	 * A provider on the shared adapter: its MachineHost from the same settings, with no live switch, since it makes
 	 * nothing by itself. The live sweep lists and deletes through it, and the exec pre-check (--exec-stream) calls its
@@ -42,18 +44,11 @@ export interface ConformanceModule {
 	readonly ENV?: Readonly<Record<string, string>>;
 }
 
-/** What every registry line resolves to: the provider file's module. */
+/**
+ * What every registry line resolves to: the provider file's module. Its mount kinds and configurations are its
+ * descriptor's (mounts, capabilities), read without loading it.
+ */
 export interface ProviderModule {
-	/**
-	 * The mount kinds its computers take, the same as its provider's capabilities().mount (none: []): a caller tells which
-	 * provider binds a local folder from the registry alone, without building one.
-	 */
-	readonly MOUNT: readonly MountKind[];
-	/**
-	 * The machine kind and groups of each configuration it offers, as its built providers' capabilities() declare them:
-	 * the kind registry's entry for it (PROVIDERS in kinds.ts) holds the same, and derives its setting kinds from them.
-	 */
-	readonly CAPABILITIES: readonly KindCapabilities[];
 	/**
 	 * The provider, built from its options alone, its key included; it reads no environment, and throws in words when an
 	 * option is missing or wrong, never echoing a key. Each provider file types its own options.

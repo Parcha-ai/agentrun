@@ -5,8 +5,8 @@
 // refusal; a second, conflicting answer is 409. Only the owner's password session answers: a token is 403. An ask
 // answered after the server restarted while the run was parked still runs the call once. A deny refuses a call at once;
 // a workflow's call node calling a denied tool refuses its run. capabilities.tools and GET /v2/agents/{id}.tools show
-// each tool's permission, its default and where it came from; a catalog tool (monid.*, mcp:<server>/<tool>) asks by
-// default; an MCP server's wildcard key mcp:<server>/* is kept and applied. The reflect carve-out holds under ask,
+// each tool's permission, its default and where it came from; a catalog tool (monid:<provider>/<endpoint>,
+// mcp:<server>/<tool>) asks by default; an MCP server's wildcard key mcp:<server>/* is kept and applied. The reflect carve-out holds under ask,
 // never under deny. No socket leaves this machine and no real key is used.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -15,7 +15,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { hostToolNames } from "../dist/tool-list.js";
+import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
 import { liveSettings, runnerGate } from "./gate-support.mjs";
@@ -38,7 +38,9 @@ const HARNESSES = ["pi", "claude-agent", "codex"];
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
 const json = { "content-type": "application/json" };
 const quoted = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const isCatalog = (name) => name.startsWith("monid.") || name.startsWith("mcp:");
+const isCatalog = (name) => name.startsWith("monid:") || name.startsWith("mcp:");
+/** A monid endpoint, as a grant and a setting name it. */
+const ENRICH = "monid:faux/person/enrich";
 
 /** A scratch file the fake network appends each URL it dials to, for test `t`, and a reader of it. */
 async function network(t) {
@@ -124,26 +126,40 @@ function ownRowsSay(rows, callId, summary, at, { result = true } = {}) {
   assert.deepEqual(own, own.map(([kind]) => [kind, summary, null]), `${at}: the call's own rows`);
 }
 /** A parked call as a person reads it, in seq order (a client folds a call's result into its call's step, at the call's
- *  place): the call's own rows, then its approval row, then (once answered) the resume row. Nothing that says what came
- *  of it reads before the approval row: the call's rows say only that it was held, and the outcome is the resume row's. */
+ *  place): the call, then its approval row, then its result (once it has one), then (once answered) the resume row.
+ *  Nothing that says what came of it reads before the approval row: the call's rows say only that it was held, and the
+ *  outcome is the resume row's. */
 function readsInOrder(rows, callId, at, { answered = true } = {}) {
   const bySeq = [...rows].sort((a, b) => a.seq - b.seq);
   const own = bySeq.flatMap((r, i) => ((r.kind === "tool_use" || r.kind === "tool_result") && r.tool_use_id === callId ? [i] : []));
   const ask = bySeq.findIndex((r) => r.kind === "tool_approval_requested" && r.tool_use_id === callId);
   const shown = bySeq.map((r) => `${r.kind}: ${r.summary}`);
-  assert.ok(own.length > 0 && ask > Math.max(...own), `${at}: the approval row follows the call's own rows: ${JSON.stringify(shown)}`);
+  const calls = own.filter((i) => bySeq[i].kind === "tool_use");
+  const results = own.filter((i) => bySeq[i].kind === "tool_result");
+  assert.ok(own.length > 0 && ask > Math.max(...calls) && ask < Math.min(...results), `${at}: the approval row follows the call and sits above its result: ${JSON.stringify(shown)}`);
   if (!answered) return;
-  const resume = bySeq.findIndex((r) => r.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(r.summary ?? ""));
-  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row: ${JSON.stringify(shown)}`);
-  assert.deepEqual(own.map((i) => bySeq[i].summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held`);
+  const resume = bySeq.findIndex((r, i) => i > Math.max(ask, ...own) && r.origin === "server" && /^AgentRun: (\S+ ran once you allowed it|You declined \S+|Your message declined \S+)/.test(r.summary ?? ""));
+  assert.ok(resume > ask, `${at}: the outcome (the resume row) follows the approval row and the call's own rows: ${JSON.stringify(shown)}`);
+  ownRowsRead(own.map((i) => bySeq[i]), bySeq[resume].summary, `${at}: ${JSON.stringify(shown)}`);
+}
+/** A parked call's own rows once answered: one that ran reads as any call (what it did, its result with its status), its
+ *  result saying how it came to run; one that did not run says only that it was held. */
+function ownRowsRead(own, outcome, at) {
+  const ran = /^AgentRun: \S+ ran( once you allowed it|, as its setting allows it)/.exec(outcome ?? "");
+  if (!ran) return assert.deepEqual(own.map((r) => r.summary), own.map(() => "Held for your approval"), `${at}: the call's own rows say only that it was held`);
+  assert.ok(own.every((r) => r.summary !== "Held for your approval"), `${at}: a call that ran is never "held"`);
+  const result = own.find((r) => r.kind === "tool_result");
+  assert.ok(result?.summary.endsWith(`(${ran[1] === ", as its setting allows it" ? "ran, as its setting allows it" : "ran once you allowed it"})`) && result.tool_status, `${at}: its result row says how it came to run`);
 }
 
 test("the gate's settings: ask offered where the kernel runs the approved call itself and for catalog tools; the owner's defaults; settings it takes, an MCP server's wildcard among them; web_search under ask and deny", () => {
-  for (const name of hostToolNames()) assert.ok(permissionsOf(name).includes("ask"), `${name}: the kernel runs its approved call`);
+  // ask_person is a host tool on the CLI harnesses too, and allow or deny there as on pi: approving a question to the person
+  // would ask them twice.
+  for (const name of hostToolNames().filter((name) => name !== "ask_person")) assert.ok(permissionsOf(name).includes("ask"), `${name}: the kernel runs its approved call`);
   for (const name of ["browser", "ask_person", "pdf_pages", "llm"]) assert.deepEqual([...permissionsOf(name)], ["allow", "deny"], name);
-  for (const name of ["monid.run", "mcp:srv/echo"]) assert.deepEqual([...permissionsOf(name)], ["allow", "ask", "deny"], name);
+  for (const name of [ENRICH, "mcp:srv/echo"]) assert.deepEqual([...permissionsOf(name)], ["allow", "ask", "deny"], name);
   for (const name of Object.keys(TOOLS).filter((name) => !isCatalog(name))) assert.ok(!isCatalog(name), name);
-  assert.deepEqual(settingsIssues({ web_fetch: { provider: "parallel", permission: "ask" }, read: { permission: "deny" }, "monid.run": { permission: "allow" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } }), []);
+  assert.deepEqual(settingsIssues({ web_fetch: { provider: "parallel", permission: "ask" }, read: { permission: "deny" }, [ENRICH]: { permission: "allow" }, "monid:faux/*": { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } }), []);
   assert.deepEqual(settingsIssues({ web_fetch: { permission: "maybe" }, browser: { permission: "ask" }, read: { provider: "native" }, nothing: { permission: "deny" }, "mcp:srv": { permission: "deny" } }).map((i) => [i.field, i.reason]), [
     ["web_fetch.permission", "not_an_option"], ["browser.permission", "not_an_option"], ["read.provider", "not_allowed"], ["nothing", "not_allowed"], ["mcp:srv", "not_allowed"],
   ]);
@@ -174,7 +190,7 @@ test("a run's gate reads the server's settings at each call: a change reaches th
   assert.equal(await gate.decide("write", { path: ".learning/notes.md", content: "x" }), "ask", "its permission, never a file's word");
 });
 
-test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
+test("capabilities and an agent's tools show each tool's permission, its default and where it came from; a catalog tool asks by default, and so does email_send; an MCP server's wildcard is kept; settings refuse a permission not offered", async (t) => {
   withEnv(t, { AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL"]);
   const { api } = await serve(t);
   const doc = (await api("GET", "/openapi.json")).body;
@@ -183,13 +199,16 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const byName = (tools) => Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   const view = byName(caps.tools);
   for (const name of Object.keys(TOOLS)) {
-    assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [isCatalog(name) ? "ask" : "allow", isCatalog(name) ? "ask" : "allow", [...permissionsOf(name)]], name);
+    const asks = isCatalog(name) || asksByDefault(name) ? "ask" : "allow";
+    assert.deepEqual([view[name].permission, view[name].default_permission, view[name].permissions], [asks, asks, [...permissionsOf(name)]], name);
   }
-  const put = await api("PUT", "/settings/tools", { "monid.run": { permission: "allow" }, web_fetch: { permission: "ask" }, read: { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } });
+  const put = await api("PUT", "/settings/tools", { [ENRICH]: { permission: "allow" }, "monid:faux/*": { permission: "deny" }, web_fetch: { permission: "ask" }, read: { permission: "deny" }, "mcp:srv/*": { permission: "deny" }, "mcp:srv/echo": { permission: "allow" } });
   assert.equal(put.status, 200, JSON.stringify(put.body));
-  assert.deepEqual([put.body["monid.run"], put.body.web_fetch.permission, put.body.read, put.body["mcp:srv/*"], put.body["mcp:srv/echo"]], [{ permission: "allow" }, "ask", { permission: "deny" }, { permission: "deny" }, { permission: "allow" }]);
+  assert.deepEqual([put.body[ENRICH], put.body["monid:faux/*"], put.body.web_fetch.permission, put.body.read, put.body["mcp:srv/*"], put.body["mcp:srv/echo"]], [{ permission: "allow" }, { permission: "deny" }, "ask", { permission: "deny" }, { permission: "deny" }, { permission: "allow" }]);
+  // A monid endpoint, as an MCP server's tool, is granted by name and is no capability row of its own.
   const after = byName((await api("GET", "/capabilities")).body.tools);
-  assert.deepEqual([after["monid.run"].permission, after["monid.run"].default_permission, after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["allow", "ask", "ask", "allow", "deny"]);
+  assert.equal(after[ENRICH], undefined);
+  assert.deepEqual([after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["ask", "allow", "deny"]);
   // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
   assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
 
@@ -302,7 +321,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     // The model's own words may quote what it read (pi's faux model echoes the message); every row the server writes may not.
     assert.deepEqual(rows.filter((r) => r.kind !== "final_answer" && r.kind !== "text_block" && String(r.summary ?? "").includes(run.callId)).map((r) => r.summary), [], `${at}: no summary of the server's names the call id`);
     assert.equal(resumeRows(rows).length, 1, `${at}: one message resumed it`);
-    ownRowsSay(rows, run.callId, "Held for your approval", at);
+    if (run.decision !== "allow") ownRowsSay(rows, run.callId, "Held for your approval", at);
     assert.equal(view.pending, null);
     // The model read the answer as the call's own result: the runner runs an allowed call in place and hands a denied one
     // the refusal, so pi's faux model echoes the page or the refusal, never a message about the call.
@@ -477,8 +496,8 @@ test("a deny refuses the call at once and the run goes on, on every harness; a w
   assert.match(asked.body.error.message, new RegExp(quoted(ASKS("web_fetch"))));
   // A catalog tool (default ask) is no call node's tool here: a workflow whose call node names one is refused at its save,
   // so none runs unapproved.
-  const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: "monid.run", args: { endpoint: "/x" }, out: "Page", as: "home", deadline_s: 60 }] } };
-  const catalog = await retried(api)("POST", "/agents",{ definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: ["monid.run"] } });
+  const monidFlow = { ...flow, name: "monid-call", root: { node: "chain", steps: [{ node: "call", label: "Run monid", via: "tool", tool: ENRICH, args: { body: { name: "Ada" } }, out: "Page", as: "home", deadline_s: 60 }] } };
+  const catalog = await retried(api)("POST", "/agents",{ definition: { id: "monid-call", name: "monid-call", workflow: monidFlow, tools: [ENRICH] } });
   assert.deepEqual([catalog.status, catalog.body.error?.code, catalog.body.error?.fields?.[0]?.reason], [422, "input_invalid", "not_an_option"], JSON.stringify(catalog.body));
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "allow" } })).status, 200);
   const allowed = await api("POST", "/agents/site/runs", { input: { website: PAGE } });
@@ -598,8 +617,8 @@ const NO_APPROVER = (tool) => `Permission denied: ${tool} needs the owner's appr
 
 test("with accounts off no one can approve: an ask, a catalog tool's default or a setting, is refused with words saying so, never parked, and capabilities say an ask needs the password sign-in; with accounts on it parks", { timeout: 120_000 }, async (t) => {
   // The run's gate, told no one can approve here: a catalog tool at its default ask is refused, never asked.
-  assert.deepEqual(await runnerGate({ approvers: false }).decide("monid.run", { path: "/person/enrich" }), { deny: NO_APPROVER("monid.run") }, "a catalog tool's default ask");
-  assert.equal(await runnerGate({ approvers: true }).decide("monid.run", { path: "/person/enrich" }), "ask", "where someone can approve, it asks");
+  assert.deepEqual(await runnerGate({ approvers: false }).decide(ENRICH, { body: { name: "Ada" } }), { deny: NO_APPROVER(ENRICH) }, "a catalog tool's default ask");
+  assert.equal(await runnerGate({ approvers: true }).decide(ENRICH, { body: { name: "Ada" } }), "ask", "where someone can approve, it asks");
 
   // A server with accounts off: web_fetch set to ask is refused on every harness, and the run goes on.
   const dialled = await network(t);
@@ -607,7 +626,7 @@ test("with accounts off no one can approve: an ask, a catalog tool's default or 
   assert.equal((await off.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const caps = (await off.api("GET", "/capabilities")).body;
   const doc = (await off.api("GET", "/openapi.json")).body;
-  assert.deepEqual(Object.fromEntries(caps.tools.filter((tool) => ["web_fetch", "monid.run", "browser"].includes(tool.name)).map((tool) => [tool.name, tool.ask_needs])), { web_fetch: "password", "monid.run": "password", browser: undefined }, "every tool ask is offered for, none other");
+  assert.deepEqual(Object.fromEntries(caps.tools.filter((tool) => ["web_fetch", "bash", "browser"].includes(tool.name)).map((tool) => [tool.name, tool.ask_needs])), { web_fetch: "password", bash: "password", browser: undefined }, "every tool ask is offered for, none other");
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Capabilities, caps), [], "capabilities as documented");
   await refusedOn(off.api, ["pi"]);
   assert.deepEqual(await dialled(), [], "nothing ran");
@@ -660,27 +679,25 @@ test("a parked call whose arguments hold a held key shows no 8 characters of it 
   assert.equal(holdsPiece(JSON.stringify(summary.pending), HELD), false, "the run's summary in the list");
 });
 
-test("on pi, monid's calls at their default ask park by their settings keys, and each approved one runs once through the kernel", { timeout: 120_000 }, async (t) => {
+test("on pi, a monid endpoint's call at its default ask parks by its settings key, and the approved call runs once through the kernel", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const server = await serve(t, { accounts: true, openSetup: true, fauxMonid: fixture("faux-monid.mjs") });
   const answer = await owner(server);
   const { api } = server;
-  assert.equal((await retried(api)("POST", "/agents",agent("enrich-asks", { tools: ["monid.discover", "monid.inspect", "monid.run"] }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent("enrich-asks", { tools: [ENRICH] }))).status, 201);
   const started = await api("POST", "/agents/enrich-asks/runs", { input: { content: "Enrich with monid: Ada at Example." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
-  for (const tool of ["monid.discover", "monid.inspect", "monid.run"]) {
-    await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
-    const { pending } = (await api("GET", `/runs/${runId}`)).body;
-    assert.equal(pending?.tool, tool, "parked by its settings key");
-    assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
-    await pastApproval(api, runId, pending.id);
-  }
+  await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+  const { pending } = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(pending?.tool, ENRICH, "parked by its settings key");
+  assert.equal((await answer(runId, pending.id, { decision: "allow" })).status, 204);
+  await pastApproval(api, runId, pending.id);
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.match((await api("GET", `/runs/${runId}`)).body.result.final_answer, /"full_name":"Ada"/);
   const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(seen.map((call) => call.path), ["/v1/discover", "/v1/inspect", "/v1/run"], "each approved call once");
+  assert.deepEqual(seen.map((call) => call.path), ["/v1/inspect", "/v1/inspect", "/v1/run"], "the save's one read of its listing, then the approved call's price read again and the call once");
 });
 
 /** A held key for the cut cases, its words none a row says itself. */
@@ -738,14 +755,14 @@ test("once a parked call with a held key in its arguments is approved, the resum
 /** The call id of a parked run's web_fetch call (parked's rows), read from its call's row. */
 const callOf = ({ rows }) => rows.find((row) => row.kind === "tool_use" && row.tool_name === "web_fetch")?.tool_use_id;
 
-/** Run `runId` once its runner has applied a stop: no call waits, nothing works. A stop is a command row the runner applies
- *  (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
+/** Run `runId` once its runner has applied a stop: no call waits, nothing works, and it reads pending kind stopped. A stop
+ *  is a command row the runner applies (runs-over-store.ts stop), so its POST answers before the run reads stopped. */
 async function stoppedView(api, runId, deadlineMs = 30_000) {
   const end = Date.now() + deadlineMs;
   for (;;) {
     const view = (await api("GET", `/runs/${runId}`)).body;
-    if (view.pending === null && view.state === "idle") return view;
-    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${view.pending?.id}`);
+    if (view.pending?.kind === "stopped" && view.state === "idle") return view;
+    assert.ok(Date.now() < end, `run ${runId} did not read stopped: ${view.status}/${view.state}, pending ${JSON.stringify(view.pending)}`);
     await sleep(250);
   }
 }
@@ -765,8 +782,8 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const early = await answer(stopRun, stopId, { decision: "allow" });
   assert.deepEqual([early.status, early.body?.error?.details], [409, { reason: "already_answered", decision: "withdrawn" }], JSON.stringify(early.body));
   const stopped = await stoppedView(first.api, stopRun);
-  // A person's stop ends the turn, not the run: input_required and idle with nothing pending, as main's stop leaves one.
-  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+  // A person's stop ends the turn, not the run: input_required and idle, pending kind stopped (no approval waits).
+  assert.deepEqual([stopped.status, stopped.state, stopped.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
   const row = (await first.api("GET", `/runs/${stopRun}/timeline`)).body.rows.find((r) => r.kind === "tool_approval_requested");
   assert.match(row.summary, /^Withdrawn/, "its row says it was withdrawn");
   // On the runner a parked call has its call's row and no result row of its own (the park writes none).
@@ -789,12 +806,12 @@ test("a stop of a parked run withdraws the call: an answer sent before the stop 
   const again = await serve(t, { ...GATE, data: first.data, openSetup: false });
   const answerAgain = await ownerAgain(again);
   assert.equal((await answerAgain(stopRun, stopId, { decision: "allow" })).status, 409, "after a restart too");
-  assert.equal((await again.api("GET", `/runs/${stopRun}`)).body.pending, null);
+  assert.deepEqual((await again.api("GET", `/runs/${stopRun}`)).body.pending, { kind: "stopped" }, "still stopped after a restart, no approval pending");
   await sleep(3_000);
   assert.deepEqual(await dialled(), [], "neither call ever ran");
 });
 
-test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, nothing pending, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
+test("a stop while an approval waits and a later turn runs withdraws the call and aborts the turn: stopped, idle, pending kind stopped, the turn cut, and a later answer is 409 and never runs the call; a cancel too", { timeout: 150_000 }, async (t) => {
   const dialled = await network(t);
   const server = await serve(t, GATE);
   const answer = await owner(server);
@@ -816,7 +833,7 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
       assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
       await follow(api, runId, ["input_required"], { deadlineMs: 30_000 });
       const view = (await api("GET", `/runs/${runId}`)).body;
-      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], "stopped: idle, nothing pending");
+      assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
       // Past the turn's 8 s: a turn the stop did not cut would have answered by now.
       await sleep(10_000);
       const after = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
@@ -964,7 +981,7 @@ test.skip("a stop or a cancel that lands after an answer, before the run's proce
   }
   for (const name of ["allow-stop", "decline-stop"]) {
     const view = (await api("GET", `/runs/${runs[name].runId}`)).body;
-    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", null], `${name}: stopped`);
+    assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], `${name}: stopped`);
   }
   assert.deepEqual(await dialled(), [], "no call ran");
 });
@@ -977,8 +994,8 @@ test("a stop or a cancel cuts an approved call in flight: the tool sees the abor
   const { api } = server;
   const calls = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   for (const [end, said] of [["stop", "stopped"], ["cancel", "cancelled"]]) {
-    // monid.run asks by default: the call parks; monid's /slow then runs until its caller stops it.
-    assert.equal((await retried(api)("POST", "/agents",agent(`slow-${end}`, { tools: ["monid.run"] }))).status, 201);
+    // A monid endpoint asks by default: the call parks; monid's /slow then runs until its caller stops it.
+    assert.equal((await retried(api)("POST", "/agents",agent(`slow-${end}`, { tools: ["monid:faux/slow"] }))).status, 201);
     const runId = (await retried(api)("POST", `/agents/slow-${end}/runs`, { input: { content: "Run monid's /slow." } })).body.run_id;
     const { view } = await parked(api, runId);
     const before = (await calls()).length;

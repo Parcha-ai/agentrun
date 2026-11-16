@@ -12,9 +12,12 @@ import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { LONG_ANSWER } from "./fixtures/faux-harness.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { ADDRESS, mailbox, saved as savedAccount } from "./email-support.mjs";
 
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+// The faux model at a price: the default faux model is listed at $0, a free model, whose request with no cost is $0.
+const FAUX_PRICED = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -141,7 +144,7 @@ function runEntries(data, runId) {
 const storeRecords = (data, runId, kind) => runEntries(data, runId).filter((record) => record.kind === kind);
 
 test("a request whose price is unknown makes the run's cost unknown, never 0", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: FAUX_PRICED });
   const runId = await started(api, "unpriced", "Price unknown.");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 1, so_far_usd: 0, unpriced: 1 });
@@ -163,7 +166,8 @@ test("a run whose booked spend passes its cap shows by how much on its timeline,
 });
 
 test("a request admitted and cut by a crash is booked once, unknown: on resume the cost is unknown and every admitted request counts once", { timeout: 90_000 }, async (t) => {
-  const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
+  // A paid model's: a free model's cut request is a known $0 (the capped run's case below).
+  const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE, faux: FAUX_PRICED });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "cut", `Cut until ${go}.`, "claude-agent", ["read"]);
   // The first request is answered at its tool's end; the second is then admitted and held, never answered.
@@ -206,7 +210,7 @@ test("a run cancelled while its harness's request is out, and never opened again
 });
 
 test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+  const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: FAUX_PRICED });
   const runId = await started(api, "later", "Second turn unpriced.");
   await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);
@@ -295,19 +299,19 @@ for (const harness of ["claude-agent", "codex"]) {
 }
 
 for (const harness of ["claude-agent", "codex"]) {
-  test(`monid.run runs on ${harness} as monid_run: it saves with no warning, reaches monid on the run's key, and is journaled and shown under its wire name`, { timeout: 60_000 }, async (t) => {
+  test(`a granted monid endpoint runs on ${harness} as monid__faux__person__enrich: it saves with no warning, reaches monid on the run's key, and is journaled under its wire name and shown by its catalog name`, { timeout: 60_000 }, async (t) => {
     const log = join(await scratch(t), "monid-calls.jsonl");
     withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
     const { api, data } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
-    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid.discover", "monid.inspect", "monid.run"], tool_settings: { "monid.discover": { permission: "allow" }, "monid.inspect": { permission: "allow" }, "monid.run": { permission: "allow" } } }));
+    const saved = await api("POST", "/agents", agent(`monid-${harness}`, { harness, instructions: "Run monid's /person/enrich on Ada.", tools: ["monid:faux/person/enrich"], tool_settings: { "monid:faux/person/enrich": { permission: "allow" } } }));
     assert.deepEqual([saved.status, saved.body.warnings], [201, []], JSON.stringify(saved.body));
     const run = await api("POST", `/agents/monid-${harness}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
     const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     const seen = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(seen.map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
-    assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid_run"], "the harness's journal names the wire name");
-    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid_run"]);
+    assert.deepEqual(seen.filter((call) => call.path === "/v1/run").map((call) => [call.method, call.path, call.authorized]), [["POST", "/v1/run", true]], "sent once, on the key");
+    assert.deepEqual(storeRecords(data, run.body.run_id, "faux.call").map((record) => record.data?.name), ["monid__faux__person__enrich"], "the harness's journal names the wire name");
+    assert.deepEqual(rows.filter((r) => r.kind === "tool_use").map((r) => r.tool_name), ["monid:faux/person/enrich"], "the timeline shows the catalog name");
     const results = toolResults(rows);
     assert.equal(results.length, 1, JSON.stringify(results));
     assert.match(results[0][0], /"full_name":"Ada"/, "the run's output reaches the timeline");
@@ -315,11 +319,32 @@ for (const harness of ["claude-agent", "codex"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), the web tools and monid's three on every harness, the rest on pi", async (t) => {
+// The email tools are host tools on every harness, as web_fetch is (tool-list.ts `host`): each CLI harness is handed them
+// (cli-run-spec.ts webHostTools) and runs one on the server's account.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`email_search runs on ${harness} as a host tool: the definition saves with no warning, and the run reads the server's email account`, { timeout: 60_000 }, async (t) => {
+    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+    const faux = await mailbox(t);
+    faux.seed({ from: "Ana Díaz <ana@example.com>", to: [ADDRESS], subject: "Plan", text: "Shall we plan the launch?", messageId: "<h1@example.com>" });
+    await savedAccount(api, faux);
+    const made = await api("POST", "/agents", agent(`mail-${harness}`, { harness, instructions: 'Box calls: [{"call": "email_search", "args": {"subject": "Plan"}}]', tools: ["email_search"] }));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.doesNotMatch(JSON.stringify(made.body), /not bound yet/, "no warning that the tool is pi's only");
+    const run = await api("POST", `/agents/mail-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /h1@example\.com/, "the account's message, found over IMAP");
+    assert.equal(results[0][1], "success");
+  });
+}
+
+test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools, the email tools and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex", "opencode"];
-  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "web_fetch", "web_search", "monid.discover", "monid.inspect", "monid.run"];
+  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "email_search", "email_read", "email_draft", "email_send", "email_file", "tools_search", "tools_call", "codemode"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
@@ -420,7 +445,9 @@ for (const harness of ["claude-agent", "codex"]) {
     // with its result), so the turn is read from the run, working with the person's message in.
     await follow(api, runId, ["working"], { deadlineMs: 30_000 });
     const sent = await api("POST", `/runs/${runId}/messages`, { content: "and then?" });
-    assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+    // claude-agent steers mid-turn (its facts), so the API answers steer; this faux session takes no steer, so the runner
+    // still sends it as the next turn. codex takes no message mid-turn: follow_up.
+    assert.deepEqual([sent.status, sent.body.mode], [202, harness === "claude-agent" ? "steer" : "follow_up"], JSON.stringify(sent.body));
     await writeFile(go, "");
     const rows = await completesOnlyAfter(api, runId, "Answer 2.");
     assert.deepEqual(rows.filter((r) => ["user_message", "final_answer", "text_block"].includes(r.kind)).map((r) => r.summary), ["You: hi", "Answer 1.", "You: and then?", "Answer 2."]);
@@ -596,7 +623,7 @@ test("a codex or pi run whose write names a relative path reads the same as befo
   assert.deepEqual(piRows.filter((r) => r.tool_name === "write" || /^Saved/.test(r.summary ?? "")).map((r) => r.summary), ["Wrote report.md", "Wrote report.md: ok", "Saved report.md"]);
 });
 
-test("a capped run with a request cut by a crash goes on: the cut request counts at the worst case its cap held, $0 on a model listed at $0", { timeout: 90_000 }, async (t) => {
+test("a capped run with a request cut by a crash goes on: on a model listed at $0 the cut request is booked a known $0, so the run's cost is known", { timeout: 90_000 }, async (t) => {
   const { api, data, crashRunner } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), runnerTiming: CRASHABLE });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.`, tools: ["read"] }))).status, 201);
@@ -614,14 +641,16 @@ test("a capped run with a request cut by a crash goes on: the cut request counts
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.result?.final_answer], ["completed", "After the cut."], JSON.stringify(ended.error));
-  assert.equal(ended.cost.usd, null, "the cut request's own price never came in: the shown cost is unknown");
+  assert.equal(ended.cost.usd, 0.006, "the cut request on a free model costs nothing, a known $0: the shown cost is the other two's");
   // What the cap held for each request, on the run's one ledger (its journal in the store): the model's $0 worst case,
-  // so the cut one counts at $0, and it is booked as cut.
+  // each counted as a free model's request, and the cut one booked as cut at a known $0, marked free.
   const entries = journalOf(data, runId);
   const requests = entries.filter((entry) => entry.kind === "runner.request" && !String(entry.data?.model ?? "").startsWith("paid:"));
-  assert.deepEqual(requests.map((entry) => entry.data.heldUsd), [0, 0, 0], "the first, the cut one, and the one after it, each held at $0");
+  assert.deepEqual(requests.map((entry) => [entry.data.heldUsd, entry.data.freeRequest]), [[0, true], [0, true], [0, true]], "the first, the cut one, and the one after it, each held at $0");
   const turns = entries.filter((entry) => entry.kind === "runner.turn" && requests.some((request) => request.conversationId === entry.conversationId && request.data.turn === entry.data.turn));
   assert.deepEqual(turns.map((entry) => entry.data.cut === true), [false, true, false], `the cut one booked as cut, once: ${JSON.stringify(turns.map((entry) => entry.data))}`);
+  const cut = turns.find((entry) => entry.data.cut === true).data;
+  assert.deepEqual([cut.usd, cut.bookedUsd, cut.free], [0, 0, true], `booked a known $0: ${JSON.stringify(cut)}`);
 });
 
 // Three runs in turn, each followed for up to 55 s.

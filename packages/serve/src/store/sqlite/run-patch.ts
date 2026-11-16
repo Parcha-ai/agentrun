@@ -3,7 +3,7 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
@@ -25,17 +25,28 @@ export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
-  wake_at: number | null; backoff_until: number | null; cost_usd: number | null; metrics: string | null; summary: string | null;
-  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; started_at: number; ended_at: number | null;
+  wake_at: number | null; backoff_until: number | null; cost_usd: number | null; cost_upper_bound: number; metrics: string | null; summary: string | null;
+  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; started_at: number; ended_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, started_at, ended_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, started_at, ended_at";
 
+/** A run's exact cost in SQL, for a query that reads runs.cost_usd itself (`alias`: its runs table's): NULL when the
+ *  stored figure is only the most the run can have cost, as runOf reads it. Every raw read of the column goes through it. */
+export const EXACT_COST_USD = (alias: string): string => `CASE WHEN ${alias}.cost_upper_bound = 1 THEN NULL ELSE ${alias}.cost_usd END`;
+
+const costOf = (usd: number | null, bound: unknown): Pick<RunRow, "costUsd" | "costAtMostUsd"> =>
+  usd !== null && Number(bound) === 1 ? { costUsd: null, costAtMostUsd: usd } : { costUsd: usd, costAtMostUsd: null };
+
+/** The run row from its record. The stored cost splits here, once, for every reader: an exact cost (or null) is `costUsd`;
+ *  a cost stored as the most the run can have cost (cost_upper_bound 1) is `costAtMostUsd` alone, and `costUsd` reads null,
+ *  as for a cost no one knows. So a reader that sums or shows spend never reads a bound, with no check of its own. */
 export const runOf = (r: RunRecord): RunRow => ({
   id: r.id, agentId: r.agent_id, revisionId: r.revision_id, state: r.state, epoch: r.epoch, runner: r.runner, claimedUntil: r.claimed_until,
-  wakeAt: r.wake_at, backoffUntil: r.backoff_until, costUsd: r.cost_usd, metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
+  wakeAt: r.wake_at, backoffUntil: r.backoff_until, ...costOf(r.cost_usd, r.cost_upper_bound), metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
-  signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), startedAt: r.started_at, endedAt: r.ended_at,
+  signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), labels: r.labels === null ? {} : (JSON.parse(r.labels) as RunLabels),
+  startedAt: r.started_at, endedAt: r.ended_at,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
@@ -48,7 +59,12 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
   const params: SqliteValue[] = [];
   const set = (column: string, value: SqliteValue) => (sets.push(`${column} = ?`), params.push(value));
   if (patch.state !== undefined) set("state", patch.state);
-  if (patch.costUsd !== undefined) set("cost_usd", patch.costUsd);
+  // The bound beside the cost goes with it: a cost written without one is exact (or unknown), never a bound left from an
+  // earlier end of the run.
+  if (patch.costUsd !== undefined) {
+    set("cost_usd", patch.costUsd);
+    set("cost_upper_bound", patch.costUsd !== null && patch.costUpperBound === true ? 1 : 0);
+  }
   if (patch.metrics !== undefined) set("metrics", patch.metrics === null ? null : JSON.stringify(patch.metrics));
   if (patch.summary !== undefined) set("summary", patch.summary);
   if (patch.outcome !== undefined) set("outcome", patch.outcome);
@@ -99,18 +115,28 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         );
         break;
       }
-      // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing).
+      // The learning run is queued after every row of the end (below): only once its kept learning names it.
       case "learning_run":
-        await tx.run(
-          "INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) SELECT ?, agent_id, revision_id, 'queued', 0, ? FROM runs WHERE id = ? ON CONFLICT (id) DO NOTHING",
-          each.row.id, now, claim.runId,
-        );
-        // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
-        // the run that learned, and the cap its grade runs under. Written once, as the run is.
-        if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-          await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round, each.row.capUsd) }, now);
-        }
         break;
+    }
+  }
+  // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing), and only
+  // when the run's kept learning names it. A kept learning is kept once (above): a follow-up's end that keeps another
+  // beside one already kept that names no learning run (dropped: nothing to grade) queues none, so no learning run is
+  // ever left that no kept learning names. Such a run would be no run's grade: every list of runs would show it as the
+  // agent's own run (NOT_A_LEARNING_RUN reads the kept learning), and its spend would be booked on no run.
+  for (const each of also) {
+    if (each.table !== "learning_run") continue;
+    const named = await tx.get("SELECT 1 AS found FROM learning_proposals WHERE run_id = ? AND learning_run_id = ?", claim.runId, each.row.id);
+    if (!named) continue;
+    await tx.run(
+      "INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) SELECT ?, agent_id, revision_id, 'queued', 0, ? FROM runs WHERE id = ? ON CONFLICT (id) DO NOTHING",
+      each.row.id, now, claim.runId,
+    );
+    // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
+    // the run that learned. Written once, as the run is.
+    if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
+      await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round, each.row.capUsd) }, now);
     }
   }
   return runOf(row);

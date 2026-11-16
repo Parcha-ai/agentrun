@@ -55,9 +55,10 @@ async function learningRun(t, instructions, launchExtra = {}) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: instructions(dir), harness: HARNESS, tools: ["read"], learning: true } });
+  // A notes job (`learning: "notes"`): its run looks back at every end.
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: instructions(dir), harness: HARNESS, tools: ["read"], learning: "notes" } });
   const seed = await landWorkflows(dir, "agent-1", []);
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" }, learning: startAt(seed), ...launchExtra };
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" }, learning: { ...startAt(seed), notesOnly: true }, ...launchExtra };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: "not-a-secret", AGENT_MODEL_PRICE: "1,2,0.5", AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
@@ -144,12 +145,16 @@ test("a CLI look-back answered and then cut by a lost runner: asked again once o
   assert.equal(proposal.look_back_usd, 0.013, `both attempts' look-back spend ($0.004, then $0.008 + $0.001): ${JSON.stringify(proposal)}`);
 });
 
-test("a CLI look-back a lost runner cut under a cap: the next claim skips it (the run's spend unknown), and still keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
+// Under a cap, the cut request counts at what the cap held for it, its worst case (its spend under the cap is
+// known, as the run's own cap gates read it: learning-end.ts capSpendOf), so the next claim asks the look-back again
+// within the room left, as an uncapped run does. Its cost stays unknown.
+test("a CLI look-back a lost runner cut under a cap: the next claim asks it again once within the cap (the cut counted at its hold), and keeps the job's cost and answer time from the first ask, its look-back unknown, never $0", { timeout: 120_000 }, async (t) => {
   const { row, turns, sent, kept, restartedAt } = await restarted(t, "cut", { max_cost_usd: 1 });
   assert.equal(row.state, "ended", JSON.stringify(row));
-  assert.deepEqual(asks(sent, turns), { prompts: 1, twice: 0 }, `sent once, on runner-a; runner-b asks nothing: ${JSON.stringify(turns)}`);
+  assert.deepEqual(asks(sent, turns), { prompts: 2, twice: 0 }, `sent once on each claim: ${JSON.stringify(turns)}`);
+  assert.equal(turns.filter((turn) => turn.usd === null && turn.cut === true).length, 1, `the cut request is booked once, at an unknown price: ${JSON.stringify(turns)}`);
   const proposal = kept?.proposal;
-  assert.deepEqual([proposal?.state, proposal?.reason], ["dropped", "unknown_cost"], JSON.stringify(proposal));
+  assert.deepEqual([proposal?.state, proposal?.reason], ["dropped", "empty"], `the re-ask's answer is the one read: ${JSON.stringify(proposal)}`);
   assert.equal(proposal.job_cost_usd, 0.002, `the job's own cost, as it stood when the turn was first asked: ${JSON.stringify(proposal)}`);
   assert.ok(Date.parse(proposal.answered_at) < restartedAt, `when the job answered is runner-a's, before the restart: ${JSON.stringify(proposal)}`);
   assert.equal(proposal.look_back_usd, null, `the look-back spent what no one knows (its cut request), never nothing: ${JSON.stringify(proposal)}`);

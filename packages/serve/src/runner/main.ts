@@ -13,6 +13,7 @@
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { PROVIDERS } from "@parcha/agentrun-computer";
+import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ArchilSettingsEnvInvalid, archilSettingsFromEnv } from "../archil-settings.js";
 import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
@@ -33,6 +34,7 @@ import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
 import { startJanitor } from "../workspace/computer-janitor.js";
+import { runEndComputers } from "../workspace/run-end-computers.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -114,9 +116,9 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 }
 
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
- *  token and API key, the seal key (the runner holds it as its sealKey), and the store's connection (its URL holds a
+ *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), and the store's connection (its URL holds a
  *  database password). */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name
@@ -139,7 +141,7 @@ export function runEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv 
  *  provider loader in place of the computer package's. Under --faux (the runs' environment names the faux model, as a
  *  --faux server's and a `runner --faux` give it), --faux's computers are beside them, as the server's start check
  *  reads them (server.ts computerReady): a run on the faux desktop is claimed, and its live view opened, the real way. */
-export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub"> = {}) =>
+export const runnerComputers = (store: Store, env: KeyEnv, sealKey: Buffer, own: Pick<ComputerDepsOptions, "kinds" | "load" | "dockerPaths" | "hostAddresses" | "hostWhy" | "hub" | "dial"> = {}) =>
   // A runner on another host than its server (AGENTRUN_RUNNER_LIVE_HOST): its viewers answer there (live-reach.ts).
   computerDepsFrom({ env, store, sealKey, openComputerView: claimViewOpener(runnerLiveOf(env, sealKey)), ...(envValue(env, FAUX_ENV) ? { faux: fauxComputers() } : {}), ...own });
 
@@ -242,6 +244,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
+    const runEnded = typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined;
     runner = startRunner({
       store,
       createLoop,
@@ -250,6 +254,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+      ...(runEnded ? { runEnded } : {}),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {
@@ -296,7 +301,8 @@ export const RUNNER_DRAIN_ENV = "AGENTRUN_DRAIN_TIMEOUT";
 
 /** What a runner process holds, from its arguments and `env`: --loops, else the server's --max-runs default
  *  (AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds; maxRunsOf); --drain-timeout, else
- *  AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT. A bad AGENTRUN_MAX_RUNS or AGENTRUN_DRAIN_TIMEOUT is RunnerRefused. */
+ *  AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT. A bad AGENTRUN_MAX_RUNS, AGENTRUN_DRAIN_TIMEOUT or
+ *  AGENTRUN_FREE_MODEL_REQUESTS is RunnerRefused. */
 export function runnerHolds(args: { loops?: number; drainMs?: number }, env: NodeJS.ProcessEnv): { loops: number; drainMs: number } {
   let loops = args.loops;
   if (loops === undefined) {
@@ -311,6 +317,13 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
     const given = env[RUNNER_DRAIN_ENV];
     drainMs = durationMs(given || RUNNER_DRAIN_TIMEOUT);
     if (drainMs === undefined) throw new RunnerRefused(`${RUNNER_DRAIN_ENV} is a duration such as 6s, 500ms or 1m, not ${JSON.stringify(given)}`);
+  }
+  // The limit on each run's requests on free models (AGENTRUN_FREE_MODEL_REQUESTS), read again at each claim: a bad one refuses
+  // the runner here, never a run at its claim.
+  try {
+    freeModelRequestsOf(env);
+  } catch (error) {
+    throw new RunnerRefused((error as Error).message);
   }
   return { loops, drainMs };
 }
@@ -386,8 +399,16 @@ export function lastResort(name: string, write: (line: string) => void = (line) 
 function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
   if (event.type === "released") return `Runner ${name} released ${event.runId} (${event.end})`;
-  if (event.type === "claim-lost") return `Runner ${name} lost its claim on ${event.runId} (${event.why})`;
   if (event.type === "started" || event.type === "ended") return runLine(event);
+  return troubleLine(name, event);
+}
+
+/** The line of a runner's trouble, in its name: a claim it lost, and an error (a renew or a stop that failed), which
+ *  goes to stderr. Undefined for any other event. The runner beside a server says them the same way (beside.ts), so a
+ *  lapse of every claim at once shows its cause. */
+export function troubleLine(name: string, event: RunnerEvent): string | undefined {
+  if (event.type === "claim-lost") return `Runner ${name} lost its claim on ${event.runId} (${event.why})`;
+  if (event.type === "error") return `Runner ${name}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`;
   return undefined;
 }
 
@@ -461,7 +482,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
       // The runner subcommand ends what a crashed runner of this server left (never under --faux).
       janitor: true,
       onEvent: (event) => {
-        if (event.type === "error") return void console.error(`Runner ${runnerOf}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`);
+        if (event.type === "error") return void console.error(troubleLine(runnerOf, event));
         const line = said(runnerOf, event);
         if (line) console.log(line);
       },

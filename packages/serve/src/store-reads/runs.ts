@@ -6,7 +6,7 @@
 // shows its stored cost. These reads carry no secret text; the server's view layer cuts what it serves (an error, a review,
 // the rows) by the run's handed sign-ins.
 import type { Context } from "@earendil-works/chord/context";
-import { type ImportedFrom, type RunRow, type Store, stoppedByPerson } from "../store/store.js";
+import { type ImportedFrom, type RunLabels, type RunRow, type Store, stoppedByPerson } from "../store/store.js";
 import { spentOverStore } from "./cap.js";
 
 /** A revision's kind, as the row names it. */
@@ -24,7 +24,12 @@ export interface RunRowView {
   readonly state: RunReadState;
   readonly startedAt: string;
   readonly endedAt?: string;
+  /** What the run cost (a run still going: its booked-so-far spend); absent when unknown, and absent when an ended run's
+   *  stored cost is only the most it can have cost (`costAtMostUsd`), as the store's row reads it (RunRow.costUsd). */
   readonly costUsd?: number;
+  /** An ended run's stored cost when that is the most it can have cost, not its cost (RunRow.costAtMostUsd): said "at
+   *  most", never summed as spend. Absent otherwise. */
+  readonly costAtMostUsd?: number;
   readonly summary?: string;
   readonly archivedAt?: string;
   readonly importedFrom?: ImportedFrom;
@@ -69,6 +74,7 @@ function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind,
     startedAt: isoOf(run.startedAt),
     ...(over && run.endedAt !== null ? { endedAt: isoOf(run.endedAt) } : {}),
     ...(cost !== null ? { costUsd: cost } : {}),
+    ...(over && run.costAtMostUsd !== null ? { costAtMostUsd: run.costAtMostUsd } : {}),
     ...(over && run.summary !== null ? { summary: run.summary } : {}),
     ...(archivedAt !== null ? { archivedAt: isoOf(archivedAt) } : {}),
     ...(run.importedFrom !== null ? { importedFrom: { source: run.importedFrom.source, session: run.importedFrom.session } } : {}),
@@ -83,20 +89,21 @@ function joins(store: Store, context: Context) {
     async of(run: RunRow): Promise<RunRowView> {
       if (!agentArchived.has(run.agentId)) agentArchived.set(run.agentId, (await store.agents.get(run.agentId))?.archivedAt ?? null);
       if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, ((await store.agents.revision(run.revisionId))?.kind as RevisionKind) ?? "agentic");
-      // A run that has not ended shows the spend booked so far (the cap's own reading over the journal, the figure it holds
-      // the run to), since cost_usd is written only at the end; an ended run shows its stored cost.
+      // A run that has not ended shows what it has spent so far over the journal (spentOverStore: never the hold of a step
+      // still running), since cost_usd is written only at the end; an ended run shows its stored cost.
       const cost = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spentOverStore(store, run.id, context) : run.costUsd;
       return viewOf(run, agentArchived.get(run.agentId)!, kinds.get(run.revisionId)!, cost);
     },
   };
 }
 
-/** The runs, newest first; `agent` and `revision` narrow it. Archived runs are listed too (the server filters them), with
- *  the archive time coalesced onto each row, and a not-ended run's cost its booked-so-far spend. */
-export async function listRuns(store: Store, filter: { agent?: string; revision?: string }, context: Context): Promise<RunRowView[]> {
+/** The runs, newest first; `agent`, `revision` and `labels` (every one held) narrow it. Archived runs are listed too (the
+ *  server filters them), with the archive time coalesced onto each row, and a not-ended run's cost its booked-so-far spend. */
+export async function listRuns(store: Store, filter: { agent?: string; revision?: string; labels?: RunLabels }, context: Context): Promise<RunRowView[]> {
   const runs = await store.runs.list({
     ...(filter.agent !== undefined ? { agentId: filter.agent } : {}),
     ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}),
+    ...(filter.labels !== undefined ? { labels: filter.labels } : {}),
   });
   const join = joins(store, context);
   const views: RunRowView[] = [];

@@ -80,7 +80,8 @@ export interface TaskSpec {
 	params?: Record<string, ParamSpec>;
 	setup?: Call[];
 	instruction: string;
-	/** deny: done through the UI; the agent gets no shell or exec, and the oracle only the agent's groups. Default allow. */
+	/** deny: the agent gets no shell or exec (it keeps the files group: only checks that need the UI make the task need it),
+	 *  and the oracle only the agent's UI groups. Default allow. */
 	exec?: "allow" | "deny";
 	budget: Budget;
 	checks: Check[];

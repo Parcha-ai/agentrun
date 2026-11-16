@@ -2,8 +2,8 @@
 // the words a model reads cannot drift from the code that answers them:
 //   spec/computer/computer.d.ts                                     the `computer` object a script drives, whole;
 //   packages/run-adapters/src/kernel/registry/computer-surface.generated.ts
-//       the per-step tools' JSON schemas (computer_observe, computer_act, computer_screenshot, computer_script), and the
-//       same declarations split by group, so a run's prompt declares only what its computer offers.
+//       the per-step tools' JSON schemas (computer_observe, computer_act, computer_screenshot), and the same
+//       declarations split by group, so a codemode script's prompt declares only what its computer offers.
 // node scripts/generate-computer-surface.mjs writes them; --check compares them with what is committed and fails on any
 // difference (a test runs it). Key and role unions are read from packages/computer/dist/protocol.js: build it first.
 import { readFile, writeFile } from 'node:fs/promises';
@@ -51,7 +51,7 @@ const referencesOf = (node) => {
 
 // The types a script or a tool's arguments reach, from Computer and the tools' arguments: the protocol's first, in the
 // order they are reached, then the surface's in its file's order.
-const TOOL_ARGS = { computer_observe: 'ObserveArgs', computer_act: 'ActArgs', computer_screenshot: 'ScreenshotArgs', computer_script: 'ScriptArgs' };
+const TOOL_ARGS = { computer_observe: 'ObserveArgs', computer_act: 'ActArgs', computer_screenshot: 'ScreenshotArgs' };
 // A name in api.ts is its own type there, else the protocol's it imports; a name in protocol.ts is always the protocol's.
 const reachedApi = new Set();
 const reachedWire = new Set();
@@ -82,15 +82,11 @@ const indent = (text) => text.replace(/\t/g, '  ');
 // request of a run with a computer; spec/computer/computer.d.ts keeps the whole text, comments and all.
 const printer = ts.createPrinter({ removeComments: true, omitTrailingSemicolon: false });
 const anyString = (node) => ts.isTypeAliasDeclaration(node) && ts.isUnionTypeNode(node.type) && node.type.types.some((each) => each.kind === ts.SyntaxKind.StringKeyword);
-// The types computer_act's own schema already spells out (a script's steps are the tool's): named once there, and
-// here only by where to read them. computer_script is offered only beside computer_act (computerToolsFor).
-const SAID_BY_ACT = { UiStep: "computer_act's steps", UiExpect: "computer_act's expect" };
 // Closed lists the model reads elsewhere (a role in every outline, the kind and OS in its kind skill): a string here.
 const AS_STRING = new Set(['UiRole', 'ComputerKind', 'ComputerOs']);
 /** A declaration or a member as a model reads it: one line, no comments, no `export`, `(typeof X)[number]` expanded. */
 const compactOf = (node, source) => {
   const name = ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node) ? node.name.text : undefined;
-  if (name && Object.hasOwn(SAID_BY_ACT, name)) return `type ${name} = object; // ${SAID_BY_ACT[name]}`;
   if (anyString(node) || AS_STRING.has(name)) return `type ${name} = string;`;
   return printedOf(node, source);
 };
@@ -114,8 +110,9 @@ const typeList = [...wireNames.map((name) => [name, wireTypes.get(name), wire]),
   text: indent(textOf(node, source)),
   compact: compactOf(node, source),
   uses: [...referencesOf(node)].filter((used) => used !== name && listed.has(used)),
-  // What its compact form names: nothing, where it is the tool's; never a type it reads as `string`.
-  compactUses: Object.hasOwn(SAID_BY_ACT, name) ? [] : [...referencesOf(node)].filter((used) => used !== name && listed.has(used) && !AS_STRING.has(used)),
+  // What its compact form names: never a type it reads as `string`. A script's steps are declared whole here: under
+  // its agent's surface "code" no computer_act is listed beside codemode to spell them out.
+  compactUses: [...referencesOf(node)].filter((used) => used !== name && listed.has(used) && !AS_STRING.has(used)),
 }));
 
 // Computer's members, each with the groups its JSDoc names (`@group ui`; there with any of them), or none: always there.

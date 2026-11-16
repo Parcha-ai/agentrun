@@ -39,13 +39,19 @@ test("a definition's max_cost_usd is the agent's default cap: kept with its revi
   await follow(api, uncapped.run_id, ["completed"]);
   // Refused: anything but a number of at least 0 (null included).
   for (const value of [-1, "1", null]) assert.deepEqual(fields(await api("POST", "/agents", agent(`bad-${String(value)}`, { max_cost_usd: value }))), [["definition.max_cost_usd", "wrong_type"]], String(value));
-  // A workflow agent keeps a default cap, and its cap mode, as an agentic one does: each run started with none takes it.
-  const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_cost_usd: 1, cap_mode: "strict" }));
+  // A workflow agent keeps a default cap as an agentic one does: each run started with none takes it.
+  const flow = await api("POST", "/agents", flowAgent("flow", answerFlow(), { max_cost_usd: 1 }));
   assert.deepEqual(flow.body.error?.fields?.map((f) => [f.field, f.reason]) ?? [], []);
   assert.equal(flow.status, 201);
-  assert.deepEqual([flow.body.definition.max_cost_usd, flow.body.definition.cap_mode], [1, "strict"]);
+  assert.deepEqual([flow.body.definition.max_cost_usd, "cap_mode" in flow.body.definition], [1, false]);
   const flowRun = (await api("POST", "/agents/flow/runs", { input: { question: "What is six times seven?" } })).body;
-  assert.deepEqual([flowRun.cost.cap_usd, flowRun.cap_mode], [1, "strict"], JSON.stringify(flowRun));
+  assert.deepEqual([flowRun.cost.cap_usd, "cap_mode" in flowRun, "overshoot_bound_usd" in flowRun.cost], [1, false, false], JSON.stringify(flowRun));
+  // One cap mode, the worst case: cap_mode is no field, on a definition or a run start (422 not_allowed, nothing made).
+  const moded = await api("POST", "/agents", flowAgent("flow-moded", answerFlow(), { max_cost_usd: 1, cap_mode: "strict" }));
+  assert.deepEqual([moded.status, ...fields(moded)], [422, ["definition.cap_mode", "not_allowed"]], JSON.stringify(moded.body));
+  const runModed = await api("POST", "/agents/flow/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 1, cap_mode: "strict" });
+  assert.deepEqual([runModed.status, ...fields(runModed)], [422, ["cap_mode", "not_allowed"]], JSON.stringify(runModed.body));
+  assert.equal(runModed.body.error.fields[0].message, "The body keeps no field cap_mode.");
   await follow(api, flowRun.run_id, ["completed", "failed"]);
   const flowZero = await api("POST", "/agents", flowAgent("flow-zero", answerFlow(), { max_cost_usd: 0 }));
   assert.equal(flowZero.status, 201, JSON.stringify(flowZero.body));
