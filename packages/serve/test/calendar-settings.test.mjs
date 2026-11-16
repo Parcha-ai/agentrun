@@ -6,6 +6,7 @@
 // only on a local install; a read kept 5 minutes, then revalidated with its ETag (a 304 keeps the parsed copy).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, serve, storeBytes, withEnv } from "./support.mjs";
@@ -198,6 +199,57 @@ test("a read is kept for 5 minutes with no request; past that it asks with its E
   assert.equal((await readCalendar(faux.at("/old/basic.ics"), reach)).name, "Work", "a redirect is followed");
   for (let i = 0; i < 6; i++) faux.move(`/loop/${i}`, `/loop/${i + 1}`);
   await assert.rejects(readCalendar(faux.at("/loop/0"), reach), /redirected more than 5 times/);
+});
+
+/** A calendar server whose saved address redirects (302) to `to.path`, each of its calendars sent with ETag "1" and a 304
+ *  to If-None-Match "1", as two servers that number their versions alike would: `to.path` set by the test. Each request is
+ *  logged with the If-None-Match it carried. */
+async function sameTagCalendars(t) {
+  const files = { "/a.ics": FAUX_CALENDAR.replace("X-WR-CALNAME:Work", "X-WR-CALNAME:Calendar A"), "/b.ics": FAUX_CALENDAR.replace("X-WR-CALNAME:Work", "X-WR-CALNAME:Calendar B") };
+  const to = { path: "/a.ics" };
+  const log = [];
+  const server = createServer((req, res) => {
+    const path = (req.url ?? "/").split("?")[0];
+    const tag = req.headers["if-none-match"];
+    if (path === "/saved.ics") {
+      log.push({ path, tag, status: 302 });
+      return res.writeHead(302, { location: to.path }).end();
+    }
+    const text = files[path];
+    const status = !text ? 404 : tag === '"1"' ? 304 : 200;
+    log.push({ path, tag, status });
+    res.writeHead(status, status === 200 ? { etag: '"1"', "content-type": "text/calendar" } : { etag: '"1"' }).end(status === 200 ? text : undefined);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve)); // key-gate: loopback-rule a test's calendar server on loopback only
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  return { saved: `http://127.0.0.1:${server.address().port}/saved.ics`, to, log }; // key-gate: loopback-rule the test server's address
+}
+
+test("a saved address that now redirects to another calendar, one that happens to use the same ETag: the read past the 5 minutes is the new calendar, read in full, the old one's validators never sent there", async (t) => {
+  const { forgetCalendarsForTests, readCalendar, staleCalendarsForTests } = await import("../dist/calendar/fetch.js");
+  forgetCalendarsForTests();
+  t.after(() => forgetCalendarsForTests());
+  const { saved, to, log } = await sameTagCalendars(t);
+  const reach = { loopback: true };
+  assert.equal((await readCalendar(saved, reach)).name, "Calendar A");
+  to.path = "/b.ics";
+  staleCalendarsForTests();
+  const now = await readCalendar(saved, reach);
+  assert.equal(now.name, "Calendar B", "the calendar the address redirects to now, not the old one kept");
+  assert.deepEqual(log.filter((one) => one.path === "/b.ics"), [{ path: "/b.ics", tag: undefined, status: 200 }], "B's server saw no If-None-Match");
+});
+
+test("a saved address that still redirects to the same calendar revalidates there with its ETag, and the 304 keeps the parsed copy", async (t) => {
+  const { forgetCalendarsForTests, readCalendar, staleCalendarsForTests } = await import("../dist/calendar/fetch.js");
+  forgetCalendarsForTests();
+  t.after(() => forgetCalendarsForTests());
+  const { saved, log } = await sameTagCalendars(t);
+  const reach = { loopback: true };
+  const first = await readCalendar(saved, reach);
+  assert.equal(first.name, "Calendar A");
+  staleCalendarsForTests();
+  assert.equal(await readCalendar(saved, reach), first, "a 304 keeps the parsed copy");
+  assert.deepEqual(log.filter((one) => one.path === "/a.ics"), [{ path: "/a.ics", tag: undefined, status: 200 }, { path: "/a.ics", tag: '"1"', status: 304 }]);
 });
 
 test("a read that fails is said without the address, whatever the server or the parser echoes", async (t) => {
