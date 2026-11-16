@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { isBoxImage } from "../dist/box-image.js";
+import { BOX_IMAGE_REPOSITORY } from "../dist/box-image.js";
 import { CLOUDFLARE_RELAY_VERSION } from "../dist/descriptors/cloudflare.js";
 
 const relay = await import("../relays/cloudflare/src/index.ts");
@@ -131,7 +131,7 @@ test("the template's version is the one the provider's descriptor speaks, and it
 	const config = JSON.parse(await readFile(new URL("../relays/cloudflare/wrangler.json", import.meta.url), "utf8"));
 	const built = config.containers[0].images.box.build_vars.BOX_IMAGE;
 	assert.equal(config.vars.BOX_IMAGE, built);
-	assert.ok(isBoxImage(built), built);
+	assert.match(built, new RegExp(`^${BOX_IMAGE_REPOSITORY.replaceAll(".", "\\.")}:[0-9a-f]{12}$`));
 	assert.equal(await readFile(new URL("../relays/cloudflare/Dockerfile", import.meta.url), "utf8"), "ARG BOX_IMAGE\nFROM ${BOX_IMAGE}\n");
 });
 
