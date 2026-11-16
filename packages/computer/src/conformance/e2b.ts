@@ -15,6 +15,7 @@
 // disk's object API (the shared archilRunFolder, ./archil.ts: the host's disk SDK with COMPUTER_ARCHIL_API_KEY and
 // COMPUTER_ARCHIL_S3_URL, or an object API given as archil.objects); with no disk named it makes none, and the cases
 // are skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
+import { boxE2bTemplate } from "../box-image.js";
 import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
 import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
@@ -42,6 +43,8 @@ export const E2B_ENV = {
 	maxLifetimeMs: "COMPUTER_E2B_MAX_LIFETIME_MS",
 	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_E2B_USER",
+	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
+	connect: "COMPUTER_E2B_CONNECT",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -65,8 +68,11 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const daemonPath = env[E2B_ENV.daemon] || undefined;
 	const kind = env[E2B_ENV.kind] || undefined;
 	const daemonUser = env[E2B_ENV.user] || undefined;
+	const connect = env[E2B_ENV.connect] || undefined;
 	return {
 		apiKey,
+		// create() refuses any other value in words.
+		...(connect === undefined ? {} : { connect: connect as "exec" | "dial" }),
 		...(domain === undefined ? {} : { domain }),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		// create() refuses any other kind in words.
@@ -84,7 +90,7 @@ export const conformanceNotes: string[] = [
 	"e2b: E2B Hobby plan: every sandbox's timeout is its lifetime, capped at 30 minutes for the run (Hobby caps a sandbox at 1 h, Pro at 24 h). The daemon is a child of E2B's envd, started as a background command; network none is no internet access and no public traffic, read back from E2B and probed from inside; no stream() (a screen is streamed through agentrun, never a vendor URL), so screen.stream is skipped.",
 ];
 
-export interface E2BModuleOptions extends Pick<E2BOptions, "Sandbox" | "daemonPath" | "timeouts" | "onNote"> {
+export interface E2BModuleOptions extends Pick<E2BOptions, "Sandbox" | "daemonPath" | "timeouts" | "onNote" | "dial"> {
 	/** Where the settings are read; default process.env. */
 	env?: Record<string, string | undefined>;
 	/** Builds this package's daemon for linux/amd64 stamped with version, and gives its path; default go build. */
@@ -106,15 +112,30 @@ function live(env: Record<string, string | undefined>): void {
 const DESKTOP_TEMPLATE = "desktop";
 const BASE_TEMPLATE = "base";
 
-/** The template every computer of the run starts from: COMPUTER_E2B_TEMPLATE, or E2B Desktop's (the plain one for kind linux). */
+/**
+ * The template every computer of the run starts from: COMPUTER_E2B_TEMPLATE; else on dial the box template, since only the
+ * box image holds agentrun-dial; else E2B Desktop's (the plain one for kind linux).
+ */
 export function conformanceImage({ env = process.env }: Pick<E2BModuleOptions, "env"> = {}): string {
-	return env[E2B_ENV.template] || (env[E2B_ENV.kind] === "linux" ? BASE_TEMPLATE : DESKTOP_TEMPLATE);
+	const named = env[E2B_ENV.template];
+	if (named) return named;
+	if (env[E2B_ENV.connect] === "dial") return boxE2bTemplate();
+	return env[E2B_ENV.kind] === "linux" ? BASE_TEMPLATE : DESKTOP_TEMPLATE;
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
-export async function createProvider({ env = process.env, Sandbox, daemonPath, timeouts, onNote }: E2BModuleOptions = {}): Promise<E2BProvider> {
+export async function createProvider({ env = process.env, Sandbox, daemonPath, timeouts, onNote, dial }: E2BModuleOptions = {}): Promise<E2BProvider> {
 	live(env);
-	return create({ ...settingsFromEnv(env), ...(Sandbox ? { Sandbox } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(timeouts ? { timeouts } : {}), ...(onNote ? { onNote } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return create({ ...settingsFromEnv(env), ...(Sandbox ? { Sandbox } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(timeouts ? { timeouts } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+}
+
+/**
+ * A dial machine (COMPUTER_E2B_CONNECT=dial) dials the server that minted its token, so its Core run happens inside the
+ * public server's process (packages/serve/scripts/dial-conformance.mjs, which gives createProvider its dial), never from
+ * this CLI, which has no public server: refused in words.
+ */
+export function dialKit(): never {
+	throw new Error(`an E2B machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process (packages/serve/scripts/dial-conformance.mjs --provider e2b with ${E2B_ENV.connect}=dial)`);
 }
 
 /**

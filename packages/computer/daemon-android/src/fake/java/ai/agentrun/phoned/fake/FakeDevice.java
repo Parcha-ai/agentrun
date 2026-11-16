@@ -737,30 +737,66 @@ public final class FakeDevice implements Device {
 		}
 	};
 
+	/** How often the screen was read, and how many of those reads were encoded: what a watch costs the phone. */
+	public volatile int screenReads;
+	public volatile int encodes;
+	/** The pixels the last watchShot read, as the scene draws them: its shade and size. */
+	private String lastWatched;
+	/** Run as a watchShot has read the screen: a test's cancel at that moment. */
+	public volatile Runnable afterWatchRead;
+
 	@Override
 	public Screen screen() {
-		return (crop, maxEdge, format, quality) -> {
-			if (secure != null) return new Shot(new byte[0], 0, 0, secure);
-			Rect r = crop == null ? new Rect(0, 0, width, height) : crop;
-			int w = r.width();
-			int h = r.height();
-			if (maxEdge > 0 && Math.max(w, h) > maxEdge) {
-				double f = (double) maxEdge / Math.max(w, h);
-				w = Math.max(1, (int) Math.round(w * f));
-				h = Math.max(1, (int) Math.round(h * f));
+		return new Screen() {
+			@Override
+			public Shot shot(Rect crop, int maxEdge, String format, int quality) {
+				screenReads++;
+				return frame(crop, maxEdge, format, quality, shade());
 			}
-			return new Shot(encode(w, h, format, quality), w, h, null);
+
+			@Override
+			public Shot watchShot(int maxEdge, int quality, boolean skipUnchanged) {
+				screenReads++;
+				int shade = shade();
+				String pixels = secure != null ? null : shade + "|" + width + "x" + height;
+				boolean same = pixels != null && pixels.equals(lastWatched);
+				lastWatched = pixels;
+				Runnable after = afterWatchRead;
+				if (after != null) after.run();
+				if (skipUnchanged && same) return null;
+				return frame(null, maxEdge, "jpeg", quality, shade);
+			}
+
+			@Override
+			public void forgetWatched() {
+				lastWatched = null;
+			}
 		};
 	}
 
-	/** A frame of the scene: the front window's id as a shade, so a change of page changes the bytes. */
-	private byte[] encode(int w, int h, String format, int quality) {
+	private Shot frame(Rect crop, int maxEdge, String format, int quality, int shade) {
+		if (secure != null) return new Shot(new byte[0], 0, 0, secure);
+		Rect r = crop == null ? new Rect(0, 0, width, height) : crop;
+		int w = r.width();
+		int h = r.height();
+		if (maxEdge > 0 && Math.max(w, h) > maxEdge) {
+			double f = (double) maxEdge / Math.max(w, h);
+			w = Math.max(1, (int) Math.round(w * f));
+			h = Math.max(1, (int) Math.round(h * f));
+		}
+		encodes++;
+		return new Shot(encode(w, h, format, quality, shade), w, h, null);
+	}
+
+	/** The scene's shade: the front window's id, so a change of page changes the pixels. */
+	private synchronized int shade() {
+		return windows.isEmpty() ? 0 : (windows.get(0).id * 37) % 200;
+	}
+
+	/** A frame of the scene in its shade. */
+	private static byte[] encode(int w, int h, String format, int quality, int shade) {
 		BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
 		Graphics2D g = image.createGraphics();
-		int shade;
-		synchronized (this) {
-			shade = windows.isEmpty() ? 0 : (windows.get(0).id * 37) % 200;
-		}
 		g.setColor(new Color(shade, 120, 200 - shade));
 		g.fillRect(0, 0, w, h);
 		g.dispose();

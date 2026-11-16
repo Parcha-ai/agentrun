@@ -452,6 +452,13 @@ test("a web: case checks: unavailable or a fixture file of the case whose answer
   await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
 });
 
+test("a web: fixture with no search is refused when the package is read, in the words the eval's case read uses", async (t) => {
+  const files = { "fixtures/web.json": JSON.stringify({ fetch: { answers: [], default: { error: "no" } } }) };
+  const dir = await webPackage(t, "web-nosearch", "fixtures/web.json", [["web_fetch", { url: "https://example.test/" }]], files);
+  assert.throws(() => readCases(dir, ["web-nosearch"]), (e) => e instanceof CaseError && /web-nosearch\/fixtures\/web\.json: a web fixture is \{search: \{answers, default\}, fetch: \{answers, default\}\}/.test(e.message));
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/web-nosearch\/fixtures\/web\.json: a web fixture is \{search: \{answers, default\}, fetch: \{answers, default\}\}/.test(e.message), "validate-template reads it as eval-template does");
+});
+
 test("a grader's prompt stays under its cap: the longest results lose their middle first, then the middle calls, and the list says so", () => {
   const grader = { file: "g.md", type: "llm", rubric: "Pass if it fetched the page." };
   const call = (i, result) => ({ tool: "web_fetch", arguments: { url: `https://example.test/${i}` }, status: "success", result });
