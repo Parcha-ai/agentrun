@@ -119,7 +119,7 @@ test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready
 });
 
 /** Why a Daytona sandbox is refused in Mode 2: it takes no Archil mount, and its descriptor says why. */
-const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
+const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
 
 /** Why a vendor's sandbox, or desktop, that would mount Archil is refused in Mode 2: it needs Archil's image in the
  *  owner's own vendor account, which this server can't put there yet. No built-in provider is refused so (every one

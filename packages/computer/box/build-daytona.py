@@ -1,6 +1,8 @@
 # Build the Archil image (this folder's Dockerfile) as a Daytona snapshot, with Daytona's Python SDK (`pip install
 # daytona`) and its key in DAYTONA_API_KEY, and print the snapshot's name, which a Daytona computer's spec names as its
-# image (no Daytona computer takes an Archil mount: Archil's client hangs on its sandboxes). The name is the recipe's hash (the Dockerfile and the files it copies, install.sh among them), so a changed recipe is
+# image: a Daytona computer with an Archil mount, on a self-hosted target with an Archil egress relay (archilEgress),
+# starts from it (on Daytona's hosted cloud Archil's client hangs, so no computer there takes the mount). The name is
+# the recipe's hash (the Dockerfile and the files it copies, install.sh among them), so a changed recipe is
 # a new snapshot, and the same recipe is the one built before: Daytona then refuses the name, and the printed name is
 # the one to use. Its size is 2 CPUs, 4 GB of memory and a 10 GB disk.
 #

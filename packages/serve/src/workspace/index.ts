@@ -31,7 +31,7 @@ export { NO_PROGRAMS_WORDS, portOf } from "./computer-ports.js";
 export { COMPUTER_MCP_NAME, computerMcp, type ComputerMcpAnswer, mcpAnswerOf } from "./computer-mcp.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
-  type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
+  registryHere, type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
 export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 export {

@@ -1,10 +1,14 @@
-// Daytona's descriptor: a sandbox on Daytona's cloud, with GPUs when asked; no mount of the run's folder yet.
+// Daytona's descriptor: a sandbox on Daytona's cloud, with GPUs when asked; the run's folder on an Archil disk only where
+// the operator gives an Archil egress relay (a self-hosted Daytona target), never on Daytona's hosted cloud.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
 import { SANDBOX } from "./shared.js";
 
-/** Why a Daytona computer takes no Archil mount: check() refuses one in these words. */
-export const DAYTONA_NO_ARCHIL = "Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes";
+/** The key that turns on a Daytona computer's Archil mount: the operator's Archil egress relay (archilEgress). */
+export const DAYTONA_ARCHIL_EGRESS = "DAYTONA_ARCHIL_EGRESS";
+
+/** Why a Daytona computer made with no Archil egress takes no Archil mount: check() refuses one in these words. */
+export const DAYTONA_NO_ARCHIL = `Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets ${DAYTONA_ARCHIL_EGRESS}`;
 
 /** The image a Daytona computer starts from when its spec names "default": Daytona's own default snapshot. */
 export const DAYTONA_DEFAULT_SNAPSHOT = "default";
@@ -87,13 +91,17 @@ export const DAYTONA = defineProvider({
 		{ name: "DAYTONA_API_KEY", option: "apiKey", required: true },
 		{ name: "DAYTONA_API_URL", option: "apiUrl", required: false },
 		{ name: "DAYTONA_TARGET", option: "target", required: false },
+		{ name: DAYTONA_ARCHIL_EGRESS, option: "archilEgress", required: false },
 	],
 	metered: true,
-	// No mount: Archil's client (0.10.1) mounts on Daytona's container sandboxes, but nothing reads its /dev/fuse after,
-	// so the first statx of the folder hangs, on every kernel and mount shape tried (live, 11-14), and Daytona offered
-	// no linux-vm class to try instead. An Archil mount is refused in these words, before any request.
+	// No mount by default: on Daytona's hosted cloud, Archil's client (0.10.1) mounts on its container sandboxes, but
+	// nothing reads its /dev/fuse after, so the first statx of the folder hangs, on every kernel and mount shape tried
+	// (live, 11-14). An Archil mount is refused in these words, before any request. A self-hosted Daytona target whose
+	// sandboxes reach Archil through the operator's egress relay mounts it (live, 11-14): the operator sets
+	// DAYTONA_ARCHIL_EGRESS, and a provider made with it takes an Archil mount (mountsOf).
 	mounts: [],
 	unmounted: { archil: DAYTONA_NO_ARCHIL },
+	mountsWith: { archil: DAYTONA_ARCHIL_EGRESS },
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
 	// networkBlockAll. Open and a list: the sandbox is not blocked (the account's tier may still limit where it goes), and
 	// its programs' one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts
@@ -102,7 +110,8 @@ export const DAYTONA = defineProvider({
 	// A linux computer, with GPUs when asked.
 	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
-	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset.
+	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset. A
+	// computer with an Archil mount needs a snapshot of box/Dockerfile (box/build-daytona.py prints its name).
 	imageEnv: "AGENTRUN_DAYTONA_SNAPSHOT",
 	load: () => import("../daytona.js"),
 });

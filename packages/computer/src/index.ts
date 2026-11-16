@@ -116,7 +116,7 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,

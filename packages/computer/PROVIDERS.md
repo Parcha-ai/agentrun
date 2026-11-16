@@ -677,8 +677,13 @@ descriptor, and each computer's `hello` against `capabilities()`. [spec/computer
 says what each member promises.
 
 A mount kind your machines can't take goes in the descriptor's `unmounted`, with why in one sentence, and `check()`
-refuses it in those words. Daytona declares no mount: `unmounted: { archil: "Archil mounts don't work on Daytona yet:
-Archil's client hangs on its sandboxes" }`.
+refuses it in those words. A kind they take only where the operator sets one of your keys goes in `mountsWith` as well,
+by that key's name (an optional key): a provider made with that key declares the kind, one made without it refuses it in
+the `unmounted` words, and `mountsOf(descriptor, set)` gives the mounts for the keys set, which a server reads without
+loading your module. On a `MachineHost`, give the host that descriptor (`{ ...DESCRIPTOR, ...mountsOf(DESCRIPTOR, set) }`),
+so `capabilities()` and `check()` read it. Daytona declares no mount, `unmounted: { archil: "Archil mounts don't work on
+Daytona's hosted cloud, ..." }`, and `mountsWith: { archil: "DAYTONA_ARCHIL_EGRESS" }`: a self-hosted Daytona target
+whose sandboxes reach Archil through an Archil egress relay takes the mount.
 
 If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
 (`src/provider.ts`) directly, as [the last exec shape](#exec-shapes-that-work) does: the whole lifecycle, claims and
