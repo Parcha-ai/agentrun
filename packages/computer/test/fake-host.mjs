@@ -95,7 +95,7 @@ const START = Date.now();
  * A fake host. Its calls answer plain values or throw, as src/host.ts says. Options:
  *  - facts: over the defaults (child daemon, vendor lifetime). With labels "machine" it keeps no labels: a machine has
  *    the name create gave it (add's name), get and list answer no labels, list answers every machine, and the label
- *    script reads and writes the machine's label file (add's file);
+ *    script reads and writes the machine's label file (add's file); a read of a machine set wedged never ends;
  *  - descriptor: the host's, FAKE_DESCRIPTOR by default (network none, an archil mount, a linux and a desktop
  *    configuration, no GPU);
  *  - create: "ok", "fail" (refused: nothing made), "hold" (answers once fake.release() is called, or throws the error
@@ -124,10 +124,9 @@ const START = Date.now();
  *    socketsFail: a path among them whose chmod fails;
  *  - stale: the listing reads each machine as its create made it, running, forever: it keeps a deleted machine, and
  *    shows create's end and labels after a timer moved (E2B's Sandbox.list, read live 11-14). get stays current.
- *  - clock ({ now() }) with the vendor's own timers on it: idle, the ms after which it ends a machine no exec or
- *    keepalive reached; backstop, the vendor's delete timer set from the request's backstopAt, read back as endsAt, which
- *    ends the machine there (facts.backstop is the claim alone: a host claiming it without this one lies);
- *  - keepalive: the host has keepalive, which restarts the idle timer; its first keepaliveFails calls throw.
+ *  - clock ({ now() }) with the vendor's own timers on it: idle, the ms after which it ends a machine no exec reached;
+ *    backstop, the vendor's delete timer set from the request's backstopAt, read back as endsAt, which ends the machine
+ *    there.
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -159,8 +158,6 @@ export function fakeHost({
 	clock = { now: () => Date.now() },
 	idle,
 	backstop = false,
-	keepalive = false,
-	keepaliveFails = 0,
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -430,7 +427,7 @@ export function fakeHost({
 					await done();
 					proc.exit(5);
 				};
-			} else queueMicrotask(print);
+			} else if (!m.wedged) queueMicrotask(print);
 			return proc;
 		}
 		if (kind === "upload") {
@@ -669,18 +666,6 @@ export function fakeHost({
 			m.touched = clock.now();
 			return run(m, argv).api;
 		},
-		...(keepalive
-			? {
-					async keepalive(id, ctx) {
-						const m = machines.get(id);
-						await step("keepalive", ctx, m);
-						timers(m);
-						if (gone(m)) throw new NotFound(`machine ${id} not found`);
-						if (keepaliveFails-- > 0) throw new Error("503: the timer service is busy");
-						m.touched = clock.now();
-					},
-				}
-			: {}),
 		...(fileApi
 			? {
 					async upload(id, path, bytes, ctx) {
@@ -702,7 +687,7 @@ export function fakeHost({
 						await step("extend", ctx, m);
 						if (gone(m)) throw new NotFound(`machine ${id} not found`);
 						if (timer === "limit") throw new HostError("limit", "no whole number of seconds reaches it; nothing moved");
-						const most = Date.parse((keeps() ? JSON.parse(m.file ?? "{}") : m.labels)["agentrun.computer.max-deadline"]);
+						const most = Date.parse(m.labels["agentrun.computer.max-deadline"]);
 						if (host.facts.lifetime === "janitor") {
 							m.labels[DEADLINE_LABEL] = new Date(Math.min(Math.ceil(end.getTime() / 1000) * 1000, most)).toISOString();
 							return;

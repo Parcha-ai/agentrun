@@ -1,7 +1,7 @@
 // The shared adapter over a host that keeps no labels (HostFacts.labels "machine"): the adapter writes a machine's labels
-// to a root-only file in it right after it runs, reads them back from there, rewrites them on extend, and sweeps a
-// request's machine with no file only by the request's own name and once it is older than any create's write. The
-// fake host plays such a vendor: it keeps the name create gave, answers no labels, and lists every machine.
+// to a root-only file in it right after it runs, reads them back from there, and sweeps a request's machine with no file
+// only by the request's own name and once it is older than any create's write. The fake host plays such a vendor: it
+// keeps the name create gave, answers no labels, lists every machine, and has no extend.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -20,7 +20,7 @@ const NAME = "agentrun.computer.name";
 const DEADLINE = "agentrun.computer.deadline";
 const MAX = "agentrun.computer.max-deadline";
 const SPEC = { image: "img", lifetimeMs: 600_000, network: "none" };
-const KEEPS = { facts: { labels: "machine" } };
+const KEEPS = { facts: { labels: "machine" }, timer: "none" };
 const dir = mkdtempSync(join(tmpdir(), "computer-hosted-labels-"));
 const DAEMON_PATH = join(dir, "computerd");
 writeFileSync(DAEMON_PATH, "a stand-in for computerd, linux/amd64\n");
@@ -58,7 +58,8 @@ test("a host that keeps no labels has them written to a root-only file once the 
 	assert.equal(file[COMPUTER], "1");
 	assert.equal(file[NAME], ref.name);
 	assert.equal(file.run, "r1");
-	assert.ok(file[DEADLINE] && file[MAX], "the deadline and the most it may move to are in the file");
+	assert.ok(file[DEADLINE], "the deadline is in the file");
+	assert.equal(file[MAX], undefined, "and no most it may move to: the host has no extend");
 	assert.deepEqual(fake.labelRuns.filter((run) => run.write), [{ machine: m.id, path: LABEL_FILE, write: true }], "one write, at the label file");
 	const steps = fake.calls.map(([step]) => step);
 	assert.ok(steps.indexOf("exec labels") < steps.indexOf("upload"), "the file is written before the daemon's upload");
@@ -219,16 +220,29 @@ test("a retry of a request on another instance, while the first create has not w
 	assert.equal(fake.machines.size, 1);
 });
 
-test("a running machine whose label file reads as no label map fails the listing in words: it is never left out as a machine with no labels", async () => {
+test("one wedged machine never holds up a listing: each label read is bounded, and one that times out or fails leaves its machine out of this pass, told with its id and why; the rest are listed", async () => {
 	const fake = fakeHost(KEEPS);
 	const hosted = provider(fake.host);
-	const ref = made(await hosted.create(SPEC, { requestId: `unreadable-${++requests}` }));
-	const [m] = fake.machines.values();
-	m.file = "not a label map";
-	const listed = await provider(fake.host).list({});
-	assert.equal(listed.ok, false, "a fresh instance can't read the file, so its listing fails");
-	assert.equal(listed.error.code, "vendor");
-	assert.match(listed.error.message, new RegExp(`reading the labels in ${ref.id} failed \\(exit 0\\): not a label map`));
+	const refs = [];
+	for (let i = 0; i < 3; i++) refs.push(made(await hosted.create(SPEC, { requestId: `wedged-${++requests}` })));
+	const [wedged, unreadable] = fake.machines.values();
+	wedged.wedged = true;
+	unreadable.file = "not a label map";
+	// A fresh instance reads every file: the wedged machine's read never ends, the other's is no label map.
+	const notes = [];
+	const fresh = provider(fake.host, { timeouts: { ...TIMEOUTS, requestMs: 50 }, onNote: (note) => notes.push(note) });
+	const listed = made(await fresh.list({}));
+	assert.deepEqual(
+		listed.map((info) => info.ref.id),
+		[refs[2].id],
+		"the third is listed",
+	);
+	const told = Object.fromEntries(notes.map(({ computer, note }) => [computer, note]));
+	assert.deepEqual(Object.keys(told).sort(), [wedged.id, unreadable.id].sort(), "each machine left out is told, by its id, once");
+	assert.equal(notes.length, 2);
+	assert.match(told[wedged.id], new RegExp(`^reading the labels in ${wedged.id} did not end within 0\\.05 s; this listing leaves it out, and the next one reads it again$`));
+	assert.match(told[unreadable.id], new RegExp(`^reading the labels in ${unreadable.id} failed \\(exit 0\\): not a label map; this listing leaves it out, and the next one reads it again$`));
+	assert.equal(wedged.deleted || unreadable.deleted, false, "neither is touched");
 });
 
 test("a machine of the request's name with no file and no createdAt is never old enough: a sweep leaves it, for the vendor's timer", async () => {
@@ -240,44 +254,21 @@ test("a machine of the request's name with no file and no createdAt is never old
 	assert.equal(left.deleted, false);
 });
 
-test("a host that keeps no labels needs a vendor timer: lifetime vendor, or a janitor's backstop; a janitor without one is refused, naming both", () => {
-	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" } }).host), {
+test("a host that keeps no labels needs its vendor's timer (lifetime vendor) and has no extend: a janitor's host, with a backstop or not, and one with extend are refused in words", () => {
+	const janitor = 'Fakehost keeps no labels (facts.labels "machine"), so its vendor\'s timer must end its machines: a machine whose create stopped before its labels were written has none the janitor lists. Declare lifetime "vendor"';
+	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor" }, timer: "none" }).host), { message: janitor });
+	assert.throws(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor", backstop: true }, backstop: true, timer: "none" }).host), { message: janitor });
+	assert.throws(() => provider(fakeHost({ facts: { labels: "machine" } }).host), {
 		message:
-			'Fakehost keeps no labels (facts.labels "machine"), so a vendor timer must end its machines: a machine whose create stopped before its labels were written has none the janitor lists. Declare lifetime "vendor", or set the vendor\'s delete timer from req.backstopAt and declare backstop: true',
+			'Fakehost keeps no labels (facts.labels "machine") and has extend: the most a computer may live, which bounds an extend, would be read from a file inside the machine. Leave extend out: its computers end at the deadline create gave them',
 	});
-	assert.doesNotThrow(() => provider(fakeHost({ facts: { labels: "machine", lifetime: "janitor", backstop: true } }).host));
-});
-
-test("extend rewrites the file's deadline after the vendor's timer moves; with a timer the host can't move, there is no extend", async () => {
-	for (const [what, options, has] of [
-		["a vendor timer", { facts: { labels: "machine" } }, true],
-		["a vendor timer the host cannot move", { facts: { labels: "machine" }, timer: "none" }, false],
-	]) {
-		const fake = fakeHost(options);
-		const hosted = provider(fake.host);
-		assert.equal(typeof hosted.extend === "function", has, `${what}: extend`);
-		const ref = made(await hosted.create(SPEC, { requestId: `extend-${++requests}` }));
-		const [m] = fake.machines.values();
-		if (!has) {
-			assert.equal(fileOf(m)[MAX], undefined, `${what}: no most it may move to`);
-			continue;
-		}
-		const { deadline } = made(await hosted.extend(ref, 1_200_000));
-		assert.equal(fileOf(m)[DEADLINE], deadline.toISOString(), `${what}: the file holds the new deadline`);
-		assert.equal(m.init.deadline, deadline.toISOString(), `${what}: init's deadline follows`);
-		// Another instance reads the deadline the file holds, and moves it on from there.
-		const second = provider(fake.host);
-		assert.equal(made(await second.list({}))[0].deadline.toISOString(), deadline.toISOString(), `${what}: listed by another instance`);
-		const later = made(await second.extend(ref, 1_800_000)).deadline;
-		assert.equal(fileOf(m)[DEADLINE], later.toISOString());
-		assert.match((await hosted.extend(ref, 1_500_000)).error?.message ?? "", /earlier than/, `${what}: the first instance reads the file now, not as it last wrote it`);
-	}
+	assert.equal(provider(fakeHost(KEEPS).host).extend, undefined, "no extend");
 });
 
 test("a host that keeps no labels passes the provider cases a labelled host passes, case by case, the isolation of its label file among them, and leaves nothing behind", async () => {
 	const cases = conformanceCases.filter((c) => (c.group === "provider" && c.id !== "provider.deadline") || c.id === "isolation.label-file");
 	const run = async (facts) => {
-		const report = await runConformance(provider(fakeHost({ facts }).host), { image: "img", cases, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
+		const report = await runConformance(provider(fakeHost({ facts, timer: "none" }).host), { image: "img", cases, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
 		return { statuses: report.results.map(({ id, status }) => [id, status]), cleanup: report.cleanup };
 	};
 	const [labelled, kept] = [await run({}), await run({ labels: "machine" })];

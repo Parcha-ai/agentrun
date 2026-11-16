@@ -49,7 +49,7 @@ export interface SweepMachinesOptions {
 	requestMs?: number;
 	/** One whole listing's bound; default 60 s. */
 	listMs?: number;
-	/** Told, in words, of a machine not deleted or still there. */
+	/** Told, in words, of a machine not read, not deleted or still there. */
 	onWords?: (words: string) => void;
 }
 
@@ -59,7 +59,7 @@ export interface SweepMachinesOptions {
  * vendor refused is the error, with nothing deleted.
  */
 export async function sweepMachines(host: MachineHost, { labels = {}, before = new Set(), waitMs = 60_000, pollMs = 2_000, requestMs = 30_000, listMs = 60_000, onWords = () => {} }: SweepMachinesOptions = {}): Promise<Result<SweepCounts>> {
-	const listed = await foundBy(host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, { listMs, requestMs });
+	const listed = await foundBy(host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, { listMs, requestMs, onNote: ({ computer, note }) => onWords(`${computer} was not read: ${note}`) });
 	if (!listed.ok) return listed;
 	const added = listed.value.filter((machine) => !before.has(machine.id));
 	// Only a conformance run's machines: one another user of the account made during the run is not this sweep's.

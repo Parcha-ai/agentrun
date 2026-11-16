@@ -1396,25 +1396,41 @@ test("facts.labels.bytes: the adapter prices the caller's labels with its own at
 	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "" } })[0].message, new RegExp(`${GPU_LABEL} 27`));
 });
 
-/** A vendor that stores a machine's labels packed (facts.labels.packed): create packs, get and list unpack, list filters by the name alone. */
+/**
+ * A vendor whose labels are tight (a cap on their count, short values), its host declaring facts.labels.packed and
+ * storing, reading and listing labels as the adapter gives them: it never packs. Its create refuses labels past the
+ * room, as the vendor would.
+ */
 function packedHost(fake, room) {
-	const { packLabels, unpackLabels, PACKED_NAME } = VALUES;
-	const read = (m) => m && { ...m, labels: unpackLabels(m.labels) ?? {} };
 	return {
 		...fake.host,
 		facts: { ...fake.host.facts, labels: room },
 		/** Each create's request, as the adapter gave it. */
 		requests: [],
-		create(req, ctx) {
+		async create(req, ctx) {
 			this.requests.push(req);
-			const packed = packLabels(req.labels, req.name, room);
-			assert.equal(packed.problem, undefined, "create packs what check() let through");
-			return fake.host.create({ ...req, labels: packed.labels }, ctx);
+			const entries = Object.entries(req.labels);
+			if (room.count !== undefined && entries.length > room.count) throw new Error(`400: a machine takes at most ${room.count} tags, not ${entries.length}`);
+			const long = entries.find(([, value]) => Buffer.byteLength(value) > (room.packed.valueBytes ?? Number.POSITIVE_INFINITY));
+			if (long) throw new Error(`400: the tag ${long[0]} is longer than ${room.packed.valueBytes} bytes`);
+			return fake.host.create(req, ctx);
 		},
-		get: async (id, ctx) => read(await fake.host.get(id, ctx)),
-		list: async (labels, ctx) => (await fake.host.list(labels[NAME] === undefined ? {} : { [PACKED_NAME]: labels[NAME] }, ctx)).map(read),
 	};
 }
+
+test("facts.labels.packed is the adapter's to keep: a host that declares it and never packs (it stores and lists labels as given) passes the provider's Core cases in 5 tags of 256 bytes, and leaves nothing behind", async () => {
+	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
+	const cases = conformanceCases.filter((one) => one.group === "provider" && one.level === "core" && one.id !== "provider.deadline");
+	const host = packedHost(fakeHost(), { count: 5, packed: { valueBytes: 256 } });
+	const report = await runConformance(new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), { image: "img", cases, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
+	assert.ok(report.results.length >= 3, report.results.map(({ id }) => id).join(" "));
+	assert.deepEqual(
+		report.results.filter(({ status }) => status !== "pass").map(({ id, status, reason }) => `${id} ${status}: ${reason}`),
+		[],
+	);
+	assert.ok(host.requests.length > 0 && host.requests.every((req) => Object.keys(req.labels).length <= 5), "every create gave the host labels that fit its 5 tags");
+	assert.deepEqual(report.cleanup.sweep.stillThere, [], "the end-of-run sweep finds the run's label in the packed tags");
+});
 
 test("facts.labels.packed: the adapter's real labels (a deadline, an image ref, a list, an Archil mount) round-trip exactly under a 5-tag cap, Kubernetes' rules, Cloudflare's names and a string list; a map that can't fit is refused in words", async () => {
 	const { packLabels, unpackLabels } = VALUES;
@@ -1425,7 +1441,8 @@ test("facts.labels.packed: the adapter's real labels (a deadline, an image ref, 
 	// Made whole on a packed host: every label the adapter reads back by get came back exactly.
 	made(await create(new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), spec));
 	assert.ok(Object.keys(only(fake).labels).length <= 5, "stored in 5 tags");
-	const [{ labels, name }] = host.requests;
+	const [{ name }] = host.requests;
+	const labels = unpackLabels(host.requests[0].labels);
 	assert.ok(labels[DEADLINE] && labels["agentrun.computer.image"] === image && labels[NETWORK_LABEL].startsWith("allow:") && labels["agentrun.mount"], JSON.stringify(labels));
 	const DNS = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 	const K8S_VALUE = /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$/;
@@ -1472,7 +1489,7 @@ test("facts.labels.packed at the edge: check() answers a spec the same every tim
 	// The real map's one part, from a create on a packed host with room.
 	const roomy = packedHost(fakeHost(), { packed: {} });
 	made(await create(new HostedProvider(roomy, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), spec));
-	const part = VALUES.packLabels(roomy.requests[0].labels, roomy.requests[0].name).labels["agentrun-0"].length;
+	const part = roomy.requests[0].labels["agentrun-0"].length;
 	// One name and one part: the part's room steps across the map's length, so some creates land on the edge.
 	const sizes = [];
 	for (let valueBytes = part - 10; valueBytes <= part + 10; valueBytes++) {

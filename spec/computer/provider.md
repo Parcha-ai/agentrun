@@ -83,9 +83,11 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   still be making it. A retry that lists it waits for its labels as for a computer still starting, and a sweep of the
   name leaves it. Once it is older, a retry is refused `exists` and deletes it, as a sweep does. One whose vendor reads
   no `createdAt` is never old enough: the vendor's timer ends it, which is why such a host must declare
-  `lifetime: "vendor"`, or `backstop: true`. Only a missing file reads as no labels; a read that
-  fails otherwise fails the listing in words, so the janitor never misses a computer it couldn't read. The Core case
-  `isolation.label-file` checks that the computer's user cannot read the file.
+  `lifetime: "vendor"`. It has no `extend`: the most a computer may live would be read from inside it. Only a missing
+  file reads as no labels. A read that fails, or doesn't end within its own bound, leaves that machine out of that
+  listing, said in words with its id; the next listing reads it again, and the vendor's timer ends it either way. A
+  machine of the request's name is the exception: a read of it that fails fails the listing, so a retry never makes a
+  second. The Core case `isolation.label-file` checks that the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
@@ -123,13 +125,8 @@ it and expects the same id refused `exists`. Both are Full.
 
 On the shared machine-host adapter, a host fixes two vendor timers (`packages/computer/src/host.ts`). A janitor's host
 whose vendor has a delete or stop timer of its own sets it to `MachineRequest.backstopAt`, five minutes past the most
-the deadline may reach (create + `maxLifetimeMs`), so a computer still ends when the server is gone. A host that
-declares `backstop: true` claims it does, and its `get` reads the timer back as `endsAt`. The Core case
-`provider.backstop` holds that `endsAt` to the request's `backstopAt`, within 60 s, on the run's shared computer, and
-only that claim lets a janitor's host keep its labels in the machine. A vendor that ends
-or pauses a quiet machine is declared with `HostFacts.idleMs`, its window, and a `keepalive(id, ctx)`, its cheapest call
-that restarts the timer: the adapter calls it every `idleMs / 3` from create or attach until release, and once at attach, and refuses a host
-with `idleMs` and no `keepalive`.
+the deadline may reach (create + `maxLifetimeMs`), so a computer still ends when the server is gone. A host switches off
+every vendor timer that ends a quiet machine; where it can't be switched off, the vendor doesn't fit yet.
 
 ## The descriptor
 
