@@ -24,7 +24,7 @@ documented calls, not from written code.
 
 ## The table
 
-Of 28 rows (25 vendors; Google, Fly.io and Beam have one row per product): 0 clean, 5 fit if unverified facts hold, 16
+Of 28 rows (25 vendors; Google, Fly.io and Beam have one row per product): 0 clean, 4 fit if unverified facts hold, 17
 need a workaround, 7 are blocked.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
@@ -43,7 +43,7 @@ need a workaround, 7 are blocked.
 | [Fly.io Sprites](https://docs.fly.io/sprites) | persistent Linux VMs that sleep when idle | needs a workaround (no image or snapshot a create can name, so no desktop or Archil; `extend` rewrites the label list, or is left out) | 220-290, sandbox only | [framedExec][fe], [packLabels][pl] |
 | [Freestyle VMs](https://www.freestyle.sh/docs/vms.md) | Linux VMs | needs a workaround (a per-VM SSH identity made and deleted outside create, delete and the sweep) | about 280 | [ssh-exec][se], [packLabels][pl], [prepareImage][pi] |
 | [Google Agent Platform sandboxes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox?hl=en) | Google-managed gVisor containers | blocked (`exec`: one-shot, not root) | n/a | none |
-| [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | fits if (unverified: root makes a network namespace under GKE's gVisor; the exec stream has no idle cut); estimate over the bar | 300-380 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
+| [Google GKE Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox) | gVisor pods on the user's cluster | needs a workaround (a Kubernetes client and GKE auth in the host, an estimate over the bar; unverified: root makes a network namespace under GKE's gVisor, the exec stream has no idle cut) | 300-380 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Hugging Face Sandboxes](https://huggingface.co/docs/huggingface_hub/main/concepts/sandbox) | a VM per Job | blocked (network fence: no nested namespaces, per the vendor's docs) | about 240 if the fence held | [ssh-exec][se], [packLabels][pl], [backstopAt][bs], [prepareImage][pi] |
 | [Hyperbrowser Sandboxes](https://hyperbrowser.ai/docs/sandboxes/introduction.md) | Firecracker microVMs | needs a workaround (an SSE event reader in the host) | 250-280 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
 | [Kasm Workspaces](https://docs.kasm.com/docs/reference/developer-api) | a container session streamed to a person | blocked (`exec`: no two-way exec stream) | n/a | none |
@@ -256,8 +256,9 @@ provider spec.
 - **GKE labels and lifetime:** Kubernetes labels, packed with `packLabels`; `shutdownTime` with a delete policy, moved
   by `extend` ([lifecycle](https://agent-sandbox.sigs.k8s.io/docs/sandbox/lifecycle/)).
 - **GKE image:** the published box image's tag in the pod template, from [prepareImage](PROVIDERS.md#wire-it-up).
-- **GKE, what's open:** no member needs a workaround; the estimate is over the bar for the Kubernetes client and GKE
-  auth. Unverified: root's network namespace under gVisor, and idle limits on a silent exec stream.
+- **GKE, what's open:** size. Every member fits on main, but the Kubernetes client and GKE auth the host carries put
+  the estimate at 300-380 lines, over the bar of about 250. Unverified: root's network namespace under gVisor, and idle
+  limits on a silent exec stream.
 - **Agent Platform:** a sandbox's command is one-shot and runs without root
   ([shell quickstart](https://docs.cloud.google.com/gemini-enterprise-agent-platform/scale/sandbox/shell-sandbox-quickstart)):
   blocked on `exec`. Whether `bidiExecute` keeps a process open is unverified
