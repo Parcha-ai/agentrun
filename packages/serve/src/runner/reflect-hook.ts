@@ -8,6 +8,7 @@
 import { cutStrings } from "../key-refusal.js";
 import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
 import { type CompileAsk, type CompiledRecord, compileTurn, UNNAMED } from "../learn/compile.js";
+import type { GuardsOff } from "../learn/promote.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 
@@ -49,6 +50,10 @@ export interface ReflectDeps {
    *  from what they quote: undefined when the run compiles nothing (its job not due, a notes-only agent, a workflow
    *  that answered). Absent, or a read that throws: no compile turn. */
   readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => Promise<CompileAsk | undefined>;
+  /** Keeps the steps a compiled revision kept off from its champion (learn/promote.ts putGuardsOff), once its draft
+   *  passed: a later revision of it reads them when it is the champion, whatever promoted it. Idempotent (by workflow and
+   *  digest), so a claim that asks again writes the same. Absent: kept nowhere. */
+  readonly compiledOff?: (agentId: string, entry: GuardsOff) => Promise<void>;
   /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
   readonly compileDeadlineMs?: number;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
@@ -267,7 +272,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       // on a cap it has passed or cannot fit.
       if (capped) return close([droppedRow(turn, "no_budget", said.noBudget)]);
       if (result.kept?.checked.state === "proposed") {
-        const { workflow, from_notes } = result.record!;
+        const { workflow, from_notes, digest, inherited } = result.record!;
+        const off = (inherited?.guards ?? []).filter((one) => one.threshold === null).map((one) => one.node);
+        if (digest && off.length && deps.compiledOff) await deps.compiledOff(input.agentId, { workflow, digest, off });
         turn = turnOf(result.kept.answer);
         checked = { ...result.kept.checked, proposal: { ...(result.kept.checked.proposal as object), compiled: { workflow, from_notes } } };
         compiled = { record: result.record! };

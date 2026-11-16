@@ -30,7 +30,7 @@ import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/in
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
 import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk, heldNamesOf } from "../learn/compile.js";
-import { championOf, type PromotionRecord, promotionOf, promotionsOf, scoreOf, switchedOffOf } from "../learn/promote.js";
+import { championOf, type GuardsOff, guardsOffOf, type PromotionRecord, promotionOf, promotionsOf, putGuardsOff, scoreOf, switchedOffOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
@@ -132,6 +132,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     promptFacts: async () => ({ active: start.seedNotes ?? start.given.length }),
     // A notes run (`learning: "notes"`) compiles nothing.
     ...(start.notesOnly ? {} : { compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }) }),
+    // A compiled revision's steps kept off from its champion, kept by digest (championFor reads them back). A write that
+    // fails is said, and the learning goes on: a later revision of it then takes those steps' guards at their defaults.
+    compiledOff: async (agentId, entry) => {
+      await putGuardsOff(deps.store.settings, agentId, entry).catch((error) => deps.log?.(`learning: ${entry.workflow} at ${entry.digest}: the steps it keeps off (${entry.off.length}) were not kept: ${(error as Error)?.message ?? error}`));
+    },
     asked: async (runId) => {
       const [entries, reflect] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runReflect(deps.store, runId, BACKGROUND_CONTEXT)]);
       const hearing = new Hearing();
@@ -526,7 +531,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const graded: GradedAsk | undefined = revising && gradedOf && fed ? { answer: cut(servedAnswerOf(entries)?.answer ?? ""), words: cut(fed.text) } : undefined;
   // A revision is of main's text as read here, whatever the run started from: that commit is its conflict base (`base`).
   // It takes its workflow's champion's guards (learn/compile.ts), never told the model.
-  const champion = revising ? await championFor(deps, input.agentId, records, revising, read.current!, shown) : undefined;
+  const champion = revising ? await championFor(deps, input.agentId, records, revising, read.current!, shown, await guardsOffOf(deps.store.settings, input.agentId).catch(() => [])) : undefined;
   const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(read.main ? { base: read.main } : {}), ...(champion ? { champion } : {}), ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
   sayLeftOut();
   // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
@@ -540,9 +545,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
 
 /** The champion of learned workflow `name` (learn/promote.ts championOf: the revision that serves) a revision of it takes
  *  its guards from: its digest, its text (main's, `current`, when that is it; else as the learning folder held it at its
- *  record's commit, its digest checked) and the steps a refit switched off on its way (switchedOffOf). Undefined when it
- *  has none, or its text can't be read. */
-export async function championFor(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, records: readonly PromotionRecord[], name: string, current: string, shown: Shown): Promise<NonNullable<Extract<CompileAsk, { mode: "revise" }>["champion"]> | undefined> {
+ *  record's commit, its digest checked) and the steps switched off on its way (switchedOffOf: by a refit, or kept off by
+ *  the compile that wrote a revision on it, `compiled`, guardsOffOf), whatever promoted it. Undefined when it has none, or
+ *  its text can't be read. */
+export async function championFor(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, records: readonly PromotionRecord[], name: string, current: string, shown: Shown, compiled: readonly GuardsOff[] = []): Promise<NonNullable<Extract<CompileAsk, { mode: "revise" }>["champion"]> | undefined> {
   const champion = championOf(records, name);
   if (!champion) return undefined;
   let text = workflowDigest({ workflow: current }) === champion.digest ? current : undefined;
@@ -551,7 +557,7 @@ export async function championFor(deps: Pick<LearningEndDeps, "learningFolder">,
     const one = at.find((flow) => flow.name === name);
     if (one && workflowDigest(one) === champion.digest) text = one.workflow;
   }
-  return text === undefined ? undefined : { digest: champion.digest, text, off: [...switchedOffOf(records, name, champion.digest)] };
+  return text === undefined ? undefined : { digest: champion.digest, text, off: [...switchedOffOf(records, name, champion.digest, compiled)] };
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them

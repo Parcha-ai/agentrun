@@ -13,7 +13,8 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { landWorkflows } from "./learned-workflow-seed-support.mjs";
 
 const { DROP_MIN_WRONG, halvesOf, lowerFloor, mayLower, REFIT_MIN, refitGuards, refitHeldOut, scoreRows, UNDER_RIGHT } = await import("../dist/learn/refit.js");
-const { clears, inheritGuards, putGrade, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_MIN, SOFT_ESCALATE_THRESHOLD, switchedOffOf } = await import("../dist/learn/promote.js");
+const { clears, guardsOffOf, inheritGuards, putGrade, promotionsOf, putGuardsOff, recordPromotion, REFIT_EVERY, REPLAY_MIN, SOFT_ESCALATE_THRESHOLD, switchedOffOf } = await import("../dist/learn/promote.js");
+const { createReflectHook } = await import("../dist/runner/reflect-hook.js");
 const compile = await import("../dist/learn/compile.js");
 const { parseReflection } = await import("../dist/learn/reflect.js");
 const { draftFiles } = await import("../dist/learn/skills.js");
@@ -202,6 +203,79 @@ test("championFor: the champion's text at its record's commit, its digest checke
   const got = await championFor(deps, "agent-1", records, "answer", JSON.stringify(held), secretsShown([]));
   assert.deepEqual(got, { digest: d1, text: JSON.stringify(refit), off: ["answer"] }, "read at the champion's commit, never main's held revision");
   assert.equal(await championFor(deps, "agent-1", records.slice(0, 1).map((one) => ({ ...one, decided: "hold" })), "answer", JSON.stringify(held), secretsShown([])), undefined, "no champion: nothing to take");
+});
+
+/** A two-step `answer` workflow of agent steps, `facts` and `check`, each guard on its own confidence (`undefined`: none). */
+const answerFlow = (facts, check, words = "") => ({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [
+  { node: "agent", label: "facts", instructions: `Read the facts.${words}`, ...(facts === undefined ? {} : { guard: { signal: "self", threshold: facts } }) },
+  { node: "agent", label: "check", instructions: `Check them.${words}`, ...(check === undefined ? {} : { guard: { signal: "self", threshold: check } }) },
+] } });
+const blockOf = (flow) => `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${JSON.stringify(flow)}\n\`\`\`\``;
+/** The checks keep the draft's workflow.json as the answer gives it. */
+const keepDraft = (answer) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: draftFiles("answer", parseReflection(answer).workflows[0].text).json }] } });
+const reviseAsk = (champion) => ({ mode: "revise", workflow: "answer", current: champion.text, champion, held: { workflow: "answer", digest: champion.digest, source: "replay", reason: "r" }, reference: "", notes: [], traces: [], tools: [], judges: false, jev: false });
+
+// r3 (review on #3017, P2): a draft that keeps its champion's off step as it is (unguarded) was never visited by
+// inheritGuards (it walked guarded steps only), so the guard check refused a correct draft.
+test("a draft that keeps a champion's off step unguarded, as the champion has it, compiles cleanly and says the step is off", async () => {
+  const championText = JSON.stringify(answerFlow(undefined, 0.4));
+  const champion = { digest: workflowDigest({ workflow: championText }), text: championText, off: ["facts"] };
+  const result = await compile.compileTurn({ ask: async () => ({ answer: blockOf(answerFlow(undefined, 0.7, " Again.")) }), compile: reviseAsk(champion), answer: "", check: async (answer) => keepDraft(answer) });
+  assert.ok(result.kept, `kept, no guard error: ${JSON.stringify(result.record?.attempts)}`);
+  assert.deepEqual(result.record.inherited, { from: champion.digest, guards: [{ node: "facts", threshold: null }, { node: "check", threshold: 0.4 }] });
+  const kept = JSON.parse(result.kept.checked.proposal.files[0].text);
+  assert.deepEqual(kept.root.steps.map((step) => step.guard), [undefined, { signal: "self", threshold: 0.4 }]);
+  // inheritGuards alone: the unguarded off step is named, and nothing of the text moves for it.
+  const draft = JSON.stringify(answerFlow(undefined, 0.4));
+  assert.deepEqual(inheritGuards(draft, championText, new Set(["facts"])), { text: draft, inherited: [{ node: "facts", threshold: null }, { node: "check", threshold: 0.4 }] });
+  assert.deepEqual(inheritGuards(draft, championText, new Set()).inherited, [{ node: "check", threshold: 0.4 }], "a step not off on the champion's way is not named");
+});
+
+// r3 (review on #3017, P1): the off set came from refit records alone, so a revision that inherited an off and was
+// promoted by its replay had no refit record: the next revision of it took that step's guard back at its default.
+test("refit, then a revision that keeps the off and promotes by replay, then a revision of that: the guard stays off", async () => {
+  const at = new Date(0).toISOString();
+  const c0 = JSON.stringify(answerFlow(0.7, 0.7));
+  const r = JSON.stringify(answerFlow(undefined, 0.4));
+  const [d0, dr] = [c0, r].map((workflow) => workflowDigest({ workflow }));
+  const records = [
+    { workflow: "answer", digest: d0, at, decided: "promote", source: "dry_run", reason: "r" },
+    { workflow: "answer", digest: dr, at, decided: "promote", source: "refit", reason: "r", refit: { from: d0, guards: [{ node: "facts", was: 0.7, threshold: null }, { node: "check", was: 0.7, threshold: 0.4 }] } },
+  ];
+  // Compile A, through the end-of-run hook, revises the refit champion: the model gives facts a guard again; it goes off.
+  const written = [];
+  const hookOf = (champion, draft) => createReflectHook({
+    facts: async () => ({ learns: true, costUsd: 0.01 }), promptFacts: async () => ({ active: 0 }), asked: async () => ({ asked: [] }), nothingNew: async () => true,
+    check: async ({ turn }) => keepDraft(turn.answer), newRunId: () => "learn-1", now: () => 0,
+    compileFacts: async () => reviseAsk(champion),
+    compiledOff: async (agentId, entry) => void written.push({ agentId, entry }),
+  })({ runId: "run-a", agentId: "agent-1", claim: { runId: "run-a", runner: "r", epoch: 1, until: 0, from: "running" }, outcome: "completed", signal: new AbortController().signal, ask: async () => ({ ended: true, answer: blockOf(draft) }) });
+  const keptA = (await hookOf({ digest: dr, text: r, off: [...switchedOffOf(records, "answer", dr)] }, answerFlow(0.7, 0.7, " A."))).also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.equal(keptA.state, "proposed");
+  const textA = keptA.proposal.files[0].text;
+  const da = keptA.compiled.digest;
+  assert.equal(JSON.parse(textA).root.steps[0].guard, undefined, "A keeps facts off");
+  assert.deepEqual(written.map(({ agentId, entry }) => [agentId, entry]), [["agent-1", { workflow: "answer", digest: da, off: ["facts"] }]], "A's steps kept off are kept by its digest");
+  // A promotes by its replay: no refit record names it. Its off set is still read, from what its compile kept.
+  records.push({ workflow: "answer", digest: da, at, decided: "promote", source: "replay", reason: "r" });
+  const offA = [...switchedOffOf(records, "answer", da, written.map(({ entry }) => entry))];
+  assert.deepEqual(offA, ["facts"]);
+  // Compile B revises A: the model gives facts a guard again; it stays off.
+  const keptB = (await hookOf({ digest: da, text: textA, off: offA }, answerFlow(0.7, 0.7, " B."))).also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.equal(keptB.state, "proposed");
+  const textB = keptB.proposal.files[0].text;
+  assert.equal(JSON.parse(textB).root.steps[0].guard, undefined, "B keeps facts off");
+  // Kept by the store across a restart: putGuardsOff and guardsOffOf, newest per digest, none when it names none.
+  const kv = new Map();
+  const settings = {
+    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
+    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
+    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+  };
+  await putGuardsOff(settings, "agent-1", { workflow: "answer", digest: da, off: ["facts"] });
+  await putGuardsOff(settings, "agent-1", { workflow: "answer", digest: da, off: ["facts"] });
+  await putGuardsOff(settings, "agent-1", { workflow: "answer", digest: "other", off: [] });
+  assert.deepEqual(await guardsOffOf(settings, "agent-1"), [{ workflow: "answer", digest: da, off: ["facts"] }]);
 });
 
 // (d) Red on main: the in-sample refit wrote a revision (check raised) that the half held out of the fit never saw clear.

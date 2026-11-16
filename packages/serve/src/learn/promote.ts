@@ -482,19 +482,46 @@ export function walkGuards(doc: unknown, visit: (label: string, guard: Record<st
   }
 }
 
-/** The guarded steps a refit switched off on the way to `digest` of `workflow`: each refit record's guard gone off
- *  (RefitGuard threshold null; an escalate is a step, never counted), back along its refit records' `from`. A refit never
- *  gives a guard back, so each is off at `digest` too. A lineage cut by the records' trim names fewer, never more. */
-export function switchedOffOf(records: readonly PromotionRecord[], workflow: string, digest: string): Set<string> {
+/** The guarded steps switched off on the way to `digest` of `workflow`: each refit record's guard gone off (RefitGuard
+ *  threshold null; an escalate is a step, never counted), back along its refit records' `from`; and at each digest on
+ *  that way a compile wrote (one its compile took off from its champion: `compiled`, guardsOffOf), the steps it kept off
+ *  (GuardsOff), whatever promoted it since (a replay, a dry run). Neither ever gives a guard back, so each is off at
+ *  `digest` too. A lineage cut by the records' trim names fewer, never more. */
+export function switchedOffOf(records: readonly PromotionRecord[], workflow: string, digest: string, compiled: readonly GuardsOff[] = []): Set<string> {
   const off = new Set<string>();
   const seen = new Set<string>();
   for (let at: string | undefined = digest; at !== undefined && !seen.has(at); ) {
     seen.add(at);
+    for (const node of compiled.findLast((one) => one.workflow === workflow && one.digest === at)?.off ?? []) off.add(node);
     const refit = records.findLast((one) => one.workflow === workflow && one.digest === at && one.source === "refit" && one.refit);
     for (const guard of refit?.refit?.guards ?? []) if (!guard.escalate && guard.threshold === null) off.add(guard.node);
     at = refit?.refit?.from;
   }
   return off;
+}
+
+/** The steps a compiled revision (`digest` of `workflow`) kept off from its champion (its CompiledRecord's `inherited`
+ *  guards at threshold null): kept apart from the run that compiled it (guardsOffKey), so a later revision of it, once
+ *  it is the champion whatever promoted it, keeps them off too (switchedOffOf). */
+export interface GuardsOff {
+  readonly workflow: string;
+  readonly digest: string;
+  readonly off: readonly string[];
+}
+
+export const guardsOffKey = (agentId: string): string => `learning.guards-off.${agentId}`;
+/** The most GuardsOff kept per agent, the newest. Only a revision of a champion with a guard off writes one. */
+export const GUARDS_OFF_KEPT = 500;
+
+/** Keeps `entry` (a compiled revision's steps kept off), the newest of its workflow at its digest; none when it names none. */
+export async function putGuardsOff(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, entry: GuardsOff): Promise<void> {
+  if (!entry.off.length) return;
+  await updateKept<GuardsOff>(settings, guardsOffKey(agentId), (items) => [...items.filter((one) => !(one.workflow === entry.workflow && one.digest === entry.digest)), { workflow: entry.workflow, digest: entry.digest, off: [...entry.off] }].slice(-GUARDS_OFF_KEPT));
+}
+
+/** Every GuardsOff kept for the agent, oldest first. */
+export async function guardsOffOf(settings: Pick<Settings, "get">, agentId: string): Promise<GuardsOff[]> {
+  return itemsOf<GuardsOff>(await settings.get(guardsOffKey(agentId)));
 }
 
 /** One guarded step a new revision took from its workflow's champion (inheritGuards): its label, and the champion's
@@ -505,10 +532,10 @@ export interface InheritedGuard {
 }
 
 /** A new revision's draft `draft` with its workflow's champion's guards carried onto it (`champion`, the champion's text;
- *  `off`, the steps a refit switched off on its way, switchedOffOf). Each guarded step the draft keeps, by label (a
+ *  `off`, the steps switched off on its way, switchedOffOf). Each guarded step the draft keeps, by label (a
  *  child's prefixed), takes the champion's threshold and fit there (no fit when the champion's guard has none) when the
  *  champion's guard reads the same signal; a step whose guard went off on the champion's way, and that is the same kind
- *  of node with no guard there now, goes off too (its guard dropped). A step the champion does not have, or whose guard
+ *  of node with no guard there now, goes off too (its guard dropped, or, kept unguarded, named as it is). A step the champion does not have, or whose guard
  *  reads another signal there (its fit and threshold mean something else), keeps the default it was compiled with.
  *  Escalates are steps the draft writes, never carried. The draft's text (as given when nothing moved) and each step that
  *  took the champion's setting, in document order. */
@@ -525,24 +552,35 @@ export function inheritGuards(draft: string, champion: string, off: ReadonlySet<
   for (const { node, prefix } of workflowNodes(from)) if (typeof node.label === "string") theirs.set(`${prefix}${node.label}`, node);
   const inherited: InheritedGuard[] = [];
   let moved = false;
-  walkGuards(doc, (label, guard, node) => {
+  for (const { node, prefix } of workflowNodes(doc)) {
+    if (typeof node.label !== "string") continue;
+    const label = `${prefix}${node.label}`;
     const there = theirs.get(label);
-    if (!there) return;
+    if (!there) continue;
     const own = there.guard;
+    const offThere = own === undefined && off.has(label) && there.node === node.node;
+    const guard = node.guard;
+    // A step the draft kept unguarded where its champion's is off: it stays off, and is said so (no text moves).
+    if (guard === undefined) {
+      if (offThere) inherited.push({ node: label, threshold: null });
+      continue;
+    }
+    if (!guard || typeof guard !== "object" || Array.isArray(guard)) continue;
+    const mine = guard as Record<string, unknown>;
     if (own && typeof own === "object" && !Array.isArray(own)) {
       const { signal, threshold, fit } = own as Record<string, unknown>;
-      if (signal !== guard.signal || typeof threshold !== "number") return;
-      if (guard.threshold !== threshold || JSON.stringify(guard.fit) !== JSON.stringify(fit)) moved = true;
-      guard.threshold = threshold;
-      if (fit === undefined) delete guard.fit;
-      else guard.fit = structuredClone(fit);
+      if (signal !== mine.signal || typeof threshold !== "number") continue;
+      if (mine.threshold !== threshold || JSON.stringify(mine.fit) !== JSON.stringify(fit)) moved = true;
+      mine.threshold = threshold;
+      if (fit === undefined) delete mine.fit;
+      else mine.fit = structuredClone(fit);
       inherited.push({ node: label, threshold });
-    } else if (own === undefined && off.has(label) && there.node === node.node) {
+    } else if (offThere) {
       delete node.guard;
       moved = true;
       inherited.push({ node: label, threshold: null });
     }
-  });
+  }
   return { text: moved ? JSON.stringify(doc) : draft, inherited };
 }
 
