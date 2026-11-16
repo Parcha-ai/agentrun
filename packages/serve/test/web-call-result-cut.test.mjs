@@ -48,6 +48,28 @@ test("a cited link from a web_fetch answer the redactor cut matches it in a grad
   assert.match(prompt, new RegExp(`${LINKS[17].replaceAll(".", "\\.")} — matches call 1`));
 });
 
+test("a long page behind a redirect keeps its final url and its links through the redactor, and a citation of the final url matches", async () => {
+  // As codex's industry-primer call 9 (01a1e18e): the asked url redirects, the page's text has its spaces, and its 200
+  // links are one run of more than 8,192 characters with no whitespace from the text's last space on.
+  const asked = "https://www.nrc.gov/reactors/new-reactors/advanced/modernizing/rulemaking/part-53";
+  const final = "https://www.nrc.gov/facilities-safety/new-reactors/advanced-reactors/modernizing-how-we-regulate/rulemaking/part-53-risk-informed-technology-inclusive-regulatory-framework-for-advanced-reactors";
+  const links = Array.from({ length: 200 }, (_, i) => `https://www.nrc.gov/documents-reports/part-53/section-${i}`);
+  const text = "Part 53 is the NRC's risk-informed, technology-inclusive framework for advanced reactors. ".repeat(60);
+  const page = { ok: true, url: final, status: 200, title: "Part 53 | Nuclear Regulatory Commission", text, chars: text.length, links, via: "direct", truncated: true, next_offset: text.length, original_chars: 38950 };
+  assert.ok(JSON.stringify(links).length > 8192);
+  const tool = { name: "web_fetch", description: "", inputSchema: {}, replay: "safe", call: async () => ({ text: webFetchText(page) }) };
+  const { text: stored } = await answersCut(tool, secretRedactor([HELD])).call({ url: asked }, context);
+  const read = JSON.parse(stored.split("\n")[0]);
+  assert.equal(read.url, final);
+  assert.deepEqual(read.links, links);
+  const shown = webShownOf("web_fetch", stored);
+  assert.ok(shown, "the stored answer is web_fetch's JSON");
+  const run = { answer: `The rule: ${final}. Section 0: ${links[0]}.`, calls: [{ tool: "web_fetch", name: "web_fetch", arguments: { url: asked }, status: "success", result: webWithin(shown, CALL_RESULT_CHARS) }], mcpCalls: [], files: [] };
+  const prompt = graderInput({ file: "links.md", type: "llm", rubric: "Pass only if every cited link appears in the run's calls." }, "task", run);
+  assert.match(prompt, /part-53-risk-informed[^\n]* — matches call 1/);
+  assert.match(prompt, /part-53\/section-0 — matches call 1/);
+});
+
 test("any other tool's answer is cut as one text, as before", async () => {
   const { text: stored } = await answersCut(fetchTool("read"), secretRedactor([HELD])).call({}, context);
   assert.ok(!stored.includes(HELD));
