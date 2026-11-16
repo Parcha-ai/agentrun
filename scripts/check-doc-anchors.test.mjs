@@ -10,7 +10,7 @@ import { anchorsOf, brokenLinks, trackedFiles } from './check-doc-anchors.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('headings make the fragments GitHub makes: code spans, quotes, &, colons, repeats, setext, and <a id> anchors outside comments', () => {
+test('headings make the fragments GitHub makes: code spans, quotes, &, colons, repeats, setext, and <a id> anchors outside comments, by whole attribute', () => {
   const text = [
     '# The `labels: "machine"` option',
     '## "Quoted" and \'single\' words',
@@ -21,6 +21,9 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     '### Notes',
     '## Notes ##',
     '## &#65;PI &amp; numeric \\*escapes\\*',
+    '## The `&amp;` value',
+    '<a id=unquoted-anchor></a>',
+    '<a data-name="not-an-anchor" title=\'id="nor-this"\'></a>',
     '<a id="custom-anchor"></a>',
     '<a name="old-name"></a>',
     '',
@@ -58,7 +61,9 @@ test('headings make the fragments GitHub makes: code spans, quotes, &, colons, r
     'a-setext-heading',
     'a-long-wrapped-heading',
     'step-one-run-the-pre-check',
+    'the-amp-value',
     'the-idle_ms-field-linked-and-bold-emphasis',
+    'unquoted-anchor',
     'the-labels-machine-option',
   ].sort());
 });
@@ -71,7 +76,7 @@ test('a broken fragment or path fails naming the file, line, link and target; co
     'docs/report(1).md': '# Results\n',
     'docs/sub/page.md': [
       '# Page',
-      'See [members](../guide.md#the-eleven-members), [setup](/docs/guide.md#set-up "Set up") and [below](#page).',
+      'See [members](../guide.md#the-eleven-members), [setup](/docs/guide.md#set-up "Set up"), [below](#page) and [top](#).',
       'A [stale link](../guide.md#the-twelve-members) and [a missing section](#nowhere).',
       'A [gone file](../old.md#set-up), a [folder](../), [code](../../src/a.ts#L3) and [a site](https://example.com/x.md#y).',
       '`[inline](#not-read)`',

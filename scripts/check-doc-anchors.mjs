@@ -40,11 +40,14 @@ const decode = (text) =>
     return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
   });
 
-/** The text a heading's inline tokens render: code spans keep their content, links and emphasis their text, tags go. */
+/**
+ * The text a heading's inline tokens render: code spans keep their content as written (a reference in code shows
+ * literally), links and emphasis their text, tags go.
+ */
 function plain(tokens = []) {
   return tokens
     .map((token) => {
-      if (token.type === 'codespan') return decode(token.text);
+      if (token.type === 'codespan') return token.text;
       if (token.type === 'html') return '';
       if (token.type === 'br') return ' ';
       if (token.type === 'image') return token.text;
@@ -89,6 +92,20 @@ function* tokensOf(text) {
   yield* walk(Lexer.lex(source, { gfm: true }), 0);
 }
 
+// An HTML attribute: a name, then maybe `=` and a double-quoted, single-quoted or unquoted value (HTML's syntax).
+const ATTRIBUTE = String.raw`\s+([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+)))?`;
+const A_TAG = new RegExp(String.raw`<a((?:${ATTRIBUTE})*)\s*/?>`, 'gi');
+
+/** The id and name values of each `<a>` tag in some HTML, read attribute by attribute. */
+function* aAnchors(html) {
+  for (const [, attributes] of html.matchAll(A_TAG)) {
+    for (const [, name, ...values] of attributes.matchAll(new RegExp(ATTRIBUTE, 'g'))) {
+      const value = values.find((v) => v !== undefined);
+      if (value && /^(?:id|name)$/i.test(name)) yield decode(value);
+    }
+  }
+}
+
 /** Every fragment a Markdown text makes: its headings' slugs and its `<a id>`/`<a name>` anchors. */
 export function anchorsOf(text) {
   const slug = slugger();
@@ -98,8 +115,7 @@ export function anchorsOf(text) {
     if (token.type === 'heading') anchors.add(slug(plain(token.tokens).trim().replace(/[ \t]*\n[ \t]*/g, ' ')));
     // An anchor inside an HTML comment renders nothing; a comment with no end runs to the end of its HTML.
     else if (token.type === 'html') {
-      const html = token.raw.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-      for (const m of html.matchAll(/<a\s[^>]*?\b(?:id|name)\s*=\s*["']([^"']+)["']/gi)) anchors.add(m[1]);
+      for (const anchor of aAnchors(token.raw.replace(/<!--[\s\S]*?(?:-->|$)/g, ''))) anchors.add(anchor);
     }
   }
   return anchors;
@@ -145,7 +161,8 @@ export function brokenLinks(root, tracked) {
       const target = path ? posix.normalize(path.startsWith('/') ? path.slice(1) : posix.join(posix.dirname(file), path)).replace(/(.)\/$/, '$1') : file;
       const where = `${file}:${line}: link ${link}`;
       if (target !== '.' && !paths.has(target)) problems.push(`${where}: ${target} is not a tracked file or directory`);
-      else if (fragment !== null && target.endsWith('.md') && !anchors(target).has(fragment)) problems.push(`${where}: no heading or anchor in ${target} makes #${fragment}`);
+      // An empty fragment (`#`) goes to the top of the page and needs no anchor.
+      else if (fragment && target.endsWith('.md') && !anchors(target).has(fragment)) problems.push(`${where}: no heading or anchor in ${target} makes #${fragment}`);
     }
   }
   return problems;
