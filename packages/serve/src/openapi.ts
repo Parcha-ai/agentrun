@@ -37,6 +37,9 @@ import "./mcp-secret-writes.js";
 // The email account's routes (email/routes.ts), each marked x-agentrun-secret whole, registered with the one gate as it
 // loads: the view among them, so the API token never reads the account.
 import "./email/routes.js";
+// The calendar's routes (calendar/routes.ts), each marked x-agentrun-secret whole, registered the same way: the view
+// among them, so the API token never reads which calendar is saved.
+import "./calendar/routes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";

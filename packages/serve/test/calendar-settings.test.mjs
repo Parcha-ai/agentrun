@@ -9,6 +9,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, serve, storeBytes, withEnv } from "./support.mjs";
+import { SECRET_WRITE_REFUSAL } from "../dist/secret-writes.js";
 import { FAUX_CALENDAR, hourlyCalendar, icsLines, startIcsFaux } from "../dist/calendar/ics-faux.js";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
@@ -84,11 +85,14 @@ test("GET, PUT, test and DELETE: the view never holds the address; the test answ
   assert.match((await api("POST", "/settings/calendar/test", {})).body.message, /answered 404: the address may be old or wrong; copy it again and save it with PUT \/v2\/settings\/calendar\./);
   faux.failing(undefined);
 
-  // The token alone is refused every one of them: the owner's session reads and writes the calendar.
+  // The token alone is refused every one of them, by the server's one secret-write check and in its words: the owner's
+  // session reads and writes the calendar.
   const token = client(server.baseUrl, server.token);
   const bearer = { authorization: `Bearer ${server.token}` };
   for (const [method, path, body] of [["GET", "/settings/calendar"], ["PUT", "/settings/calendar", { url: faux.address }], ["POST", "/settings/calendar/test", {}], ["DELETE", "/settings/calendar"]]) {
-    assert.equal((await token(method, path, body, bearer)).status, 403, `${method} ${path} with the token`);
+    const refused = await token(method, path, body, bearer);
+    assert.equal(refused.status, 403, `${method} ${path} with the token`);
+    assert.equal(refused.body?.error?.message, SECRET_WRITE_REFUSAL, `${method} ${path}: in the one refusal text`);
   }
 
   // Nowhere in the clear: no answer, no log line, no byte of the store.
