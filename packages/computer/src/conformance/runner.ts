@@ -98,7 +98,7 @@ function whenAborted(signal: AbortSignal): Promise<never> {
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
 	// Given no cases, the run takes its computer's suite: a browser's own cases, as the CLI does, else the suite's.
-	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu, long = false, concurrency } = options;
+	const { image, only, kind, signal, cases = casesFor(provider.capabilities().kind), drifted, planted, dial, mountFor, onResult, notes, caseTimeoutMs = 180_000, patience = 30_000, cleanupTimeoutMs = 60_000, fixture, gpu, long = false, concurrency } = options;
 	if (kind !== undefined && only !== undefined) throw new TypeError("a run takes kind and only apart: a kind runs its own cases");
 	if (concurrency !== undefined && !(Number.isSafeInteger(concurrency) && concurrency >= 1)) throw new TypeError(`concurrency is a whole number of computers, 1 or more; got ${concurrency}`);
 	const cap = concurrency ?? Infinity;
@@ -541,6 +541,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					const got = await planted();
 					plantedBy.add(got.provider);
 					return got;
+				},
+				async dial() {
+					t.assert(dial !== undefined, "the provider's machines dial the server, and the run was given no server for them: a conformance module exports dialKit() (ConformanceOptions.dial)");
+					return await (dial as NonNullable<typeof dial>)();
 				},
 				async runFolder(kind) {
 					const none = `the run was given no run folder for mount kind ${kind}`;

@@ -550,7 +550,7 @@ export interface components {
     };
     triggers?: {
       routes: boolean;
-      sources: ("schedule" | "webhook" | "github" | "composio" | "email")[];
+      sources: ("schedule" | "webhook" | "github" | "composio" | "email" | "feed")[];
       targets: ("start_run" | "message_run")[];
       min_every_s: number;
       history_kept: number;
@@ -1217,7 +1217,7 @@ export interface components {
     origin?: "server" | "trigger";
     trigger?: {
       id: string;
-      source: "schedule" | "webhook" | "slack" | "github" | "composio" | "email";
+      source: "schedule" | "webhook" | "slack" | "github" | "composio" | "email" | "feed";
       owner: boolean;
       name?: string;
     };
@@ -1721,6 +1721,26 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "feed";
+        urls: string[];
+        every_s?: number;
+        items?: string;
+        id?: string;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -1827,6 +1847,26 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "feed";
+        urls: string[];
+        every_s: number;
+        items?: string;
+        id?: string;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -1870,7 +1910,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -2094,7 +2134,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -3171,6 +3211,26 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "feed";
+        urls: string[];
+        every_s: number;
+        items?: string;
+        id?: string;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -3214,7 +3274,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4124,7 +4184,7 @@ export interface operations {
     answer: {
       firings: {
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4233,6 +4293,26 @@ export interface operations {
               prefix: string;
             })[];
           }[];
+        } | {
+          kind: "feed";
+          urls: string[];
+          every_s: number;
+          items?: string;
+          id?: string;
+          accept?: {
+            event: string;
+            actions?: string[];
+            where?: ({
+              pointer: string;
+              in: unknown[];
+            } | {
+              pointer: string;
+              exists: boolean;
+            } | {
+              pointer: string;
+              prefix: string;
+            })[];
+          }[];
         };
         target: {
           kind: "start_run";
@@ -4276,7 +4356,7 @@ export interface operations {
         updated_at: string;
         last_firing: {
           key: string;
-          by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+          by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
           nominal_at: string;
           status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
           at: string;
@@ -4590,7 +4670,7 @@ export interface operations {
     body: never;
     answer: {
       key: string;
-      by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -4610,7 +4690,7 @@ export interface operations {
       ok: "duplicate";
     } | {
       key: string;
-      by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -4631,7 +4711,7 @@ export interface operations {
     answer: {
       firings: ({
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4653,7 +4733,7 @@ export interface operations {
     } | {
       firings: ({
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4677,7 +4757,7 @@ export interface operations {
     answer: {
       firings: ({
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -4699,7 +4779,7 @@ export interface operations {
     } | Record<string, unknown> | {
       firings: ({
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;
@@ -5410,6 +5490,26 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "feed";
+        urls: string[];
+        every_s?: number;
+        items?: string;
+        id?: string;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target?: {
         kind: "start_run";
@@ -5516,6 +5616,26 @@ export interface operations {
             prefix: string;
           })[];
         }[];
+      } | {
+        kind: "feed";
+        urls: string[];
+        every_s: number;
+        items?: string;
+        id?: string;
+        accept?: {
+          event: string;
+          actions?: string[];
+          where?: ({
+            pointer: string;
+            in: unknown[];
+          } | {
+            pointer: string;
+            exists: boolean;
+          } | {
+            pointer: string;
+            prefix: string;
+          })[];
+        }[];
       };
       target: {
         kind: "start_run";
@@ -5559,7 +5679,7 @@ export interface operations {
       updated_at: string;
       last_firing: {
         key: string;
-        by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+        by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
         nominal_at: string;
         status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
         at: string;

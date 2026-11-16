@@ -253,6 +253,30 @@ adapter's: init's fence holds `none`, and init's egress proxy holds `open` and a
 may ignore `egress: false` where it has none. The probe from inside is what counts. Where root can make neither, init
 refuses to start, so the adapter doesn't fit.
 
+### A vendor with no exec: machines that dial
+
+A host whose facts say `connect: "dial"` has no `exec` and no `upload`: descriptor, facts, `create`, `get`, `list`
+and `delete`, with `errorCode`, `extend` and `check` optional. The constructor refuses one with `exec` or `upload`,
+with `labels: "machine"` (read through exec), or for kind `desktop` (the machine's init has no display), in words.
+`HostedProvider` takes `dial: { url, tokens, hub }`: the server's public address (`AGENTRUN_PUBLIC_URL`), its
+`MachineTokens` and its `AttachHub`. Then:
+
+- `create` refuses `refused`, before the vendor is called, each in its own words: with no `dial` (the process has
+  no attach hub), when the url is missing or not `https` (`http` only on `127.0.0.1`), and for an Archil mount. A
+  host that doesn't dial ignores `dial`, so a server may pass it to every hosted provider. It mints the machine's token, expiring at `backstopAt`, and calls the
+  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names the five) and `egress`
+  true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
+  machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
+  dial at once. Then it waits up to `createMs` for the machine's socket in the hub; one that
+  never dials is deleted, its token revoked, and create fails `timeout`, naming the address.
+- Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
+  holds by the daemon's SHA-256, which the machine checks before it runs it.
+- `connect` goes over the machine's socket, by the attach binding's rules: a drop fails `gone`. `release` with
+  `delete` revokes the token and closes the socket before the vendor's delete.
+- The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400`, and
+  after delete or past `backstopAt` it is refused. A run of a dial host passes `ConformanceOptions.dial`, the server's
+  side for the case (through the CLI, its conformance module's `dialKit()`); a host with exec passes the case, observed.
+
 ## A new vendor
 
 1. A descriptor (`defineProvider`, above) and a provider module: a class implementing `ComputerProvider`, with

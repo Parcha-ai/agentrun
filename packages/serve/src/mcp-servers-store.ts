@@ -150,6 +150,13 @@ export class McpServersOverStore {
     return new URL(this.signIns.base).origin;
   }
 
+  /** Where a server-side read of a URL may go (a feed's, a calendar's), as an MCP server's requests may: this server's
+   *  network, its own addresses (never read), the private-network hosts the owner allows (read now, at each call), loopback
+   *  only on a local install, and stopped with the server. */
+  async outboundReach(): Promise<{ network: OAuthNetwork; reach: { own: readonly string[]; allowed: readonly string[]; loopback: boolean }; signal: AbortSignal }> {
+    return { network: this.network, reach: { own: this.signIns.own, allowed: await privateOAuthHosts(this.store), loopback: this.loopback }, signal: this.stopped.signal };
+  }
+
   /** The server's own tool settings, set as the server starts. */
   toolSettings: () => ToolSettingsMap = () => ({});
 
