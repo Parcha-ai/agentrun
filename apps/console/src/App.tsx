@@ -69,7 +69,7 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; notes?: string[]; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -110,11 +110,12 @@ export function route(h: string = location.hash): Where {
   m = h.match(/^#\/templates\/([^/?]+)$/);
   if (m) return { section: "templates", template: decodeURIComponent(m[1]) };
   if (h.startsWith("#/templates")) return { section: "templates" };
-  // Triggers: the list, a new schedule, a new webhook, one trigger, and a schedule's editor.
+  // Triggers: the list, a new one of each kind, one trigger, and its editor.
   if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
   if (h === "#/triggers/new-webhook") return { section: "triggers", trigger: null, kind: "webhook" };
   if (h === "#/triggers/new-github") return { section: "triggers", trigger: null, kind: "github" };
   if (h === "#/triggers/new-composio") return { section: "triggers", trigger: null, kind: "composio" };
+  if (h === "#/triggers/new-feed") return { section: "triggers", trigger: null, kind: "feed" };
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };

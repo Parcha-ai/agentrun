@@ -1,5 +1,5 @@
 import { agentHash } from "@/components/AgentPage";
-import { ArrowLeft, Blocks, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Trash2, Webhook, Zap } from "lucide-react";
+import { ArrowLeft, Blocks, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
 import { ProblemCard } from "@/components/Problem";
@@ -19,13 +19,13 @@ import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, MAX_FEEDS, span } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or its editor
- *  (`edit`: a schedule's whole, a webhook's or GitHub trigger's filter). */
-export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio"; edit?: boolean };
+ *  (`edit`: a schedule's whole, a webhook's or GitHub trigger's filter, a feed trigger's feeds). */
+export type ScheduleView = { trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed"; edit?: boolean };
 type PageProps = { v2: Client; go: (hash: string) => void; agentName: (id: string) => string };
 /** `minEvery`: the shortest interval the server takes (capabilities' features.triggers.min_every_s), when it says. */
 /** `now`: the page's clock, for whether a one-time schedule's picked time is still ahead. */
@@ -44,7 +44,7 @@ export function SchedulesPage({ v2, view, go, agentName, minEvery, failuresToPau
   // stays in sight but off, with the line that says how to give one. Unknown (an older server) leaves it on.
   const noAddress = publicUrl === false;
   if (view.trigger === undefined) return <ScheduleList v2={v2} go={go} agentName={agentName} every={refreshMs * 2} now={now} failuresToPause={failuresToPause} noAddress={noAddress} />;
-  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} noAddress={noAddress} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
+  if (view.trigger === null) return view.kind === "webhook" ? <WebhookForm v2={v2} go={go} /> : view.kind === "github" ? <GitHubForm v2={v2} go={go} /> : view.kind === "composio" ? <ComposioForm v2={v2} go={go} noAddress={noAddress} /> : view.kind === "feed" ? <FeedForm v2={v2} go={go} minEvery={minEvery} /> : <ScheduleForm v2={v2} go={go} minEvery={minEvery} now={now} />;
   if (view.edit) return <ScheduleEdit key={view.trigger} v2={v2} go={go} id={view.trigger} minEvery={minEvery} now={now} />;
   return <ScheduleDetail key={view.trigger} v2={v2} go={go} agentName={agentName} id={view.trigger} every={refreshMs} now={now} failuresToPause={failuresToPause} />;
 }
@@ -78,6 +78,9 @@ function OffChip({ trigger }: { trigger: Trigger }) {
 /** How a schedule's last firing went, or that it has not fired. */
 const lastWords = (t: Trigger) => (t.last_firing ? `${firingWords(t.last_firing)}${t.last_firing.catch_up ? " · caught up late" : ""} · ${at(t.last_firing.nominal_at)}` : "Not fired yet");
 
+/** A polled trigger's last check (a feed's): whether it read, its words, and when. */
+const checkWords = (c: NonNullable<Trigger["last_check"]>) => `${c.ok ? "Checked" : "Check failed"} ${at(c.at)}: ${c.message}`;
+
 /** The words under New app trigger when the server has no public address. */
 export const NO_ADDRESS_LINE = "App triggers need this server's public address: set AGENTRUN_PUBLIC_URL and restart.";
 
@@ -102,12 +105,13 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
     <div className="p-5 md:p-8">
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-auto text-2xl font-semibold">Triggers</h1>
-        {/* With no trigger yet the panel below offers the four, each with what it is for: the page says each once. */}
+        {/* With no trigger yet the panel below offers the five, each with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
           <>
             <Button size="lg" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
             <Button size="lg" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
             <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
+            <Button size="lg" onClick={() => go("#/triggers/new-feed")}><Rss aria-hidden /> New feed trigger</Button>
             <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
           </>
         )}
@@ -131,6 +135,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
                 </div>
                 <div className="min-w-0 font-mono text-small text-muted-foreground md:text-right">
                   <p className="break-words">{lastWords(t)}</p>
+                  {t.last_check && <p data-last-check={t.last_check.ok ? "ok" : "failed"} className={`mt-1 break-words ${t.last_check.ok ? "" : "text-warning-text"}`}>{checkWords(t.last_check)}</p>}
                 </div>
               </li>
             ))}
@@ -142,21 +147,22 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
 }
 
 
-/** A server with no trigger yet: what a trigger is, and the four things that can start a run, each with its own way
- *  in. These stand in for the page's four buttons, which show once there is a trigger. */
+/** A server with no trigger yet: what a trigger is, and the five things that can start a run, each with its own way
+ *  in. These stand in for the page's five buttons, which show once there is a trigger. */
 function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress: boolean }) {
   const kinds = [
     { Icon: CalendarClock, name: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once.", action: "New schedule", to: "#/triggers/new" },
     { Icon: Webhook, name: "Webhook", what: "On each signed request another system sends to its URL.", action: "New webhook", to: "#/triggers/new-webhook" },
     { Icon: GitPullRequest, name: "GitHub", what: "On the events you pick from this server's GitHub App. Connect GitHub in Settings first.", action: "New GitHub trigger", to: "#/triggers/new-github" },
     { Icon: Blocks, name: "From an app", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository. Save the server in Settings first.", action: "New app trigger", to: "#/triggers/new-composio" },
+    { Icon: Rss, name: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests.", action: "New feed trigger", to: "#/triggers/new-feed" },
   ];
   return (
     <section aria-labelledby="first-trigger" className="border border-primary/50 bg-primary/5 p-5">
       <p className="caps text-label text-primary-text">No triggers yet</p>
       <h2 id="first-trigger" className="mt-2 text-xl font-semibold">Start runs without being here</h2>
       <p className="mt-1 max-w-prose text-lead text-muted-foreground">A trigger starts a run of an agent for you, and each run it starts stops at a spend cap. Pick what should start it.</p>
-      <ul className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <ul className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {kinds.map(({ Icon, name, what, action, to }) => (
           <li key={name} className="flex flex-col border bg-background p-4">
             <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{name}</p>
@@ -273,8 +279,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   const gh = isGitHubTrigger(trigger) ? trigger : null;
   // A trigger from an app: its server, event and config, its filter, and whether Composio still has its instance.
   const app = isComposioTrigger(trigger) ? trigger : null;
-  if (!hook && !gh && !app && !isScheduleTrigger(trigger)) return <NotASchedule />;
-  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger;
+  // A feed trigger: its feeds, how often they are read, its last check (with the note of a first check's start), its
+  // pointers and filter.
+  const feed = isFeedTrigger(trigger) ? trigger : null;
+  if (!hook && !gh && !app && !feed && !isScheduleTrigger(trigger)) return <NotASchedule />;
+  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger | FeedTrigger;
   // A one-time schedule whose time has passed: Done with when it ran (a started firing of its own time, the server's word:
   // nothing to resume), or that its time passed. Resume stays unless the server says it ran: the browser's clock alone
   // may run ahead of the server's.
@@ -325,11 +334,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
-          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
+          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : feed ? `Feed · ${feedWhen(feed.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
-          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : "Edit"}</Button>
+          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : feed ? "Edit feed" : "Edit"}</Button>
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
@@ -349,12 +358,13 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       </div>
       {disabledWords(trigger, failuresToPause) && (
         <p role="status" data-disabled className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">
-          {disabledWords(trigger, failuresToPause)} {trigger.disabled?.reason === "source_unreadable" ? "Edit its when, then Resume." : trigger.disabled?.reason === "auto_paused" ? (done && "passed" in done ? "Its time has passed: edit its time first, then Resume." : done ? "" : "Resume turns it on again.") : ""}
+          {disabledWords(trigger, failuresToPause)} {trigger.disabled?.reason === "source_unreadable" ? (feed ? "Edit its feeds, then Resume." : "Edit its when, then Resume.") : trigger.disabled?.reason === "auto_paused" ? (done && "passed" in done ? "Its time has passed: edit its time first, then Resume." : done ? "" : "Resume turns it on again.") : ""}
         </p>
       )}
       {said && <ProblemCard problem={said} className="mt-4" />}
       {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
+      {feed && <LastCheck check={feed.last_check ?? null} newest={firings[0]} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={agentHash(runs.target.agent_id)} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
         <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
@@ -376,6 +386,16 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
         </> : gh ? <>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-small">{gh.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul><p className="mt-1 text-small text-muted-foreground">From this server's GitHub App (Settings → GitHub).</p></dd>
+        </> : feed ? <>
+          <dt className="caps text-label text-muted-foreground">Feeds</dt>
+          <dd className="min-w-0 break-words"><ul className="space-y-1 font-mono text-small">{feed.source.urls.map((url) => <li key={url} className="break-all">{httpHref(url) ? <a href={httpHref(url)} target="_blank" rel="noreferrer" className="hover:underline">{url}</a> : url}</li>)}</ul></dd>
+          <dt className="caps text-label text-muted-foreground">Read</dt><dd>Every {span(feed.source.every_s ?? FEED_EVERY_S)}</dd>
+          {(feed.source.items !== undefined || feed.source.id !== undefined) && <>
+            <dt className="caps text-label text-muted-foreground">JSON list</dt>
+            <dd className="min-w-0 break-words font-mono text-small">Items at {feed.source.items ? feed.source.items : "the whole document"} · Id at {feed.source.id ?? "/id"}</dd>
+          </>}
+          <dt className="caps text-label text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words">{feed.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{feed.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every new or updated item"}</dd>
         </> : <>
           <dt className="caps text-label text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
         </>}
@@ -407,6 +427,8 @@ function ScheduleEdit({ v2, go, id, minEvery, now }: FormProps & { id: string })
   // A webhook's, GitHub trigger's or trigger from an app's filter is edited alone: its address, secret, what was made on
   // Composio, and its run stay as they are.
   if (isWebhookTrigger(trigger) || isGitHubTrigger(trigger) || isComposioTrigger(trigger)) return <FilterForm v2={v2} go={go} trigger={trigger} />;
+  // A feed trigger's feeds, interval, pointers and filter are edited alone: its name and its run stay as they are.
+  if (isFeedTrigger(trigger)) return <FeedForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} />;
   // Never an editor for another kind of trigger: its save would rebuild it as a schedule that starts runs.
   if (!isScheduleTrigger(trigger)) return <NotASchedule />;
   return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} now={now} />;
@@ -1134,5 +1156,137 @@ function AppFilter({ where, onChange, issues, others = [] }: { where: RuleDraft[
         {others.length > 0 && <p className="text-small text-muted-foreground" role="note">{others.length === 1 ? "One more rule, made through the API, is kept as it is" : `${others.length} more rules, made through the API, are kept as they are`}: {others.join(", ")}.</p>}
       </div>
     </fieldset>
+  );
+}
+
+/** A feed trigger's last check, said where its page opens: whether it read, its words and when; and, when its newest
+ *  firing is a note of its own that started nothing (a first check's start: the items already there), that note. */
+function LastCheck({ check, newest }: { check: NonNullable<Trigger["last_check"]> | null; newest?: Firing }) {
+  const note = newest && newest.by === "feed" && newest.status === "skipped" && !newest.run_id && newest.reason ? newest.reason : null;
+  return (
+    <section aria-label="Last check" data-last-check={!check ? "none" : check.ok ? "ok" : "failed"} className={`mt-4 border px-4 py-3 text-body ${check && !check.ok ? "border-warning/50 bg-warning/10" : "border-primary/50 bg-primary/5"}`}>
+      <p className="caps text-label text-muted-foreground">{!check ? "Not checked yet" : `${check.ok ? "Last check" : "Last check failed"} · ${at(check.at)}`}</p>
+      {check && <p className={`mt-1 break-words ${check.ok ? "" : "text-warning-text"}`}>{check.message}</p>}
+      {note && <p className="mt-1 break-words" data-note>{note}</p>}
+    </section>
+  );
+}
+
+/** A new feed trigger, or `trigger`'s feeds to edit: 1 to 20 URLs a line, how often they are read (at least the server's
+ *  `minEvery`), a JSON list's pointers behind their disclosure, and Only when on the item; a new one, the run each item
+ *  starts. A create lands on the trigger's page, where its first check says what it watches from. An edit sends its
+ *  source alone, as a PATCH, and only when it changed. */
+function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTrigger }) {
+  const [draft, setDraft] = useState<FeedDraft>(() => (trigger ? feedDraftOf(trigger) : emptyFeed()));
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [issues, setIssues] = useState<Record<string, string>>({});
+  const [rest, setRest] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  // The JSON list's pointers show open when the trigger has one.
+  const [listOpen, setListOpen] = useState(() => !!trigger && (trigger.source.items !== undefined || trigger.source.id !== undefined));
+  // A create sent again unchanged reuses its Idempotency-Key; an edited one gets a new key.
+  const keys = useRef(keeper()).current;
+  // A save that answers after the person left the form opens nothing.
+  const open = useRef(true);
+  useEffect(() => { open.current = true; return () => { open.current = false; }; }, []);
+  useEffect(() => { if (!trigger) allAgents(v2).then(setAgents, () => setAgents([])); }, [v2, trigger]);
+  const set = <K extends keyof FeedDraft>(k: K) => (value: FeedDraft[K]) => setDraft((d) => ({ ...d, [k]: value }));
+  const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
+  const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const shown = feedFields(feedUrlsOf(draft.urls).urls.length, [draft.where.length, ...draft.others.map((r) => r.where.length)]);
+    setRest([]);
+    const refused = (err: unknown) => {
+      if (!open.current) return;
+      const found = issuesOf(err);
+      setIssues(Object.fromEntries(Object.entries(found.fields).filter(([k]) => shown.has(k))));
+      setRest([...found.rest, ...Object.entries(found.fields).filter(([k]) => !shown.has(k)).map(([, v]) => v)]);
+      setSaving(false);
+    };
+    if (trigger) {
+      const { source, issues: found } = feedSourceOf(draft, minEvery);
+      if (Object.keys(found).length) { setIssues(found); return; }
+      setIssues({}); setSaving(true);
+      try {
+        if (!same(source, trigger.source)) await v2.updateTrigger(trigger.id, { source });
+        if (open.current) go(hashOf(trigger.id));
+      } catch (err) { refused(err); }
+      return;
+    }
+    const { body, issues: missing } = feedBodyOf(draft, minEvery, agentCap !== undefined);
+    if (!body) { setIssues(missing ?? {}); return; }
+    setIssues({}); setSaving(true);
+    try {
+      const made = await v2.createTrigger(body, keys.keyFor("createTrigger", body));
+      if (open.current) go(hashOf(made.id));
+    } catch (err) { refused(err); }
+  };
+  const urlIssues = Object.entries(issues).filter(([k]) => /^source\.urls(\[\d+\])?$/.test(k));
+  const live = agentsByName((agents ?? []).filter((a) => !a.archived_at));
+  const others = draft.others.map((r) => r.event + (r.actions.trim() ? ` (${r.actions.trim()})` : ""));
+  return (
+    <form onSubmit={(e) => void save(e)} className="p-5 md:p-8" noValidate>
+      <a href={trigger ? hashOf(trigger.id) : "#/triggers"} className="caps -my-1 inline-flex items-center gap-2 py-1 text-label text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> {trigger ? trigger.name : "Triggers"}</a>
+      <h1 className="mt-3 flex items-center gap-2 text-2xl font-semibold"><Rss className="size-5 text-primary-text" aria-hidden />{trigger ? "Edit feed" : "New feed trigger"}</h1>
+      <p className="mt-2 text-body text-muted-foreground">{trigger ? "The feeds it reads, how often, and which items start a run. Its name, its agent and what each run is asked stay as they are." : "Each new or updated item in its feeds starts a capped run of the agent. The items already there when it is made start none: its first check, on its page once it is made, says how many."}</p>
+      {rest.length > 0 && <div className="mt-4 border border-destructive/50 p-3 text-body text-destructive-text" role="alert">{rest.map((r, i) => <p key={i}>{r}</p>)}</div>}
+      <div className={`mt-5 ${formColumnsClass}`}>
+        {!trigger && <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="vendor outages" /></Field>}
+        <div className="min-w-0">
+          <UiField className="min-w-0" label="Feed URLs" hint={`One a line, 1 to ${MAX_FEEDS}: RSS, Atom, JSON Feed, or an API's JSON list. Plain http is read on a public address alone.`}
+            error={urlIssues.length ? <>{urlIssues.map(([k, v]) => <span key={k} data-issue={k} className="block">{v}</span>)}</> : undefined}>
+            <Textarea name="urls" rows={4} className="p-3 font-mono text-small" value={draft.urls} onChange={(e) => set("urls")(e.target.value)} placeholder="https://www.githubstatus.com/history.atom" spellCheck={false} />
+          </UiField>
+          {trigger && <p className="mt-2 text-small text-warning-text" role="note">A feed you add starts from now: what's in it already won't start runs.</p>}
+        </div>
+        <Field label="Every" field="source.every_s" issue={issues["source.every_s"]} hint={minEvery ? atLeast(minEvery) : undefined}>
+          <span className="flex gap-2">
+            <Input name="every" inputMode="decimal" value={draft.every} onChange={(e) => set("every")(e.target.value)} placeholder="15" />
+            <Picker id="feed-every-unit" name="everyUnit" label="Unit" className="w-32 shrink-0" value={draft.everyUnit} onChange={(v) => set("everyUnit")(v as FeedDraft["everyUnit"])}
+              options={(["seconds", "minutes", "hours"] as const).map((u) => ({ value: u, label: u }))} />
+          </span>
+        </Field>
+        <details data-json-list open={listOpen} onToggle={(e) => setListOpen(e.currentTarget.open)} className="min-w-0 border p-3">
+          <summary className="cursor-pointer text-body font-semibold">JSON list <span className="font-normal text-small text-muted-foreground">(optional: a feed that is an API's JSON, such as GitHub's pull requests)</span></summary>
+          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Items at" field="source.items" issue={issues["source.items"]} hint="A JSON Pointer to the array of items: empty for the whole document, /data/items for one inside it.">
+              <Input name="items" value={draft.items} onChange={(e) => set("items")(e.target.value)} placeholder="/data/items" autoComplete="off" spellCheck={false} />
+            </Field>
+            <Field label="Each item's id at" field="source.id" issue={issues["source.id"]} hint="A JSON Pointer into an item to what names it: empty for /id, /number for a pull request.">
+              <Input name="id" value={draft.id} onChange={(e) => set("id")(e.target.value)} placeholder="/id" autoComplete="off" spellCheck={false} />
+            </Field>
+          </div>
+        </details>
+        <fieldset className="min-w-0">
+          <legend className="caps text-label text-muted-foreground">Filter <span className="font-normal normal-case">(optional)</span></legend>
+          <div className="mt-2 space-y-3">
+            <Said issues={issues} field="source.accept" />
+            <Said issues={issues} field="source.accept[0]" />
+            <p className="text-small text-muted-foreground">A condition reads the item: /title, /link, /summary, /author, /categories, /feed/url, and /update (true for an item seen before that was updated). A JSON list's item is under /item.</p>
+            <ConditionList name="feed" at="source.accept[0]" where={draft.where} onChange={set("where")} issues={issues} label="Only when" />
+            {others.length > 0 && <p className="text-small text-muted-foreground" role="note">{others.length === 1 ? "One more rule, made through the API, is kept as it is" : `${others.length} more rules, made through the API, are kept as they are`}: {others.join(", ")}.</p>}
+          </div>
+        </fieldset>
+        {!trigger && <>
+          <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+            <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
+              options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
+                ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
+          </Field>
+          <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The item comes with it: its title, link, summary and feed.">
+            <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} />
+          </Field>
+          <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+            hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
+            <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
+          </Field>
+        </>}
+      </div>
+      <div className="mt-6 flex flex-wrap gap-2">
+        <Button type="submit" size="lg" variant="solid" disabled={saving}>{saving ? (trigger ? "Saving" : "Creating") : trigger ? "Save feed" : "Create feed trigger"}</Button>
+        <Button type="button" size="lg" variant="ghost" onClick={() => go(trigger ? hashOf(trigger.id) : "#/triggers")}>Cancel</Button>
+      </div>
+    </form>
   );
 }
