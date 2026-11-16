@@ -6,7 +6,7 @@ This page reads 25 sandbox and machine vendors against the provider contract in 
 machine-host adapter, what the provider would take, and what is still open. It is for a vendor's engineer, or a
 contributor, deciding whether to write one.
 
-As of main `bf56d3ced8`, 2026-11-16, from the vendors' public documentation and SDK source; nothing here was run on a
+As of main `10758ab70e`, 2026-11-16, from the vendors' public documentation and SDK source; nothing here was run on a
 vendor's account.
 
 **The bar for a clean fit.** Every host member ([the twelve members](PROVIDERS.md#the-twelve-members)) fits with what's
@@ -34,7 +34,7 @@ need a workaround, 7 are blocked.
 | [Baseten Sandboxes](https://docs.baseten.co/sandboxes/overview.md) | microVMs | needs a workaround (the desktop image needs Baseten's sandbox API server as its entrypoint, a layer of ours) | 260-280 | [framedExec][fe], [prepareImage][pi] |
 | [Beam Sandbox](https://docs.beam.cloud/v2/sandbox/overview) | disposable containers with a TTL | blocked (`exec`: no live stdin) | n/a | none |
 | [Beam VM](https://docs.beam.cloud/v2/vm/overview) | persistent microVMs | needs a workaround (`extend` rewrites the whole metadata map, or is left out) | 300-350 | [ssh-exec][se], [prepareImage][pi] |
-| [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand; a deleted sandbox's kept record read as no machine) | 250-280 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
+| [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand) | 250-280 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (a relay Worker of ours carries create, list, exec and the timer; the image is fixed at deploy) | 250-330, plus a relay Worker | [framedExec][fe], [keepalive][ka] |
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 330 | [keepalive][ka], [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | needs a workaround (a shim of ours over the pty console: raw mode, stderr framing) | about 300 | [packLabels][pl], [keepalive][ka], [prepareImage][pi] |
@@ -53,7 +53,7 @@ need a workaround, 7 are blocked.
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | self-hosted containers, or microVMs with Kata | needs a workaround (an exec of ours over execd's PTY socket; isolation set per deployment; the fence needs user namespaces allowed) | about 280 | [packLabels][pl], [prepareImage][pi] |
 | [Railway Sandboxes](https://docs.railway.com/sandboxes) | VMs in a project environment | needs a workaround (no name or labels: labels kept in create's variables and read by exec; errors mapped by message text) | 420-470 | [keepalive][ka], [prepareImage][pi] |
 | [Render Sandboxes](https://render.com/docs/sandboxes) | Firecracker microVMs | needs a workaround (no stdin call: a fifo pump of ours) | about 320 | [framedExec][fe], [labels "machine"][lm], [prepareImage][pi] |
-| [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (a shut-down devbox's kept record read as no machine; two SSE feeds merged by hand) | 270-290 | [framedExec][fe], [backstopAt][bs], [prepareImage][pi] |
+| [Runloop Devboxes](https://docs.runloop.ai/docs/devboxes/overview.md) | VMs | needs a workaround (two SSE feeds merged by hand) | 270-290 | [framedExec][fe], [backstopAt][bs], [prepareImage][pi] |
 | [Together Code Sandbox](https://docs.together.ai/docs/together-code-sandbox.md) | Firecracker microVMs booted from snapshots | needs a workaround (an SSE event reader in the host) | 260-290 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 | [Vercel Sandbox](https://vercel.com/docs/sandbox) | Firecracker microVMs | fits if (unverified: the log stream keeps a character split across two chunks whole and holds 75 s of silence; a taken name's status reads as `exists`; root makes a network namespace) | 230-290 | [framedExec][fe], [packLabels][pl], [prepareImage][pi] |
 
@@ -130,8 +130,7 @@ provider spec.
 - **Image:** "every sandbox image must include the sandbox API server and start it as the entrypoint"
   ([images](https://docs.baseten.co/sandboxes/manage-images.md)), so the box image needs a Baseten layer of ours. The
   sandbox kind on Baseten's stock image needs none.
-- **Open:** ours, a "vendor agent as entrypoint" recipe beside `box/install.sh`, and a docs line for a deleted
-  sandbox's kept record. Unverified: the runtime user, label bounds, root's network namespace.
+- **Open:** ours, a "vendor agent as entrypoint" recipe beside `box/install.sh`. Unverified: the runtime user, label bounds, root's network namespace.
 
 ### Beam
 
@@ -163,8 +162,7 @@ provider spec.
 - **Image:** a template image carries Blaxel's sandbox-api, marked "required"
   ([templates](https://docs.blaxel.ai/Sandboxes/Templates.md)), so the box image gets it by hand. The size rule
   (memory as a multiple of cpus) is held in the host's `check`.
-- **Open:** ours, a "vendor agent as entrypoint" image case, a size rule in `facts`, and a docs line for a deleted
-  sandbox's kept record. Unverified: root's network namespace, arch, listeners, the label charset.
+- **Open:** ours, a "vendor agent as entrypoint" image case and a size rule in `facts`. Unverified: root's network namespace, arch, listeners, the label charset.
 
 ### Cloudflare Sandbox
 
@@ -292,7 +290,7 @@ provider spec.
   moves it, so no `extend`.
 - **Image:** a team image built from a Dockerfile in [prepareImage](PROVIDERS.md#wire-it-up)
   ([custom images](https://hyperbrowser.ai/docs/sandboxes/custom-images.md)).
-- **Open:** ours, an SSE reader beside `ndjson` and a docs line for a closed sandbox's kept record. Unverified: a
+- **Open:** ours, an SSE reader beside `ndjson`. Unverified: a
   process started without a timeout has none, exec runs as root, root makes a network namespace, a team image can be
   found by name; the docs give `timeoutMs`, a process's "Maximum runtime in milliseconds", no default
   ([processes](https://hyperbrowser.ai/docs/sandboxes/processes.md)). The macOS runtime would be a direct
@@ -422,10 +420,10 @@ provider spec.
 - **Labels and lifetime:** metadata; a janitor host that sets `keep_alive_time_seconds`, after which the devbox shuts
   down (48 hours at most), from [backstopAt](PROVIDERS.md#the-twelve-members)
   ([create](https://docs.runloop.ai/api-reference/devbox/create-a-devbox.md)). A
-  shut-down devbox stays readable. The delete wait ends only when `get` finds no machine, so the host reads that
-  record as `undefined` ([get](PROVIDERS.md#the-twelve-members)), with no line on main naming that case.
+  shut-down devbox stays readable, and the host's `get` answers `undefined` for it, as for any vendor's kept record of
+  a deleted machine ([get](PROVIDERS.md#the-twelve-members)).
 - **Image:** a blueprint built in [prepareImage](PROVIDERS.md#wire-it-up).
-- **Open:** ours, an SSE reader beside `ndjson`, and a terminal state for a kept record. Unverified: listeners, SSE
+- **Open:** ours, an SSE reader beside `ndjson`. Unverified: listeners, SSE
   silence, metadata limits, root's network namespace.
 
 ### Together Code Sandbox
@@ -468,7 +466,6 @@ The open gaps on our side, by how many rows they hold back:
 | No two-way exec stream: a computer that dials out to AgentRun instead | 9: Alibaba, AWS, Azure, Beam Sandbox, Cloudflare, DigitalOcean (if its caps cut the bridge), Fly Machines, Google Agent Platform, Kasm | planned |
 | Exec shapes `framedExec` doesn't take: SSE events, a one-socket PTY, no stdin call | 6: Together, Runloop, Hyperbrowser (SSE); DigitalOcean, OpenSandbox (PTY); Render (no stdin) | adapter helper |
 | An image that isn't "boot, run `install.sh`, snapshot": a deploy-time digest, or the vendor's agent as entrypoint | 5: Cloudflare, AWS, Blaxel, Baseten, Fly Sprites | docs and box |
-| A vendor's kept record of a deleted machine holds the delete wait | 4: Runloop, Blaxel, Hyperbrowser, Baseten | docs line |
 | One each: an idle destroy as the timer for `labels: "machine"` (Railway); a per-machine credential (Freestyle); `e2b.ts` taking an API URL (Cube); an SDK that keeps keys process-wide (microsandbox) | 4 | adapter or docs |
 
 Dial-out is planned: computerd in the machine would connect to AgentRun, so the vendor needs no exec stream. The
