@@ -605,3 +605,13 @@ test("ownerSaid: a grade's pending words or a person's message after the first a
   assert.equal(ownerSaid([words, { kind: "agentrun.end" }], job), false, "a round a past end closed");
   assert.equal(ownerSaid([], [...job, ...asked, row("0:5", "user_message", { text: "Why 42?" })]), true, "a person's follow-up");
 });
+
+test("ownerSaid: a subagent's task prompt (a child conversation's user_message) is not the owner's feedback; a root message after the answer still is", () => {
+  const { ownerSaid } = endModule;
+  const row = (id, kind, extra = {}) => ({ id, kind, agent_label: null, parent_tool_use_id: null, text: null, ...extra });
+  const job = [row("0:1", "user_message", { text: "Question 1" })];
+  const child = row("1:1", "user_message", { text: "Research the freight rates", conversation_id: 1, parent_tool_use_id: "toolu_spawn" });
+  const answer = row("0:9", "final_answer", { text: "42" });
+  assert.equal(ownerSaid([], [...job, child, answer]), false, "a subagent's prompt");
+  assert.equal(ownerSaid([], [...job, child, answer, row("0:10", "user_message", { text: "Why 42?" })]), true, "a root follow-up after a subagent ran");
+});
