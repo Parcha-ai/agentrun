@@ -253,3 +253,20 @@ test("the budget's time ceiling (READ_WORK_MS) stops a read whose steps are few 
   // And a budget of steps too small for it stops it by its steps.
   assert.throws(() => eventsIn(calendar, window, { work: { steps: 3, clock: () => 0 } }), (error) => error instanceof RepeatsError && error.by === "steps");
 });
+
+test("a THISANDFUTURE range that moves occurrences earlier: the answer is the window's earliest 200 events, the moved ones among them, not the first 200 the rule reaches", () => {
+  // Hourly from Nov 1 00:00 UTC; from Nov 15 on, every occurrence moved 14 days back (onto Nov 1 and on again).
+  const calendar = parseCalendar(icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//AgentRun//test//EN", "X-WR-TIMEZONE:UTC",
+    "BEGIN:VEVENT", "UID:hourly@test", "DTSTAMP:20261001T000000Z", "DTSTART:20261101T000000Z", "DTEND:20261101T003000Z", "RRULE:FREQ=HOURLY", "SUMMARY:Hourly", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:hourly@test", "DTSTAMP:20261001T000000Z", "RECURRENCE-ID;RANGE=THISANDFUTURE:20261115T000000Z", "DTSTART:20261101T000000Z", "DTEND:20261101T003000Z", "SUMMARY:Hourly (moved)", "END:VEVENT",
+    "END:VCALENDAR"]), "test");
+  const { events, truncated } = read(calendar, "2026-11-01", "2026-11-30");
+  assert.equal(truncated, true);
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.000Z$/, "+00:00");
+  const expected = [];
+  for (let hour = 0; hour < 100; hour++) {
+    const start = Date.UTC(2026, 10, 1, hour);
+    for (const title of ["Hourly", "Hourly (moved)"]) expected.push([title, iso(start), iso(start + 1_800_000), false]);
+  }
+  assert.deepEqual(events.map(brief), expected);
+});
