@@ -414,6 +414,14 @@ test("prepareImage: a desktop's snapshot is built once from boxd's own image: th
 	assert.deepEqual(rest.find(([call]) => call === "snapshots.create").slice(1), ["b-1", name]);
 	assert.deepEqual(rest.find(([call]) => call === "list").slice(1), [{ org: "acme", labels: {} }], "the org's whole list: the build machine has no label");
 	assert.deepEqual(rest.filter(([call]) => call === "delete"), [["delete", "b-1"]], "the build machine alone");
+
+	const unlisted = setup({ kind: "desktop" }, building({ list: () => [] }));
+	assert.deepEqual(await unlisted.provider.prepareImage(), { ok: true, value: name });
+	assert.deepEqual(
+		unlisted.rec.calls.slice(-3).map(([call, id]) => [call, id]),
+		[["list", { org: "acme", labels: {} }], ["delete", "b-1"], ["get", "b-1"]],
+		"the id create answered is deleted and read gone though the list lags",
+	);
 });
 
 test("prepareImage: a cancelled request makes no build machine, and a cancel while one starts deletes it at once", async () => {

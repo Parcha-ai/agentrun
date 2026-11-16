@@ -304,20 +304,24 @@ class BoxdHost implements MachineHost {
 		building();
 		// Named before the create, so a create whose reply is lost leaves a machine the cleanup still finds.
 		const machine = `agentrun-desktop-build-${randomBytes(4).toString("hex")}`;
+		const made = new Set<string>();
 		let built: { name: string } | { error: unknown };
 		try {
-			built = { name: await this.#build(machine, name, end, signal) };
+			built = { name: await this.#build(machine, made, name, end, signal) };
 		} catch (error) {
 			built = { error };
 		}
-		const left = await this.#gone(machine);
+		const left = await this.#gone(machine, made);
 		if ("error" in built) throw left === undefined ? built.error : withWords(built.error, `; ${left}`);
 		if (left !== undefined) throw new HostError("vendor", `the boxd snapshot ${name} is ready, but ${left}: call again to start from the snapshot`);
 		return built.name;
 	}
 
-	/** The build itself, on a machine of this name: made, started (a cancel stops the wait), the recipe, the capture read ready. */
-	async #build(machine: string, name: string, end: number, signal: AbortSignal | undefined): Promise<string> {
+	/**
+	 * The build itself, on a machine of this name (its id put in `ids` as create answers it): made, started (a cancel stops
+	 * the wait), the recipe, the capture read ready.
+	 */
+	async #build(machine: string, ids: Set<string>, name: string, end: number, signal: AbortSignal | undefined): Promise<string> {
 		const { org } = this.options;
 		const made = await this.creator.create({
 			name: machine,
@@ -326,6 +330,7 @@ class BoxdHost implements MachineHost {
 			config: { autoSuspendTimeout: 0 },
 			deleteAfter: BUILD_TTL_S,
 		});
+		ids.add(made.id);
 		const ms = Math.max(1, end - Date.now());
 		orThrow(await race(this, this.machines.waitUntilReady(made.id, { timeout: ms }), `the build machine ${made.id}'s start`, ms + CALL_SLACK_MS, signal));
 		const what = `the desktop recipe (mousepad) on the build machine ${made.id}`;
@@ -355,18 +360,19 @@ class BoxdHost implements MachineHost {
 	}
 
 	/**
-	 * Every machine of the build's name in the org's list (it has no label to list it by), each deleted once and read gone
-	 * through get, until the list shows none left, GONE_MS at most. Not the caller's to cancel: a cancelled build is
-	 * cleaned up too. Undefined once none is left, else what is left in words (boxd's delete timer, set at create, ends it).
+	 * The build's machines, each deleted once and read gone through get, GONE_MS at most: the ids create answered (`made`),
+	 * which a lagging list can't hide, and every machine of the build's name in the org's list (it has no label to list it
+	 * by), which finds one whose create reply was lost. Not the caller's to cancel: a cancelled build is cleaned up too.
+	 * Undefined once none is left, else what is left in words (boxd's delete timer, set at create, ends it).
 	 */
-	async #gone(machine: string): Promise<string | undefined> {
+	async #gone(machine: string, made: ReadonlySet<string>): Promise<string | undefined> {
 		const { org } = this.options;
 		const asked = new Set<string>();
 		try {
 			await until(`the build machine ${machine}'s delete`, { end: Date.now() + GONE_MS, pollMs: BUILD_POLL_MS }, async () => {
 				const listed = await this.machines.list({ ...(org === undefined ? {} : { org }), labels: {} });
 				let left = 0;
-				for (const { id } of [...listed].filter((one) => one.name === machine)) {
+				for (const id of new Set([...made, ...[...listed].filter((one) => one.name === machine).map((one) => one.id)])) {
 					if (!asked.has(id)) {
 						asked.add(id);
 						await this.delete(id);
