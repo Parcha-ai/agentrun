@@ -19,6 +19,7 @@ import {
 	KIND_SHAPES,
 	kindOf,
 	kindRefusals,
+	mountsOf,
 	PROVIDERS,
 	providerIds,
 	providerModule,
@@ -210,6 +211,8 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 	assert.equal(defineProvider(good), good);
 	assert.deepEqual(descriptorProblems(good), []);
 	assert.deepEqual(descriptorProblems({ ...good, unmounted: { archil: "Archil's client hangs here" } }), [], "a kind it doesn't take, with why");
+	const relay = { ...good, keys: [...good.keys, { name: "ACME_RELAY", option: "relay", required: false }], unmounted: { archil: "Archil's client hangs here" }, mountsWith: { archil: "ACME_RELAY" } };
+	assert.deepEqual(descriptorProblems(relay), [], "a kind it takes once the operator sets one of its keys");
 	for (const [change, words] of [
 		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
 		[{ label: " " }, /label is not a name in words/],
@@ -222,6 +225,11 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ unmounted: { archil: " " } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
 		[{ unmounted: ["archil"] }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
 		[{ mounts: ["archil"], unmounted: { archil: "it hangs" } }, /unmounted names a mount kind that mounts declares/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: { archil: "ACME_RELAY" } }, /mountsWith maps mount kinds \(bind, archil\) to the name of one of its keys that is not required/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: { archil: "ACME_KEY" } }, /mountsWith maps mount kinds .* not required/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: { nfs: "ACME_KEY" } }, /mountsWith maps mount kinds/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: ["archil"] }, /mountsWith maps mount kinds/],
+		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_RELAY", option: "relay", required: false }], mountsWith: { archil: "ACME_RELAY" } }, /each kind of mountsWith is in unmounted too/],
 		[{ network: [] }, /network is not a list of the network forms/],
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
@@ -309,4 +317,22 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 		for (const { network } of built) assert.ok(network.every((form) => entry.network.includes(form)), `${id}: ${network} is among ${entry.network}`);
 		assert.deepEqual([...new Set(built.flatMap(({ network }) => network))].sort(), [...entry.network].sort(), `${id}: its configurations make every form its entry declares`);
 	}
+});
+
+test("mountsOf: a descriptor's mounts with the operator's keys, the kinds of mountsWith whose key is set taken and left out of unmounted; Daytona's archil with DAYTONA_ARCHIL_EGRESS alone", () => {
+	const daytona = DESCRIPTORS.find((one) => one.id === "daytona");
+	assert.deepEqual(daytona.mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
+	assert.deepEqual(daytona.keys.find((key) => key.name === "DAYTONA_ARCHIL_EGRESS"), { name: "DAYTONA_ARCHIL_EGRESS", option: "archilEgress", required: false });
+	assert.deepEqual(mountsOf(daytona, () => false), { mounts: [], unmounted: { archil: daytona.unmounted.archil } }, "hosted Daytona: no mount, and why");
+	assert.match(daytona.unmounted.archil, /Archil's client hangs on its sandboxes/);
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS"), { mounts: ["archil"], unmounted: {} }, "with an egress: the Archil mount");
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_API_KEY"), mountsOf(daytona, () => false), "only the key mountsWith names turns it on");
+	// No other provider has a mount its keys turn on: each one's mounts are its descriptor's, whatever is set.
+	for (const one of DESCRIPTORS.filter((d) => d.id !== "daytona")) {
+		assert.equal(one.mountsWith, undefined, one.id);
+		assert.deepEqual(mountsOf(one, () => true).mounts, [...one.mounts], one.id);
+	}
+	// The registry's entry carries it, for a server to read without loading the provider.
+	assert.deepEqual(PROVIDERS.find((one) => one.id === "daytona").mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
+	assert.deepEqual(mountsOf({ mounts: ["bind"], unmounted: { archil: "why" }, mountsWith: { archil: "K" } }, () => true), { mounts: ["bind", "archil"], unmounted: {} });
 });

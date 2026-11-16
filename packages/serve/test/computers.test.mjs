@@ -119,7 +119,7 @@ test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready
 });
 
 /** Why a Daytona sandbox is refused in Mode 2: it takes no Archil mount, and its descriptor says why. */
-const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
+const DAYTONA_NO_DISK = "Daytona can't mount the owner's disk this server keeps run folders on (Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS): set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)";
 
 /** Why a vendor's sandbox, or desktop, that would mount Archil is refused in Mode 2: it needs Archil's image in the
  *  owner's own vendor account, which this server can't put there yet. No built-in provider is refused so (every one
@@ -181,6 +181,8 @@ test("a key save takes only the provider's declared names, seals each in the sto
   const { store, sealKey, routes } = await setup(t);
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-a", OPENAI_API_KEY: "sk-x" }), (error) => error instanceof KeysRefused && error.fields.map((f) => [f.field, f.reason]).join() === "OPENAI_API_KEY,not_allowed");
   await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: 7 }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type");
+  // Whitespace alone is no value, as a key in the environment is none (key-meta.ts envValue): refused, never saved as set.
+  for (const blank of [" ", "\t\n"]) await assert.rejects(routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: blank }), (error) => error instanceof KeysRefused && error.fields[0].reason === "wrong_type" && /a non-empty string/.test(error.fields[0].message), JSON.stringify(blank));
   assert.deepEqual(await store.sealedKeys.all(), [], "nothing saved when any name is refused");
   const saved = await routes.saveKeys("browserbase", { BROWSERBASE_API_KEY: "good-b1", BROWSERBASE_PROJECT_ID: "good-proj" });
   assert.deepEqual(saved, { id: "browserbase", name: "Browserbase", metered: true, secrets: [{ name: "computer:browserbase:BROWSERBASE_API_KEY", set: true, source: "console", changed_at: CHANGED }, { name: "computer:browserbase:BROWSERBASE_PROJECT_ID", set: true, source: "console", changed_at: CHANGED }], required: ["computer:browserbase:BROWSERBASE_API_KEY", "computer:browserbase:BROWSERBASE_PROJECT_ID"], ready: true, network: "the vendor's own network; this server's allow-list doesn't apply", shell: "none", host_tools: ["read", "write", "edit"], shell_note: SHELL_NOTES.none }, "the shared secret shape: set, where from, when changed; never a value; and the shell a browser gives (none: it mounts no folder)");

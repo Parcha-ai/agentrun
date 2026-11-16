@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import * as daytonaModule from "../dist/conformance/daytona.js";
+import { fakeObjects } from "./fake-archil.mjs";
 
 const { createProvider, DAYTONA_ENV } = daytonaModule;
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -56,6 +57,7 @@ test("createProvider() names the variable it needs, and makes no request without
 		user: "COMPUTER_DAYTONA_USER",
 		snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
+		archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });
@@ -271,4 +273,35 @@ test("the live suite on real Daytona skips unless both AGENTRUN_COMPUTER_LIVE_DA
 		assert.match(tap, /# pass 0/);
 		assert.match(tap, /# fail 0/);
 	}
+});
+
+const EGRESS = "192.0.2.40:18100:42050";
+const ARCHIL = {
+	COMPUTER_ARCHIL_DISK: "dsk-00000000000baf76",
+	COMPUTER_ARCHIL_REGION: "aws-us-east-1",
+	COMPUTER_ARCHIL_TOKEN: "tok-daytona-module-0123456789abcdef",
+	COMPUTER_ARCHIL_API_KEY: "fake-test-key",
+	COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+};
+
+test("COMPUTER_DAYTONA_ARCHIL_EGRESS is the provider's archilEgress: set, it takes an Archil mount; unset, it refuses one; a malformed one is refused at createProvider()", () => {
+	const fetch = async () => assert.fail("no request");
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY }, fetch }).capabilities().mount, []);
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: EGRESS }, fetch }).capabilities().mount, ["archil"]);
+	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: "192.0.2.40:8100:42050" }, fetch }), /the Archil egress is/);
+	assert.throws(() => createProvider({ env: { DAYTONA_ARCHIL_EGRESS: EGRESS } }), /COMPUTER_DAYTONA_API_KEY/, "a bare DAYTONA_ name is never read");
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, DAYTONA_ARCHIL_EGRESS: EGRESS }, fetch }).capabilities().mount, [], "the bare name is not the module's");
+});
+
+test('mountFor("archil") gives a fresh run folder on the COMPUTER_ARCHIL_* disk only with COMPUTER_DAYTONA_ARCHIL_EGRESS set (the provider takes the mount only then), and none for a bind', async () => {
+	const { mountFor } = daytonaModule;
+	assert.equal(await mountFor("archil", { env: { ...ARCHIL } }), undefined, "no egress: hosted Daytona, so the mount cases are skipped");
+	assert.equal(await mountFor("archil", { env: { [DAYTONA_ENV.archilEgress]: EGRESS } }), undefined, "no disk named");
+	assert.equal(await mountFor("bind", { env: { ...ARCHIL, [DAYTONA_ENV.archilEgress]: EGRESS } }), undefined, "a Daytona computer takes no bind");
+	const objects = fakeObjects();
+	const folder = await mountFor("archil", { env: { ...ARCHIL, [DAYTONA_ENV.archilEgress]: EGRESS }, archil: { objects } });
+	assert.equal(folder.mount.kind, "archil");
+	assert.equal(folder.mount.disk, ARCHIL.COMPUTER_ARCHIL_DISK);
+	assert.match(folder.mount.folder, /^agents\/conformance\/runs\/[A-Za-z0-9][A-Za-z0-9_-]*\/work$/);
+	await folder.close();
 });

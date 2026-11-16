@@ -124,6 +124,8 @@ export interface ProviderEntry {
 	readonly mounts: readonly MountKind[];
 	/** Why its computers take none of these mount kinds, each in one sentence (descriptor.ts). */
 	readonly unmounted?: Unmounted;
+	/** Mount kinds its computers take only where the operator sets the key named, by kind (descriptor.ts, mountsOf). */
+	readonly mountsWith?: Readonly<Partial<Record<MountKind, string>>>;
 	/**
 	 * The network forms its computers make, its descriptor's: ["none"], a remote computer whose programs run in a network
 	 * of their own; ["open"], the vendor's own network, which no allowlist of this server reaches; Docker's all three.

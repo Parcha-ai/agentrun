@@ -51,7 +51,8 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   // The Composio form, open (true), open filled from a template's need (its `add`), or closed.
   const [composio, setComposio] = useState<boolean | Add>(composioAdd && writable ? composioAdd : false);
   // What a delete says after its row is gone: a Composio server that could not be removed there is the owner's to remove.
-  const [removedNote, setRemovedNote] = useState<string | null>(null);
+  // What a Composio server's delete did there (`removed`: all of it went), shown once the row is gone.
+  const [removedNote, setRemovedNote] = useState<{ removed: boolean; note: string } | null>(null);
   // The forms follow the `add` param on every location change: Back to a setup URL opens one again, with its fields reset.
   const addKey = add ? JSON.stringify(add) : "";
   const seenAdd = useRef(addKey);
@@ -115,7 +116,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </p>
           )}
           {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-          {removedNote && <p className="border border-warning/50 p-4 text-body text-warning-text" role="status">{removedNote}</p>}
+          {removedNote && <p className={`border p-4 text-body ${removedNote.removed ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">{removedNote.note}</p>}
           {loadError && (
             <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
               <p className="font-mono">The MCP servers could not be read. {loadError.text}</p>
@@ -128,11 +129,11 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </>
           )}>
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => () => { setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => (said?: { removed: boolean; note: string }) => { if (said) setRemovedNote(said); setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} settings={settings} settingsBusy={settingsBusy} settingsProblem={settingsProblem?.server === s.name ? settingsProblem.problem : null} onSettings={(edit) => void saveSettings(s.name, edit)} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })}
-            onPaste={() => void pasteFromClipboard(() => setForm({ saved: s }), () => page.current?.querySelector<HTMLInputElement>('input[name="mcp-token"], input[name="mcp-header-value-0"]') ?? null)} onChanged={load} onDeleted={(note) => { setRemovedNote(note ?? null); load(); }} />)}</ul>
+            onPaste={() => void pasteFromClipboard(() => setForm({ saved: s }), () => page.current?.querySelector<HTMLInputElement>('input[name="mcp-token"], input[name="mcp-header-value-0"]') ?? null)} onChanged={load} onDeleted={(said) => { setRemovedNote(said ?? null); load(); }} />)}</ul>
           : <p className="border px-3 py-4 font-mono text-body text-muted-foreground">No MCP server is saved here yet.</p>)}
           </SettingsSection>
           <PrivateHosts v2={v2} />
@@ -151,7 +152,7 @@ const keyOf = (server: string, tool: string) => `mcp:${server}/${tool}`;
 const ALL_PERMISSIONS: Permission[] = ["allow", "ask", "deny"];
 
 function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onSettings, writable, signIn, onChange, onPaste, onChanged, onDeleted }: {
-  v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onPaste: () => void; onChanged: () => void; onDeleted: (note?: string) => void;
+  v2: Client; server: McpServer; writable: boolean; signIn: (name: string, body: { url: string }) => Promise<void>; onChange: (problem?: Problem) => void; onPaste: () => void; onChanged: () => void; onDeleted: (said?: { removed: boolean; note: string }) => void;
   settings: ToolSettings | null; settingsBusy: boolean; settingsProblem: Problem | null; onSettings: (edit: (current: ToolSettings) => ToolSettings) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -198,7 +199,7 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
       {confirm && (
         <div role="alertdialog" aria-label={`Delete ${s.name}`} className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">
           <p className="min-w-0 flex-1 text-body">Delete {s.name}? Its credential goes with it, and an agent that grants its tools can't call them.</p>
-          <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { onDeleted((await v2.deleteMcpServer(s.name))?.composio?.note); })}>Delete</Button>
+          <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => { onDeleted((await v2.deleteMcpServer(s.name))?.composio); })}>Delete</Button>
           <Button size="sm" onClick={() => setConfirm(false)}>Keep</Button>
         </div>
       )}
@@ -402,7 +403,9 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [name, setName] = useState(add?.name ?? "");
   const [listed, setListed] = useState<ComposioTools | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
-  const [after, setAfter] = useState<{ connect?: string; notServed?: string[] } | null>(null);
+  // What a save says after it is saved: where to connect the account, the actions not served, and what a save over a
+  // server did at Composio with what its earlier save made.
+  const [after, setAfter] = useState<{ connect?: string; notServed?: string[]; composio?: { removed: boolean; note: string } } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
@@ -424,7 +427,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
     const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
     form.current?.reset();
     onSaved();
-    if (answer.connect_url || answer.not_served?.length) setAfter({ connect: answer.connect_url, notServed: answer.not_served }); else onClose();
+    if (answer.connect_url || answer.not_served?.length || answer.composio) setAfter({ connect: answer.connect_url, notServed: answer.not_served, composio: answer.composio }); else onClose();
   });
   const toggle = (slug: string) => setPicked((now) => (now.includes(slug) ? now.filter((x) => x !== slug) : [...now, slug]));
   if (after) {
@@ -433,6 +436,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
         <p className="text-body">Saved.{after.connect ? ` Its tools need your ${listed?.toolkit} account: connect it on Composio, then refresh the server.` : ""}</p>
         {after.connect && <p><a href={after.connect} target="_blank" rel="noopener noreferrer" className="font-mono text-body underline">Connect your {listed?.toolkit} account</a></p>}
         {after.notServed?.length ? <p className="font-mono text-body text-muted-foreground">Composio's server doesn't list {after.notServed.join(", ")}: a run can't call {after.notServed.length === 1 ? "it" : "them"}.</p> : null}
+        {after.composio && <p className={`border p-4 text-body ${after.composio.removed ? "border-success/50 text-success-text" : "border-warning/50 text-warning-text"}`} role="status">{after.composio.note}</p>}
         <Button size="sm" onClick={onClose}>Done</Button>
       </section>
     );
@@ -480,7 +484,7 @@ const AUTH_LABEL: Record<McpAuth["type"], string> = { none: "Credential", bearer
  *  A new server is previewed before it can be saved; any change of its address or credential asks for another. A new
  *  server's form offers the URL presets (MCP_URL_PRESETS): one fills the name (the first free one of `taken`), address,
  *  credential and toolkit, and says its note; `add.preset` opens the form with one filled. */
-function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; taken: readonly Pick<McpServer, "name">[] | null; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: () => void }) {
+function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, onSaved }: { v2: Client; saved?: McpServer; add?: Add; given?: Problem; writable: boolean; taken: readonly Pick<McpServer, "name">[] | null; signIn: (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => Promise<void>; onCancel: () => void; onSaved: (said?: { removed: boolean; note: string }) => void }) {
   const form = useRef<HTMLFormElement>(null);
   const linked = saved ? undefined : urlPresetOf(add?.preset);
   const [preset, setPreset] = useState<McpPreset | undefined>(linked);
@@ -558,8 +562,8 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
     if (!addable) return;
     if (type === "oauth" && (!saved || needsSignIn)) return void startSignIn();
     // No prices are sent: this form sets none, and the server keeps the saved ones for the tools still listed at the same
-    // address when a PUT has none.
-    void act(async () => { await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(); });
+    // address when a PUT has none. A change that moved a Composio server off Composio says what it removed there.
+    void act(async () => { const answer = await v2.saveMcpServer(name.trim(), url.trim(), auth(), kind()); form.current?.reset(); onSaved(answer.composio); });
   };
   const canSave = !busy && addable && !!name.trim() && !!url.trim() && (!!saved || !!preview);
   // A preset fills the form as typing would: a new preview is asked for, and anything filled stays the owner's to change.
