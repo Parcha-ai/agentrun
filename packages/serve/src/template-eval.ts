@@ -27,6 +27,8 @@ import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, typ
 import type { EmailFaux } from "./email/email-faux.js";
 import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
 import { EMAIL_TOOLS } from "./email/names.js";
+import { CALENDAR_EVENTS } from "./calendar/names.js";
+import type { IcsFaux } from "./calendar/ics-faux.js";
 import type { MonidFake } from "./runner/monid-run.js";
 import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { webShownOf } from "./timeline/index.js";
@@ -69,7 +71,7 @@ export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's o
 
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "feed"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -86,7 +88,8 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "feed", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["feed", "feed fakes the package's feeds"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"]];
+
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
 
@@ -138,6 +141,10 @@ export type EvalCase = {
   /** The case's fake mailbox (eval-mailbox.ts): each run on each of its layouts gets a fake account seeded from it, and is
    *  started by the package's trigger as it would be. Absent: the server's account, if any. */
   email?: MailboxFixture;
+  /** The case's calendar (`calendar:`, an .ics file in the case): served on loopback by a fake calendar server
+   *  (calendar/ics-faux.ts) and saved as the eval's own server's calendar for the case's runs, read by calendar_events with
+   *  the case's `now` as its clock. Absent: the server's calendar, if any. */
+  calendar?: { file: string; text: string };
   /** The case's fake feed (eval-feed.ts): each run gets fake feeds served from it, read in place of the URLs the
    *  package's feed trigger names, and is started by that trigger as it would be. */
   feed?: FeedFixture;
@@ -415,6 +422,18 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: an email case's run is started by the package's trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
+    // The case's calendar: an iCalendar file in the case, served by a fake calendar server as the server's calendar.
+    let calendar: EvalCase["calendar"];
+    if (c.calendar !== undefined) {
+      const path = inside(root, c.calendar, "file");
+      if (!path || !path.endsWith(".ics")) bad(`${at}/case.yaml: calendar is an iCalendar file (.ics) in the case (not ${JSON.stringify(c.calendar)})`);
+      else {
+        const text = readFileSync(join(root, path), "utf8");
+        if (!/^\uFEFF?\s*BEGIN:VCALENDAR\b/i.test(text)) bad(`${at}/${path}: is not an iCalendar file (one that starts BEGIN:VCALENDAR)`);
+        else calendar = { file: path, text };
+      }
+      if (!(pkg.tools ?? []).includes(CALENDAR_EVENTS)) bad(`${at}/case.yaml: calendar fakes the server's calendar, and the package's tools don't name ${CALENDAR_EVENTS}`);
+    }
     // The case's fake feed: its fixture, and the package's feed trigger its runs start from (eval-feed.ts).
     let feed: FeedFixture | undefined;
     if (c.feed !== undefined) {
@@ -474,7 +493,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(feed ? { feed } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -1088,7 +1107,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await closeServe();
       removeTree(scratch!);
       throw error;
@@ -1101,7 +1120,9 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     // An email case saves its fake mailbox as the server's email account, a secret write, which the API token never
     // makes: the eval owns its own scratch server, so it opens that server's console from its launch link, as the owner
     // who started it would, and makes those writes from that session.
-    if (clock && serve.launchCode) {
+    // A calendar case saves its fake calendar as the server's calendar, a secret write too.
+    const calendarCase = cases.some((one) => one.calendar);
+    if ((clock || calendarCase) && serve.launchCode) {
       const origin = new URL(serve.baseUrl).origin;
       const opened = await fetch(`${origin}/?launch=${encodeURIComponent(serve.launchCode)}`, { redirect: "manual" }).catch(() => undefined);
       const cookie = opened?.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ");
@@ -1119,6 +1140,19 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
         throw new Error(typeof address === "string"
           ? `the server on ${options.data} keeps an email account (${address}), and an email case saves its fake mailbox as the server's account in its place: remove it (DELETE /v2/settings/email), run the eval, and save it again; or run the eval without --on-data`
           : `the server on ${options.data} did not say whether it keeps an email account (GET /settings/email ${kept?.status ?? "failed"}), which an email case's fake mailbox would replace: nothing ran`);
+      }
+    }
+    // On the owner's folder, a calendar case's fake calendar would replace the calendar its server keeps: refused before
+    // anything runs, the calendar as it was.
+    if (calendarCase && options.data !== undefined) {
+      const kept = await api("GET", "/settings/calendar", undefined, owner).catch(() => undefined);
+      const configured = kept?.status === 200 && isObject(kept.body) && kept.body.configured === true;
+      if (configured || kept?.status !== 200) {
+        await close();
+        removeTree(scratch!);
+        throw new Error(configured
+          ? `the server on ${options.data} keeps a calendar${isObject(kept!.body) && typeof kept!.body.name === "string" ? ` (${kept!.body.name})` : ""}, and a calendar case saves its fake calendar as the server's calendar in its place: remove it (DELETE /v2/settings/calendar), run the eval, and save it again; or run the eval without --on-data`
+          : `the server on ${options.data} did not say whether it keeps a calendar (GET /settings/calendar ${kept?.status ?? "failed"}), which a calendar case's fake calendar would replace: nothing ran`);
       }
     }
   }
@@ -1177,6 +1211,7 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
   const saved: { name: string; url: string }[] = [];
   const runs: RunResult[] = [];
   const total = options.runs ?? one.runs;
+  let calendarFaux: IcsFaux | undefined;
   // A server an owner keeps (--server, or the owner's folder with --on-data): its MCP servers are the owner's.
   const owners = Boolean(options.server) || options.data !== undefined;
   try {
@@ -1196,6 +1231,13 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
       // Another eval on the same server may have saved its own fake under the name meanwhile: then neither case's calls
       // can be told apart, and this one fails rather than run on a fake it does not own.
       if (owners && !(await ownsFake(api, name, fake.url))) throw new ApiFailure(`another eval saved its own MCP server named ${name} on this server meanwhile: run one eval of this package at a time on a server`);
+    }
+    // A calendar case's fake calendar, on loopback, saved as the server's calendar for all its runs (a read-only fake: no
+    // run changes it).
+    if (one.calendar) {
+      const { startIcsFaux } = await import("./calendar/ics-faux.js");
+      calendarFaux = await startIcsFaux({ text: one.calendar.text });
+      expectOk("saving the case's fake calendar as the server's calendar", await api("PUT", "/settings/calendar", { url: calendarFaux.address }, ctx.owner));
     }
     // An email case's runs repeat on each of its mailbox's layouts, each run on a fake account of its own.
     const layouts = one.email ? one.email.layouts : [undefined];
@@ -1223,6 +1265,12 @@ async function runCase(ctx: Ctx, one: EvalCase): Promise<CaseResult> {
     if (one.email) {
       const removed = await api("DELETE", "/settings/email", undefined, ctx.owner).catch((error: unknown) => ({ status: 0, body: (error as Error).message }));
       if (removed.status !== 204 && removed.status !== 404) ctx.log(`case ${one.name}: the server's email account (the case's fake mailbox) was not removed: DELETE /settings/email ${removed.status} ${JSON.stringify(removed.body).slice(0, 200)}`);
+    }
+    // The eval's own server's calendar was the case's fake calendar, gone with it; a removal that fails is said.
+    if (one.calendar) {
+      const removed = await api("DELETE", "/settings/calendar", undefined, ctx.owner).catch((error: unknown) => ({ status: 0, body: (error as Error).message }));
+      if (removed.status !== 204 && removed.status !== 404) ctx.log(`case ${one.name}: the server's calendar (the case's fake calendar) was not removed: DELETE /settings/calendar ${removed.status} ${JSON.stringify(removed.body).slice(0, 200)}`);
+      await calendarFaux?.close();
     }
   }
 }

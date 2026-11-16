@@ -20,6 +20,7 @@ import { CONTENT_FILTERED, type NoteRequest } from "../types.js";
 import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../booking.js";
 import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
 import type { BilledRequest } from "./overhead.js";
+import { onOpenRouter, openRouterAttribution } from "./openrouter-attribution.js";
 
 /** Whether a request's admission refused it for the run's spend cap, read from the error's fields alone: the cap's own
  *  error (CapRefused, its `code`), or the runner's stop for the cap's verdict (HarnessRunError, its `refusal`: the
@@ -1056,6 +1057,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const hostHeaders = { ...options.headers };
   const forward = options.fetch ?? fetch;
   const origin = baseOf(options.origin);
+  /** AgentRun's app attribution, on a proxy whose upstream is OpenRouter's and on no other (openrouter-attribution.ts).
+   *  Not the host's headers: no error is cut for echoing its public values. */
+  const attribution = onOpenRouter(origin) ? openRouterAttribution() : {};
   /** Whether each answer states what it cost in its usage (`statesUsageCost`): read as the request's reported figure when
    *  no header gave one, the price's figure kept beside it. */
   const costStated = statesUsageCost(origin);
@@ -1234,12 +1238,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     if (!credential) return refuse(res, 500, "the session has no provider credential", req);
     try {
-      // The host's own headers, over any the client sent by those names; then the credential's, over everything. A name
-      // replaces any other spelling of it, so no two headers of one name reach the provider combined.
+      // OpenRouter's attribution, then the host's own headers, over any the client sent by those names; then the
+      // credential's, over everything. A name replaces any other spelling of it, so no two headers of one name reach the
+      // provider combined.
       const set = (name: string, value: string) => {
         for (const sent of Object.keys(headers)) if (sent.toLowerCase() === name.toLowerCase()) delete headers[sent];
         headers[name] = value;
       };
+      for (const [name, value] of Object.entries(attribution)) set(name, value);
       for (const [name, value] of Object.entries(hostHeaders)) set(name, value);
       for (const [name, value] of Object.entries(policy.authHeaders(credential))) set(name, value);
     } catch (error) {

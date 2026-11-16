@@ -1603,10 +1603,29 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
   return errors.length ? { ok: false, errors, issues, ...(warnings.length ? { warnings } : {}) } : { ok: true, ...(warnings.length ? { warnings } : {}) };
 }
 
+/** The value a `{path}` placeholder reads from state, in interpolation's lookup order: the path as written, else, for a
+ *  `state.` path, the path after `state.` (so `{state.x}` reads a real `state` key first). undefined when neither
+ *  resolves. Every placeholder the engine fills reads through it; a static check of what a step reads can too. */
+export function placeholderValue(state: Record<string, unknown>, path: string): unknown {
+  const v = getPath(state, path);
+  return v === undefined && path.startsWith("state.") ? getPath(state, path.slice(6)) : v;
+}
+
+/** A whole-string placeholder, marked optional or not (interpolateValue keeps its value's type). */
+const WHOLE_PLACEHOLDER = /^\{([a-zA-Z0-9_.$]+)(\?)?\}$/;
+/** A placeholder inside a longer string: never marked (`{x?}` there is literal text). */
+const INNER_PLACEHOLDER = /\{([a-zA-Z0-9_.$]+)\}/g;
+/** The placeholders a state value's string holds, as interpolateValue fills them: a whole string is one, marked optional
+ *  (`"{draft?}"`) or not; inside a longer string only unmarked ones are. For a host check of what a step reads. */
+export function placeholdersOf(text: string): { path: string; optional: boolean }[] {
+  const whole = WHOLE_PLACEHOLDER.exec(text);
+  if (whole) return [{ path: whole[1]!, optional: !!whole[2] }];
+  return [...text.matchAll(INNER_PLACEHOLDER)].map((match) => ({ path: match[1]!, optional: false }));
+}
+
 function interpolate(template: string, state: Record<string, unknown>): string {
-  return template.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
-    let v = getPath(state, p);
-    if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+  return template.replace(INNER_PLACEHOLDER, (_, p) => {
+    const v = placeholderValue(state, p);
     return v === undefined || v === null ? `(${p} unset)` : typeof v === "string" ? v : JSON.stringify(v);
   });
 }
@@ -1897,19 +1916,21 @@ function shapeFromSchema(schema: Record<string, unknown>): unknown {
   return Object.fromEntries(Object.entries(properties).map(([key, sub]) => [key, shapeFromSchema(sub as Record<string, unknown>)]));
 }
 
+/** `interpolateValue`: a whole-string placeholder keeps its value's type; one marked optional (`"{draft?}"`) is null while
+ *  its path is absent (a loop's first pass, before the step that writes it ran) instead of failing. Only a whole string
+ *  may be marked: inside a longer string `{draft?}` is literal text. */
 function interpolateValue(value: unknown, state: Record<string, unknown>, stage: string = "interpolation"): unknown {
   if (typeof value === "string") {
-    const whole = value.match(/^\{([a-zA-Z0-9_.$]+)\}$/);
+    const whole = WHOLE_PLACEHOLDER.exec(value);
     if (whole) {
       const p = whole[1];
-      let v = getPath(state, p);
-      if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+      const v = placeholderValue(state, p);
+      if (v === undefined && whole[2]) return null;
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return v;
     }
-    return value.replace(/\{([a-zA-Z0-9_.$]+)\}/g, (_, p) => {
-      let v = getPath(state, p);
-      if (v === undefined && p.startsWith("state.")) v = getPath(state, p.slice(6));
+    return value.replace(INNER_PLACEHOLDER, (_, p) => {
+      const v = placeholderValue(state, p);
       if (v === undefined) throw new WorkflowStateError(`interpolation path "${p}" is not present in the state`, stage, p, "missing_interpolation");
       return typeof v === "string" ? v : JSON.stringify(v);
     });

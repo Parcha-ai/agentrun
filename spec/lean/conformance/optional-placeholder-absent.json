@@ -1,0 +1,121 @@
+{
+  "description": "A whole-string placeholder marked optional is null while its path is absent: the child's requires sees null, never a missing_interpolation.",
+  "workflow": {
+    "v": 2,
+    "name": "optional-absent",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "CIn": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string"
+          },
+          "prev": {}
+        },
+        "required": [
+          "q"
+        ]
+      },
+      "COut": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any",
+      "path": "finding"
+    },
+    "root": {
+      "node": "workflow",
+      "label": "inner",
+      "workflow": {
+        "v": 2,
+        "name": "child",
+        "schemas": {
+          "CIn": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              },
+              "prev": {}
+            },
+            "required": [
+              "q"
+            ]
+          },
+          "COut": {
+            "type": "object",
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "input": {
+          "schemaId": "CIn"
+        },
+        "output": {
+          "schemaId": "COut",
+          "path": "finding"
+        },
+        "root": {
+          "node": "agent",
+          "label": "find",
+          "instructions": "Do it.",
+          "out": "COut",
+          "as": "finding",
+          "requires": [
+            "prev"
+          ]
+        }
+      },
+      "input": {
+        "q": "{q}",
+        "prev": "{draft?}"
+      },
+      "out": "Any",
+      "as": "finding"
+    }
+  },
+  "input": {
+    "q": "why"
+  },
+  "script": {
+    "gen": {
+      "/root/workflow/root": {
+        "submission": {
+          "v": "because"
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "state",
+      "reason": "required_nonempty",
+      "label": "find",
+      "path": "prev"
+    },
+    "events": {
+      "/root": [
+        "node.start:inner",
+        "node.end:inner:failed"
+      ],
+      "/root/workflow/root": [
+        "node.start:inner/find",
+        "node.end:inner/find:failed"
+      ]
+    }
+  }
+}

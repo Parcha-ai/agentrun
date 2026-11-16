@@ -196,6 +196,7 @@ export type PairedView = {
   /** The pairing (createPairing's id) whose code paired it. */
   pairing: string;
   created_at: string;
+  /** Its last hello: the live socket's while it is attached (never null while online), else the last one kept. */
   seen_at: string | null;
 };
 
@@ -206,12 +207,15 @@ function featuresOf(features: unknown): Record<string, true | { off: string }> {
   return Object.fromEntries(Object.entries(features).flatMap(([name, value]): [string, true | { off: string }][] => (value === true ? [[name, true]] : isObject(value) && typeof value.off === "string" ? [[name, { off: value.off }]] : [])));
 }
 
-export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "hello" | "claimed" | "deadline">, serves: readonly string[]): PairedView {
+export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "since" | "hello" | "claimed" | "deadline">, serves: readonly string[]): PairedView {
   const paired = row.hello as Partial<HelloResult>;
   // Kind and os stay what it paired as (another is refused at hello); the rest follows its driver's live hello.
   const hello: Partial<HelloResult> = hub.hello(row.id) ?? paired;
   const holder = hub.claimed(row.id)?.[RUN_LABEL] ?? null;
   const until = holder === null ? undefined : hub.deadline(row.id);
+  // The hub has the socket live before the store keeps its hello (attach's accept, then seen), so a list between the
+  // two reads the hub's time: an online computer is never listed as never seen.
+  const seen = hub.since(row.id)?.getTime() ?? row.seenAt;
   return {
     id: row.id,
     name: row.name,
@@ -231,7 +235,7 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     held_until: until === undefined ? null : until.toISOString(),
     pairing: row.pairingId,
     created_at: new Date(row.createdAt).toISOString(),
-    seen_at: row.seenAt === null ? null : new Date(row.seenAt).toISOString(),
+    seen_at: seen === null ? null : new Date(seen).toISOString(),
   };
 }
 

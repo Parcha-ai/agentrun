@@ -3,6 +3,7 @@
 export { ANTHROPIC_IMAGE_TOKENS_MAX, ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS, ASSUMED_TOOL_PROMPT_TOKENS, anthropicImageTokens, GEMINI_HIGH_RESOLUTION_TOKENS, geminiImageTokens, imageInputOf, imageProviderOf, imageSizeOf, imageTokens, INPUT_OVERHEAD_APIS, LOCAL_COUNT_MARGIN, messagesImagesIn, messagesInputAfter, messagesLocalInputTokens,OPENAI_IMAGE_TOKENS_MAX, openaiImageTokens, openaiPatchMultiplier, providerInputOverhead, responsesEscapedBytes, responsesImagesIn, responsesInputOverhead, responsesLocalInputTokens, type BilledRequest, type ImageInput, type InputShape } from "./overhead.js";
 export { O200K_SHA256, O200K_VOCABULARY, o200kModel, o200kTokens } from "./o200k.js";
 export { COUNT_TIMEOUT_MS, countedInputOf, CredentialUnavailable, localInputOf, hostHeaderProblems, lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, ROUTE_ORIGIN, sameKey, startModelProxy, statesUsageCost, streamErrorOf, usageCostOf } from "./proxy.js";
+export { OPENROUTER_APP, OPENROUTER_ATTRIBUTION_ENV, onOpenRouter, openRouterApp, openRouterAttribution } from "./openrouter-attribution.js";
 export type { InputCounter, ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRequest, ProxyRequestContext, ProxyRoute, ProxyUsage, StreamError } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";

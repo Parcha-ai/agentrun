@@ -336,7 +336,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -577,7 +577,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest
   // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
-  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   const promotion = claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   });
@@ -608,7 +608,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     if (webNames.length) {
       life = hostLifecycle();
-      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) });
+      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
       gate.askedOn(host);
       webTools = await webHostTools(host, granted, ctx);
     }

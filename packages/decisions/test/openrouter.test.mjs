@@ -311,3 +311,16 @@ test("priceOf: a catalog that answers 200 with no list of models is one that can
   broken = false;
   assert.equal((await provider.priceOf("liquid/d1"))?.promptUsd, 0.00000002, "read again once it answers a list");
 });
+
+test("app: its url, title and categories go as HTTP-Referer, X-OpenRouter-Title and X-OpenRouter-Categories; no app sends none, and never a visibility", async () => {
+  const sent = async (over) => {
+    const { fetch, seen } = fakeFetch([answered()]);
+    await judgeFromProvider(openrouterProvider({ ...settings, ...over, fetch }))({ label: 'x', kind: 'judge', state: { claim: 'c' }, questions: QUESTIONS });
+    const headers = seen[0].init.headers;
+    return Object.fromEntries(['HTTP-Referer', 'X-OpenRouter-Title', 'X-OpenRouter-Categories', 'X-OpenRouter-App-Visibility', 'X-Title'].flatMap((name) => (name in headers ? [[name, headers[name]]] : [])));
+  };
+  const app = { url: 'https://github.com/Parcha-ai/agentrun', title: 'AgentRun', categories: 'cloud-agent,personal-agent' };
+  assert.deepEqual(await sent({ app }), { 'HTTP-Referer': app.url, 'X-OpenRouter-Title': 'AgentRun', 'X-OpenRouter-Categories': 'cloud-agent,personal-agent' });
+  assert.deepEqual(await sent({ app: { url: 'https://my-app.example', title: 'My app' } }), { 'HTTP-Referer': 'https://my-app.example', 'X-OpenRouter-Title': 'My app' }, 'only the parts set');
+  assert.deepEqual(await sent({}), {}, 'no app, no attribution');
+});

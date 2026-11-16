@@ -11,6 +11,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { ComposioTriggers } from "../dist/composio-triggers.js";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { secretWritePath, serve } from "./support.mjs";
 import { firings, made, until } from "./trigger-support.mjs";
 
@@ -380,6 +381,95 @@ test("a failed read of the instances leaves every trigger's state at Composio un
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
   assert.ok(listed.body.composio_error, "said");
   assert.deepEqual(listed.body.triggers.map((x) => x.on_composio), ["unknown", "unknown"], JSON.stringify(listed.body.triggers));
+});
+
+test("while Composio triggers use a server, a save over it as another user and an ordinary save that moves it off Composio are refused in the delete's words: the server, its trigger and what they stand on at Composio stay; a save as the same user goes through, and once the trigger is gone so does the move", async (t) => {
+  const s = await setup(t);
+  const made = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const before = (await s.api("GET", "/settings/mcp-servers/gh")).body;
+  const first = s.composio.mcpIds[0];
+  const refused = `gh has Composio triggers: ${made.body.name}. Delete it first, then save the server again.`;
+  const asOther = { api_key: s.composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "someone-else" };
+
+  const over = await s.api("PUT", "/settings/mcp-servers/gh/composio", asOther);
+  assert.equal(over.status, 409, JSON.stringify(over.body));
+  assert.deepEqual([over.body.error.code, over.body.error.message, over.body.error.details], ["composio_in_use", refused, { triggers: [{ id: made.body.id, name: made.body.name }] }]);
+  assert.ok(s.composio.mcpLive.has(first), "the server's MCP server stays at Composio");
+  assert.ok(!s.composio.mcpLive.has(s.composio.mcpIds[1]), "the refused save's own MCP server is removed there");
+
+  const other = await startFakeMcp();
+  t.after(() => other.close());
+  const moved = await s.api("PUT", "/settings/mcp-servers/gh", { url: other.url, auth: { type: "none" } });
+  assert.equal(moved.status, 409, JSON.stringify(moved.body));
+  assert.deepEqual([moved.body.error.code, moved.body.error.message], ["composio_in_use", refused]);
+  const after = (await s.api("GET", "/settings/mcp-servers/gh")).body;
+  assert.deepEqual([after.url, after.auth, after.source], [before.url, before.auth, before.source], "the server is as it was");
+  assert.ok(s.composio.mcpLive.has(first), "and so is its MCP server at Composio");
+  assert.equal(s.composio.instances.size, 1, "its trigger's instance stays");
+  assert.equal((await s.api("GET", `/triggers/${made.body.id}`)).status, 200);
+
+  // The same user's save (its tools again): what the trigger stands on is unchanged, so it goes through.
+  const same = await s.api("PUT", "/settings/mcp-servers/gh/composio", { ...asOther, user_id: "agentrun-qa" });
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.equal((await s.api("DELETE", `/triggers/${made.body.id}`)).status, 204);
+  const movedNow = await s.api("PUT", "/settings/mcp-servers/gh", { url: other.url, auth: { type: "none" } });
+  assert.equal(movedNow.status, 200, JSON.stringify(movedNow.body));
+});
+
+test("a save over a server its trigger uses: one that keeps its user and auth config (its tools alone) removes at Composio only the earlier MCP server, and the trigger stays subscribed as it was; one as another user, or of another toolkit (another auth config, or none), is refused and leaves the server's record of what it stands on, and the trigger, untouched", async (t) => {
+  const s = await setup(t, { composio: {
+    toolkits: { github: { no_auth: false, tools: TOOLS }, linear: { no_auth: false, tools: [{ slug: "LINEAR_LIST_ISSUES", name: "List issues", description: "Lists issues." }] }, hackernews: { no_auth: true, tools: [{ slug: "HACKERNEWS_GET_FRONTPAGE", name: "Front page", description: "Reads the front page." }] } },
+    authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }], linear: [{ id: "ac_linear", is_composio_managed: true }] },
+    active: ["github", "linear"],
+  } });
+  const made = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const record = async () => s.server.store.settings.get("mcp.composio/gh");
+  const kept = { instances: [...s.composio.instances.keys()], subscriptions: s.composio.subscriptions.length };
+  const deletesFrom = (from) => s.composio.calls.slice(from).filter((call) => call.method === "DELETE").map((call) => call.path);
+  const body = { api_key: s.composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "agentrun-qa" };
+
+  // Its tools again, as the same user under the same auth config: what the trigger runs as is unchanged.
+  const stood = await record();
+  let from = s.composio.calls.length;
+  const same = await s.api("PUT", "/settings/mcp-servers/gh/composio", body);
+  assert.equal(same.status, 200, JSON.stringify(same.body));
+  assert.deepEqual(deletesFrom(from), [`/api/v3.1/mcp/${s.composio.mcpIds[0]}`], "the earlier MCP server alone: no account, no auth config");
+  assert.deepEqual(same.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpIds[0]}.` });
+  const now = await record();
+  assert.deepEqual([now.user, now.auth_config, now.accounts], [stood.user, stood.auth_config, stood.accounts], "it stands on what it stood on");
+  assert.deepEqual({ instances: [...s.composio.instances.keys()], subscriptions: s.composio.subscriptions.length }, kept, "the trigger's instance and the project's subscription stay");
+  assert.equal((await s.api("GET", `/triggers/${made.body.id}`)).body.enabled, true);
+
+  // As another user: refused in words, nothing written, nothing removed but the refused save's own MCP server.
+  from = s.composio.calls.length;
+  const other = await s.api("PUT", "/settings/mcp-servers/gh/composio", { ...body, user_id: "someone-else" });
+  assert.equal(other.status, 409, JSON.stringify(other.body));
+  assert.equal(other.body.error.message, `gh has Composio triggers: ${made.body.name}. Delete it first, then save the server again.`);
+  assert.deepEqual(deletesFrom(from), [`/api/v3.1/mcp/${s.composio.mcpIds[2]}`], "the refused save's own MCP server alone");
+  assert.deepEqual(await record(), now, "the record of what it stands on is as it was");
+  assert.ok(s.composio.mcpLive.has(s.composio.mcpIds[1]), "the server's MCP server stays");
+  assert.deepEqual({ instances: [...s.composio.instances.keys()], subscriptions: s.composio.subscriptions.length }, kept);
+  assert.equal((await s.api("GET", `/triggers/${made.body.id}`)).body.enabled, true);
+
+  // Of another toolkit, as the same user: another auth config (linear's), or none (hackernews needs no sign-in), so what
+  // the trigger runs as would change. Refused the same way.
+  const shown = (await s.api("GET", "/settings/mcp-servers/gh")).body;
+  for (const [toolkit, tool] of [["linear", "LINEAR_LIST_ISSUES"], ["hackernews", "HACKERNEWS_GET_FRONTPAGE"]]) {
+    from = s.composio.calls.length;
+    const ids = s.composio.mcpIds.length;
+    const kit = await s.api("PUT", "/settings/mcp-servers/gh/composio", { ...body, toolkit, tools: [tool] });
+    assert.equal(kit.status, 409, `${toolkit}: ${JSON.stringify(kit.body)}`);
+    assert.deepEqual([kit.body.error.code, kit.body.error.message], ["composio_in_use", `gh has Composio triggers: ${made.body.name}. Delete it first, then save the server again.`], toolkit);
+    assert.equal(s.composio.mcpIds.length, ids + 1, `${toolkit}: the refused save made one MCP server`);
+    assert.deepEqual(deletesFrom(from), [`/api/v3.1/mcp/${s.composio.mcpIds[ids]}`], `${toolkit}: the refused save's own MCP server alone`);
+    assert.deepEqual(await record(), now, `${toolkit}: the record of what it stands on is as it was`);
+    assert.ok(s.composio.mcpLive.has(s.composio.mcpIds[1]), `${toolkit}: the server's MCP server stays`);
+    assert.deepEqual({ instances: [...s.composio.instances.keys()], subscriptions: s.composio.subscriptions.length }, kept, toolkit);
+    assert.equal((await s.api("GET", `/triggers/${made.body.id}`)).body.enabled, true, toolkit);
+  }
+  assert.deepEqual((await s.api("GET", "/settings/mcp-servers/gh")).body, shown, "the server reads as it did");
 });
 
 test("deleting the saved server while its first trigger waits on its instance: no trigger outlives its server, and Composio keeps nothing orphaned", async (t) => {

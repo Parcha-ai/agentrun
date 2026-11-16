@@ -89,10 +89,11 @@ async function world(t, { handed, mark, leaky = LEAKY, stored }) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
+  // A notes job (`learning: "notes"`): its run looks back at every end, so its end-of-run answer is read.
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: "notes" } });
   await saveSignIn(server, KEY, { agentId: "agent-1", provider: "browserbase", pointer: POINTER });
   const seed = await seedOf(dir, "agent-1");
-  const launch = { input: { content: `Log in with the session ${POINTER}.` }, title: "t", place: { mode: "runner" }, plane: { browser: "browserbase" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0 } };
+  const launch = { input: { content: `Log in with the session ${POINTER}.` }, title: "t", place: { mode: "runner" }, plane: { browser: "browserbase" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0, notesOnly: true } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
 
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });

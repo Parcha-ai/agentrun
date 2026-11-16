@@ -67,9 +67,12 @@ function providerFiles() {
 	return found;
 }
 
-/** A MachineHost's id: its descriptor's (readonly descriptor = E2B, imported from ./descriptors/<file>.js). */
+/**
+ * A MachineHost's id: its descriptor's (readonly descriptor = E2B, imported from ./descriptors/<file>.js), typed where the
+ * host gives each instance its own copy of it (Daytona's, with the mounts of its keys: readonly descriptor: HostDescriptor = DAYTONA).
+ */
 function descriptorIdOf(source) {
-	const name = /\breadonly descriptor = (\w+);/.exec(source)?.[1];
+	const name = /\breadonly descriptor(?::\s*\w+)? = (\w+);/.exec(source)?.[1];
 	const from = name && new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from "\\./descriptors/([a-z0-9-]+)\\.js"`).exec(source)?.[1];
 	if (!from) return undefined;
 	return new RegExp(`export const ${name} = defineProvider\\(\\{\\s*id: "([^"]+)"`).exec(readFileSync(new URL(`descriptors/${from}.ts`, SRC), "utf8"))?.[1];

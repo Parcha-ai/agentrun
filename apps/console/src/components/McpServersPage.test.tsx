@@ -740,6 +740,37 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 
+  it("a save over a server shows, in its words, what it did at Composio with what the earlier save made", async () => {
+    const note = "Removed in Composio: the connected account ca_link_1 (its connect link with it).";
+    const s = server([[], [saved({ name: "gh" })]], (c) => (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio" ? json(200, { server: saved({ name: "gh" }), composio: { removed: true, note } }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const said = [...p.host.querySelectorAll('[role="status"]')].find((e) => e.textContent === note);
+    expect(said?.className).toContain("text-success-text");
+  });
+
+  it("a save refused on a field (422 with fields) shows the field's words and, under them, what it left at Composio", async () => {
+    const words = "Composio's github server doesn't serve GITHUB_LIST_ISSUES: pick another action.";
+    const note = "Left in Composio: the auth config ac_made_1. Remove what is left of gh in Composio yourself: https://platform.composio.dev";
+    const s = server([[]], (c) => (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio" ? refusal(422, "input_invalid", `${words} ${note}`, { fields: [{ field: "tools", reason: "not_served", message: words }], details: { composio: note } }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const alert = p.host.querySelector('[role="alert"]');
+    expect([...(alert?.querySelectorAll("p") ?? [])].map((e) => e.textContent)).toEqual([words, note]);
+  });
+
   it("drops an action list asked for a toolkit no longer in the field, and keeps Cancel off while a save is out", async () => {
     let late: (r: Response) => void = () => undefined;
     let first = true;
@@ -818,6 +849,32 @@ describe("Settings → MCP servers, deleting a Composio server", () => {
     await p.click(/^Delete$/, p.row("hn").querySelector('[role="alertdialog"]')!);
     expect(p.text()).toContain("No MCP server is saved here yet");
     expect(p.host.querySelector('[role="status"]')?.textContent).toContain(note);
+    expect(p.host.querySelector('[role="status"]')?.className).toContain("text-warning-text");
+  });
+
+  it("says what it removed in Composio when all of it went, as a success, not a warning", async () => {
+    const note = "Removed in Composio: the MCP server srv_1, the connected account ca_1 (its connect link with it) and the auth config ac_1.";
+    const s = server([[saved({ name: "gh" })], []], (c) => (c.method === "DELETE" ? json(200, { deleted: true, composio: { removed: true, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Delete$/, p.row("gh"));
+    await p.click(/^Delete$/, p.row("gh").querySelector('[role="alertdialog"]')!);
+    expect(p.text()).toContain("No MCP server is saved here yet");
+    const status = p.host.querySelector('[role="status"]');
+    expect(status?.textContent).toContain(note);
+    expect(status?.className).toContain("text-success-text");
+    expect(status?.className).not.toContain("text-warning-text");
+  });
+
+  it("says what a change that moved a Composio server to another address removed in Composio", async () => {
+    const note = "Removed in Composio: the MCP server srv_1, the connected account ca_1 (its connect link with it) and the auth config ac_1.";
+    const s = server([[saved({ name: "work-slack", source: "composio", toolkit: "slack" })], [saved({ name: "work-slack" })]], (c) => (c.method === "PUT" ? json(200, { ...saved({ name: "work-slack" }), composio: { removed: true, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("work-slack"));
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.method).toBe("PUT");
+    const status = p.host.querySelector('[role="status"]');
+    expect(status?.textContent).toContain(note);
+    expect(status?.className).toContain("text-success-text");
   });
 });
 

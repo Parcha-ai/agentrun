@@ -37,6 +37,9 @@ import "./mcp-secret-writes.js";
 // The email account's routes (email/routes.ts), each marked x-agentrun-secret whole, registered with the one gate as it
 // loads: the view among them, so the API token never reads the account.
 import "./email/routes.js";
+// The calendar's routes (calendar/routes.ts), each marked x-agentrun-secret whole, registered the same way: the view
+// among them, so the API token never reads which calendar is saved.
+import "./calendar/routes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
@@ -246,6 +249,20 @@ const EMAIL_ACCOUNT_BODY = {
 };
 /** One half of an email account test. */
 const MAIL_CHECK = closed({ ok: { type: "boolean" }, message: { type: "string", description: "In plain words: \"Signed in to <host>.\", with INBOX's count for IMAP, or why not." } });
+/** GET and PUT /settings/calendar's answer (calendar/address.ts calendarView): the calendar, never its address. */
+const CALENDAR_VIEW = closed({
+  configured: { type: "boolean", description: "A calendar is saved and its address opens with this server's seal key: calendar_events reads it." },
+  host: { type: ["string", "null"], description: "The host its address reads from (calendar.google.com), never the address." },
+  name: { type: ["string", "null"], description: "The calendar's own name (its X-WR-CALNAME), as the save read it; null when that read failed or it has none." },
+  time_zone: { type: ["string", "null"], description: "The calendar's own time zone (its X-WR-TIMEZONE, else the server's), as the save read it; null when that read failed." },
+}, "The server's one calendar, never its iCal address.");
+/** PUT /settings/calendar's and POST /settings/calendar/test's body: the calendar's iCal address. */
+const CALENDAR_BODY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    url: { type: "string", minLength: 1, maxLength: 2048, "x-agentrun-secret": true, description: "The calendar's secret iCal address (https://… or webcal://…, read as https://): Google Calendar's \"Secret address in iCal format\", Outlook's ICS link, iCloud's public calendar link. Sealed, never answered or shown again." },
+  },
+};
 /** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
 const CHATGPT_SIGN_IN = {
   type: "object", additionalProperties: false, required: ["state"],
@@ -1190,7 +1207,7 @@ const GRADE_FIELDS = {
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
   workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
-  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `revise`, a wrong grade of a run its learned workflow answered alone, a revision ask for that workflow with the job, its answer and the grade's words; `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a right grade of a run its workflow answered alone costs $0), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a grade of a run its learned workflow answered alone, right or wrong, is kept and costs $0: the workflow's graded hold reads it), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
 };
 const RUN_LEARNING = {
   oneOf: [
@@ -1274,7 +1291,7 @@ const LEARNING_COST = closed({
   workflows: { type: "array", items: closed({
     workflow: { type: "string", description: "The learned workflow, by name." },
     digest: { type: "string", description: "The version of it its newest run served first ran: the first 16 hex characters of its workflow.json's sha256. A new version starts its count from zero." },
-    state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: over its newest ${COST_WINDOW} priced runs served at this version, its mean all-in cost (\`served\`) is at or over the agent's cost by hand (\`by_hand\`), so it no longer runs first; each run it would have served asks the agent for a new version, which runs first again.` },
+    state: { enum: ["serving", "needs_revision"], description: `\`serving\`: it runs first on every run it fits. \`needs_revision\`: over its newest ${COST_WINDOW} priced runs served at this version, its mean all-in cost (\`served\`) is at or over the agent's cost by hand (\`by_hand\`), so it no longer runs first: the agent takes each run it would have served, and the stop asks for no new version. A new version (a new digest) runs first again.` },
     served: COST_MEAN(`The mean all-in cost (\`total_usd\`: the run's own cost, the workflow's nodes and, after a handback, the agent's work, with every learning round booked for it) of its newest ${COST_WINDOW} runs served first at this version whose all-in cost is known (a window, never how many runs it served: \`runs\` stops at ${COST_WINDOW}); null when none is.`),
     by_hand: COST_MEAN("The agent's cost by hand: the mean all-in cost (`total_usd`) of its runs on the `agent` path whose all-in cost is known or, with none, of its runs before the workflow first ran; null when there are none: the workflow then keeps serving."),
     unknown_cost_runs: { ...COUNT, description: "How many runs `served` and `by_hand` would have read have no known all-in cost: left out of their means, never read as 0." },
@@ -1399,9 +1416,9 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
       operationId: "gradeRun", tags: ["runs"], summary: "Grade an ended run's answer: right or wrong, and the fields a right answer holds",
-      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded. The run's path never changes on a grade: a right grade of a run its learned workflow answered alone is kept and nothing more ($0); a wrong one opens the run again on a revision ask for that workflow; a run the agent finished, graded with a \`label\`, opens again on a look-back on it. Either round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
+      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0; the workflow's graded hold reads it, and only a hold asks for its revision); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
       parameters: [ref("parameters/RunId")],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads." } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads." } } } } } },
       responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
@@ -2178,6 +2195,44 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "email/1",
     },
   },
+  "/settings/calendar": {
+    get: {
+      operationId: "getCalendar", tags: ["local"], summary: "This server's calendar: its host, name and time zone, never its address",
+      description: "The one calendar calendar_events reads. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CALENDAR_VIEW, "The calendar."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    put: {
+      operationId: "saveCalendar", tags: ["local"], summary: "Save this server's calendar, its iCal address sealed",
+      description: "Replaces the calendar. The address is https (webcal:// is read as https://; plain http, another scheme, or a user and password in it is refused in words), sealed under the server's seal key, and in no answer, event, log line or run input. The calendar is read once for its own name and time zone; a read that fails saves the address all the same (name and time_zone null): POST /settings/calendar/test says why. 422 by field for a body that does not read. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { ...CALENDAR_BODY, required: ["url"] } } } },
+      responses: { "200": json(CALENDAR_VIEW, "Saved."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    delete: {
+      operationId: "deleteCalendar", tags: ["local"], summary: "Forget this server's calendar",
+      description: "Removes the calendar and its sealed address. calendar_events then answers that no calendar is saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+  },
+  "/settings/calendar/test": {
+    post: {
+      operationId: "testCalendar", tags: ["local"], summary: "Read the calendar and say what it holds",
+      description: "Reads the saved calendar with an empty body, or the address in the body (saved nowhere), as calendar_events reads it (https only; a private address refused unless its host is allowed in Settings → MCP servers; 10 MB, 20 s, 5 redirects), and answers in words: \"Work: 214 events, time zone America/New_York, next: Standup, Mon Nov 17 09:30\" (its name, its events and series, its time zone, and its next event in the next 62 days), or why it couldn't be read, never the address. 422 for a body that does not read, or an empty body with no calendar saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: false, content: { "application/json": { schema: CALENDAR_BODY } } },
+      responses: { "200": json(closed({ ok: { type: "boolean", description: "The calendar was read." }, message: { type: "string", description: "In plain words: what it holds, or why it couldn't be read." } }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+  },
   "/settings/chatgpt": {
     get: {
       operationId: "getChatGPTSignIn", tags: ["local"], summary: "This server's ChatGPT sign-in: its state, who and which plan, never a token",
@@ -2269,19 +2324,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveMcpServer", tags: ["local"], summary: "Preview a remote MCP server, then save it with the tools listed and its credential sealed",
-      description: `The credential is sealed under the server's seal key, bound to the server's name and its URL's origin, and kept in the data directory as ciphertext alone. 403 forbidden to the API token for a save that sends a credential's value, or that would drop or change the credential the server holds (another \`auth.type\`, or none): the owner's signed-in session alone. 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds.`,
+      description: `The credential is sealed under the server's seal key, bound to the server's name and its URL's origin, and kept in the data directory as ciphertext alone. 403 forbidden to the API token for a save that sends a credential's value, or that would drop or change the credential the server holds (another \`auth.type\`, or none): the owner's signed-in session alone. 412 precondition_failed when a save that sends a new credential, or none, finds the server's credential changed while it listed its tools (another save, a sign-in or a removal landed), or a save that keeps it finds the server at another address or holding another kind of credential by then (a Composio save over it moved it): nothing is written over it. A body with no credential keeps the sealed one while the type and the URL's origin stay the same; else it is 422. A body with no \`prices\` keeps the saved ones for the tools still listed at the same URL, so a save from any client never leaves a paid tool unmetered; \`prices: {}\` clears them. 422 too for a bad name, URL or auth, or a price that is not a finite number 0 or more or names a tool the server does not list. ${MCP_CONNECTS} Nothing is saved unless the listing succeeds. A save that moves a server the Composio preset made to another address makes it another service's server, and removes in the owner's Composio account what the preset made for it, as its delete does (the MCP server, then the connected account its connect link started and the auth config it made, unless another saved server uses them), with the key it was saved with, and answers \`composio\` saying so; 409 composio_in_use, naming them in \`details.triggers\`, while Composio triggers use it: delete them first. A save of a server the preset made lists its tools at once, then writes and cleans up one at a time with the preset's saves and the MCP servers' deletes, in its Composio project's turn.`,
       parameters: [MCP_NAME],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: MCP_URL, auth: MCP_AUTH, prices: MCP_PRICES, ...MCP_TOOLKIT_BODY } } } } },
-      responses: { "200": json(MCP_SERVER_VIEW, "The server, as saved."), ...errors(400, 401, 403, 409, 412, 415, 422, 429, 500), ...MCP_FAILED },
+      responses: { "200": json({ ...MCP_SERVER_VIEW, properties: { ...MCP_SERVER_VIEW.properties, composio: closed({ removed: { type: "boolean", description: "Nothing the save was to remove at Composio is left there." }, note: { type: "string", description: "What it removed at Composio, what it kept and why, and what is left, with the dashboard's address to remove that by hand." } }, "Present when the save moved a server the Composio preset made off Composio: what became of what the preset made there.") } }, "The server, as saved."), ...errors(400, 401, 403, 409, 412, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
     delete: {
       operationId: "deleteMcpServer", tags: ["local"], summary: "Forget a saved MCP server and its credential",
-      description: "409 composio_in_use, naming them in `details.triggers`, for a Composio server that Composio triggers still use: delete them first. A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, after the row is removed: the row is already gone while that delete waits on Composio. Composio's 404 means it is already gone; when Composio refuses or does not answer, or the saved key does not open, the answer is 200 with `composio.removed: false` and a note to remove it there. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed, and nothing is sent to Composio.",
+      description: "409 composio_in_use, naming them in `details.triggers`, for a Composio server that Composio triggers still use: delete them first. A server the Composio preset made also has its MCP server deleted in the owner's Composio account, with the saved key, after the row is removed: the row is already gone while that delete waits on Composio. So does what its save made for it there that no other saved server uses: the connected account its connect link started (the link with it), and the auth config it made. What another saved server uses is kept, and goes with the last of them; what the save found there already (an auth config or an account the owner had) is never deleted. A preset's delete answers 200 with `composio`: `removed` true when nothing it was to remove is left, and `note`, what it removed, kept (and why) and left, in words. Composio's 404 means that one is already gone; when Composio refuses or does not answer, or the saved key does not open, `removed` is false and the note names what is left, to remove there. 403 forbidden to the API token when the server holds a credential: removing it drops a secret, the owner's signed-in session's alone. A server saved with none is the token's to remove. 412 precondition_failed when the server's credential changed between that check and the removal (a save or a sign-in landed): nothing is removed, and nothing is sent to Composio.",
       parameters: [MCP_NAME],
       responses: {
-        "204": { description: "Forgotten (and, for a Composio preset server, its Composio MCP server deleted, or already gone there)." },
-        "200": json(closed({ deleted: { type: "boolean", enum: [true] }, composio: closed({ removed: { type: "boolean", enum: [false] }, note: { type: "string", description: "What to do by hand: remove the server in Composio yourself, with the dashboard's address." } }) }), "Forgotten here, but the Composio MCP server a preset made could not be deleted (Composio refused or did not answer): it stays in the owner's Composio account until removed there. The row is gone either way."),
+        "204": { description: "Forgotten: a server the Composio preset did not make." },
+        "200": json(closed({ deleted: { type: "boolean", enum: [true] }, composio: closed({ removed: { type: "boolean", description: "Nothing the delete was to remove at Composio is left there." }, note: { type: "string", description: "What it removed at Composio, what it kept and why, and what is left, with the dashboard's address to remove that by hand." } }) }), "Forgotten here, a Composio preset server: what its delete did in the owner's Composio account. The row is gone either way."),
         ...errors(401, 403, 404, 409, 412, 429, 500),
       },
       "x-agentrun-serve": "mcpservers/1",
@@ -2308,10 +2363,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers/{name}/composio": {
     put: {
       operationId: "saveComposioServer", tags: ["local"], summary: "Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server",
-      description: COMPOSIO_NOTE + " Makes (or reuses) a Composio-managed auth config for a toolkit that needs the person's account, makes a Composio MCP server allowing only `tools`, asks for its address (the helper actions that connect an account left off; its path ends in `/mcp`), and saves that address as the MCP server `name` through the one MCP save: the key is sealed as an `x-api-key` header, the tools listed, none priced (\"not metered\"). When the toolkit needs an account and `user_id` has no active one, `connect_url` is Composio's page to connect it; nothing here signs in. `user_id` defaults to `agentrun`. 422 for a bad name, key, toolkit or tools, a key or request Composio refuses (each says the step); 424 `upstream_failed` when Composio fails or the saved address does not list its tools. Nothing is saved unless every step succeeds. The owner's signed-in session alone: 403 forbidden to the API token.",
+      description: COMPOSIO_NOTE + " Makes (or reuses) a Composio-managed auth config for a toolkit that needs the person's account, makes a Composio MCP server allowing only `tools`, asks for its address (the helper actions that connect an account left off; its path ends in `/mcp`), and saves that address as the MCP server `name` through the one MCP save: the key is sealed as an `x-api-key` header, the tools listed, none priced (\"not metered\"). When the toolkit needs an account and `user_id` has no active one, `connect_url` is Composio's page to connect it; nothing here signs in. `user_id` defaults to `agentrun`. 422 for a bad name, key, toolkit or tools, a key or request Composio refuses (each says the step); 424 `upstream_failed` when Composio fails or the saved address does not list its tools. Nothing is saved unless every step succeeds, and a save that fails removes in Composio what it made there (the MCP server, the connected account its connect link started, the auth config it made), never what it found; when Composio refuses that too, its error's message names what is left, with the dashboard's address (and a 422 on a field says it in \`details.composio\` as well). A save over a server the preset made removes, once it is saved, the MCP server that server's earlier save made, and what that save made and this one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it (then it is that one's), and answers `composio` saying so, as a delete does. A save over a server as another `user_id` or auth config is 409 composio_in_use, naming them in `details.triggers`, while Composio triggers use it: delete them first; a save that leaves what they stand on alone goes through. Preset saves, the saves of the servers they made, and deletes of MCP servers run one at a time. The owner's signed-in session alone: 403 forbidden to the API token.",
       parameters: [MCP_NAME],
       requestBody: { required: true, content: { "application/json": { schema: closedWith({ api_key: COMPOSIO_KEY, toolkit: COMPOSIO_TOOLKIT, tools: { type: "array", minItems: 1, maxItems: 500, items: { type: "string", minLength: 1 }, description: "The slugs of the actions to grant, from the listing." } }, { user_id: { type: "string", pattern: "^[A-Za-z0-9._@-]{1,128}$", description: "The Composio user the actions run as; default `agentrun`." } }) } } },
-      responses: { "200": json(closedWith({ server: MCP_SERVER_VIEW }, { connect_url: { type: "string", format: "uri", description: "Present when the toolkit needs an account and the user has no active one: Composio's page to connect it." }, not_served: { type: "array", items: { type: "string" }, description: "Present when Composio's server leaves out some of `tools` (it can, for an action it was allowed): the slugs it doesn't list, which a run can't call." } }), "The server as saved, and where to connect the account when it must be."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
+      responses: { "200": json(closedWith({ server: MCP_SERVER_VIEW }, { connect_url: { type: "string", format: "uri", description: "Present when the toolkit needs an account and the user has no active one: Composio's page to connect it." }, not_served: { type: "array", items: { type: "string" }, description: "Present when Composio's server leaves out some of `tools` (it can, for an action it was allowed): the slugs it doesn't list, which a run can't call." }, composio: closed({ removed: { type: "boolean", description: "Nothing the save was to remove at Composio is left there." }, note: { type: "string", description: "What it removed at Composio, what it kept and why, and what is left, with the dashboard's address to remove that by hand." } }, "Present when the save was over a server whose earlier save made something at Composio that this one no longer stands on: what became of it.") }), "The server as saved, and where to connect the account when it must be."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",
     },
   },
@@ -3781,7 +3836,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     }, {
       oauth: { ...MCP_SIGN_IN_CLIENT, description: "With `auth: oauth`, when the sign-in's discovery could be made." },
     }),
-    input_invalid: { type: "object", additionalProperties: false, properties: { oauth: { ...MCP_SIGN_IN_CLIENT, description: "With field `client_id`, reason `registration_unavailable` (POST .../oauth/start): as a preview's `details.oauth`, `registration` false." } } },
+    input_invalid: { type: "object", additionalProperties: false, properties: { oauth: { ...MCP_SIGN_IN_CLIENT, description: "With field `client_id`, reason `registration_unavailable` (POST .../oauth/start): as a preview's `details.oauth`, `registration` false." }, composio: { type: "string", description: "A Composio preset save refused on a field (PUT .../composio) whose removal of what it made there Composio refused too: what is left there and where to remove it, in words, as its message ends." } } },
     upstream_failed: { type: "object", additionalProperties: false, properties: { status: { type: "integer", description: "The MCP server's HTTP status, when it answered one." } } },
     sign_in_held: { type: "object", additionalProperties: false, minProperties: 1, maxProperties: 1, properties: { held_by: { type: "string", description: "The run that holds the sign-in's save lease." }, handed_to: { type: "string", description: "A run still going that was handed the sign-in (signins/1)." } } },
     wrong_origin: closed({ open: { type: "string", format: "uri", description: "Where to open the console to sign in: the address the authorization server sends the browser back to." } }),

@@ -27,7 +27,7 @@ export const REFIT_EVERY = 20;
 export const GRADES_KEPT = 500;
 export const PROMOTIONS_KEPT = 200;
 
-/** The most characters a grade's words (`label`) may hold, and the most of them and of a wrong answer a revise ask shows. */
+/** The most characters a grade's words (`label`) may hold, and the most of them and of an answer a compile ask shows. */
 export const LABEL_MAX = 4_000;
 
 export const GRADE_SOURCES =["feedback", "eval"] as const;
@@ -244,7 +244,7 @@ export const promotionOf = (records: readonly PromotionRecord[], workflow: strin
 
 /** The champion of `workflow`: the newest record of the digest promoted last (a digest's place is its latest win's,
  *  winsOf), while that digest's newest record still says promote. A newer revision replaying or held never stops it; a
- *  wrong served grade asks for a revision and never stops it; it stops when a newer revision's replay promotes that one
+ *  wrong served grade asks for nothing and never stops it alone; it stops when a newer revision's replay promotes that one
  *  (then the champion), or its own graded runs hold it (source graded: no champion until a revision is promoted). A held
  *  revision its owner replays (runner/promotion.ts askReplay) and the replay promotes wins again: the champion from then.
  *  The money rule stops it on its own (runner/workflow-first.ts). Undefined: none. */

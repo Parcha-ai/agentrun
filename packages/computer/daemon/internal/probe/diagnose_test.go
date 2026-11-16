@@ -165,16 +165,19 @@ func udpServer(t *testing.T, answer func([]byte) []byte) string {
 	return conn.LocalAddr().String()
 }
 
-// closedUDP is a UDP port nothing listens on any more.
+// closedUDP is a UDP port nothing answers on, for the whole test. A port bound and let go is free for any other process
+// to bind and answer from (a CI runner did, once: 29 bytes back, and the verdict read egress). So a socket connected to
+// 127.0.0.1:9 holds it instead: no other socket can take it (that socket has no SO_REUSEADDR), and the kernel delivers
+// to a connected UDP socket only its peer's datagrams, so a datagram from the probe finds no socket and is refused
+// (ICMP port unreachable).
 func closedUDP(t *testing.T) string {
 	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	conn, err := net.Dial("udp", "127.0.0.1:9")
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := conn.LocalAddr().String()
-	_ = conn.Close()
-	return address
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn.LocalAddr().String()
 }
 
 // dnsAnswer answers a DNS query as a resolver would: its id, the response bit, its question, no records.

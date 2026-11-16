@@ -198,6 +198,10 @@ export interface AdapterSpecDeps {
    *  server (runner/beside.ts, Serve.localInstall) is told so, by that server in its own process. Absent, never: a hosted
    *  or standalone runner's loopback is its host's other services. */
   readonly mcpLoopback?: boolean;
+  /** That server's own addresses (Serve.own: where it listens, and its public address on loopback), told with
+   *  mcpLoopback: a run's loopback request (an MCP server's, its authorization server's, a pin's listing, calendar_events') never goes to
+   *  their ports, as the server's own requests never do. */
+  readonly mcpOwn?: readonly string[];
   /** A template eval's fakes, by the agent a run is of (template-eval.ts, from its case: EvalFakes). Only the eval's own
    *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
    *  maps onto it. Absent, or undefined for a run: none. */
@@ -490,7 +494,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -658,7 +662,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest
   // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
-  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the run asks for its revision.
+  // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   const promotion = claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   });
@@ -700,7 +704,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -1073,6 +1077,10 @@ export function buildToolHost(opts: {
   readonly toolSettings?: unknown;
   /** The run's template eval fakes, where the eval's own runner gives them (AdapterSpecDeps.evalFakes). */
   readonly fakes?: EvalFakes;
+  /** The server is a local install (AdapterSpecDeps.mcpLoopback): calendar_events may read a calendar on loopback. */
+  readonly loopback?: boolean;
+  /** That server's own addresses (AdapterSpecDeps.mcpOwn): never the ports calendar_events reads on loopback. */
+  readonly own?: readonly string[];
 }): ToolHost {
   const liveAt = runnerLiveOf(opts.env, opts.sealKey);
   const { root, claim, run, life } = opts;
@@ -1081,6 +1089,8 @@ export function buildToolHost(opts: {
     ...(web ? { web } : {}),
     ...(now ? { now } : {}),
     ...(email ? { emailFake: email } : {}),
+    ...(opts.loopback ? { calendarLoopback: true } : {}),
+    ...(opts.own ? { serverOwn: opts.own } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

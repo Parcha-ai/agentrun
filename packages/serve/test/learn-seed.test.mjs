@@ -11,6 +11,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, 
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agentFolderOf, homeKey } from "../dist/files.js";
+import { said } from "../dist/learning-words.js";
 import { KEEPS, learnedIn, NOTHING_YET, pinOf, resnapSync, wholeIn } from "./learn-support.mjs";
 import { agent, follow, runDir, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -131,10 +132,11 @@ test("a new agent with learning on: its first run makes its folder, main checked
   assert.deepEqual(readdirSync(learnedDir(data, runId)), ["MEMORY.md"]);
   assert.ok(prompt.includes(`Answer the question.\n\n# Learned\n\n${KEEPS}\n\n${NOTHING_YET}`), `an empty index: the run is told it learns, and that nothing is learned yet: ${prompt}`);
   assert.ok(!prompt.includes("What you learned in earlier runs"), "no intro to notes it has none of");
-  // Seeded, then asked the end-of-run turn, which (the faux model says its prompt) gave no note (learn-reflect.test.mjs).
+  // Seeded; its owner said nothing on the run, so it was not asked its look-back (runner/reflect-hook.ts), and nothing is
+  // learned.
   const { whole, short } = await learningOf(api, "fresh", runId);
-  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "string" });
-  assert.deepEqual(short, { state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." }, "a list says it in the same words");
+  assert.deepEqual({ ...whole, at: typeof whole.at }, { state: "dropped", reason: "empty", detail: said.noFeedback, at: "string" });
+  assert.deepEqual(short, { state: "dropped", reason: "empty", detail: said.noFeedback }, "a list says it in the same words");
   // A server started again reads the run's learning back from its serve.json, whole and in a list.
   await first.close();
   const again = await serve(t, { data, faux: SYSTEM });

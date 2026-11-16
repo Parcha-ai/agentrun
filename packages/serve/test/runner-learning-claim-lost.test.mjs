@@ -74,9 +74,10 @@ async function lostRun(t, { capUsd, runCap, held, losses, priceOf, endOfRunOf, s
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning: true } });
+  // A notes job (`learning: "notes"`): its run looks back at every end.
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning: "notes" } });
   const seed = await seedOf(dir, "agent-1");
-  const body = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0 }, max_cost_usd: capUsd };
+  const body = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0, notesOnly: true }, max_cost_usd: capUsd };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body });
   const launch = readLaunchBody(body);
   assert.equal(launch?.maxCostUsd, capUsd, "the launch carries the cap the learning step reads");

@@ -224,6 +224,9 @@ export type DefinitionInput = {
       permission?: "allow" | "ask" | "deny";
       scope?: "thread" | "mailbox";
     };
+    calendar_events?: {
+      permission?: "allow" | "ask" | "deny";
+    };
     browser?: {
       provider?: "auto" | "browserbase" | "kernel" | "chrome";
       permission?: "allow" | "deny";
@@ -2473,6 +2476,8 @@ export type CreatePairingResponse = {
   expires_at: string;
 };
 
+/** Forget this server's calendar (DELETE /settings/calendar). */
+
 /** Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription). */
 export type DeleteComposioSubscriptionResponse = {
   deleted: true;
@@ -2515,6 +2520,14 @@ export type FinishChatGPTSignInResponse = {
   authorize_url?: string;
   expires_at?: string;
   models?: Array<string>;
+};
+
+/** This server's calendar: its host, name and time zone, never its address (GET /settings/calendar). */
+export type GetCalendarResponse = {
+  configured: boolean;
+  host: string | null;
+  name: string | null;
+  time_zone: string | null;
 };
 
 /** This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt). */
@@ -2802,6 +2815,17 @@ export type RotateComposioSecretResponse = {
   rotated: true;
 };
 
+/** Save this server's calendar, its iCal address sealed (PUT /settings/calendar). */
+export type SaveCalendarBody = {
+  url: string;
+};
+export type SaveCalendarResponse = {
+  configured: boolean;
+  host: string | null;
+  name: string | null;
+  time_zone: string | null;
+};
+
 /** Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type SaveComposioServerBody = {
   api_key: string;
@@ -2854,6 +2878,10 @@ export type SaveComposioServerResponse = {
   };
   connect_url?: string;
   not_served?: Array<string>;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
 };
 
 /** Save a computer provider's keys, sealed (PUT /computers/{provider}/keys). */
@@ -2953,6 +2981,15 @@ export type StartMcpOAuthResponse = {
   authorization_url: string;
 };
 
+/** Read the calendar and say what it holds (POST /settings/calendar/test). */
+export type TestCalendarBody = {
+  url?: string;
+};
+export type TestCalendarResponse = {
+  ok: boolean;
+  message: string;
+};
+
 /** Test a computer provider's account with its saved keys (POST /computers/{provider}/test). */
 export type TestComputerResponse = {
   ok: true;
@@ -3002,7 +3039,7 @@ export type TestWorkspaceArchilResponse = {
 export type DeleteMcpServerResponse = {
   deleted: true;
   composio: {
-    removed: false;
+    removed: boolean;
     note: string;
   };
 };
@@ -3241,6 +3278,10 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio?: {
+    removed: boolean;
+    note: string;
+  };
 };
 
 /** Read activity and token usage reported by externally running agents (GET /observations). */
@@ -3416,7 +3457,7 @@ export type GradeRunResponse = {
   path: "agent" | "handed_back" | "workflow" | "replay";
   workflow: string | null;
   workflow_digest: string | null;
-  feedback: "revise" | "look_back" | null;
+  feedback: "look_back" | null;
   expected?: Record<string, unknown>;
 };
 
@@ -3598,7 +3639,7 @@ export type GetRunLearningResponse = {
     path: "agent" | "handed_back" | "workflow" | "replay";
     workflow: string | null;
     workflow_digest: string | null;
-    feedback: "revise" | "look_back" | null;
+    feedback: "look_back" | null;
     feedback_status: "running" | "ended" | "not_run" | null;
   };
 } | null;
@@ -4253,6 +4294,9 @@ export type PutToolSettingsBody = {
     permission?: "allow" | "ask" | "deny";
   };
   email_file?: {
+    permission?: "allow" | "ask" | "deny";
+  };
+  calendar_events?: {
     permission?: "allow" | "ask" | "deny";
   };
   browser?: {
@@ -5515,12 +5559,14 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   writeLearningFile: {"method":"PUT","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match","If-None-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"text","secret":false,"publicFields":[],"tagged":true},
   connectGitHub: {"method":"POST","path":"/integrations/github/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createPairing: {"method":"POST","path":"/computers/pairings","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteCalendar: {"method":"DELETE","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteComposioSubscription: {"method":"DELETE","path":"/settings/mcp-servers/{name}/composio/subscription","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteComputer: {"method":"DELETE","path":"/computers/{computer_id}","pathParams":["computer_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteEmailAccount: {"method":"DELETE","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteWorkspaceArchil: {"method":"DELETE","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   disconnectGitHub: {"method":"DELETE","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   finishChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in/finish","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getCalendar: {"method":"GET","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getChatGPTSignIn: {"method":"GET","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5535,12 +5581,14 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   rotateComposioSecret: {"method":"POST","path":"/settings/mcp-servers/{name}/composio/rotate-secret","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveCalendar: {"method":"PUT","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
   saveComputerKeys: {"method":"PUT","path":"/computers/{provider}/keys","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveEmailAccount: {"method":"PUT","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
+  testCalendar: {"method":"POST","path":"/settings/calendar/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testComputer: {"method":"POST","path":"/computers/{provider}/test","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testEmailAccount: {"method":"POST","path":"/settings/email/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWorkspaceArchil: {"method":"POST","path":"/workspace/archil/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5731,6 +5779,8 @@ export function resources(call: Call) {
     local: {
       /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
       createPairing: (options?: RequestOptions): Promise<CreatePairingResponse> => call("createPairing", [], undefined, undefined, options),
+      /** Forget this server's calendar (DELETE /settings/calendar). */
+      deleteCalendar: (options?: RequestOptions): Promise<void> => call("deleteCalendar", [], undefined, undefined, options),
       /** Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription). */
       deleteComposioSubscription: (name: string, options?: RequestOptions): Promise<DeleteComposioSubscriptionResponse> => call("deleteComposioSubscription", [name], undefined, undefined, options),
       /** Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id}). */
@@ -5743,6 +5793,8 @@ export function resources(call: Call) {
       disconnectGitHub: (options?: RequestOptions): Promise<DisconnectGitHubResponse> => call("disconnectGitHub", [], undefined, undefined, options),
       /** Finish signing in with ChatGPT with the address the sign-in tab ended on (POST /settings/chatgpt/sign-in/finish). */
       finishChatGptsignIn: (body: FinishChatGPTSignInBody, options?: RequestOptions): Promise<FinishChatGPTSignInResponse> => call("finishChatGPTSignIn", [], body, undefined, options),
+      /** This server's calendar: its host, name and time zone, never its address (GET /settings/calendar). */
+      getCalendar: (options?: RequestOptions): Promise<GetCalendarResponse> => call("getCalendar", [], undefined, undefined, options),
       /** This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt). */
       getChatGptsignIn: (options?: RequestOptions): Promise<GetChatGPTSignInResponse> => call("getChatGPTSignIn", [], undefined, undefined, options),
       /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
@@ -5767,6 +5819,8 @@ export function resources(call: Call) {
       receiveHookComposio: (hook: string, body: RawBody, options?: BodyOptions): Promise<ReceiveHookComposioResponse> => call("receiveHook_composio", [hook], body, undefined, options),
       /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
       rotateComposioSecret: (name: string, options?: RequestOptions): Promise<RotateComposioSecretResponse> => call("rotateComposioSecret", [name], undefined, undefined, options),
+      /** Save this server's calendar, its iCal address sealed (PUT /settings/calendar). */
+      saveCalendar: (body: SaveCalendarBody, options?: RequestOptions): Promise<SaveCalendarResponse> => call("saveCalendar", [], body, undefined, options),
       /** Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). */
       saveComposioServer: (name: string, body: SaveComposioServerBody, options?: RequestOptions): Promise<SaveComposioServerResponse> => call("saveComposioServer", [name], body, undefined, options),
       /** Save a computer provider's keys, sealed (PUT /computers/{provider}/keys). */
@@ -5777,6 +5831,8 @@ export function resources(call: Call) {
       signOutChatGpt: (options?: RequestOptions): Promise<SignOutChatGPTResponse> => call("signOutChatGPT", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
       startChatGptsignIn: (options?: RequestOptions): Promise<StartChatGPTSignInResponse> => call("startChatGPTSignIn", [], undefined, undefined, options),
+      /** Read the calendar and say what it holds (POST /settings/calendar/test). */
+      testCalendar: (body?: TestCalendarBody, options?: RequestOptions): Promise<TestCalendarResponse> => call("testCalendar", [], body, undefined, options),
       /** Test a computer provider's account with its saved keys (POST /computers/{provider}/test). */
       testComputer: (provider: string, options?: RequestOptions): Promise<TestComputerResponse> => call("testComputer", [provider], undefined, undefined, options),
       /** Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test). */
