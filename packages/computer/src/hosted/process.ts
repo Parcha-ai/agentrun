@@ -9,6 +9,16 @@ import type { ComputerConnection } from "../provider.js";
 import type { HelloResult } from "../protocol.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "../result.js";
 
+/** The host's exec; a dial host has none, and a call of it throws unsupported, in words. */
+export function execOf(host: MachineHost): NonNullable<MachineHost["exec"]> {
+	return (
+		host.exec?.bind(host) ??
+		(() => {
+			throw new HostError("unsupported", `${host.descriptor.label}'s machines have no exec: they dial this server (facts.connect "dial")`);
+		})
+	);
+}
+
 /** What a call's race adds to the bound it gives the vendor's own call, so the vendor's timeout, not the race, reports a slow call. */
 export const CALL_SLACK_MS = 5_000;
 
@@ -173,7 +183,7 @@ export const OUTPUT_MAX = 64 * 1024;
  */
 export async function runToExit(host: MachineHost, id: string, argv: readonly string[], { stdin, ms, signal, what }: { stdin?: Iterable<Uint8Array>; ms: number; signal?: AbortSignal; what: string }): Promise<Result<RunResult>> {
 	const fail = failFor(host.descriptor.id);
-	const started = await hostCall(host, what, (ctx) => host.exec(id, argv, ctx), ms, signal);
+	const started = await hostCall(host, what, (ctx) => execOf(host)(id, argv, ctx), ms, signal);
 	if (!started.ok) return started;
 	const proc = started.value;
 	const out = drain(proc.stdout, OUTPUT_MAX);
@@ -260,7 +270,7 @@ export async function openBridge(
 	const fail = failFor(host.descriptor.id);
 	// Never signalled, only raced: the bridge lives on after this call. It has no command timeout, so one the vendor
 	// starts after this was given up on is killed as it lands.
-	const started = await hostCall(host, `starting the daemon's stdio bridge in ${name}`, (ctx) => host.exec(id, argv, { timeoutMs: ctx.timeoutMs }), requestMs, signal, (late) => late.ok && late.value.kill());
+	const started = await hostCall(host, `starting the daemon's stdio bridge in ${name}`, (ctx) => execOf(host)(id, argv, { timeoutMs: ctx.timeoutMs }), requestMs, signal, (late) => late.ok && late.value.kill());
 	if (!started.ok) {
 		const { code, message } = started.error;
 		return code === "timeout" || code === "aborted" ? fail(code, `${message}; a bridge that starts after this is killed`) : started;
