@@ -232,7 +232,8 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
   let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
   // The context the images take: each use of a reference adds its image again (https://docs.typesafe.ai/images).
   let imageTokens = 0, imageUses = 0;
-  const held: ImageTokens = { state: 0, questions: {} };
+  // No prototype: a question named __proto__ or constructor must read its own count, not an inherited object.
+  const held: ImageTokens = { state: 0, questions: Object.create(null) as Record<string, number> };
   if (carriesImage) {
     // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
     const stateTexts = [...stringValues(request.state)];
