@@ -127,6 +127,8 @@ const START = Date.now();
  *  - clock ({ now() }) with the vendor's own timers on it: idle, the ms after which it ends a machine no exec reached;
  *    backstop, the vendor's delete timer set from the request's backstopAt, read back as endsAt, which ends the machine
  *    there.
+ *  - onBoot(m): with facts.connect "dial" (no exec, no upload), called once a create's machine has started init from its
+ *    boot env (MachineRequest.boot): the dialer (fake-dial-host.mjs).
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -158,6 +160,7 @@ export function fakeHost({
 	clock = { now: () => Date.now() },
 	idle,
 	backstop = false,
+	onBoot = () => {},
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -596,6 +599,15 @@ export function fakeHost({
 				m.request = req;
 				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
+				if (req.boot) {
+					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, then the dial itself, the caller's (onBoot).
+					m.boot = { ...req.boot.env };
+					const args = m.boot.AGENTRUN_INIT_ARGS.split(" ");
+					const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
+					m.daemon = { path: DAEMON, sha256: m.boot.AGENTRUN_DAEMON_SHA256 };
+					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), max: flag("--max-deadline"), network: flag("--network") });
+					queueMicrotask(() => onBoot(m));
+				}
 				if (req.command) {
 					// The entrypoint's words: the daemon, the wait, the home, the display, the nonce, then --gate <path> or not,
 					// then init's.
@@ -659,15 +671,20 @@ export function fakeHost({
 			fake.events.push({ machine: id, what: "delete" });
 			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0, state: lingers.state ?? "running" };
 		},
-		async exec(id, argv, ctx) {
-			const m = machines.get(id);
-			await step(`exec ${scriptOfWords(argv)?.kind ?? rootVerb(argv) ?? "other"}`, ctx, m);
-			timers(m);
-			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			m.touched = clock.now();
-			return run(m, argv).api;
-		},
-		...(fileApi
+		// A dial host has no exec and no upload: its machines dial the server.
+		...(facts.connect === "dial"
+			? {}
+			: {
+					async exec(id, argv, ctx) {
+						const m = machines.get(id);
+						await step(`exec ${scriptOfWords(argv)?.kind ?? rootVerb(argv) ?? "other"}`, ctx, m);
+						timers(m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						m.touched = clock.now();
+						return run(m, argv).api;
+					},
+				}),
+		...(fileApi && facts.connect !== "dial"
 			? {
 					async upload(id, path, bytes, ctx) {
 						const m = machines.get(id);
@@ -702,6 +719,11 @@ export function fakeHost({
 
 	fake.host = host;
 	fake.add = add;
+	/** What the daemon in machine m answers to one request ({ method, params }): a dialer's side of the socket. */
+	fake.answer = (m, request) => {
+		fake.requests.push({ machine: m.id, method: request.method, params: request.params });
+		return answer(m, request);
+	};
 	/** Lets every held create go on, or, given an error, fail with it (having made nothing). */
 	fake.release = async (error) => {
 		for (const one of held.splice(0)) error === undefined ? one.resolve() : one.reject(error);

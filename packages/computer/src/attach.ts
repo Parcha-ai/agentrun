@@ -3,7 +3,7 @@
 // with the token it got by pairing, and the same JSON-RPC messages travel as text frames, one message per frame. Serve
 // is the caller: it sends hello first, then the run's calls. The AttachHub keeps one live connection per paired
 // computer; attachedProvider hands that computer to a run as a provider, one run at a time.
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
 import { kindServed } from "./kinds.js";
@@ -12,6 +12,8 @@ import { type ComputerCapabilities, type ComputerConnection, type ComputerProvid
 import { fail, ok, type Result } from "./result.js";
 
 export const ATTACH_PATH = "/v2/computers/attach";
+/** Where a hosted machine that dials fetches the server's computerd for its arch (?arch=amd64|arm64), with its token. */
+export const DAEMON_PATH = "/v2/computers/daemon";
 /** The WebSocket subprotocol a driver asks for: the protocol version it speaks. Serve answers with it or refuses. */
 export const ATTACH_SUBPROTOCOL = `agentrun.computer.${PROTOCOL_VERSION}`;
 /** Each side pings this often (WebSocket ping frames, not JSON-RPC), so a NAT keeps the path open. */
@@ -155,6 +157,36 @@ export interface MachineTokens {
 	mint(machine: string, mint: MachineMint): Promise<string>;
 	/** The machine's token refused from now on; a machine with none is done. */
 	revoke(machine: string): Promise<void>;
+}
+
+const sha256 = (token: string) => createHash("sha256").update(token).digest("hex");
+
+/**
+ * MachineTokens in one process's memory, as serve's store keeps them (the sha256 alone): for tests and a conformance
+ * kit. check is what the server's attach and daemon routes ask of a token.
+ */
+export class MemoryMachineTokens implements MachineTokens {
+	readonly #held = new Map<string, { machine: string; mint: MachineMint }>();
+	readonly #hashOf = new Map<string, string>();
+
+	async mint(machine: string, mint: MachineMint): Promise<string> {
+		await this.revoke(machine);
+		const token = `art_${randomBytes(32).toString("hex")}`;
+		this.#held.set(sha256(token), { machine, mint: { ...mint } });
+		this.#hashOf.set(machine, sha256(token));
+		return token;
+	}
+
+	async revoke(machine: string): Promise<void> {
+		this.#held.delete(this.#hashOf.get(machine) ?? "");
+		this.#hashOf.delete(machine);
+	}
+
+	/** The machine and mint a token is good for at `at`: undefined for one unknown, revoked, or past its expiresAt. */
+	check(token: string, at = new Date()): { machine: string; mint: MachineMint } | undefined {
+		const held = this.#held.get(sha256(token));
+		return held === undefined || at.getTime() > held.mint.expiresAt.getTime() ? undefined : held;
+	}
 }
 
 /** A minted machine as the AttachHub takes its socket: under the machine's name, its hello held to the mint. */

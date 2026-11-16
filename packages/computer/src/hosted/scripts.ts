@@ -260,7 +260,7 @@ export function hostedCommands({
 	network = "",
 }: ChildCommandOptions & { atomic?: boolean; waitS?: number; gate?: string; sha256?: string; nonce?: string; sockets?: readonly string[]; rootOnly?: readonly string[] } = {}): HostedCommands {
 	const init = initScriptArgs({ deadline, user, display, maxDeadline, network });
-	const initArgs = ["init", "--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]), ...(network === "" ? [] : ["--network", network])];
+	const initArgs = ["init", ...initFlags({ deadline, user, maxDeadline, network })];
 	return {
 		install: argvOf(INSTALL_SCRIPT, [staging, DAEMON_IN_COMPUTER, WORK, SOCKET_DIR, ...(atomic ? ["1", sha256, nonce] : [])]),
 		start: argvOf(START_SCRIPT, [INIT_LOG, ...argvOf(INIT_SCRIPT, init)]),
@@ -285,6 +285,15 @@ export interface ChildCommandOptions {
 	maxDeadline?: string;
 	/** The network form init's egress proxy serves (./network.ts networkFormOf): open, or allow: and a list; none, no proxy. */
 	network?: string;
+}
+
+/**
+ * init's flags, as start and a pid1 entrypoint give them: the deadline, the user, --own-network, and the most
+ * deadline.extend may move it to and the network form where given. A dial machine's AGENTRUN_INIT_ARGS, space-separated:
+ * no value holds a space.
+ */
+export function initFlags({ deadline = "", user = TOOL_USER, maxDeadline = "", network = "" }: Omit<ChildCommandOptions, "staging" | "display">): string[] {
+	return ["--deadline", deadline, "--user", user, "--own-network", ...(maxDeadline === "" ? [] : ["--max-deadline", maxDeadline]), ...(network === "" ? [] : ["--network", network])];
 }
 
 /** The init script's arguments: the daemon, the deadline, the user, home and the socket's folder, then the display, the

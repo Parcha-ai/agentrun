@@ -1,6 +1,6 @@
 // The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
 // and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
+// errorCode, extend, check). A host whose machines dial the server (facts.connect "dial") has no exec and no upload. HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
 // spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels (packed
 // where the host declares it), list and attach, the deadline and extend, the wait after a delete, the sweep of a lost
 // create, the Archil mount, and the words of every refusal. These doc comments are the contract a new vendor reads
