@@ -299,6 +299,22 @@ describe("applying a template", () => {
     { source: "url", toolkit: "hubspot", required: false, reason: "Writes the brief back to the lead's record.", tools: [{ name: "create_note", tool: "mcp:hubspot/create_note", asks: "ask" }] },
   ] };
 
+  // A url need whose toolkit is a URL preset's (Settings → MCP servers) links to that preset, filled: release-shipped's
+  // GitHub need opens GitHub (token), not an empty form under the name github.
+  it("a url need whose toolkit is a preset's links to the add form with that preset; any other toolkit to the plain form", async () => {
+    const need = (toolkit: string) => ({ source: "url" as const, toolkit, required: true, reason: null, tools: [{ name: "search", tool: `mcp:${toolkit}/search`, asks: "allow" as const }] });
+    const PRESET_NEEDS: TemplateView = { ...REVIEWER, name: "release-shipped", mcp: ["github", "parallel", "firecrawl", "linear", "notion", "hubspot"].map(need) };
+    const t = await open("release-shipped", { templates: [PRESET_NEEDS], servers: [] });
+    const href = (toolkit: string) => t.host.querySelector(`[data-missing-mcp="${toolkit}"] a`)!.getAttribute("href");
+    expect(href("github")).toBe("#/settings/mcp?add=github&preset=github-token");
+    expect(href("parallel")).toBe("#/settings/mcp?add=parallel&preset=parallel");
+    expect(href("firecrawl")).toBe("#/settings/mcp?add=firecrawl&preset=firecrawl");
+    expect(href("linear")).toBe("#/settings/mcp?add=linear&preset=linear");
+    expect(href("notion")).toBe("#/settings/mcp?add=notion&preset=notion");
+    expect(href("hubspot")).toBe("#/settings/mcp?add=hubspot");
+    expect(route("#/settings/mcp?add=github&preset=github-token").add).toEqual({ name: "github", preset: "github-token" });
+  });
+
   it("a Composio need no saved server matches: Not set up here, with a link to the Composio preset with its toolkit and actions", async () => {
     const t = await open("inbound-lead", { templates: [LEAD_MCP], servers: [{ name: "slack", source: "github", toolkit: "github" }] });
     const row = t.host.querySelector('[data-mcp="slack"]')!;
