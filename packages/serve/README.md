@@ -2187,8 +2187,10 @@ secret, so the name decides. The value is kept in the composio source's sealed s
 secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
 `source.sealed_config` names the field. The events list names these fields per event under `sealed`, and the console
 takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
-change to the config and is refused, as every config change is: make a new trigger for a new key. The trigger's delete
-removes the value. A trigger saved by an earlier server with such a value in plain text is sealed at the next start.
+change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
+The trigger's delete removes the value. A trigger saved by an earlier server with such a value in plain text is answered
+masked by the same rule at once, and sealed at the next start. The log line names the trigger and the field, never the
+value.
 
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
@@ -2933,6 +2935,9 @@ work is done and before the answer is sent, so a retry after a restart gets the 
 between the work and the save loses it, and a save that fails still answers. A run create's key is also kept with its
 run in the agent store, written with the run itself, so a retry after any restart, or after that day, gets that run (as
 it is now, marked `Idempotent-Replayed: true`), and another body under the key is still `409 idempotency_mismatch`.
+The file keeps no request body. A key's fingerprint is an HMAC of the body under a key derived from the seal key, and
+its answer is kept as a read answers it (a composio trigger's sealed config as `"[sealed]"`). A record an earlier server
+wrote with the body itself is rewritten at the start, and the log says how many.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.

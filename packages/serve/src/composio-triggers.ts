@@ -19,14 +19,14 @@
 //   its own scope of the same sealed settings (configScope), and the trigger keeps SEALED_MASK in its place, the field
 //   named in `sealed_config`: Composio's upsert alone gets the value. A PATCH that leaves it out or sends the mask keeps
 //   it; any other value is a change to the config, refused. The delete removes it. A trigger kept before this rule with
-//   its key in the clear is sealed at the next start (sealKept).
+//   its key in the clear is answered masked all the same (shownSource), and sealed at the next start (sealKept).
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
 import { createHash, randomBytes } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
-import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedSchemaFields } from "./trigger-composio.js";
+import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -153,16 +153,19 @@ export class ComposioTriggers implements TriggerUpstream {
   }
 
   patched(was: Source, given: Source): Source {
-    const fixed = "A Composio trigger's server, event and config made its instance on Composio, so they stay: make a new trigger for another.";
+    const fixed = "A Composio trigger's server, event and config made its instance on Composio, so they stay: to change one (a sealed key too), delete the trigger and make a new one.";
     for (const field of ["server", "event", "instance_id", "hook"]) if (given[field] !== undefined && given[field] !== was[field]) throw invalid([{ field: `source.${field}`, reason: "not_allowed", message: fixed }]);
-    // A sealed field left out, or sent as the mask an answer shows, keeps its value; any other value is a change.
-    const sealed = sealedOf(was);
+    // A sealed field left out, or sent as the mask an answer shows, keeps its value; any other value is a change. Read
+    // against the source as answered (shownSource), so one still kept in the clear compares as the answer showed it.
+    const shown = shownSource(was);
+    const sealed = sealedOf(shown);
     const sent = given.config;
     const config = isObject(sent) && sealed.length ? { ...sent, ...Object.fromEntries(sealed.filter((name) => sent[name] === undefined).map((name) => [name, SEALED_MASK])) } : sent;
-    if (!same(config, was.config)) throw invalid([{ field: "source.config", reason: "not_allowed", message: fixed }]);
+    if (!same(config, shown.config)) throw invalid([{ field: "source.config", reason: "not_allowed", message: fixed }]);
     if (given[MOVE_FIELD] !== undefined) throw invalid([{ field: `source.${MOVE_FIELD}`, reason: "not_allowed", message: `${MOVE_FIELD} is a create's alone.` }]);
     const { [SEALED_FIELD]: _given, ...rest } = given;
-    return { ...rest, config: was.config, ...(sealed.length ? { [SEALED_FIELD]: sealed } : {}), instance_id: was.instance_id, hook: was.hook };
+    const kept = sealedOf(was);
+    return { ...rest, config: was.config, ...(kept.length ? { [SEALED_FIELD]: kept } : {}), instance_id: was.instance_id, hook: was.hook };
   }
 
   async turned(source: Source, id: string, on: boolean): Promise<Json | undefined> {
@@ -309,8 +312,10 @@ export class ComposioTriggers implements TriggerUpstream {
   }
 
   /** At the server's start: each composio trigger kept with a credential of its config in the clear (made before the
-   *  config was sealed) sealed now, its source rewritten (`rewrite`) with the mask in its place. Composio's instance is left
-   *  as it is: it already holds the value. One that can't be sealed is said, and left for the next start. */
+   *  config was sealed) sealed now, its source rewritten (`rewrite`) as an answer shows it (shownSource: the mask in its
+   *  place), and said with the trigger's id and the fields' names alone. Composio's instance is left as it is: it already
+   *  holds the value. One that can't be sealed is said, still answered masked, and left for the next start. A trigger
+   *  with nothing in the clear is passed over, so a second start does nothing. */
   async sealKept(rewrite: (id: string, source: Source) => Promise<void>): Promise<number> {
     let done = 0;
     for (const holder of await this.deps.holders()) {
@@ -319,14 +324,13 @@ export class ComposioTriggers implements TriggerUpstream {
       if (!clear.length || !isObject(config)) continue;
       try {
         for (const name of clear) await this.deps.sealed.set(configScope(holder.id, name), configFieldFor(config[name] as string), config[name] as string);
-        const sealed = [...new Set([...sealedOf(holder.source), ...clear])];
-        await rewrite(holder.id, { ...holder.source, config: { ...config, ...Object.fromEntries(clear.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: sealed });
+        await rewrite(holder.id, shownSource(holder.source));
+        this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: clear.join(",") });
         done++;
       } catch (error) {
-        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, error: hidden(String((error as Error)?.message ?? error), clear.map((name) => config[name] as string)) });
+        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: clear.join(","), error: hidden(String((error as Error)?.message ?? error), clear.map((name) => config[name] as string)) });
       }
     }
-    if (done) this.deps.say({ condition: "composio_config_sealed", triggers: String(done) });
     return done;
   }
 

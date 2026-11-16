@@ -72,6 +72,17 @@ export const sealedSchemaFields = (schema: unknown): string[] => {
   }).map(([name]) => name);
 };
 
+/** `source` as every answer sends it: each config field sealedConfigFields names as SEALED_MASK, and named in
+ *  sealed_config, whether it is sealed yet or still kept in the clear (a trigger saved before this rule, until the next
+ *  start seals it: composio-triggers.ts sealKept). */
+export const shownSource = (source: Source): Source => {
+  const config = source.config;
+  const clear = sealedConfigFields(config).filter((name) => (config as Json)[name] !== SEALED_MASK);
+  if (!clear.length) return source;
+  const sealed = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as string[]) : [];
+  return { ...source, config: { ...(config as Json), ...Object.fromEntries(clear.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealed, ...clear])] };
+};
+
 const jsonOf = (text: string): unknown => {
   try {
     return JSON.parse(text) as unknown;
@@ -136,6 +147,7 @@ export const composio: TriggerAdapter = {
     issues.push(...unknownSourceFields(value, ["kind", "server", "event", "config", "accept", "instance_id", "hook", SEALED_FIELD, MOVE_FIELD]));
     return fieldsOf(value, bad);
   },
+  shown: shownSource,
   wellFormed: (source) => {
     const read = fieldsOf(source, () => {});
     return read !== undefined && typeof read.instance_id === "string" && typeof read.hook === "string";
