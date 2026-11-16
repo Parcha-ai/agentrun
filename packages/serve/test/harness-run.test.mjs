@@ -340,11 +340,11 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
   });
 }
 
-test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools, the email tools and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
+test("capabilities say which harnesses run each tool: the file tools, bash and the background tools (in a box), ask_person, the web tools, the email tools, calendar_events and the three host tools over a run's own tools on every harness, the rest on pi", async (t) => {
   const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
   const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
   const every = ["pi", "claude-agent", "codex", "opencode"];
-  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "email_search", "email_read", "email_draft", "email_send", "email_file", "tools_search", "tools_call", "codemode"];
+  const hosted = ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list", "ask_person", "web_fetch", "web_search", "email_search", "email_read", "email_draft", "email_send", "email_file", "calendar_events", "tools_search", "tools_call", "codemode"];
   for (const name of hosted) assert.deepEqual(tools[name], every, name);
   for (const [name, harnesses] of Object.entries(tools)) if (!hosted.includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
