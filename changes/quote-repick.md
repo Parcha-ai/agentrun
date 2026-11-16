@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A learned workflow whose answer quotes the pages it fetched re-picks once on a quote miss before it hands back. The learning checks refuse a draft whose step writing the answer hands back on its first miss: that step must be the body of a `loop` with `maxIters` 2 whose `until` is `not` of the answer's `quote_missing` check (the same `path`, `field` and `pages`), followed by the `quote_missing` escalate. A first miss writes the answer once more with the failed draft in its state; a second miss hands back. The compile prompt asks for the same loop. On the H5d test, re-picking kept 26 of 31 misses at about half the cost of handing every miss to the agent.
+  - A run's metrics carry `loops`: one row per loop exit of its learned workflows, `{node, iterations, met, workflow}`, so a re-pick (`iterations` 2) and whether its quotes were found (`met`) can be counted. Its model request is booked as any node's.
+  - Upgrading: a learned workflow already merged keeps serving as it is; its next compiled revision must carry the re-pick loop to pass the checks.

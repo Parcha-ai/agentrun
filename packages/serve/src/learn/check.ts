@@ -420,7 +420,8 @@ const writesKey = (node: unknown, key: string): boolean => isNode(node) && (writ
 /** Why a draft's quote check is not code: its answer carries quotes (a `quote` or `quotes` property in its output schema)
  *  and it fetches pages (a call step), yet some place in the answer holding quotes has no escalate on quote_missing
  *  reading it after the answer is written (quoteRule), or that escalate reads as a page a key holding no page as fetched
- *  (a model's summary of a page is no page). A judge or an `ask` is never the quote check:
+ *  (a model's summary of a page is no page), or, those checks in place, the step writing the answer hands back on its
+ *  first miss instead of re-picking once (a loop of REPICK_PASSES until a check passes). A judge or an `ask` is never the quote check:
  *  H5's judge flagged 149 of 170 answers while 416 of 429 quotes were in the pages, and could not tell the 8 answers
  *  quoting text no page held from the rest; code can. One line each, in words the compile retry acts on. */
 export function quoteCheckProblems(doc: unknown): string[] {
@@ -428,6 +429,20 @@ export function quoteCheckProblems(doc: unknown): string[] {
 }
 
 const siteKey = (site: QuoteSite): string => site.keys.join("\u0000");
+
+/** The passes of a checked answer's re-pick loop: the draft, then one re-pick. */
+const REPICK_PASSES = 2;
+/** A quote_missing predicate as a refusal writes it out. */
+type QuoteRead = { readonly path: unknown; readonly field: unknown; readonly pages: readonly unknown[] };
+const quoteMissingText = ({ path, field, pages }: QuoteRead): string =>
+  `{"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
+/** Whether `step` is the re-pick of an answer `check` reads: a loop of REPICK_PASSES until that check's quote_missing (its
+ *  path, field and pages) no longer holds. */
+const repicks = (step: unknown, check: QuoteRead): boolean => {
+  if (!isNode(step) || step.node !== "loop" || step.maxIters !== REPICK_PASSES || !isObject(step.until) || step.until.predicate !== "not" || !isObject(step.until.of)) return false;
+  const of = step.until.of;
+  return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
+};
 
 /** quoteCheckProblems for one workflow (the draft's, or a composed workflow node's child, its schemas its own else
  *  `schemasAround`): whether the rule applies (its answer carries quotes and it fetches pages), and why it fails. Only a
@@ -477,12 +492,19 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
       const path = [answerPath, ...read.path].join(".");
       const field = read.field ?? "";
       if (checks.some((check) => check.path === path && check.field === field)) continue;
-      const predicate = `{"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
+      const predicate = quoteMissingText({ path, field, pages });
       problems.push(`the answer carries quotes (${where(site)}) and the workflow fetches pages: check them in code, with an escalate ${predicate} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge`);
     }
     for (const { label, pages: read } of checks) for (const page of read) {
       const head = typeof page === "string" ? page.split(".")[0] : "";
       if (!pages.includes(head)) problems.push(`the quote_missing escalate ${JSON.stringify(label)} reads ${JSON.stringify(String(page).slice(0, 64))} as a page, which no call step fetched: its pages are the state keys its call steps write (${pages.join(", ")})`);
+    }
+    // Once the checks hold, the answer re-picks once before one hands back (H5d, preregistered: the answer step once more
+    // over the run's pages kept 26 of 31 misses, right 76.9% against the draft's 50.0%, at 11.6% of the agent's cost
+    // where handing every miss back cost 21.7%): the step writing it is a loop of REPICK_PASSES until one check passes.
+    const [first] = checks;
+    if (!problems.length && first && !checks.some((check) => repicks(writer, check))) {
+      problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back`);
     }
   }
   // A composed workflow writing the answer that applies the rule and fails it: its own check is the one to fix.
