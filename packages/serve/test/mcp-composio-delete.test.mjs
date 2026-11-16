@@ -1,7 +1,8 @@
 // Deleting a Composio-preset server in Settings removes the MCP server the preset made in the owner's Composio account too
 // (DELETE /api/v3.1/mcp/{id}, sent with the saved key), then forgets our row. Composio's 404 is "already gone"; a refusal or
-// no answer still forgets the row, and the answer says what to remove in Composio. A server the preset did not make sends
-// Composio nothing. The key is never in an answer or a log line.
+// no answer still forgets the row, and the answer says what to remove in Composio. Either way a preset's delete answers
+// 200 with what it removed there in words (mcp-composio-cleanup.test.mjs: the auth config and account too). A server the
+// preset did not make sends Composio nothing, and answers 204. The key is never in an answer or a log line.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
@@ -28,7 +29,8 @@ const deleted = (s) => s.composio.to(`/api/v3.1/mcp/${s.composio.mcpId}`, "DELET
 test("deleting a preset server deletes the one it made on Composio, with the saved key, then forgets our row", async (t) => {
   const s = await setup(t);
   const res = await s.api("DELETE", "/settings/mcp-servers/hn");
-  assert.equal(res.status, 204, JSON.stringify(res.body));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(res.body, { deleted: true, composio: { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpId}.` } });
   assert.equal(deleted(s).length, 1, "Composio was asked to delete the server it made");
   assert.ok(deleted(s)[0].keyOk, "the call carried the saved key as x-api-key");
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
@@ -38,7 +40,8 @@ test("deleting a preset server deletes the one it made on Composio, with the sav
 test("Composio's 404 means it is already gone: the delete goes on and says nothing is left to remove", async (t) => {
   const s = await setup(t, { fail: { ...MADE, status: 404 } });
   const res = await s.api("DELETE", "/settings/mcp-servers/hn");
-  assert.equal(res.status, 204, JSON.stringify(res.body));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual(res.body.composio, { removed: true, note: `Removed in Composio: the MCP server ${s.composio.mcpId}.` });
   assert.equal(deleted(s).length, 1);
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404);
 });
@@ -50,8 +53,7 @@ for (const status of [403, 500]) {
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(res.body.deleted, true);
     assert.equal(res.body.composio.removed, false);
-    assert.match(res.body.composio.note, /Remove hn in Composio yourself/);
-    assert.match(res.body.composio.note, /https:\/\/platform\.composio\.dev/);
+    assert.equal(res.body.composio.note, `Left in Composio: the MCP server ${s.composio.mcpId}. Remove what is left of hn in Composio yourself: https://platform.composio.dev`);
     assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
     assert.ok(!JSON.stringify(res.body).includes(s.composio.apiKey), "the answer holds the key");
     assert.ok(!s.log.text().includes(s.composio.apiKey), "the log holds the key");
@@ -80,7 +82,7 @@ test("a preset whose saved key does not open here: our row is forgotten, nothing
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.deleted, true);
   assert.equal(res.body.composio.removed, false);
-  assert.match(res.body.composio.note, /Remove hn in Composio yourself: https:\/\/platform\.composio\.dev/);
+  assert.match(res.body.composio.note, /^Left in Composio: the MCP server it made \(the saved key doesn't open here\)\. Remove what is left of hn in Composio yourself: https:\/\/platform\.composio\.dev$/);
   assert.equal(deleted(s).length, 0, "no DELETE was sent");
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "our row is gone");
 });

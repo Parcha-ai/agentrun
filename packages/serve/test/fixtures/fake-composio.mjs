@@ -18,6 +18,9 @@
 // it at most that many a page, by `cursor` and `next_cursor`, as `limit` does), turned on and off
 // by PATCH and deleted by DELETE /trigger_instances/manage/{id}. An upsert for an account that is not ACTIVE, or whose
 // config misses a required field, is refused 400. Connected accounts carry their id (`ca_fake_<toolkit>`) and user_id.
+// An auth config it makes (`ac_made_<n>`) is listed with its toolkit's from then on, as Composio-managed, until a DELETE
+// /auth_configs/{id} removes it; a connect link answers the connected account it starts (`ca_link_<n>`), which DELETE
+// /connected_accounts/{id} removes. A delete of one it doesn't have answers 404.
 // Its base URL carries a path of its own, new each start, and its MCP server's id is new each start too: a request on its
 // port that the server under test didn't send (a port prober on the host GETs / on each new loopback listener; another
 // test process's client may still call a port it freed, which this fake then took) is not one of its calls. Such a
@@ -77,6 +80,10 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const mcp = noTools || listStatus ? await startEmptyMcp(`/v3/mcp/${id}/mcp`, inspect, listStatus) : await startFakeMcp({ path: `/v3/mcp/${id}/mcp`, inspect });
   const mcpOrigin = new URL(mcp.url).origin;
   let made = 0;
+  let links = 0;
+  /** The auth configs it made, by toolkit slug; and the connected accounts its connect links started, by id. */
+  const madeConfigs = {};
+  const linked = new Set();
   let madeSubs = 0;
   let madeInstances = 0;
   const secretOf = () => `cmp_whsec-${randomBytes(18).toString("base64url")}`;
@@ -125,8 +132,22 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     }
     const one = /^\/api\/v3\/toolkits\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && one) return toolkits[one[1]] ? reply(200, { slug: one[1], auth_config_details: [{ mode: toolkits[one[1]].no_auth === true ? "NO_AUTH" : "OAUTH2" }] }) : reply(404, { error: { message: "Toolkit not found" } });
-    if (req.method === "GET" && url.pathname === "/api/v3/auth_configs") return reply(200, { items: authConfigs[slug] ?? [] });
-    if (req.method === "POST" && url.pathname === "/api/v3/auth_configs") return reply(201, { auth_config: { id: `ac_made_${++made}` } });
+    if (req.method === "GET" && url.pathname === "/api/v3/auth_configs") return reply(200, { items: [...(authConfigs[slug] ?? []), ...(madeConfigs[slug] ?? [])] });
+    if (req.method === "POST" && url.pathname === "/api/v3/auth_configs") {
+      const config = { id: `ac_made_${++made}`, is_composio_managed: true, status: "ENABLED", toolkit: { slug: body?.toolkit?.slug } };
+      (madeConfigs[config.toolkit.slug] ??= []).push(config);
+      return reply(201, { auth_config: { id: config.id } });
+    }
+    const config = /^\/api\/v3\/auth_configs\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "DELETE" && config) {
+      for (const list of [...Object.values(madeConfigs), ...Object.values(authConfigs)]) {
+        const at = list.findIndex((c) => c.id === config[1]);
+        if (at >= 0) return (list.splice(at, 1), reply(200, { success: true }));
+      }
+      return reply(404, { error: { message: `Auth config ${config[1]} not found` } });
+    }
+    const account = /^\/api\/v3\/connected_accounts\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "DELETE" && account) return linked.delete(account[1]) || account[1].startsWith("ca_fake_") ? reply(200, { success: true }) : reply(404, { error: { message: `Connected account ${account[1]} not found` } });
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/custom") return reply(201, { id });
     if (req.method === "DELETE" && url.pathname === `/api/v3.1/mcp/${id}`) return reply(200, { id, deleted: true });
     if (req.method === "POST" && url.pathname === "/api/v3.1/mcp/servers/generate") return reply(200, { user_ids_url: body.user_ids.map((u) => `${mcpOrigin}/v3/mcp/${id}?user_id=${u}&include_composio_helper_actions=true`) });
@@ -137,7 +158,11 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const user = url.searchParams.get("user_ids") ?? "agentrun";
       return reply(200, { items: listed.filter((a) => !under || a.auth_config === under).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE })) });
     }
-    if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") return reply(201, { redirect_url: `https://connect.composio.test/link/${body.auth_config_id}` });
+    if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") {
+      const started = `ca_link_${++links}`;
+      linked.add(started);
+      return reply(201, { link_token: `lt_fake_${links}`, redirect_url: `https://connect.composio.test/link/${body.auth_config_id}`, expires_at: at(), connected_account_id: started });
+    }
     // The project's webhook subscription: one at most.
     if (url.pathname === "/api/v3/webhook_subscriptions") {
       if (req.method === "GET") return reply(200, { items: subscriptions, next_cursor: null, total_pages: subscriptions.length ? 1 : 0, current_page: 1, total_items: subscriptions.length });
@@ -205,6 +230,9 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   return {
     baseUrl: `http://127.0.0.1:${http.address().port}${own}`,
     apiKey, calls, strays, mcpKeys, mcpId: id,
+    /** The auth configs it made that it still has, by toolkit slug; and the connected accounts its links started that it
+     *  still has. */
+    madeConfigs, linked,
     /** The project's webhook subscriptions as Composio keeps them now (at most one), secret and all. */
     subscriptions,
     /** The trigger instances as Composio keeps them now, by id: `{ id, trigger_name, connected_account_id, user_id,

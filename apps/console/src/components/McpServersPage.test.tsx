@@ -818,6 +818,20 @@ describe("Settings → MCP servers, deleting a Composio server", () => {
     await p.click(/^Delete$/, p.row("hn").querySelector('[role="alertdialog"]')!);
     expect(p.text()).toContain("No MCP server is saved here yet");
     expect(p.host.querySelector('[role="status"]')?.textContent).toContain(note);
+    expect(p.host.querySelector('[role="status"]')?.className).toContain("text-warning-text");
+  });
+
+  it("says what it removed in Composio when all of it went, as a success, not a warning", async () => {
+    const note = "Removed in Composio: the MCP server srv_1, the connected account ca_1 (its connect link with it) and the auth config ac_1.";
+    const s = server([[saved({ name: "gh" })], []], (c) => (c.method === "DELETE" ? json(200, { deleted: true, composio: { removed: true, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Delete$/, p.row("gh"));
+    await p.click(/^Delete$/, p.row("gh").querySelector('[role="alertdialog"]')!);
+    expect(p.text()).toContain("No MCP server is saved here yet");
+    const status = p.host.querySelector('[role="status"]');
+    expect(status?.textContent).toContain(note);
+    expect(status?.className).toContain("text-success-text");
+    expect(status?.className).not.toContain("text-warning-text");
   });
 });
 
