@@ -3,6 +3,8 @@
 AgentRun is an open-source platform for running AI agents. It gives each agent a computer, a sandbox or a desktop, on
 a vendor's machines. This page shows how to add your machines in one pull request.
 
+How 25 sandbox vendors fit this contract today, and what each provider would take: [the provider scorecard](SCORECARD.md).
+
 ## The first 30 minutes
 
 Conformance comes first: each step ends on a command that tells you whether it's done. Run them from the repository root.
@@ -14,7 +16,7 @@ Conformance comes first: each step ends on a command that tells you whether it's
    through the relay you ship, once it is deployed to your own account; or, on a cloud, in the cluster, group or project
    you made first. `--machine` takes whatever your `exec` takes, the id `create` answers and `get` reads (a name is fine):
    `npm run conformance -w @parcha/agentrun-computer -- --provider ./packages/computer/dist/<vendor>.js --exec-stream --machine <machine id>`
-3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the twelve members](#the-twelve-members).
+3. Copy `e2b.ts` into [the four files](#what-you-write) and fill in [the eleven members](#the-eleven-members).
 4. Run the [whole suite between two sweeps](#prove-it) until its last line reads `core PASS`:
    `npm run conformance -w @parcha/agentrun-computer -- --provider <vendor>`
 5. [Open the pull request](#send-it) with the report and the sweep's last line.
@@ -35,9 +37,7 @@ AgentRun needs two things from your API:
   If your API keeps no labels, declare `labels: "machine"` in your facts. AgentRun then writes them to a file in the
   machine that only root can read, and you list by the name create gives the machine, or list every machine where your
   API takes no name. Your timer must end machines (`lifetime: "vendor"`): a machine whose create stopped before the
-  file was written carries no label the janitor can find. A janitor host may keep labels in the machine too if it sets
-  its vendor's delete timer from `req.backstopAt` and declares `backstop: true`. Its `get` must read that timer back as
-  `endsAt`, which the Core case `provider.backstop` checks.
+  file was written carries no label the janitor can find. Such a host has no `extend`.
 
 ### Exec shapes that work
 
@@ -62,6 +62,7 @@ it by them alone:
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | Daytona, [`src/daytona.ts`](src/daytona.ts): a session command, its log WebSocket, and its input call, which takes whole lines; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
+| The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
 | SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill` |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` kills by the pid the shared wrapper reports |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
@@ -104,9 +105,50 @@ An event may carry `base64` in place of `text` for output that isn't text. The t
 loopback vendor ([`test/fake-text-host.mjs`](test/fake-text-host.mjs)) through the pre-check and the shared adapter's
 create.
 
+#### Output as server-sent events
+
+`sse` from `src/hosted/rest.ts` reads a `text/event-stream` body as the HTML standard says: comments (a keep-alive)
+are skipped, `data:` lines are joined, and each event carries the last `id:` and `retry:` the stream set, which a host
+that resumes a dropped stream asks from. Hyperbrowser's process API is this shape: `POST /sandbox/processes` answers
+the process's stream, `event: started` with its id, then `event: output` with `data: {"stream":"stdout","encoding":
+"base64","data":"…"}`, where `stream` may also be `system` (the runtime's own lines, not the process's), then
+`event: done` with `data: {"exit_code":0}`. Its stdin and kill calls take that id. `start` reads the stream as far as
+the id and hands the rest to `events`:
+
+```ts
+const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+const stdin = (id: string, json: object) => api.call("POST", api.url(`/sandbox/processes/${id}/stdin`), { json });
+const exec = (argv: readonly string[], ctx: HostCall) =>
+	framedExec<{ id: string; stream: AsyncGenerator<SseEvent> }>(
+		{
+			async start(argv, ctx) {
+				const command = `exec ${argv.map(quote).join(" ")}`; // exec: the vendor's kill reaches argv, not a sh
+				const stream = sse(orThrow(await api.stream("POST", api.url("/sandbox/processes"), { json: { command }, timeoutMs: ctx.timeoutMs })).body);
+				const first = await stream.next();
+				if (first.done || first.value.event !== "started") throw new Error("the process's stream ended before it started");
+				return { id: (JSON.parse(first.value.data) as { id: string }).id, stream };
+			},
+			async *events({ stream }) {
+				for await (const { event, data } of stream) {
+					const value = JSON.parse(data);
+					if (event === "done") yield { exit: value.exit_code };
+					else if (event === "output" && value.stream !== "system") yield { stream: value.stream, base64: value.data };
+				}
+			},
+			write: async ({ id }, text) => void orThrow(await stdin(id, { data: Buffer.from(text).toString("base64"), encoding: "base64" })),
+			end: async ({ id }) => void orThrow(await stdin(id, { eof: true })),
+			kill: async ({ id }) => void orThrow(await api.call("DELETE", api.url(`/sandbox/processes/${id}`))),
+		},
+		argv,
+		ctx,
+	);
+```
+
+The tests run the same host against a Hyperbrowser-shaped loopback vendor, the same fake, through the pre-check.
+
 ### Step one: run the exec pre-check
 
-Before you write anything else, write your host's constructor and its `exec` (see [the twelve members](#the-twelve-members)
+Before you write anything else, write your host's constructor and its `exec` (see [the eleven members](#the-eleven-members)
 below). Then write a `createHost({ env = process.env } = {})` in your conformance module that builds the host from
 your key (the pre-check calls it with `{}`, the sweep with `{ env }`), and point to that module from your provider file
 with `conformance`, as `e2b.ts` does. E2B's `createHost` in `src/conformance/e2b.ts` is three lines. Make one machine
@@ -145,10 +187,10 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
-### The twelve members
+### The eleven members
 
-A host has twelve members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
-`upload`, `errorCode`, `extend`, `check` and `keepalive`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
+A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
+`upload`, `errorCode`, `extend` and `check`. Every snippet below is cut from E2B's host in `src/e2b.ts`, and `// …`
 marks a cut. A member answers its value, or throws. AgentRun reads a thrown error's code: a `HostError(code, message)`
 (from `src/host.ts`) carries its own, and any other error goes through `errorCode`, then defaults to `"vendor"`. Each
 call gets `ctx` with a `timeoutMs` and sometimes a `signal`. Pass both to your client where you can.
@@ -183,9 +225,8 @@ machine, the cap is the janitor's, as Agent37's 24 hours (`DAY_MS`, `src/agent37
 
 Switch off every vendor timer that ends a quiet machine (an idle stop or sleep): a computer sits quiet for minutes, and
 the vendor would end it under the agent. Agent37's `create` sends `auto_sleep: false`, and Daytona's idle stop is off
-unless a user sets `autoStopMinutes` (`src/daytona.ts`). Where the idle timer can't be switched off, declare its window
-as `idleMs` in `facts` and write a `keepalive`: AgentRun calls it every `idleMs / 3` while it holds the computer. With
-`"janitor"`, where your vendor has a timer that deletes or stops, set it to `req.backstopAt`, so a machine still ends if
+unless a user sets `autoStopMinutes` (`src/daytona.ts`). Where the idle timer can't be switched off, your vendor
+doesn't fit yet. With `"janitor"`, where your vendor has a timer that deletes or stops, set it to `req.backstopAt`, so a machine still ends if
 AgentRun's server is gone.
 
 ```ts
@@ -205,14 +246,12 @@ AgentRun polls `get`. The exception is a vendor that applies a machine's setting
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
 finds machines by them. With `labels: "machine"` there is nowhere to store them: give the machine `req.name` as its
-own name where your API takes one, and answer it as `Machine.name` from `get` and `list`. AgentRun writes the labels
+own name where your API takes one, and answer it as `Machine.name` from `get` and `list`, and answer each machine's
+image as your API reads it back as `Machine.image`: AgentRun reads labels only in a machine of your provider's `image`
+option or a box image. AgentRun writes the labels
 into the machine once it runs. Without a name, a machine whose create was cut off before that write can't be traced to
 its request, so it ends only at your timer. Where your API keeps fewer or shorter labels than AgentRun writes, declare
-`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`: your create
-stores what `packLabels` (`src/hosted/values.ts`) gives, one name to list by and the map in parts, and `get` and
-`list` both answer `unpackLabels`' map. `list` filters by `PACKED_NAME` alone, set to
-`labels["agentrun.computer.name"]` where that is asked, or lists everything: AgentRun keeps only machines whose
-unpacked labels carry what it asked. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
+`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
 `HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
@@ -236,11 +275,11 @@ vendor whose size is its image's refuses them in its own `check`.
 ```
 
 **`get(id, ctx)`** reads one machine as your API sees it now, as a `Machine`:
-`{ id, labels, state, endsAt?, createdAt?, why? }`.
+`{ id, labels, state, name?, image?, endsAt?, createdAt?, why? }`.
 
 - `state` is `starting`, `running`, `stopped` (there but not running, such as paused) or `gone` (being deleted,
   ended, or failed).
-- `endsAt` is when your timer ends it, with `lifetime: "vendor"` or `backstop: true`.
+- `endsAt` is when your timer ends it, with `lifetime: "vendor"`.
 - `createdAt` is when your API made it. Of two racing creates' machines, AgentRun keeps the oldest.
 - `why` is your API's words for a machine that failed to start, which is `gone`.
 
@@ -275,7 +314,10 @@ each one by `get` for its state, labels and end, and drops one `get` reads as no
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
 don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. With
 `labels: "machine"`, list by `labels["agentrun.computer.name"]` where it is asked and your API lists by name, or list
-everything. AgentRun keeps the machines of that name and reads each running one's labels from its file. A stopped
+everything. AgentRun keeps the machines of that name whose `image` is ours, and reads each running one's labels from
+its file; one whose
+read fails or doesn't end is left out of that listing, in words, and read again at the next (a create's listing by its
+name fails instead, since the machine may be its own). A stopped
 machine can't be read: it has the labels this process last read from it, or none after a restart, so the janitor
 leaves it, and only your timer or a person ends it.
 
@@ -353,11 +395,10 @@ an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's 
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
 your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
-extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create.
+extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create. A host
+with `labels: "machine"` is refused one.
 `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields aren't
-checked yet. `keepalive(id, ctx)` is your API's cheapest call that restarts its idle timer on the machine (a timeout
-set again, a heartbeat), required with `idleMs` and refused without it. One that throws is noted and tried again at
-the next. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
+checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
 
 ### Wire it up
@@ -649,7 +690,9 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 `--before <file>` records every machine listed with `agentrun.computer=1`. `--after <file>` deletes each new machine
 that carries a conformance run's label (`agentrun.conformance`) and reads it back gone. It leaves alone everything
-recorded before, and any new machine without that label, which belongs to someone else on the account. It prints
+recorded before, and any new machine without that label, which belongs to someone else on the account. With
+`labels: "machine"`, labels are read only in a machine of a box image or of `--image <image>`, the image your run
+started from. It prints
 `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` and exits 0 when every swept machine is gone, 1 when one is
 still there, and 2 on a usage error. It reaches your API through the conformance module's `createHost({ env })`, which
 reads the same settings as the run and needs no live switch. If one account holds more than one place to list, such as

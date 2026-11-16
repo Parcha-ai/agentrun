@@ -434,7 +434,8 @@ test('the preflight passes on a tree the fold produced, for that tag', () => fix
 /** A repository whose tag `v${version}` is the release pull request's fold plus two pull requests the queue merged before the tag. */
 async function taggedRelease(fn) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-release-tree-'));
-  const git = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: root });
+  // No background maintenance after a commit, as changes.test.mjs's repo(): it races the rm below.
+  const git = (...args) => exec('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root });
   try {
     await putJson(join(root, 'package.json'), { version, private: true });
     await mkdir(join(root, 'packages/pi-browser'), { recursive: true });
@@ -447,7 +448,7 @@ async function taggedRelease(fn) {
     await writeFile(join(root, 'changes/late-browser.md'), '---\npackages: @parcha/pi-browser\nkind: feature\n---\nA browser change merged after the fold.\n');
     await git('init', '-q'); await git('add', '-A'); await git('commit', '-q', '-m', 'the tagged commit'); await git('tag', `v${version}`);
     await fn(root, git);
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true, maxRetries: 5 }); }
 }
 
 test('the release tree is the tag plus the fold: the fragments the tag carries are in this version\'s sections, and nothing else differs', () => taggedRelease(async root => {

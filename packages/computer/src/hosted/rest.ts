@@ -159,6 +159,86 @@ export function rest(options: RestOptions): Rest {
 	};
 }
 
+/** The JSON value of each line of a body of newline-delimited JSON, as the lines come; a line that is not JSON throws. */
+export async function* ndjson(body: AsyncIterable<Uint8Array>): AsyncIterable<unknown> {
+	const decoder = new TextDecoder();
+	let rest = "";
+	for await (const chunk of body) {
+		rest += decoder.decode(chunk, { stream: true });
+		let at = rest.indexOf("\n");
+		while (at >= 0) {
+			const line = rest.slice(0, at).trim();
+			rest = rest.slice(at + 1);
+			if (line !== "") yield JSON.parse(line);
+			at = rest.indexOf("\n");
+		}
+	}
+	rest += decoder.decode();
+	if (rest.trim() !== "") yield JSON.parse(rest);
+}
+
+/** One event of a text/event-stream body: its type, its data, and the last id and retry the stream had set by then. */
+export interface SseEvent {
+	/** "message" unless an `event:` field named it. */
+	event: string;
+	/** Its `data:` fields, joined by "\n". */
+	data: string;
+	/** The last `id:` so far ("" for none): what a host that resumes a dropped stream asks from. */
+	id: string;
+	/** The last `retry:` so far, the ms the vendor asks a reconnect to wait. */
+	retry?: number;
+}
+
+/**
+ * The events of a body of server-sent events (text/event-stream), as they come, read as the HTML standard's event
+ * stream says: lines end at \r\n, \n or \r; a line that starts with ":" is a comment (a vendor's keep-alive); a blank
+ * line ends an event, and one with no data is none. An event the body ends inside is dropped.
+ */
+export async function* sse(body: AsyncIterable<Uint8Array>): AsyncGenerator<SseEvent, void, undefined> {
+	// Not ignoreBOM: the standard drops a U+FEFF that starts the stream.
+	const decoder = new TextDecoder();
+	let rest = "";
+	let data: string[] = [];
+	let event = "";
+	let id = "";
+	let retry: number | undefined;
+	// The last line ended at a \r that ended what came: a \n that starts what comes next is that \r's, no line of its own.
+	let halfCrLf = false;
+	const eol = /\r\n|\r|\n/g;
+	function* lines(text: string): Generator<SseEvent> {
+		if (halfCrLf && text !== "") {
+			if (text.startsWith("\n")) text = text.slice(1);
+			halfCrLf = false;
+		}
+		// What is left from before holds no line end: the search starts at what came.
+		eol.lastIndex = rest.length;
+		rest += text;
+		let from = 0;
+		for (let end = eol.exec(rest); end !== null; end = eol.exec(rest)) {
+			const line = rest.slice(from, end.index);
+			from = eol.lastIndex;
+			halfCrLf = end[0] === "\r" && from === rest.length;
+			if (line === "") {
+				if (data.length > 0) yield { event: event || "message", data: data.join("\n"), id, ...(retry === undefined ? {} : { retry }) };
+				data = [];
+				event = "";
+				continue;
+			}
+			if (line.startsWith(":")) continue;
+			const colon = line.indexOf(":");
+			const field = colon < 0 ? line : line.slice(0, colon);
+			const value = colon < 0 ? "" : line.slice(line[colon + 1] === " " ? colon + 2 : colon + 1);
+			if (field === "data") data.push(value);
+			else if (field === "event") event = value;
+			else if (field === "id" && !value.includes("\0")) id = value;
+			else if (field === "retry" && /^[0-9]+$/.test(value)) retry = Number(value);
+		}
+		rest = rest.slice(from);
+	}
+	for await (const chunk of body) yield* lines(decoder.decode(chunk, { stream: true }));
+	yield* lines(decoder.decode());
+}
+
 /**
  * Every item of a paged listing. next gets the cursor of the page to read (none for the first) and answers its items and
  * the cursor of the page after it, or nothing at the end. A cursor that comes back twice, or a listing past max pages,

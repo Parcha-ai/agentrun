@@ -1272,7 +1272,8 @@ Exa takes keyless use only over IPv4, straight to its endpoint (through a proxy 
 free limit Exa answers a `429` with a Retry-After, or a tool result it marks rate-limited (`ai.exa/rateLimited`); the
 search is tried once more after a jittered 1 to 3 s, or the Retry-After Exa names when it is 5 s or less (a longer one, as
 for its daily limit, is not waited out). Still limited, the tool answers `{error}` in our words: `Free web search is
-rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.` Any
+rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant
+the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key.` Any
 other failure Exa answers reads `Free web search failed. Exa said: "<the first sentence of its text>"`, cut at 120
 characters; Exa's own instructions (a key for its MCP URL) are never passed on.
 

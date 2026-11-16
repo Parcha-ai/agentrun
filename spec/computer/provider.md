@@ -83,9 +83,15 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
   still be making it. A retry that lists it waits for its labels as for a computer still starting, and a sweep of the
   name leaves it. Once it is older, a retry is refused `exists` and deletes it, as a sweep does. One whose vendor reads
   no `createdAt` is never old enough: the vendor's timer ends it, which is why such a host must declare
-  `lifetime: "vendor"`, or `backstop: true`. Only a missing file reads as no labels; a read that
-  fails otherwise fails the listing in words, so the janitor never misses a computer it couldn't read. The Core case
-  `isolation.label-file` checks that the computer's user cannot read the file.
+  `lifetime: "vendor"`. It has no `extend`: the most a computer may live would be read from inside it. Only a missing
+  file reads as no labels. A read that fails, or doesn't end within its own bound, leaves that machine out of that
+  listing, said in words with its id; the next listing reads it again, and the vendor's timer ends it either way. A
+  listing by the request's name is the exception: what it finds, of that name or of none, may be the request's own, so
+  a read that fails fails the listing, and a retry never makes a second. The file is read only in a machine whose
+  vendor record shows our image: the provider's `image` option, or a box image by its name (`isBoxImage`, any recipe
+  hash, so an older release's machines are still found). Another image's machine is never run in, and one that shows
+  no image is left out, in words; a spec of another image is refused. The Core case `isolation.label-file` checks that
+  the computer's user cannot read the file.
 - The same id after it stopped, ended or passed its deadline is refused `exists`, in words: "computer-… was made for
   this request and has ended: create with a new request id". Never a second computer under the same name.
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
@@ -123,15 +129,11 @@ it and expects the same id refused `exists`. Both are Full.
 
 On the shared machine-host adapter, a host fixes two vendor timers (`packages/computer/src/host.ts`). A janitor's host
 whose vendor has a delete or stop timer of its own sets it to `MachineRequest.backstopAt`, five minutes past the most
-the deadline may reach (create + `maxLifetimeMs`), so a computer still ends when the server is gone. A host that
-declares `backstop: true` claims it does, and its `get` reads the timer back as `endsAt`. The Core case
-`provider.backstop` holds that `endsAt` to the request's `backstopAt`, within 60 s, on the run's shared computer, and
-only that claim lets a janitor's host keep its labels in the machine. A vendor that ends
-or pauses a quiet machine is declared with `HostFacts.idleMs`, its window, and a `keepalive(id, ctx)`, its cheapest call
-that restarts the timer: the adapter calls it every `idleMs / 3` from create or attach until release, and once at attach, and refuses a host
-with `idleMs` and no `keepalive`. A host's `get` answers `undefined` for a machine the vendor no longer has, and for
-a record the vendor keeps of one that is deleted and won't come back, which its `list` leaves out; `gone` is a machine
-still being destroyed, and release waits on it after the delete.
+the deadline may reach (create + `maxLifetimeMs`), so a computer still ends when the server is gone. A host switches off
+every vendor timer that ends a quiet machine; where it can't be switched off, the vendor doesn't fit yet. A host's
+`get` answers `undefined` for a machine the vendor no longer has, and for a record the vendor keeps of one that is
+deleted and won't come back, which its `list` leaves out; `gone` is a machine still being destroyed, and release waits
+on it after the delete.
 
 ## The descriptor
 
@@ -231,8 +233,9 @@ Each failure says what the exec did wrong, such as "U+000A (at byte 12) came bac
 
 The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, a relay in the image over
 any two-way stream, or split calls (one starts a process, one streams its events, one per write), which
-`framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns into a `MachineProcess`. A request and response
-exec, which answers a command's output when it ends, can't carry the bridge.
+`framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns into a `MachineProcess`; `ndjson` and `sse`
+(`hosted/rest.ts`) read events that come as NDJSON or as server-sent events. A request and response exec, which
+answers a command's output when it ends, can't carry the bridge.
 
 On a vendor whose root can make a network namespace, or one inside a user namespace, the three networks are the
 adapter's: init's fence holds `none`, and init's egress proxy holds `open` and a list

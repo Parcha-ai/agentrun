@@ -12,7 +12,8 @@
 // labelled machines with no conformance label, which another user of the account made during the run: never touched. A
 // machine in <file> is never touched either: no call names it, and a before file of another provider is refused, as is
 // one listed elsewhere for a provider whose module names where it lists (sweepScope: an app and a server), since
-// every machine there would read as new.
+// every machine there would read as new. A host that keeps its labels in the machine has them read only in a machine
+// of a box image or of --after's --image <image>, the image the run started from.
 // Exit 0 when every swept machine is gone, 1 when one is still there, 2 on a usage error, a before file it cannot read,
 // missing settings, or a listing the vendor refused (nothing is deleted then). It makes nothing, so it needs no live switch.
 //
@@ -49,8 +50,13 @@ export interface SweepMachinesOptions {
 	requestMs?: number;
 	/** One whole listing's bound; default 60 s. */
 	listMs?: number;
-	/** Told, in words, of a machine not deleted or still there. */
+	/** Told, in words, of a machine not read, not deleted or still there. */
 	onWords?: (words: string) => void;
+	/**
+	 * The image the run's computers started from. With facts.labels "machine", labels are read only in a machine of this
+	 * image or a box image (HostedOptions.image): one of another image is never read, so never swept.
+	 */
+	image?: string;
 }
 
 /**
@@ -58,8 +64,8 @@ export interface SweepMachinesOptions {
  * conformance run's label is deleted and read back gone; one without it is left alone and counted. A listing the
  * vendor refused is the error, with nothing deleted.
  */
-export async function sweepMachines(host: MachineHost, { labels = {}, before = new Set(), waitMs = 60_000, pollMs = 2_000, requestMs = 30_000, listMs = 60_000, onWords = () => {} }: SweepMachinesOptions = {}): Promise<Result<SweepCounts>> {
-	const listed = await foundBy(host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, { listMs, requestMs });
+export async function sweepMachines(host: MachineHost, { labels = {}, before = new Set(), waitMs = 60_000, pollMs = 2_000, requestMs = 30_000, listMs = 60_000, onWords = () => {}, image }: SweepMachinesOptions = {}): Promise<Result<SweepCounts>> {
+	const listed = await foundBy(host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, { listMs, requestMs, image, onNote: ({ computer, note }) => onWords(`${computer} was not read: ${note}`) });
 	if (!listed.ok) return listed;
 	const added = listed.value.filter((machine) => !before.has(machine.id));
 	// Only a conformance run's machines: one another user of the account made during the run is not this sweep's.
@@ -115,6 +121,8 @@ const USAGE = `usage: node packages/computer/dist/conformance/sweep.js --provide
   --after <file>   delete every machine listed with ${COMPUTER_LABEL}=1 and ${RUN_LABEL} whose id is not in <file>, read
                    each back until the vendor no longer has it (up to 60 s each), and print
                    {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}; a new one with no ${RUN_LABEL} is left alone
+  --image <image>  with --after, for a host that keeps its labels in the machine: the image the run's computers started
+                   from, read beside the box images (a machine of any other image is never read, so never swept)
   settings: the provider's conformance module's (COMPUTER_<VENDOR>_*), never the vendor's own names
 exit: 0 every swept machine is gone, 1 one is still there, 2 usage error, unreadable before file, no settings, or a refused listing`;
 
@@ -126,19 +134,26 @@ interface Args {
 	provider: string;
 	mode: "before" | "after";
 	file: string;
+	image?: string;
 }
 
 function parse(argv: string[]): Args {
 	let provider: string | undefined;
+	let image: string | undefined;
 	let found: { mode: "before" | "after"; file: string } | undefined;
 	for (let i = 0; i < argv.length; i++) {
 		const [flag = "", inline] = (argv[i] ?? "").split(/=(.*)/s, 2);
-		if (flag !== "--before" && flag !== "--after" && flag !== "--provider") throw new Usage(`unknown option ${flag}`);
+		if (flag !== "--before" && flag !== "--after" && flag !== "--provider" && flag !== "--image") throw new Usage(`unknown option ${flag}`);
 		const value = inline ?? argv[++i];
-		if (value === undefined || value === "" || value.startsWith("--")) throw new Usage(`${flag} needs a ${flag === "--provider" ? "provider id" : "file"}`);
+		if (value === undefined || value === "" || value.startsWith("--")) throw new Usage(`${flag} needs a ${flag === "--provider" ? "provider id" : flag === "--image" ? "image" : "file"}`);
 		if (flag === "--provider") {
 			if (provider !== undefined) throw new Usage("give --provider once");
 			provider = value;
+			continue;
+		}
+		if (flag === "--image") {
+			if (image !== undefined) throw new Usage("give --image once");
+			image = value;
 			continue;
 		}
 		if (found !== undefined) throw new Usage("give --before <file> or --after <file>, one of them");
@@ -146,7 +161,7 @@ function parse(argv: string[]): Args {
 	}
 	if (provider === undefined) throw new Usage("give --provider <id>");
 	if (found === undefined) throw new Usage("give --before <file> or --after <file>, one of them");
-	return { provider, ...found };
+	return { provider, ...found, ...(image === undefined ? {} : { image }) };
 }
 
 /** The ids a before file of this provider (and of this scope, when the provider names one) holds, or why it is not one. */
@@ -223,7 +238,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		return 0;
 	}
 	const said: string[] = [];
-	const swept = await sweepMachines(host, { before, waitMs, pollMs, onWords: (words) => said.push(words) });
+	const swept = await sweepMachines(host, { before, waitMs, pollMs, image: args.image, onWords: (words) => said.push(words) });
 	for (const words of said) await write(stderr, `${words}\n`);
 	if (!swept.ok) {
 		await write(stderr, `listing the machines carrying ${COMPUTER_LABEL}=1 failed, so nothing was deleted: ${swept.error.message}\n`);

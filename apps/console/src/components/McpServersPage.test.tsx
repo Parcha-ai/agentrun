@@ -1004,3 +1004,154 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     expect(document.activeElement).toBe(permission(p, "delete_repo"));
   });
 });
+
+describe("Settings → MCP servers, URL presets", () => {
+  // The five servers the free templates use: each fills the add form's name, address, credential and toolkit, and says
+  // one line about it. Preview and Save are the form's own: the server checks the address as it checks any.
+  const PRESETS = [
+    { label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: /no key/i },
+    { label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: /without a key/i },
+    { label: "GitHub (token)", name: "github", url: "https://api.githubcopilot.com/mcp/", auth: "bearer", note: /fine-grained/i },
+    { label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: /sign in/i },
+    { label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: /sign in/i },
+  ] as const;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const checkedAuth = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[name="mcp-auth"]:checked')?.value;
+
+  it.each(PRESETS)("$label fills the name, address, credential, toolkit and its note", async (preset) => {
+    const s = server([[]]);
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.click(new RegExp(`^${esc(preset.label)}$`));
+    expect(p.input("mcp-name").value).toBe(preset.name);
+    expect(p.input("mcp-url").value).toBe(preset.url);
+    expect(checkedAuth(p.host)).toBe(preset.auth);
+    expect(p.input("mcp-toolkit").value).toBe(preset.name);
+    expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(preset.note);
+    expect(s.writes()).toEqual([]);
+  });
+
+  it("shows the presets above \"Or any MCP URL\", only on a new server's form", async () => {
+    const s = server([[saved()]]);
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    const text = p.text();
+    for (const preset of PRESETS) expect(text.indexOf(preset.label)).toBeGreaterThan(-1);
+    expect(text.indexOf("Or any MCP URL")).toBeGreaterThan(Math.max(...PRESETS.map((x) => text.indexOf(x.label))));
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("fake"));
+    expect(p.text()).not.toContain("Or any MCP URL");
+    expect(p.button(/^Parallel Search$/)).toBeUndefined();
+  });
+
+  it("GitHub (token) has a read-only choice that swaps the address to /readonly and back", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^GitHub \(token\)$/);
+    const readOnly = p.host.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="Read-only"]')!;
+    expect(readOnly.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { readOnly.click(); });
+    expect(p.input("mcp-url").value).toBe("https://api.githubcopilot.com/mcp/readonly");
+    await act(async () => { readOnly.click(); });
+    expect(p.input("mcp-url").value).toBe("https://api.githubcopilot.com/mcp/");
+  });
+
+  it("a preset's name already saved fills the first free one, so Save never replaces that server", async () => {
+    const p = await open(server([[saved({ name: "parallel" })]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+    expect(p.input("mcp-toolkit").value).toBe("parallel");
+  });
+
+  it("a preset's Preview and Save send what the form sends for any address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "firecrawl" })) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Firecrawl$/);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes()).toEqual([
+      { method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://mcp.firecrawl.dev/v2/mcp", auth: { type: "none" } } },
+      { method: "PUT", path: "/v2/settings/mcp-servers/firecrawl", body: { url: "https://mcp.firecrawl.dev/v2/mcp", auth: { type: "none" }, toolkit: "firecrawl" } },
+    ]);
+  });
+
+  it("routes #/settings/mcp?add=<name>&preset=<id> to the form with that preset filled; an unknown id is the plain form", () => {
+    expect(route("#/settings/mcp?add=notion&preset=notion").add).toEqual({ name: "notion", preset: "notion" });
+    expect(route("#/settings/mcp?add=gh&preset=github-token").add).toEqual({ name: "gh", preset: "github-token" });
+    expect(route("#/settings/mcp?add=foo&preset=nope").add).toEqual({ name: "foo" });
+  });
+
+  it("a deep link's preset opens the form filled, under the link's name", async () => {
+    const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=notion&preset=notion").add });
+    expect(p.input("mcp-name").value).toBe("notion");
+    expect(p.input("mcp-url").value).toBe("https://mcp.notion.com/mcp");
+    expect(checkedAuth(p.host)).toBe("oauth");
+    expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(/sign in/i);
+  });
+
+  it("a preset clears a credential typed for another server, so none is sent to the preset's address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.pick("bearer");
+    await p.type("mcp-token", "tok-for-another-server");
+    await p.click(/^GitHub \(token\)$/);
+    expect(p.input("mcp-token").value).toBe("");
+    await p.click(/^Preview$/);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://api.githubcopilot.com/mcp/", auth: { type: "bearer" } } }]);
+  });
+
+  it("a preset clears the scopes and client typed for another OAuth server", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Linear$/);
+    await p.type("mcp-scopes", "read write");
+    await p.type("mcp-client-id", "linear-client");
+    await p.type("mcp-client-secret", "linear-secret");
+    await p.click(/^Notion$/);
+    expect(p.input("mcp-scopes").value).toBe("");
+    expect(p.input("mcp-client-id").value).toBe("");
+    expect(p.input("mcp-client-secret").value).toBe("");
+  });
+
+  it("the presets wait for the saved servers to be read, so none picks a name that is taken", async () => {
+    let list!: (r: Response) => void;
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? new Promise<Response>((r) => { list = r; }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+    await act(async () => { list(json(200, { servers: [saved({ name: "parallel" })] })); });
+    await p.settle();
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+  });
+
+  it("a list that can't be read leaves the presets off", async () => {
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? refusal(500, "internal", "down") : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+  });
+
+  it("a new server's name already saved can't be saved: it would replace that server", async () => {
+    const s = server([[saved({ name: "fake" })]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "fake");
+    await p.type("mcp-url", "https://mcp.example.test/mcp");
+    await p.click(/^Preview$/);
+    expect(p.text()).toMatch(/fake is saved already/);
+    expect(p.button(/^Save$/)?.disabled).toBe(true);
+    expect(s.writes().filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
+  it("a deep link with an unknown preset id opens the plain form", async () => {
+    const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=foo&preset=nope").add });
+    expect(p.input("mcp-name").value).toBe("foo");
+    expect(p.input("mcp-url").value).toBe("");
+    expect(checkedAuth(p.host)).toBe("none");
+    expect(p.host.querySelector("[data-mcp-preset]")).toBeNull();
+  });
+});

@@ -136,21 +136,3 @@ export async function framedExec<P>(pieces: ExecPieces<P>, argv: readonly string
 		},
 	};
 }
-
-/** The JSON value of each line of a body of newline-delimited JSON, as the lines come; a line that is not JSON throws. */
-export async function* ndjson(body: AsyncIterable<Uint8Array>): AsyncIterable<unknown> {
-	const decoder = new TextDecoder();
-	let rest = "";
-	for await (const chunk of body) {
-		rest += decoder.decode(chunk, { stream: true });
-		let at = rest.indexOf("\n");
-		while (at >= 0) {
-			const line = rest.slice(0, at).trim();
-			rest = rest.slice(at + 1);
-			if (line !== "") yield JSON.parse(line);
-			at = rest.indexOf("\n");
-		}
-	}
-	rest += decoder.decode();
-	if (rest.trim() !== "") yield JSON.parse(rest);
-}

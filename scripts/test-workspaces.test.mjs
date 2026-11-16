@@ -37,7 +37,7 @@ else { appendFileSync(log, 'end ' + name + '\\n'); process.exitCode = Number(opt
 // A repository root with a workspace per entry, packages/<dir> named @fx/<dir>; `test` is its test script.
 function fixture(t, spec) {
   const root = mkdtempSync(join(tmpdir(), 'test-workspaces-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fx', private: true, workspaces: ['packages/*'] }));
   writeFileSync(join(root, 'step.mjs'), STEP);
   writeFileSync(join(root, 'log'), '');
@@ -196,7 +196,7 @@ function repo(t) {
   const root = fixture(t, {
     a: { test: step('a') }, b: { test: step('b'), deps: ['a'] }, c: { test: step('c'), devDeps: ['b'] }, d: { test: step('d') }, docs: {},
   });
-  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8' });
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root, encoding: 'utf8' });
   writeFileSync(join(root, '.gitignore'), 'log\nnode_modules\n');
   git('init', '-q', '-b', 'main');
   git('add', '.');

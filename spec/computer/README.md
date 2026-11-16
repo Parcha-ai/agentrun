@@ -10,7 +10,7 @@ feedback.
 click through, a phone or a browser. The computer protocol puts every one of those behind one wire. Inside the machine
 runs a small daemon, `computerd`. It answers JSON-RPC methods (`exec.run`, `files.*`, `process.*`, `screen.*`,
 `input.actions`, `apps.*`, `ui.*`) over its stdin and stdout. Outside the machine, each vendor has a small
-`MachineHost`: twelve members that create, read, list and delete the vendor's machines, and start one process in a
+`MachineHost`: eleven members that create, read, list and delete the vendor's machines, and start one process in a
 machine. AgentRun does the rest through that one process. It installs the daemon, talks to it over that process's
 stdin and stdout, enforces deadlines, makes create safe to retry, and sweeps up leftovers. A phone or a browser has no
 daemon, so its provider answers the same methods itself.
