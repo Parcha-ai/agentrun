@@ -252,6 +252,8 @@ export function kubeTransport(endpoint: KubeEndpoint): KubeTransport {
 			req.on("response", (res) => {
 				const chunks: Buffer[] = [];
 				res.on("data", (chunk: Buffer) => chunks.push(chunk));
+				// A body cut off after the headers (a proxy's 503 whose connection drops) is the call's failure, never the process's.
+				res.on("error", (cause) => done({ ok: false, error: causeError(what, cause, timedOut, init.signal?.aborted === true, init.timeoutMs) }));
 				res.on("end", () => done({ ok: false, error: answerError(what, res.statusCode ?? 0, Buffer.concat(chunks).toString("utf8")) }));
 			});
 			const onAbort = () => {

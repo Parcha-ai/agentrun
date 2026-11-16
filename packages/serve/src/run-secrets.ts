@@ -3,7 +3,7 @@
 // The runner's claim reads them (runner/claim-secrets.ts).
 import type { Revision } from "./agent-rows.js";
 import { harnessModelKeys } from "./adapters.js";
-import { COMPUTER_KEY_NAMES } from "./computer-keys.js";
+import { COMPUTER_DESCRIPTOR_KEY_NAMES } from "./computer-keys.js";
 import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
@@ -14,10 +14,11 @@ import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
 import { workflowTools } from "./tools.js";
 import { ARCHIL_API_KEY_ENV } from "./workspace/archil-key.js";
 
-/** The computer providers' account keys a run never gets: every computer key (computer-keys.ts COMPUTER_KEY_NAMES) but
+/** The computer providers' account keys a run never gets: every name a computer descriptor declares for its keys
+ *  (computer-keys.ts COMPUTER_DESCRIPTOR_KEY_NAMES), key-shaped or not (a kubeconfig holds a cluster's credentials), but
  *  a tool key's field (Browserbase's and Kernel's, which a run's `browser` tool takes when its revision binds it). Only
  *  the server's and the runner's computer providers read one, at a claim or a Settings test. */
-const COMPUTER_ACCOUNT_KEYS = COMPUTER_KEY_NAMES.filter((name) => !TOOL_FIELDS.includes(name));
+const COMPUTER_ACCOUNT_KEYS = COMPUTER_DESCRIPTOR_KEY_NAMES.filter((name) => !TOOL_FIELDS.includes(name));
 /** The server's own secrets, which a run never gets: the API token, by name or by value, the seal key the tool keys are
  *  kept under (tool-keys.ts), the store's URL (it may hold the database's password), the remote boxes' keys
  *  (place-offers.ts BOX_KEYS) and every other computer provider's account key, which only the server's and the runner's

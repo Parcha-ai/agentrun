@@ -75,6 +75,11 @@ export const KEY_TABLE: KeyTable = keyTableOf(PROVIDERS);
  *  list, so a key set where the server starts is held in memory (secrets.ts), never left in its environment. */
 export const COMPUTER_KEY_NAMES: readonly string[] = [...new Set(PROVIDERS.flatMap((entry) => entry.keys.map((key) => key.name)).filter(keyShaped))];
 
+/** Every name a computer provider's descriptor declares for its keys, key-shaped or not: each is the server's and the
+ *  runner's to read, never a run's (run-secrets.ts). A credential whose name is no key's (KUBERNETES_KUBECONFIG, which
+ *  holds a cluster's token or client key) is held off a run by this, not by its name's shape. */
+export const COMPUTER_DESCRIPTOR_KEY_NAMES: readonly string[] = [...new Set(PROVIDERS.flatMap((entry) => entry.keys.map((key) => key.name)))];
+
 const has = (record: object, key: string): boolean => Object.prototype.hasOwnProperty.call(record, key);
 const labelOf = (providerId: string, table: KeyTable): string => (has(table.labels, providerId) ? table.labels[providerId]! : providerId);
 const refused = (code: string, message: string): { ok: false; error: { code: string; message: string } } => ({ ok: false, error: { code, message } });

@@ -260,9 +260,12 @@ test("started by its launcher, no process of its user holds a secret in its envi
   noSecretAnywhere(root, canary);
 });
 
+/** A Kubernetes kubeconfig: no key by its name, but it holds the cluster's token or client key, so it is an account key. */
+const KUBECONFIG = "KUBERNETES_KUBECONFIG";
 /** The account keys serve reads for its computer providers and for Archil, by the modules that name them: each key a
- *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), and Archil's. */
-const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV])];
+ *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), Archil's, and a
+ *  kubeconfig. */
+const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV, KUBECONFIG])];
 
 // A key the launcher does not name stays in the server's environment, where any process of its user reads it and any
 // child spawned with process.env inherits it: every account key serve reads is on the list, and only the server's and the
@@ -270,9 +273,6 @@ const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => pr
 test("every computer provider's key and Archil's account key is on the launcher's list, and no run is handed one but a browser tool's", async (t) => {
   const { RUN_SECRETS } = await import("../dist/run-secrets.js");
   for (const name of ACCOUNT_KEYS) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
-  // A Kubernetes kubeconfig holds the cluster's token or client key, though its name is no key's: on the list too, so it
-  // never stays in the server's environment, where a run's (cut by name and key shape alone) would inherit it.
-  assert.ok(SECRET_NAMES.includes("KUBERNETES_KUBECONFIG"), "KUBERNETES_KUBECONFIG is on the launcher's list of secrets");
   const serverOnly = ACCOUNT_KEYS.filter((one) => !TOOL_FIELDS.includes(one));
   for (const name of serverOnly) assert.ok(!RUN_SECRETS.includes(name), `${name} is the server's own: no run is handed it`);
   // A run's environment as its claim builds it, with every account key both saved in the store and in the runner's own

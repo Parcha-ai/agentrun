@@ -8,7 +8,7 @@ import test from "node:test";
 import { KUBERNETES } from "../dist/descriptors/kubernetes.js";
 import { GKE_SCOPES, googleAdc } from "../dist/google-adc.js";
 import { CLAIM_API, KubernetesHost, LABELS_ANNOTATION, POD_NAME_ANNOTATION, processOf, SLEEPER, create } from "../dist/kubernetes.js";
-import { answerError, EXEC_PROTOCOLS, execStatus, kubeCode, webSocket } from "../dist/kubernetes-api.js";
+import { answerError, EXEC_PROTOCOLS, execStatus, kubeCode, kubeTransport, webSocket } from "../dist/kubernetes-api.js";
 import { resolveEndpoint } from "../dist/kubernetes-auth.js";
 import { PID_KILL, PID_WRAPPER } from "../dist/hosted/scripts.js";
 import { failAs } from "../dist/result.js";
@@ -525,4 +525,32 @@ test("an upload whose command exits early (a full disk) is a refusal in its own 
 	const failed = await thrown(host.upload("p", "/tmp/computerd", new Uint8Array(200_000), ctx));
 	assert.equal(failed.transient, undefined, "the command's own failure carries no mark");
 	assert.match(failed.message, /exited 1: head: write error: No space left on device/);
+});
+
+test("an exec whose API answers its headers and then drops the body (a proxy's 503 cut off) fails at once, transient: the cut is read, not waited out to the call's bound", async (t) => {
+	// A throwaway certificate for 127.0.0.1, made for this test alone: the transport speaks only https.
+	const { execFileSync } = await import("node:child_process");
+	const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const https = await import("node:https");
+	const dir = mkdtempSync(join(tmpdir(), "kube-tls-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-days", "1", "-keyout", join(dir, "key.pem"), "-out", join(dir, "cert.pem")], { stdio: "ignore" });
+	const cert = readFileSync(join(dir, "cert.pem"), "utf8");
+	// No upgrade: a 503 whose body says it is 1,000 bytes long, cut after 10.
+	const server = https.createServer({ key: readFileSync(join(dir, "key.pem")), cert }, (_req, res) => {
+		res.writeHead(503, { "Content-Length": "1000" });
+		res.write("upstream u");
+		setTimeout(() => res.socket.destroy(), 20);
+	});
+	await new Promise((done) => server.listen(0, "127.0.0.1", done));
+	t.after(() => server.close());
+	const transport = kubeTransport({ server: `https://127.0.0.1:${server.address().port}`, tls: { ca: cert } });
+	const started = Date.now();
+	const opened = await transport.stream("/api/v1/namespaces/n/pods/p/exec", [["command", "true"]], EXEC_PROTOCOLS, { timeoutMs: 5000 });
+	assert.equal(opened.ok, false);
+	assert.equal(opened.error.transient, true, "a connection cut mid-answer is the API's trouble");
+	assert.notEqual(opened.error.code, "timeout", `the cut is read as it happens: ${opened.error.message}`);
+	assert.ok(Date.now() - started < 4000, "well within the call's 5 s bound");
 });
