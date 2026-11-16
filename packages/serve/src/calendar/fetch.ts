@@ -27,9 +27,10 @@ export type CalendarNetwork = OAuthNetwork;
  *  to another secret address), each scrubbed from what the calendar says as the saved one is (address.ts scrubAddress). */
 export type ReadCalendar = ParsedCalendar & { followed: readonly string[] };
 
-/** A read kept: `followed` is its calendar's own list, added to in place when a revalidation is redirected somewhere new, so
- *  a 304 answers the very copy kept. */
-type Kept = { at: number; etag?: string; modified?: string; calendar: ReadCalendar; followed: string[] };
+/** A read kept: `from`, the address its body came from (the last hop), the one address its validators are sent to;
+ *  `followed`, its calendar's own list, added to in place when a revalidation is redirected somewhere new, so a 304 answers
+ *  the very copy kept. */
+type Kept = { at: number; from: string; etag?: string; modified?: string; calendar: ReadCalendar; followed: string[] };
 /** Each address's last read, by address: at most KEPT_MAX, the oldest read dropped first. */
 const kept = new Map<string, Kept>();
 const KEPT_MAX = 16;
@@ -52,14 +53,16 @@ export async function readCalendar(url: string, reach: CalendarReach = {}, netwo
   const followed: string[] = [];
   try {
     const answer = await fetchCalendar(url, reach, network, held, signal, followed);
-    if (answer.status === 304 && held) {
+    // A 304 only answers a read that sent the kept copy's validators (fetchCalendar), so `held` is there.
+    if (answer.status === 304) {
+      if (!held) throw new CalendarError(`${hostOf(url)} answered 304.`);
       held.at = Date.now();
       for (const one of followed) if (!held.followed.includes(one)) held.followed.push(one);
       return held.calendar;
     }
     const calendar = { ...parseCalendar(answer.body ?? "", hostOf(url)), followed };
     kept.delete(url);
-    kept.set(url, { at: Date.now(), ...(answer.etag ? { etag: answer.etag } : {}), ...(answer.modified ? { modified: answer.modified } : {}), calendar, followed });
+    kept.set(url, { at: Date.now(), from: answer.from, ...(answer.etag ? { etag: answer.etag } : {}), ...(answer.modified ? { modified: answer.modified } : {}), calendar, followed });
     while (kept.size > KEPT_MAX) kept.delete(kept.keys().next().value!);
     return calendar;
   } catch (error) {
@@ -87,10 +90,11 @@ function codeOf(error: unknown): string | undefined {
   return undefined;
 }
 
-type Answer = { status: 200; body: string; etag?: string; modified?: string } | { status: 304; body?: undefined; etag?: string; modified?: string };
+type Answer = { status: 200; body: string; from: string; etag?: string; modified?: string } | { status: 304; body?: undefined; etag?: string; modified?: string };
 
 /** One fetch of `url`, following at most REDIRECTS_MAX redirects, each hop checked and its address added to `followed`;
- *  conditional on `held`'s validators. */
+ *  conditional on `held`'s validators at the address its body came from alone, so a redirect that now goes elsewhere is
+ *  read in full there (another server's ETag may match by chance), and a 304 counts only from that address. */
 async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarNetwork | undefined, held: Kept | undefined, stop: AbortSignal | undefined, followed: string[]): Promise<Answer> {
   const signal = AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(stop ? [stop] : [])]);
   const { calendarAt, dialAt, systemNetwork } = await import("../mcp-oauth.js");
@@ -104,8 +108,9 @@ async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarN
       let res: Response | undefined;
       try {
         const headers: Record<string, string> = { accept: "text/calendar, text/plain;q=0.5, */*;q=0.1", "user-agent": "AgentRun-calendar/1" };
-        if (held?.etag) headers["if-none-match"] = held.etag;
-        if (held?.modified) headers["if-modified-since"] = held.modified;
+        const asking = held !== undefined && target.href === held.from;
+        if (asking && held.etag) headers["if-none-match"] = held.etag;
+        if (asking && held.modified) headers["if-modified-since"] = held.modified;
         res = await dialAt(network, at.address)(target.href, { redirect: "manual", signal, headers });
         const location = res.headers.get("location");
         if (res.status >= 300 && res.status < 400 && res.status !== 304 && location) {
@@ -117,10 +122,10 @@ async function fetchCalendar(url: string, reach: CalendarReach, given: CalendarN
           continue;
         }
         const validators = { ...(res.headers.get("etag") ? { etag: res.headers.get("etag")! } : {}), ...(res.headers.get("last-modified") ? { modified: res.headers.get("last-modified")! } : {}) };
-        if (res.status === 304 && held) return { status: 304, etag: validators.etag ?? held.etag, modified: validators.modified ?? held.modified };
+        if (res.status === 304 && asking) return { status: 304, etag: validators.etag ?? held.etag, modified: validators.modified ?? held.modified };
         if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 410) throw new CalendarError(`${target.host} answered ${res.status}: the address may be old or wrong; copy it again and save it with ${CALENDAR_SETTING}.`);
         if (res.status < 200 || res.status >= 300) throw new CalendarError(`${target.host} answered ${res.status}.`);
-        return { status: 200, body: await bodyOf(res, target), ...validators };
+        return { status: 200, body: await bodyOf(res, target), from: target.href, ...validators };
       } finally {
         await res?.body?.cancel().catch(() => undefined);
       }
