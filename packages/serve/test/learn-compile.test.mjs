@@ -567,7 +567,11 @@ test("answerTierProblems: the answering step is the model node writing output.pa
 // while 416 of 429 quotes were in those pages (verbatim, or after case, quote, dash and space normalisation, or read as
 // letters and digits alone). The quote check of a compiled workflow is the DSL's code predicate, quote_missing: a draft
 // whose answer carries quotes and which fetches pages is refused without one, in words the compile retry acts on.
-const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {} } = {}) => ({
+// `repick` (with a check): the answer step re-picks once before the check hands back (a loop of 2 until it passes).
+const ANSWER_STEP = { node: "decide", label: "answer", instructions: "Say whether {page} states a refund policy, quoting it.", out: "Answer", as: "answer" };
+const QUOTES_WHEN = (check) => ({ predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check });
+const repickOf = (check, body = ANSWER_STEP) => ({ node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_WHEN(check) }, body });
+const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {}, repick = true } = {}) => ({
   v: 2, name: "find-policies",
   schemas: {
     Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
@@ -580,9 +584,9 @@ const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {} } = {
   root: { node: "chain", steps: [
     { node: "call", label: "fetch", via: "tool", tool: "web_fetch", args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
     { node: "extract", label: "facts", instructions: "Sum up the refund policy on {page}.", out: "Facts", as: "facts", tier: "fast" },
-    { node: "decide", label: "answer", instructions: "Say whether {page} states a refund policy, quoting it.", out: "Answer", as: "answer" },
+    check && repick ? repickOf(check) : ANSWER_STEP,
     ...extra,
-    ...(check ? [{ node: "escalate", label: "quotes", when: { predicate: "quote_missing", path: "answer.evidence", field: "quote", ...check }, kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
+    ...(check ? [{ node: "escalate", label: "quotes", when: QUOTES_WHEN(check), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
   ] },
 });
 const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge';
@@ -601,6 +605,29 @@ test("the quote check is code: a draft whose answer carries quotes and which fet
   assert.deepEqual(checked(citedDraft({ check: { pages: ["page", "facts"] } })), [{ rule: "workflow", path: DRAFT_PATH, detail: 'the quote_missing escalate "quotes" reads "facts" as a page, which no call step fetched: its pages are the state keys its call steps write (page)' }]);
   // A check of quotes outside the answer is not the answer's.
   assert.deepEqual(checked(citedDraft({ check: { path: "facts.summary", field: undefined, pages: ["page"] } })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_QUOTE_CHECK }]);
+});
+
+// H5d (preregistered): on a quote miss, the answer step once more over the run's pages kept 26 of 31 misses, right 76.9%
+// against the draft's 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost 21.7%. So a checked
+// answer re-picks once before its check hands back: the step writing it is a loop of 2 until that check passes.
+const NO_REPICK = (step) => `the step "${step}" writes the answer and the escalate "quotes" hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": 2, "until": {"predicate": "not", "of": {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back`;
+
+test("the quote check re-picks once: a checked answer step that hands back on its first miss is refused; in a loop of 2 until that check passes it passes; more passes, or a loop until anything else, is refused", () => {
+  const checked = (doc) => checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], outcome: "completed", tools: ["web_fetch"], dsl }).problems;
+  assert.deepEqual(checked(citedDraft()), []);
+  assert.deepEqual(checked(citedDraft({ repick: false })), [{ rule: "workflow", path: DRAFT_PATH, detail: NO_REPICK("answer") }]);
+  const again = (change) => {
+    const doc = citedDraft();
+    change(doc.root.steps[2]);
+    return quoteCheckProblems(doc);
+  };
+  assert.deepEqual(again((loop) => (loop.maxIters = 3)), [NO_REPICK("repick")], "one re-pick at most");
+  assert.deepEqual(again((loop) => (loop.maxIters = 1)), [NO_REPICK("repick")], "no re-pick");
+  assert.deepEqual(again((loop) => (loop.until = QUOTES_WHEN({ pages: ["page"] }))), [NO_REPICK("repick")], "until the quote misses");
+  assert.deepEqual(again((loop) => (loop.until = { predicate: "field_true", path: "answer.refunds" })), [NO_REPICK("repick")], "until something else");
+  assert.deepEqual(again((loop) => (loop.until.of = QUOTES_WHEN({ path: "answer.other", pages: ["page"] }))), [NO_REPICK("repick")], "until a check of other quotes");
+  // The compile turn is told the same.
+  assert.match(compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), /one re-pick before it hands back: make the step that writes the answer the body of a `loop` with `"maxIters": 2`/);
 });
 
 test("quoteCheckProblems: quotes anywhere in the answer's schema (by $ref, items, anyOf), pages fetched by a call under a map, and nothing asked of an answer with no quotes or a workflow that fetches nothing", () => {
@@ -652,7 +679,9 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   routed.root.steps = [fetch, facts, { node: "route", label: "kind", branches: { quoted: { body: { node: "chain", steps: [answer, check] } }, plain: { body: answer } } }];
   assert.deepEqual(quoteCheckProblems(routed), [NO_QUOTE_CHECK], "checked on one branch only");
   routed.root.steps.push(check);
-  assert.deepEqual(quoteCheckProblems(routed), [], "checked after the route, on every branch's answer");
+  assert.deepEqual(quoteCheckProblems(routed), [NO_REPICK("kind")], "checked after the route, on every branch's answer, which hands back on a first miss");
+  routed.root.steps[2] = repickOf({ pages: ["page"] }, routed.root.steps[2]);
+  assert.deepEqual(quoteCheckProblems(routed), [], "checked after the route, which re-picks once");
   const early = citedDraft({ check: null });
   early.root.steps = [fetch, check, facts, answer];
   assert.deepEqual(quoteCheckProblems(early), [NO_QUOTE_CHECK], "checked before the answer is written");
