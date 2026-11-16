@@ -7,7 +7,7 @@ import test from "node:test";
 import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
 
-const { BoxdProvider, create } = await import("../dist/boxd.js");
+const { BoxdProvider, boxdDesktopSnapshot, create } = await import("../dist/boxd.js");
 const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
 
 const KEY = "bxd_fake_computer_key_0123456789";
@@ -55,10 +55,12 @@ function recorder(answers = {}) {
 		},
 		files: { upload: call("files.upload") },
 	};
+	const snapshots = { create: call("snapshots.create"), get: call("snapshots.get") };
 	const Boxd = class {
 		constructor(options) {
 			clients.push(options);
 			this.machines = machines;
+			this.snapshots = snapshots;
 		}
 	};
 	return { calls, clients, Boxd };
@@ -107,6 +109,8 @@ test("the constructor refuses a size that is not boxd's and the machine user's u
 	assert.doesNotThrow(make({ vcpu: 4, memory: "16G" }));
 	assert.throws(make({ daemonUser: "1000:1000" }), /machine's own user/);
 	assert.throws(make({ maxLifetimeMs: 31 * 24 * HOUR }), /the longest boxd keeps a computer/);
+	assert.throws(make({ kind: "desktop", vcpu: 4, memory: "16G" }), /a boxd desktop starts from a snapshot, which keeps the size it was captured at/);
+	assert.doesNotThrow(make({ kind: "desktop" }));
 });
 
 test("capabilities: a child daemon in a microVM, network none, janitor lifetime, delete only, boxd's agent port; desktop too", () => {
@@ -134,6 +138,17 @@ test("check takes default or a snapshot's name, refuses a snapshot with a size, 
 	assert.deepEqual(fields({ ...SPEC, labels: { Team: "x" } }), ["labels"]);
 	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2, memoryMb: 4096 }), ["cpus", "memoryMb"]);
+	assert.deepEqual(rec.calls, []);
+});
+
+test("a desktop on boxd's own image is refused in words: it lists no stock app; a snapshot is taken", () => {
+	const { rec, provider } = setup({ kind: "desktop" });
+	const [refusal, ...more] = provider.check(SPEC);
+	assert.deepEqual(more, []);
+	assert.equal(refusal.field, "image");
+	assert.match(refusal.message, /^a boxd desktop starts from a snapshot with a desktop app, and boxd's own image lists none of the stock ones \(Xfce's text editor and terminal, xterm\): name agentrun-desktop-[0-9a-f]{12}, which prepareImage\(\) builds, or a snapshot of your own$/);
+	assert.deepEqual(provider.check({ ...SPEC, image: boxdDesktopSnapshot() }), []);
+	assert.deepEqual(provider.check({ ...SPEC, image: "my-desktop" }), []);
 	assert.deepEqual(rec.calls, []);
 });
 
@@ -306,6 +321,116 @@ test("upload is files.upload, and extend sets the janitor's deadline label with 
 	]);
 });
 
+/** An exec stream that prints stderr and exits with code. */
+function ran(code, stderr = "") {
+	return {
+		stderr: (async function* () {
+			if (stderr) yield Buffer.from(stderr);
+		})(),
+		async *[Symbol.asyncIterator]() {},
+		write() {},
+		end() {},
+		wait: () => Promise.resolve(code),
+		close() {},
+	};
+}
+
+/** A snapshot as boxd reads one. */
+const snapshot = (patch = {}) => ({ name: boxdDesktopSnapshot(), status: "ready", archived: false, storage: "local", ...patch });
+
+/** A build's answers: no snapshot until snapshots.create, then ready; the build machine gone once deleted. */
+function building(answers = {}) {
+	let taken = false;
+	let deleted = false;
+	return {
+		"snapshots.get": () => (taken ? snapshot() : Promise.reject(named("NotFoundError"))),
+		"snapshots.create": () => {
+			taken = true;
+			return { name: boxdDesktopSnapshot(), status: "pending" };
+		},
+		create: (params) => machine({ id: "b-1", name: params.name, labels: {} }),
+		get: () => (deleted ? Promise.reject(named("NotFoundError")) : machine({ id: "b-1" })),
+		delete: () => void (deleted = true),
+		streamExec: () => ran(0),
+		...answers,
+	};
+}
+
+test("prepareImage: a sandbox starts from boxd's own image, with no call and no wait", async () => {
+	const { rec, provider } = setup();
+	const told = [];
+	assert.deepEqual(await provider.prepareImage({ onWait: (...said) => told.push(said) }), { ok: true, value: "default" });
+	assert.deepEqual([rec.calls, told], [[], []]);
+	assert.equal(BOXD.prepareImage, true);
+	assert.deepEqual(BOXD.defaultImage, { sandbox: "default" }, "a desktop has no default: it starts from what prepareImage() answers");
+});
+
+test("prepareImage: a desktop's snapshot the org has is answered by its name, with no build and no wait", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, { "snapshots.get": snapshot() });
+	const told = [];
+	const name = boxdDesktopSnapshot();
+	assert.match(name, /^agentrun-desktop-[0-9a-f]{12}$/);
+	assert.deepEqual(await provider.prepareImage({ onWait: (...said) => told.push(said) }), { ok: true, value: name });
+	assert.deepEqual(rec.calls, [["snapshots.get", name, { org: "acme" }]]);
+	assert.deepEqual(told, []);
+	const keyOrg = setup({ kind: "desktop", org: undefined }, { "snapshots.get": snapshot() });
+	await keyOrg.provider.prepareImage();
+	assert.deepEqual(keyOrg.rec.calls, [["snapshots.get", name, {}]], "no org: the key's own");
+	const reads = [snapshot({ status: "pending" }), snapshot()];
+	const pending = setup({ kind: "desktop" }, { "snapshots.get": () => reads.shift() });
+	assert.deepEqual(await pending.provider.prepareImage({ onWait: (...said) => told.push(said) }), { ok: true, value: name }, "one being made is waited for");
+	assert.deepEqual([pending.rec.calls.map(([call]) => call), told], [["snapshots.get", "snapshots.get"], []]);
+});
+
+test("prepareImage: a desktop's snapshot is built once from boxd's own image: the recipe as root, the capture, the build machine deleted and gone", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building());
+	const told = [];
+	const name = boxdDesktopSnapshot();
+	assert.deepEqual(await provider.prepareImage({ onWait: (...said) => told.push(said) }), { ok: true, value: name });
+	assert.deepEqual(told, [["build", name]], "told once, before the build");
+	const [first, made, ...rest] = rec.calls;
+	assert.deepEqual(first, ["snapshots.get", name, { org: "acme" }]);
+	const [what, params] = made;
+	assert.equal(what, "create");
+	assert.match(params.name, /^agentrun-desktop-build-[0-9a-f]{8}$/);
+	assert.deepEqual({ ...params, name: "x" }, { name: "x", org: "acme", isolated: true, config: { autoSuspendTimeout: 0 }, deleteAfter: 7_200 }, "boxd's own image, no labels (a restore carries them over), boxd's delete timer");
+	const exec = rest.find(([call]) => call === "streamExec");
+	assert.equal(exec[1], "b-1");
+	assert.match(exec[2].command, /^sudo -n sh -c '[^']*apt-get install -y -qq --no-install-recommends mousepad[^']*org\.xfce\.mousepad\.desktop[^']*'$/);
+	assert.deepEqual(
+		rest.map(([call]) => call),
+		["waitUntilReady", "streamExec", "snapshots.create", "snapshots.get", "delete", "get"],
+		"ready, the recipe, the capture, read until ready, then the machine deleted and read gone",
+	);
+	assert.deepEqual(rest.find(([call]) => call === "snapshots.create").slice(1), ["b-1", name]);
+	assert.deepEqual(rest.find(([call]) => call === "delete"), ["delete", "b-1"]);
+});
+
+test("prepareImage: a recipe that fails fails in its own words, and the build machine is deleted; no snapshot is taken", async () => {
+	const { rec, provider } = setup({ kind: "desktop" }, building({ streamExec: () => ran(100, "E: Unable to locate package mousepad\n") }));
+	const failed = await provider.prepareImage();
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "vendor");
+	assert.match(failed.error.message, /^boxd's desktop snapshot agentrun-desktop-[0-9a-f]{12}: the desktop recipe \(mousepad\) on the build machine b-1 exited with 100: E: Unable to locate package mousepad$/);
+	assert.equal(rec.calls.some(([call]) => call === "snapshots.create"), false);
+	assert.deepEqual(rec.calls.filter(([call]) => call === "delete"), [["delete", "b-1"]]);
+});
+
+test("prepareImage: a desktop snapshot that failed or that boxd archived is refused in words, with no build", async () => {
+	for (const [patch, code, words] of [
+		[{ status: "failed" }, "vendor", /is "failed", not ready: delete it, then call again to build it anew$/],
+		[{ archived: true, storage: "archived" }, "refused", /is archived \(storage "archived"\), and boxd makes no machine from it until its operator unarchives it: delete it, then call again to build it anew$/],
+	]) {
+		const { rec, provider } = setup({ kind: "desktop" }, { "snapshots.get": snapshot(patch) });
+		const told = [];
+		const failed = await provider.prepareImage({ onWait: (...said) => told.push(said) });
+		assert.equal(failed.ok, false);
+		assert.equal(failed.error.code, code);
+		assert.match(failed.error.message, words);
+		assert.deepEqual([rec.calls.map(([call]) => call), told], [["snapshots.get"], []]);
+	}
+});
+
 test("errorCode reads the SDK's error names and gRPC codes", () => {
 	const { host } = setup();
 	const cases = [
@@ -332,8 +457,11 @@ test("errorCode reads the SDK's error names and gRPC codes", () => {
 test("the conformance module reads only its COMPUTER_BOXD_* names, after the live switch; the sweep's host needs none", async () => {
 	assert.throws(() => settingsFromEnv({ BOXD_API_KEY: "fake" }), /COMPUTER_BOXD_API_KEY/);
 	assert.deepEqual(settingsFromEnv({ [BOXD_ENV.key]: KEY, [BOXD_ENV.org]: "acme", [BOXD_ENV.region]: "fra", [BOXD_ENV.kind]: "desktop" }), { apiKey: KEY, org: "acme", region: "fra", kind: "desktop" });
-	assert.equal(conformanceImage({ env: {} }), "default");
-	assert.equal(conformanceImage({ env: { [BOXD_ENV.image]: "snap" } }), "snap");
+	assert.equal(await conformanceImage({ env: {} }), "default");
+	assert.equal(await conformanceImage({ env: { [BOXD_ENV.image]: "snap", [BOXD_ENV.kind]: "desktop" } }), "snap");
+	const desktop = { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY, [BOXD_ENV.kind]: "desktop" };
+	assert.equal(await conformanceImage({ env: desktop, Boxd: recorder({ "snapshots.get": snapshot() }).Boxd }), boxdDesktopSnapshot(), "a desktop's is the desktop snapshot, through prepareImage");
+	await assert.rejects(conformanceImage({ env: { ...desktop, [BOXD_ENV.live]: undefined } }), /AGENTRUN_COMPUTER_LIVE_BOXD=1/);
 	await assert.rejects(createProvider({ env: { [BOXD_ENV.key]: KEY } }), /AGENTRUN_COMPUTER_LIVE_BOXD=1/);
 	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd: recorder().Boxd });
 	assert.equal(provider.capabilities().maxLifetimeMs, 30 * 60_000);
