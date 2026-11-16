@@ -36,6 +36,7 @@ test("computer keys: the saved keys become each provider's create() options; a n
     ["modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { tokenId: KEY, tokenSecret: SECRET, app: "agentrun" }],
     ["e2b", { E2B_API_KEY: KEY }, { apiKey: KEY }],
     ["orgo", { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" }, { apiKey: KEY, workspaceId: "ws-1" }],
+    ["fly", { FLY_API_TOKEN: KEY, FLY_APP: "acme-computers" }, { apiToken: KEY, app: "acme-computers" }],
     ["phone-harness", { PHONE_HARNESS_API_KEY: KEY }, { apiKey: KEY }],
     ["browserbase", { BROWSERBASE_API_KEY: KEY, BROWSERBASE_PROJECT_ID: "proj-1" }, { apiKey: KEY, projectId: "proj-1" }],
     ["kernel", { KERNEL_API_KEY: KEY }, { apiKey: KEY }],
@@ -54,6 +55,8 @@ test("computer keys: a required key not saved is refused in words that name what
   assert.match(modal.error.message, /^Modal needs MODAL_TOKEN_SECRET saved: save it in Settings → Computers/);
   const bb = providerOptions("browserbase", {});
   assert.match(bb.error.message, /^Browserbase needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID saved: save them in Settings → Computers/);
+  // Fly's app has no default (its names are global): a token alone is refused, naming the app's key.
+  assert.match(providerOptions("fly", { FLY_API_TOKEN: KEY }).error.message, /^Fly Machines needs FLY_APP saved: save it in Settings → Computers \(PUT \/v2\/computers\/fly\/keys\)/);
   assert.equal(providerOptions("daytona", { DAYTONA_API_KEY: "  " }).ok, false, "a blank key is no key");
   // The table is every descriptor's: an id it does not list is refused, naming the ones it does.
   const unknown = providerOptions("vmware", { KEY });

@@ -19,6 +19,7 @@
 // drift.version under dial: a machine runs the computerd this server serves, and the image holds no Go to build one of
 // another version, so the drifted twin's machines are served a copy of the daemon with its version string changed in
 // place (same length): the copy's sha256 is the twin's, and only the twin's tokens are served it.
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -114,8 +115,15 @@ const NO_PAIRING = new Proxy(
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
 const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
 
-/** A copy of the daemon at `path` in a directory of its own, every `from` in it written over with `to`; its path. */
-function driftedDaemon(path, from, to) {
+/** Go's name for this process's architecture: the daemon builds this machine can run. */
+const HERE = { x64: "amd64", arm64: "arm64" }[process.arch];
+
+/**
+ * A copy of the daemon for `arch` at `path` in a directory of its own, every `from` in it written over with `to`; its
+ * path. A copy this machine can run is run once (`computerd version`), and must say `to`: one that does not start, or
+ * says another version, fails the drift case here rather than in a machine.
+ */
+function driftedDaemon(arch, path, from, to) {
 	const bytes = readFileSync(path);
 	const was = Buffer.from(from);
 	let found = 0;
@@ -129,6 +137,10 @@ function driftedDaemon(path, from, to) {
 	const out = join(dir, "computerd");
 	writeFileSync(out, bytes);
 	chmodSync(out, 0o755);
+	if (arch === HERE) {
+		const said = execFileSync(out, ["version"], { encoding: "utf8", env: {}, timeout: 10_000 }).trim();
+		if (said !== to) throw new Error(`the drift case's copy of ${path} says version ${said}, not ${to}`);
+	}
 	return out;
 }
 
@@ -248,16 +260,24 @@ async function main(argv, env) {
 		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), text.replace(MINTED_TOKEN, "art_[redacted]"));
 		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage(options, { signal: controller.signal }) : undefined;
 		if (typeof image !== "string" || image === "") throw new Error(`${name}: its conformance module names no image (conformanceImage())`);
+		const cases = casesFor(provider.capabilities().kind);
+		if (only !== undefined) {
+			// A name that is no group or case id would narrow the run to nothing, which must not read as a pass.
+			const known = new Set(cases.flatMap((one) => [one.id, one.group]));
+			const unknown = only.filter((one) => !known.has(one));
+			if (only.length === 0) throw new Error(`--only names no group or case id\n${USAGE}`);
+			if (unknown.length > 0) throw new Error(`--only: ${unknown.join(", ")} is neither a group nor a case id of the provider's suite\n${USAGE}`);
+		}
 		const report = await runConformance(provider, {
 			image,
-			cases: casesFor(provider.capabilities().kind),
+			cases,
 			...(only === undefined ? {} : { only }),
 			long: true,
 			signal: controller.signal,
 			dial: () => kit,
 			drifted: async () => {
 				const arch = provider.host?.facts?.arch ?? "amd64";
-				if (!drift.paths.has(arch)) drift.paths.set(arch, driftedDaemon(hostedDaemonPath(arch), provider.version, driftedVersion(provider.version)));
+				if (!drift.paths.has(arch)) drift.paths.set(arch, driftedDaemon(arch, hostedDaemonPath(arch), provider.version, driftedVersion(provider.version)));
 				return module.createProvider({ ...options, dial: { url: publicUrl, tokens: minting(drift.machines), hub }, daemonPath: drift.paths.get(arch) });
 			},
 			...(declared === undefined ? {} : { declared }),
@@ -276,8 +296,10 @@ async function main(argv, env) {
 		if (notes.length > 0) report.providerNotes = notes;
 		process.stdout.write(`${BEGIN}\n${scrub(JSON.stringify(report, null, 2))}\n${END}\n`);
 		say(`Core ${report.core}`);
-		// A run --only narrowed is partial at best: it passes when every case it ran passed (the runner's "partial").
-		return report.core === "pass" || (only !== undefined && report.core === "partial") ? 0 : 1;
+		// A run --only narrowed is partial at best: it passes when every case it ran passed (the runner's "partial"), and
+		// one did.
+		const narrowed = only !== undefined && report.core === "partial" && report.results.some((result) => result.status === "pass");
+		return report.core === "pass" || narrowed ? 0 : 1;
 	} finally {
 		process.off("SIGINT", stop);
 		process.off("SIGTERM", stop);

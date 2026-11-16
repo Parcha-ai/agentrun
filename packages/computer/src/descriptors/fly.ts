@@ -8,9 +8,12 @@ import { SANDBOX } from "./shared.js";
 export const FLY = defineProvider({
 	id: "fly",
 	label: "Fly Machines",
-	keys: [{ name: "FLY_API_TOKEN", option: "apiToken", required: true }],
-	// The Fly app its machines live in: one the operator made (fly apps create), as Fly's app names are global.
-	settings: [{ name: "flyApp", option: "app" }],
+	keys: [
+		{ name: "FLY_API_TOKEN", option: "apiToken", required: true },
+		// The Fly app its machines live in: one the operator made (fly apps create), as Fly's app names are global, so there
+		// is no default. Saved beside the token in Settings → Computers, as Orgo's workspace and Daytona's URL are.
+		{ name: "FLY_APP", option: "app", required: true },
+	],
 	metered: true,
 	// None: a machine that dials takes no Archil mount yet (its helper's root steps run through exec, which it has none of).
 	mounts: [],

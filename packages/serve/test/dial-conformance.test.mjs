@@ -14,6 +14,8 @@ const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.m
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
 const MINTED = /art_[0-9a-f]{64}/;
+/** Why the runs that serve the daemon skip, or false: the fixture's machines run the served build's `computerd version`. */
+const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
  *  planted key, which a module given by path has none of. The exec, files and process groups need a real daemon. */
 const ONLY = "provider,drift,health.hello,health.ping,health.unknown-method,health.kind-consistent,health.kind-served";
@@ -51,7 +53,7 @@ function reportOf(stdout) {
 
 test(
   "the script stands up serve's attach routes on $PORT and runs Core with --long over a dial host whose machines dial it: every case it runs passes, provider.deadline, drift.arch and drift.version among them, the report lands between the markers, and no token is written",
-  { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)", timeout: 300_000 },
+  { skip: BUILT, timeout: 300_000 },
   async () => {
     const port = await freePort();
     let health;
@@ -74,7 +76,7 @@ test(
   },
 );
 
-test("a run whose Core does not pass still prints its report between the markers, and exits 1", { skip: !existsSync(DAEMON) && "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)", timeout: 120_000 }, async () => {
+test("a run whose Core does not pass still prints its report between the markers, and exits 1", { skip: BUILT, timeout: 120_000 }, async () => {
   const port = await freePort();
   // A module given by path declares nothing, so health.declared skips, which Core counts against it.
   const ran = await run(["--provider", FIXTURE, "--only", "health.declared"], { PORT: String(port), AGENTRUN_PUBLIC_URL: `http://127.0.0.1:${port}` });
@@ -84,8 +86,10 @@ test("a run whose Core does not pass still prints its report between the markers
   assert.equal(ran.code, 1, ran.stderr);
 });
 
-test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT", async () => {
+test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, or with an --only that names nothing in the suite", async () => {
   for (const [args, env, words] of [
+    [["--provider", FIXTURE, "--only", "provider.deadlin"], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "--only: provider.deadlin is neither a group nor a case id of the provider's suite"],
+    [["--provider", FIXTURE, "--only", ","], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "--only names no group or case id"],
     [[], { PORT: "0", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, "usage: node dial-conformance.mjs --provider <registry id or module path>"],
     [["--provider", FIXTURE], { PORT: "0" }, "AGENTRUN_PUBLIC_URL is not set: the provider's machines dial it"],
     [["--provider", FIXTURE], { AGENTRUN_PUBLIC_URL: "http://127.0.0.1:1" }, 'PORT is the port this process listens on, not ""'],
@@ -93,6 +97,6 @@ test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUB
     const ran = await run(args, env);
     assert.equal(ran.code, 1, words);
     assert.equal(ran.stdout, "", words);
-    assert.ok(ran.stderr.startsWith(`dial-conformance: ${words}`), ran.stderr);
+    assert.ok(ran.stderr.includes(`dial-conformance: ${words}`), ran.stderr);
   }
 });

@@ -1,13 +1,17 @@
 // A conformance module for scripts/dial-conformance.mjs's test: a dial host (computer's fake host, facts.connect "dial")
 // whose machines dial the server over the network as agentrun-dial does. A create's machine fetches the daemon from
-// AGENTRUN_DAEMON_URL with its token, runs it only when its sha256 is AGENTRUN_DAEMON_SHA256 (its hello says the
-// package's version when the bytes hold it, another when the server changed it), and dials AGENTRUN_ATTACH_URL with
-// AGENTRUN_ATTACH_TOKEN, where the fake's daemon answers. uname -m answers the machine's arch, and the janitor ends a
+// AGENTRUN_DAEMON_URL with its token, takes it only when its sha256 is AGENTRUN_DAEMON_SHA256, and runs its
+// `computerd version` (its hello says that version, so the drift case's changed copy is run too), then dials
+// AGENTRUN_ATTACH_URL with AGENTRUN_ATTACH_TOKEN, where the fake's daemon answers. uname -m answers the machine's arch, and the janitor ends a
 // machine past its deadline. Every provider the script makes is over one host, as every provider of a vendor is.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ATTACH_SUBPROTOCOL, HostedProvider } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
-import { fakeHost, VERSION } from "../../../computer/test/fake-host.mjs";
+import { fakeHost } from "../../../computer/test/fake-host.mjs";
 
 const MACHINE = { amd64: "x86_64", arm64: "aarch64" };
 
@@ -22,6 +26,22 @@ function answerOf(m, request) {
 	return fake.answer(m, request);
 }
 
+/** The version the fetched daemon says (`computerd version`, run once per build): its hello's. */
+const versions = new Map();
+function versionOf(sha256, bytes) {
+	if (!versions.has(sha256)) {
+		const dir = mkdtempSync(join(tmpdir(), "dial-fake-machine-"));
+		try {
+			const file = join(dir, "computerd");
+			writeFileSync(file, bytes, { mode: 0o755 });
+			versions.set(sha256, execFileSync(file, ["version"], { encoding: "utf8", env: {} }).trim());
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+	return versions.get(sha256);
+}
+
 /** The machine's agentrun-dial: the daemon fetched and held to its sha256, then the dial. */
 async function boot(m) {
 	const env = m.boot;
@@ -29,8 +49,9 @@ async function boot(m) {
 	const fetched = await fetch(env.AGENTRUN_DAEMON_URL, { headers: { authorization } });
 	if (!fetched.ok) return;
 	const bytes = Buffer.from(await fetched.arrayBuffer());
-	if (createHash("sha256").update(bytes).digest("hex") !== env.AGENTRUN_DAEMON_SHA256) return;
-	m.box.hello = { ...m.box.hello, arch: fake.host.facts.arch, version: bytes.includes(Buffer.from(VERSION)) ? VERSION : `${VERSION}-another` };
+	const sha256 = createHash("sha256").update(bytes).digest("hex");
+	if (sha256 !== env.AGENTRUN_DAEMON_SHA256) return;
+	m.box.hello = { ...m.box.hello, arch: fake.host.facts.arch, version: versionOf(sha256, bytes) };
 	const ws = new WebSocket(env.AGENTRUN_ATTACH_URL, ATTACH_SUBPROTOCOL, { headers: { authorization } });
 	ws.on("error", () => undefined);
 	ws.on("message", (data) => {
