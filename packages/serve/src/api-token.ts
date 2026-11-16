@@ -22,12 +22,14 @@ export function tokenProblem(token: string, name = "the token"): string | undefi
 }
 
 /** AGENTRUN_TOKENS read: entries `id:secret`, separated by commas, whitespace or newlines; the first `:` ends the id.
- *  An empty or blank value is no list (undefined), as an empty AGENTRUN_TOKEN is no token. Throws, in words that never
+ *  An empty or blank value, or one of separators alone, is no list (undefined), as an empty AGENTRUN_TOKEN is no token. Throws, in words that never
  *  hold a secret, on an entry with no `:`, an id outside ID, a secret that breaks the token's rules or holds a comma
  *  (the separator), or an id used twice. */
 export function parseTokens(text: string | undefined): ApiToken[] | undefined {
   if (text === undefined || text.trim() === "") return undefined;
   const entries = text.split(/[\s,]+/).filter((entry) => entry !== "");
+  // Separators alone hold no entry: no list, so the start and its banner agree (DIR/.token's is the token, and printed).
+  if (entries.length === 0) return undefined;
   return entries.map((entry, index) => {
     const colon = entry.indexOf(":");
     if (colon < 0) throw new Error(`${TOKENS_ENV} entry ${index + 1} is not id:secret`);

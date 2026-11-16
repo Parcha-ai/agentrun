@@ -33,6 +33,8 @@ test("the list is AGENTRUN_TOKENS, of id:secret entries separated by commas or w
   assert.equal(parseTokens(undefined), undefined);
   assert.equal(parseTokens(""), undefined, "an empty list is none, as an empty AGENTRUN_TOKEN is");
   assert.equal(parseTokens(" \n"), undefined);
+  assert.equal(parseTokens(","), undefined, "separators alone are no list, as the server takes them");
+  assert.equal(parseTokens(" ,\n, "), undefined);
 });
 
 test("an entry that is not id:secret, a bad id or a short secret is refused, in words that hold no secret", () => {
