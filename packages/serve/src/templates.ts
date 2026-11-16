@@ -923,7 +923,13 @@ export function readPackage(from: string | PackageFiles): Package {
     const at = /^triggers\.(\d+)\.enabled$/.exec(field);
     return !!at && typeof p.triggers[Number(at[1])]?.enabled === "string";
   };
-  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A feed trigger a parameter's default leaves with no feeds is skipped at apply (feedLeftEmpty), never refused: so here.
+  const skippedAtApply = (field: string): boolean => {
+    const at = /^triggers\.(\d+)\./.exec(field);
+    const trigger = at ? made.triggers[Number(at[1])] : undefined;
+    return !!trigger && feedLeftEmpty(trigger);
+  };
+  for (const issue of madeTriggerIssues(made.triggers, 0, p.inputSchema)) if (!saidEnabled(issue.field) && !skippedAtApply(issue.field) && (["wrong_type", "not_allowed", "missing"].includes(issue.reason) || !sampled(issue.field))) bad(MANIFEST, `${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
   if (problems.length) throw new PackageError(dir, [...new Set(problems)]);
   return p;
 }
