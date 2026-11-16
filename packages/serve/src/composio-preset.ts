@@ -31,12 +31,13 @@ export type Ask = (step: string, method: "GET" | "POST" | "PATCH" | "DELETE", pa
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const issue = (field: string, reason: string, message: string): InputIssue => ({ field, reason, message });
 
-/** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key, and end with
- *  `outcome`, what the failure left (a save's: nothing was saved). */
-export function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined, outcome = "nothing was saved"): Ask {
+/** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key nor a `sealed`
+ *  value (a trigger's sealed config), and end with `outcome`, what the failure left (a save's: nothing was saved). */
+export function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined, outcome = "nothing was saved", sealed: readonly string[] = []): Ask {
   const base = (control.baseUrl ?? BASE).replace(/\/+$/, "");
   const send = control.fetch ?? fetch;
-  const scrub = (said: string) => said.split(key).join("[the key]").slice(0, 300);
+  // Composio's words may quote what it was sent: the key, and each sealed config value (`sealed`), never pass on.
+  const scrub = (said: string) => sealed.filter(Boolean).reduce((text, value) => text.split(value).join("[sealed]"), said.split(key).join("[the key]")).slice(0, 300);
   return async (step, method, path, body, missing) => {
     let res: Response;
     let raw: string;

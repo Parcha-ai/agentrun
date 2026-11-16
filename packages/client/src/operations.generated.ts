@@ -2608,6 +2608,7 @@ export type ListComposioEventsResponse = {
     description: string;
     config: Record<string, unknown>;
     polled: boolean;
+    sealed: Array<string>;
     instructions?: string;
   }>;
 };
@@ -4413,6 +4414,7 @@ export type CreateTriggerBody = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -4542,6 +4544,7 @@ export type CreateTriggerResponse = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -4774,6 +4777,7 @@ export type GetTriggerResponse = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -4953,6 +4957,7 @@ export type ListTriggersResponse = {
         }>;
       }>;
       instance_id?: string;
+      sealed_config?: Array<string>;
       hook?: string;
       move_subscription?: true;
     } | {
@@ -5137,6 +5142,7 @@ export type UpdateTriggerBody = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -5263,6 +5269,7 @@ export type UpdateTriggerResponse = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {

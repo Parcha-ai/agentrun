@@ -2180,6 +2180,16 @@ key, in order, and undoes what it made when a later step fails:
   deleted with the last.
 - The trigger here. Its `source` names what was made: `instance_id` and `hook`.
 
+A config field named like a credential is sealed at the create. That is a field whose value is a string and where a word
+of the name is secret, password, passwd, passphrase, token, credential or apikey, or where the last word is key. For
+example, HubSpot's deal-stage event takes `{app_id, developer_api_key}`. Composio's trigger schemas mark no field
+secret, so the name decides. The value is kept in the composio source's sealed settings, next to the subscription's
+secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
+`source.sealed_config` names the field. The events list names these fields per event under `sealed`, and the console
+takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
+change to the config and is refused, as every config change is: make a new trigger for a new key. The trigger's delete
+removes the value. A trigger saved by an earlier server with such a value in plain text is sealed at the next start.
+
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
 says whether there is one, never the address, and the console turns New app trigger off without one, with the line

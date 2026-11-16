@@ -1635,10 +1635,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
+  // A key's fingerprint is the SHA-256 of its request's body (stable JSON), never the body: a body can hold a credential
+  // (a composio trigger's config), and this file is no place for one. An entry an older server kept with the body itself
+  // is read as its digest, and written so at the next save.
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
   const keptFile = join(data, IDEMPOTENCY_FILE);
   const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
-  const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
+  const digested = (v: Kept): Kept => (/^[0-9a-f]{64}$/.test(v.fingerprint) ? v : { ...v, fingerprint: sha256Hex(String(v.fingerprint)) });
+  const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000).map(([k, v]) => [k, digested(v)]));
   // A failed save rejects only its own caller: the next save starts from a settled chain and writes every kept key.
   let saving: Promise<void> = Promise.resolve();
   const keep = () =>
@@ -1771,6 +1775,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  // A composio trigger kept with a credential of its config in the clear (saved before the config was sealed) is sealed
+  // before the first request: no answer shows it from this start on.
+  await composioTriggers.sealKept(async (id, source) => void (await (options.store ?? store).triggers.update(id, { source }))).catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
   /** What a save refused while Composio triggers use the server says to do once they are gone (composio-triggers.ts inUse). */
   const SAVE_AFTER_TRIGGERS = "then save the server again";
   /** What a save over a preset server left at Composio (ComposioDropped), removed there with the key it was made with, in
@@ -2009,7 +2016,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key === undefined) return work();
     if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Idempotency-Key is 1 to 255 characters");
     const slot = `${path}\n${key}`;
-    const fingerprint = stable(body);
+    const fingerprint = sha256Hex(stable(body));
     const now = Date.now();
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
     const known = idempotency.get(slot);
@@ -2021,7 +2028,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
     try {
-      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(fingerprint) });
+      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint });
     } catch (error) {
       idempotency.delete(slot);
       throw error;
