@@ -1276,7 +1276,7 @@ async function feedRun(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const source = filledSource(ctx.pkg, fixture.trigger, one.parameters);
   const urls = Array.isArray(source?.urls) ? source.urls.filter((url): url is string => typeof url === "string") : [];
   if (!urls.length) throw new ApiFailure(`the package's trigger ${fixture.trigger} names no feed URL with the case's parameters`);
-  const feeds = await caseFeeds(fixture, urls, typeof source?.items === "string" ? source.items : undefined);
+  const feeds = await caseFeeds(fixture, urls, typeof source?.items === "string" ? source.items : undefined, typeof source?.id === "string" ? source.id : undefined);
   ctx.feedRoutes!.route = feeds.route;
   try {
     return await runOnce(ctx, one, n, fakes, undefined, feeds);

@@ -19,6 +19,7 @@
 // feed it reads has stopped. Turning it on again reads them all from the start.
 import type { FeedItem, ParsedFeed } from "./feed/parse.js";
 import type { FeedReach, Validators } from "./feed/fetch.js";
+import { pointed } from "./feed/pointer.js";
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, PAYLOAD_KEPT_BYTES, type PolledEvent, type PollResult, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
 import { MAX_EVERY_S, MIN_EVERY_S } from "./trigger-schedule.js";
@@ -44,8 +45,10 @@ const LAST_CHECK = "last_check";
 const URL_CHARS = 2000;
 const POINTER = /^(\/([^~]|~[01])*)?$/;
 const POINTER_CHARS = 300;
+/** The most fields a JSON list's `fields` keeps of each item. */
+const MAX_FIELDS = 50;
 
-type FeedSource = { kind: "feed"; urls: string[]; every_s: number; items?: string; id?: string; accept?: Rule[] };
+type FeedSource = { kind: "feed"; urls: string[]; every_s: number; items?: string; id?: string; updated?: string; fields?: string[]; accept?: Rule[] };
 /** One feed's state: `seen`, its seen set as [key hash, updated ms (0: none)], oldest first (absent: its start not taken
  *  yet); its last read's validators; its own title; `missing`, the 404s in a row; `stopped`, why it is no longer read. */
 type FeedState = { seen?: [string, number][]; etag?: string; modified?: string; title?: string; missing?: number; stopped?: string };
@@ -70,13 +73,18 @@ function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: s
   }
   const every = value.every_s ?? DEFAULT_EVERY_S;
   if (!Number.isSafeInteger(every) || (every as number) < MIN_EVERY_S || (every as number) > MAX_EVERY_S) fail("every_s", "invalid", `every_s is a whole number of seconds, ${MIN_EVERY_S} to ${MAX_EVERY_S}`);
-  for (const name of ["items", "id"] as const) {
+  for (const name of ["items", "id", "updated"] as const) {
     const pointer = value[name];
     if (pointer === undefined) continue;
     const whole = name === "items";
     if (typeof pointer !== "string" || pointer.length > POINTER_CHARS || !POINTER.test(pointer) || (!whole && !pointer)) {
-      fail(name, "invalid", whole ? `items is a JSON Pointer to a JSON list's array of items ("" for the whole document, /data/items): for a feed that is a JSON list` : `id is a JSON Pointer into a JSON list's item to its id (/id, /number): for a feed that is a JSON list`);
+      if (name === "updated") fail(name, "invalid", "updated is a JSON Pointer into a JSON list's item to the date it last changed (/updated_at): for a feed that is a JSON list");
+      else fail(name, "invalid", whole ? `items is a JSON Pointer to a JSON list's array of items ("" for the whole document, /data/items): for a feed that is a JSON list` : `id is a JSON Pointer into a JSON list's item to its id (/id, /number): for a feed that is a JSON list`);
     }
+  }
+  const fields = value.fields;
+  if (fields !== undefined && (!Array.isArray(fields) || fields.length < 1 || fields.length > MAX_FIELDS || fields.some((one) => typeof one !== "string" || !one || one.length > POINTER_CHARS || !POINTER.test(one)))) {
+    fail("fields", "invalid", `fields is a list of 1 to ${MAX_FIELDS} JSON Pointers into a JSON list's item (/number, /user/login): the payload's item keeps only these, for a feed that is a JSON list`);
   }
   const accept = value.accept === undefined ? undefined : acceptOf(value.accept, fail);
   accept?.forEach((rule, i) => {
@@ -84,7 +92,7 @@ function fieldsOf(value: Record<string, unknown>, bad: (field: string, reason: s
     if (rule.actions !== undefined) fail(`accept[${i}].actions`, "not_allowed", "A feed item has no action: take it by its fields with where");
   });
   if (failed) return undefined;
-  return { kind: "feed", urls: urls as string[], every_s: every as number, ...(value.items !== undefined ? { items: value.items as string } : {}), ...(value.id !== undefined ? { id: value.id as string } : {}), ...(accept ? { accept } : {}) };
+  return { kind: "feed", urls: urls as string[], every_s: every as number, ...(value.items !== undefined ? { items: value.items as string } : {}), ...(value.id !== undefined ? { id: value.id as string } : {}), ...(value.updated !== undefined ? { updated: value.updated as string } : {}), ...(value.fields !== undefined ? { fields: value.fields as string[] } : {}), ...(accept ? { accept } : {}) };
 }
 
 /** Why `url` is no feed URL a trigger reads, or undefined: an http(s) URL, with no user or password in it. */
@@ -128,7 +136,7 @@ async function readOne(url: string, state: FeedState | undefined, source: FeedSo
     if (read.status === 304) return { url, ok: true, changed: false };
     if (!("body" in read)) return { url, ok: false, status: read.status, problem: `Couldn't read ${url}: HTTP ${read.status}.` };
     try {
-      const feed = parseFeed(read.body, { ...(source.items !== undefined ? { items: source.items } : {}), ...(source.id !== undefined ? { id: source.id } : {}) });
+      const feed = parseFeed(read.body, { ...(source.items !== undefined ? { items: source.items } : {}), ...(source.id !== undefined ? { id: source.id } : {}), ...(source.updated !== undefined ? { updated: source.updated } : {}) });
       return { url, ok: true, changed: true, feed, validators: { ...(read.etag ? { etag: read.etag } : {}), ...(read.modified ? { modified: read.modified } : {}) } };
     } catch (error) {
       if (!(error instanceof FeedUnreadable)) throw error;
@@ -167,13 +175,15 @@ function oldestFirst(items: readonly FeedItem[]): FeedItem[] {
 /** The payload an item fires with, within PAYLOAD_KEPT_BYTES: a JSON list's {id, link, title, item, update}, its raw item
  *  cut shallower until it fits; any other's {id, link, title, published, updated, author, summary, categories, feed,
  *  update}, its summary cut until it fits. */
-function payloadOf(c: Candidate, list: boolean, title: string | null): Record<string, unknown> {
+function payloadOf(c: Candidate, list: boolean, title: string | null, fields?: readonly string[]): Record<string, unknown> {
   const { item, update } = c;
   if (list) {
-    const whole = { id: item.id, link: item.link, title: item.title, item: item.raw, update };
+    // `fields`, when the source names some, keep only those of the item, before the cap.
+    const raw = fields ? keeping(item.raw, fields) : item.raw;
+    const whole = { id: item.id, link: item.link, title: item.title, item: raw, update };
     if (fits(whole)) return whole;
     for (const [depth, chars] of [[3, 2000], [3, 300], [2, 2000], [2, 300], [1, 300], [1, 100]] as const) {
-      const cut = { ...whole, item: shallow(item.raw, depth, chars), item_truncated: true };
+      const cut = { ...whole, item: shallow(raw, depth, chars), item_truncated: true };
       if (fits(cut)) return cut;
     }
     return { id: item.id, link: item.link, title: item.title?.slice(0, 300) ?? null, item: null, item_truncated: true, update };
@@ -185,6 +195,29 @@ function payloadOf(c: Candidate, list: boolean, title: string | null): Record<st
     if (fits(cut)) return cut;
   }
   return { id: clipped(item.id, 200), link: clipped(item.link, 200), title: clipped(item.title, 200), published: iso(item.published), updated: iso(item.updated), author: null, summary: null, categories: [], feed: { title: null, url: c.url }, update };
+}
+/** `raw` with only the values at `pointers` kept, each at its own place (a list's kept entries compacted). */
+function keeping(raw: unknown, pointers: readonly string[]): unknown {
+  const out: Record<string, unknown> = {};
+  for (const pointer of pointers) {
+    const value = pointed(raw, pointer);
+    if (value === undefined) continue;
+    const keys = pointer.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+    let from: unknown = raw;
+    let into: Record<string, unknown> | unknown[] = out;
+    keys.forEach((key, i) => {
+      const source = (from as Record<string, unknown>)[key];
+      const slot = into as Record<string, unknown>;
+      if (i === keys.length - 1) slot[key] = value;
+      else {
+        slot[key] ??= Array.isArray(source) ? [] : {};
+        into = slot[key] as Record<string, unknown> | unknown[];
+      }
+      from = source;
+    });
+  }
+  const dense = (value: unknown): unknown => (Array.isArray(value) ? value.filter(() => true).map(dense) : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, dense(v)])) : value);
+  return dense(out);
 }
 const fits = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8") <= PAYLOAD_KEPT_BYTES;
 const clipped = (text: string | null, n: number) => (text !== null && text.length > n ? `${text.slice(0, n - 1)}…` : text);
@@ -239,7 +272,7 @@ async function poll(source: FeedSource, reach: FeedReach, cursor: Cursor): Promi
     for (const item of items) {
       const was = seen.get(hashed(item.key));
       if (was === undefined) fresh.push({ url: read.url, item, update: false, at: item.updated ?? item.published, n: 0 });
-      else if (item.updated !== null && item.updated > was) fresh.push({ url: read.url, item, update: true, at: item.updated, n: 0 });
+      else if (item.updated !== null && item.updated > was && (was > 0 || !feed.list)) fresh.push({ url: read.url, item, update: true, at: item.updated, n: 0 });
     }
     candidates.push(fresh);
   }
@@ -295,7 +328,7 @@ async function poll(source: FeedSource, reach: FeedReach, cursor: Cursor): Promi
   const name = (url: string) => states[url]?.title ?? url;
   const named = (urls: readonly string[]) => (urls.length === 1 ? name(urls[0]!) : `${urls.length} feeds`);
   const events: PolledEvent[] = taken.map((c) => {
-    const body = payloadOf(c, lists.get(c.url) ?? false, states[c.url]?.title ?? null);
+    const body = payloadOf(c, lists.get(c.url) ?? false, states[c.url]?.title ?? null, source.fields);
     const key = `${c.url}\n${c.item.key}${c.item.updated !== null ? `\n${iso(c.item.updated)}` : ""}`;
     // Its cursor made only when the engine asks for it (the last event it records, when the poll is cut short): never one
     // whole cursor per item taken.
@@ -332,7 +365,7 @@ export const feed: TriggerAdapter = {
   // Each item is its own: one run's answer is never handed to the next.
   previousResult: false,
   settings: { scope: "trigger", fields: { [CURSOR]: { public: true }, [LAST_CHECK]: { public: true } } },
-  describe: `{kind: "feed", urls: ["https://..."], every_s?: ${DEFAULT_EVERY_S}, items?: "/data/items", id?: "/id", accept?: [{event: "${EVENT}", where?}]}`,
+  describe: `{kind: "feed", urls: ["https://..."], every_s?: ${DEFAULT_EVERY_S}, items?: "/data/items", id?: "/id", updated?: "/updated_at", fields?: ["/number", "/title"], accept?: [{event: "${EVENT}", where?}]}`,
   fires: "each new or updated item in its feeds (`feed`: RSS, Atom, JSON Feed or a JSON list), read every every_s seconds, that its `accept` takes",
   firedBy: "`feed`: an item new to one of its feeds, or one seen before with a later updated time, its key from the trigger, the feed's URL, the item's key and its updated time.",
   schemas: [
@@ -342,6 +375,8 @@ export const feed: TriggerAdapter = {
         every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S, default: DEFAULT_EVERY_S, description: "How often it reads its feeds, in seconds, on a grid from the epoch." },
         items: { type: "string", maxLength: POINTER_CHARS, pattern: "^(/([^~]|~[01])*)?$", description: "For a JSON list: a JSON Pointer to its array of items. Absent: the whole document." },
         id: { type: "string", minLength: 1, maxLength: POINTER_CHARS, pattern: "^/([^~]|~[01])*$", description: "For a JSON list: a JSON Pointer into each item to its id. Absent: /id." },
+        updated: { type: "string", minLength: 1, maxLength: POINTER_CHARS, pattern: "^/([^~]|~[01])*$", description: "For a JSON list: a JSON Pointer into each item to the date it last changed (/updated_at). An item whose date moves on fires again with update: true. Absent: a JSON list's item fires once." },
+        fields: { type: "array", minItems: 1, maxItems: MAX_FIELDS, items: { type: "string", minLength: 1, maxLength: POINTER_CHARS, pattern: "^/([^~]|~[01])*$" }, description: "For a JSON list: JSON Pointers into each item; the payload's item keeps only these, each at its own place, before the payload's size cap (a pull request that is large whole fits). Absent: the whole item, cut shallower when it is over the cap." },
         accept: { ...ACCEPT_SCHEMA, description: `The items that start a run: each rule's event is "${EVENT}", its where reads the payload (/title, /link, /feed/url; a JSON list's /item/...). None: every item.` },
       },
     ),
@@ -349,11 +384,11 @@ export const feed: TriggerAdapter = {
   sent: [
     closedSchema(
       { kind: { const: "feed" }, urls: { type: "array", minItems: 1, maxItems: MAX_FEEDS, items: { type: "string" } }, every_s: { type: "integer", minimum: MIN_EVERY_S, maximum: MAX_EVERY_S } },
-      { items: { type: "string" }, id: { type: "string" }, accept: ACCEPT_SCHEMA },
+      { items: { type: "string" }, id: { type: "string" }, updated: { type: "string" }, fields: { type: "array", items: { type: "string" } }, accept: ACCEPT_SCHEMA },
     ),
   ],
   parse(value, _now, bad, issues) {
-    issues.push(...unknownSourceFields(value, ["kind", "urls", "every_s", "items", "id", "accept"]));
+    issues.push(...unknownSourceFields(value, ["kind", "urls", "every_s", "items", "id", "updated", "fields", "accept"]));
     return fieldsOf(value, bad);
   },
   wellFormed: (source) => fieldsOf(source, () => {}) !== undefined,
