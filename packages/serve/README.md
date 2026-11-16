@@ -2648,6 +2648,7 @@ than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is
 that refuses the run's key (401) fails the run naming the key and where to set it ("OpenRouter refused
 OPENROUTER_API_KEY (401: User not found): set it where AgentRun starts, or save it in Settings → Model keys."), on every
 harness, with the provider's first sentence only.
+Every request to OpenRouter carries AgentRun's app attribution (`HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun`), so a self-hosted server's usage on its own key counts toward AgentRun's listing on OpenRouter; `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts sends none.
 
 `claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the

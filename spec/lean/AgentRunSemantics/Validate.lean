@@ -28,6 +28,8 @@ mutual
 def tmplRefs : Tmpl → List Path
   | .lit _ => []
   | .ref p => [p]
+  -- An optional placeholder may name a path no upstream node produces (`checkInterpolations` reads none).
+  | .opt _ => []
   | .text parts => textRefs parts
   | .arr xs => tmplRefsList xs
   | .obj kvs => tmplRefsFields kvs
