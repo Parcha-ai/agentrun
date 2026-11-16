@@ -3,7 +3,7 @@
 // which is the grader's. The host reads the copy itself (regular files only, never a link followed) and hands each change
 // here with its bytes; nothing the checker refuses is ever written to git. Every problem it reports is printable: its
 // path and detail are cut of the host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
-import { placeholderValue } from "@parcha/agentrun-dsl";
+import { placeholdersOf, placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
 import { compiledLineBytes, INDEX_FILE, INDEX_LINES, type LearnedNote, NOTE_FILE, parseNoteFile, ruleOf } from "./notes.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
@@ -256,16 +256,21 @@ function pageStateOf(pages: ReadonlySet<string>): Record<string, unknown> {
   }
   return state;
 }
-/** The page keys a value reads: each `{path}` (or `{path?}`) in its strings, at any depth, resolved by the engine's own
- *  lookup (the DSL's placeholderValue, which interpolation reads through: the path as written, so a real `state` key
- *  first, then the path after `state.`) over pageStateOf. A key holding compact facts is absent there, so a
- *  `{state.x}` read falls back to `x` as the engine may when its `state` key lacks `x`. */
+/** The mark key (pageStateOf) the placeholder `path` reads in `state`, if it reads one. */
+const markRead = (state: Record<string, unknown>, path: string): string | undefined => {
+  const read = placeholderValue(state, path);
+  return read !== null && typeof read === "object" ? pageKeyOf.get(read) : undefined;
+};
+/** The page keys a value reads: each placeholder in its strings, at any depth, as interpolation fills them (the DSL's
+ *  placeholdersOf: `{path?}` only as a whole string, literal text inside a longer one), resolved by the engine's own
+ *  lookup (the DSL's placeholderValue: the path as written, so a real `state` key first, then the path after `state.`)
+ *  over pageStateOf. A key holding compact facts is absent there, so a `{state.x}` read falls back to `x` as the engine
+ *  may when its `state` key lacks `x`. */
 function pagesRead(value: unknown, state: Record<string, unknown>, out = new Set<string>(), depth = 0): Set<string> {
   if (depth > 32) return out;
   if (typeof value === "string") {
-    for (const match of value.matchAll(/\{([a-zA-Z0-9_.$]+)\??\}/g)) {
-      const read = placeholderValue(state, match[1]!);
-      const key = read !== null && typeof read === "object" ? pageKeyOf.get(read) : undefined;
+    for (const { path } of placeholdersOf(value)) {
+      const key = markRead(state, path);
       if (key !== undefined) out.add(key);
     }
   } else if (Array.isArray(value)) value.forEach((one) => pagesRead(one, state, out, depth + 1));
@@ -579,15 +584,13 @@ const repicks = (step: unknown, check: QuoteRead): boolean => {
   const of = step.until.of;
   return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
-/** Whether a step's `state` map reads state key `key` through an optional placeholder (`"{answer?}"`, `"{answer.x?}"`,
- *  `"{state.answer?}"`, a whole string): null on a re-pick loop's first pass, before any draft exists, and the failed
- *  draft on its second. */
+/** Whether a step's `state` map names state key `key` as the whole marked placeholder `"{answer?}"` (a whole string):
+ *  null on a re-pick loop's first pass, before any draft exists, and the failed draft on its second. No path below the
+ *  key counts (`"{answer.x?}"`, `"{state.answer?}"`, unmarked `"{answer}"`): paths are not validated, so only the key
+ *  itself is sure to hold the draft. */
 function readsDraft(state: unknown, key: string, depth = 0): boolean {
   if (depth > 32) return false;
-  if (typeof state === "string") {
-    const path = /^\{([a-zA-Z0-9_.$]+)\?\}$/.exec(state)?.[1]?.split(".");
-    return !!path && (path[0] === "state" && path.length > 1 ? path[1] : path[0]) === key;
-  }
+  if (typeof state === "string") return placeholdersOf(state).some(({ path, optional }) => optional && path === key);
   if (Array.isArray(state)) return state.some((one) => readsDraft(one, key, depth + 1));
   return isObject(state) && Object.values(state).some((one) => readsDraft(one, key, depth + 1));
 }

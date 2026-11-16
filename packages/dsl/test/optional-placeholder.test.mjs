@@ -4,7 +4,7 @@
 // never needs the whole state (the pages included) to see it. Unmarked, an absent path still fails the step.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { runWorkflow, validateWorkflow } from '../dist/index.js';
+import { placeholdersOf, runWorkflow, validateWorkflow } from '../dist/index.js';
 
 const SCHEMAS = {
   In: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
@@ -47,4 +47,12 @@ test('the mark reads the state. prefix and a nested path; inside a longer string
   const nested = await run(flow({ draft: '{state.answer.text?}', note: 'was {answer?}' }));
   assert.equal(nested.result.status, 'complete', JSON.stringify(nested.result));
   assert.deepEqual(nested.seen, [{ draft: null, note: 'was {answer?}' }, { draft: 'pass 1', note: 'was {answer?}' }]);
+});
+
+// A host checking what a step reads lists a string's placeholders as interpolation reads them, not by its own pattern.
+test('placeholdersOf: a whole string is one placeholder, marked or not; inside a longer string only unmarked ones are', () => {
+  assert.deepEqual(placeholdersOf('{answer?}'), [{ path: 'answer', optional: true }]);
+  assert.deepEqual(placeholdersOf('{state.answer.text}'), [{ path: 'state.answer.text', optional: false }]);
+  assert.deepEqual(placeholdersOf('was {answer?} for {question} and {state.page}'), [{ path: 'question', optional: false }, { path: 'state.page', optional: false }]);
+  assert.deepEqual(placeholdersOf('no placeholder {} {a b}'), []);
 });
