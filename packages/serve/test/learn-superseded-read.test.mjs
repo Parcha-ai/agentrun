@@ -52,3 +52,15 @@ test("a replay read of a superseded revision is decided, never running", async (
   assert.equal(view.status, "failed", JSON.stringify(view));
   assert.match(view.reason, /a newer draft arrived while it replayed \(before beta\.40\)/);
 });
+
+test("a replay of a superseded revision reserves: the guarded write compares what a read shows, and stored history stays as it was", async () => {
+  const { recordPromotion } = await import("../dist/learn/promote.js");
+  const { settings, kv } = storeOf();
+  // askReplay's reservation: still the record the read showed (same `at`, same `decided`).
+  const own = promotionOf(await promotionsOf(settings, "a"), "answer", "old0old0old0old0");
+  const fresh = { workflow: "answer", digest: "old0old0old0old0", at: "2026-11-16T10:00:00.000Z", decided: "replaying", source: "replay", reason: "replaying", replay_id: "0198c0de-0000-7000-8000-000000000002" };
+  const kept = await recordPromotion(settings, "a", fresh, (was) => was?.at === own.at && was?.decided === own.decided);
+  assert.equal(kept.won, true, JSON.stringify(kept));
+  assert.deepEqual(kv.get("learning.promotions.a").items.slice(0, 2), stored.items, "the stored beta.39 records are not rewritten");
+  assert.equal(kv.get("learning.promotions.a").items.at(-1).decided, "replaying");
+});
