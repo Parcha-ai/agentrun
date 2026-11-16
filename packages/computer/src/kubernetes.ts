@@ -264,7 +264,9 @@ export function processOf(stream: KubeStream, killer?: ProcessKill): MachineProc
 				try {
 					for (let at = 0; at < bytes.length; at += CHUNK) await stream.send(0, bytes.subarray(at, at + CHUNK));
 				} catch (error) {
-					// A send the socket refused is the connection lost: transient, as the stream's end before the status is.
+					// A send the socket refused after the command's status came is the command's end, not an outage: unmarked.
+					// Before it, the connection is lost: transient, as the stream's end before the status is.
+					if (finished && lost === undefined) throw new Error(`the command ended while its stdin was written: ${(error as Error).message}`);
 					throw lost ?? new HostError("vendor", `writing the command's stdin failed: ${(error as Error).message}`, { transient: true });
 				}
 			});
@@ -624,13 +626,23 @@ export class KubernetesHost implements MachineHost {
 		const bound = AbortSignal.timeout(ctx.timeoutMs);
 		const timedOut = new Promise<"timeout">((done) => bound.addEventListener("abort", () => done("timeout"), { once: true }));
 		const late = () => new HostError("timeout", `the upload to ${path} did not finish within ${ctx.timeoutMs / 1000} s`, { transient: true });
+		const refused = async (code: number) => {
+			await Promise.all([drained, drainOut]);
+			return new HostError("vendor", `the upload to ${path} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim().slice(0, 300)}`);
+		};
 		try {
-			const written = await Promise.race([running.write(bytes).then(() => "sent" as const), timedOut]);
+			const written = await Promise.race([running.write(bytes).then(() => "sent" as const, (error: unknown) => ({ error })), timedOut]);
 			if (written === "timeout") throw late();
+			if (written !== "sent") {
+				// The command may have ended on its own first (a full disk): its exit and words are the failure, not the send's.
+				const ended = await Promise.race([running.wait().catch(() => undefined), timedOut]);
+				if (typeof ended === "number" && ended !== 0) throw await refused(ended);
+				throw written.error;
+			}
 			const code = await Promise.race([running.wait(), timedOut]);
 			if (code === "timeout") throw late();
+			if (code !== 0) throw await refused(code);
 			await Promise.all([drained, drainOut]);
-			if (code !== 0) throw new HostError("vendor", `the upload to ${path} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim().slice(0, 300)}`);
 		} catch (error) {
 			if (error instanceof HostError) throw new HostError(error.code, error.message.startsWith("the upload") ? error.message : `the upload to ${path} failed: ${error.message}`, { transient: error.transient === true });
 			throw new HostError("vendor", `the upload to ${path} failed: ${(error as Error).message}`);

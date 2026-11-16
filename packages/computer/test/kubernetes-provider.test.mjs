@@ -507,3 +507,22 @@ test("a dropped exec connection is transient: wait() and the next write reject w
 	assert.equal(failed.transient, true);
 	assert.match(failed.message, /the upload to \/tmp\/computerd failed: .*connection reset by peer/);
 });
+
+test("an upload whose command exits early (a full disk) is a refusal in its own words, not an outage, though the socket then refuses the rest", async () => {
+	const host = hostOf(fakeApi([{ method: "STREAM", answer: () => {
+		const one = fakeStream();
+		// The command fails at once: its status comes, and every send after it fails as the socket closes.
+		one.stream.send = async () => {
+			await new Promise((done) => setTimeout(done, 5));
+			throw new Error("write after end");
+		};
+		setTimeout(() => {
+			one.push(2, "41 7\nhead: write error: No space left on device\n");
+			one.push(3, JSON.stringify({ status: "Failure", details: { causes: [{ reason: "ExitCode", message: "1" }] } }));
+		}, 1);
+		return ok(one.stream);
+	} }]));
+	const failed = await thrown(host.upload("p", "/tmp/computerd", new Uint8Array(200_000), ctx));
+	assert.equal(failed.transient, undefined, "the command's own failure carries no mark");
+	assert.match(failed.message, /exited 1: head: write error: No space left on device/);
+});
