@@ -18,6 +18,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11/xvfbtest"
@@ -410,6 +411,37 @@ func TestAppsLaunchAURLEndsADialogItsLauncherLeft(t *testing.T) {
 	}
 	if n := w.shown("SingleLeave"); n != 1 {
 		t.Fatalf("after the refused hand-over, %d windows of the app show, not 1: its dialog outlived the launch", n)
+	}
+}
+
+// The race under the test above, made certain: the launcher has ended (and its guard reaped it) before the launch's
+// tree is read, and what it left runs in a session of its own. That is still the launch's, so it lingers.
+func TestALaunchLingersWhenItsLauncherEndedBeforeItsTreeWasRead(t *testing.T) {
+	table := process.NewTable(process.Options{})
+	// The launcher ends only once what it left is in a session of its own, so its group holds nothing of the launch's.
+	ready := filepath.Join(t.TempDir(), "ready")
+	started, err := table.Start(context.Background(), process.StartParams{
+		Argv: []string{"sh", "-c", `setsid sh -c 'touch "$0"; exec sleep 30' "$0" </dev/null >/dev/null 2>&1 &
+while [ ! -e "$0" ]; do sleep 0.01; done`, ready}, Orphans: "keep"})
+	if err != nil {
+		t.Fatalf("process.start: %v", err)
+	}
+	guard := table.Guard(started.ID)
+	t.Cleanup(func() {
+		for _, pid := range proctree.Descendants(guard) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	timeout := int64(5000)
+	if waited, err := table.Wait(context.Background(), process.WaitParams{ID: started.ID, TimeoutMs: &timeout}); err != nil || waited.Running {
+		t.Fatalf("the launcher did not end: %+v %v", waited, err)
+	}
+	if parentOf(started.Pid) != 0 {
+		t.Fatalf("the launcher %d is still in /proc after it ended", started.Pid)
+	}
+	if tree := treeOf(started.Pid, guard); !tree.lingers() {
+		t.Fatalf("the launch's tree (guard %d) does not linger, though the launcher left a process under its guard: %v",
+			tree.guard, proctree.Descendants(guard))
 	}
 }
 
