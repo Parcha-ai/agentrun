@@ -2203,6 +2203,8 @@ account, or builds it once: a base snapshot of `morphvm-minimal` at 2 vCPUs, 4 G
 /snapshot`), an instance from it with a 2 h TTL of its own, `box/install.sh` run as root over SSH, then `POST
 /instance/{id}/snapshot` with the digest, and the instance deleted. The box snapshot and its base have no TTL, so
 neither expires. A build that fails before it asks for the box snapshot deletes its base as well, so it leaves nothing.
+A cancel does the same: the base's and the instance's creates take no cancel signal, only their own time bound, so
+their ids are always read and then deleted. Only a create that outlives that bound (60 s) can leave its result unseen.
 A failed box snapshot, with none other, is refused in words until it is deleted in the account.
 
 **Unverified** (the lane's live kit settles them): that the gateway takes the instance's key for the user `<instance

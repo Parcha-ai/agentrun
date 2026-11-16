@@ -364,14 +364,22 @@ class MorphHost implements MachineHost {
 		if (found !== undefined) return found;
 		building();
 		const marked = { [BUILD_LABEL]: name };
-		const base = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: marked }, call);
+		// The two creates are never signalled, only bounded: a cancel mid-call would lose the id of what Morph made, and the
+		// base snapshot has no TTL. A cancel is answered once the id is held, so the finally below deletes what was made.
+		const create = { timeoutMs: BUILD_CALL_MS };
+		const notCancelled = (what: string) => {
+			if (signal?.aborted) throw new HostError("aborted", `the box build was aborted after ${what}`);
+		};
+		const base = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: marked }, create);
 		if (typeof base?.id !== "string" || !SNAPSHOT_ID.test(base.id)) throw new HostError("vendor", `POST /snapshot answered no snapshot id: ${show(base?.id)}`);
 		// Set once the box snapshot is asked for: from then on it may need the base, which is kept.
 		let snapshotted = false;
 		let vm: string | undefined;
 		try {
+			notCancelled(`its base snapshot ${base.id} was made`);
 			await this.#snapshotReady(base.id, end, signal);
-			vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base.id, metadata: marked, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, call)).id);
+			vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base.id, metadata: marked, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, create)).id);
+			notCancelled(`its instance ${vm} was made`);
 			await this.#build(vm, name, end, signal, call, () => (snapshotted = true));
 		} finally {
 			// Their own bound, not the caller's signal: a cancelled build still deletes its instance (its TTL backs this),

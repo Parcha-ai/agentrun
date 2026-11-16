@@ -437,6 +437,31 @@ test("a build whose install.sh fails answers vendor in words, makes no box snaps
 	assert.deepEqual([...fake.rest.snapshots.keys()], [snapshot]);
 });
 
+test("a build cancelled while Morph makes its base or its instance holds the id all the same, answers aborted, and deletes both", async (t) => {
+	for (const during of [/^\/api\/snapshot$/, /^\/api\/instance$/]) {
+		const controller = new AbortController();
+		const fake = await fakeMorph();
+		t.after(() => fake.sshd.close());
+		const own = fake.rest.snapshot({}).id;
+		// Morph makes it, then the caller cancels before the answer is read: a call that took the signal never reads the id.
+		const fetch = async (url, init = {}) => {
+			const answer = await fake.rest.fetch(url, init);
+			if (init.method === "POST" && during.test(new URL(url).pathname)) {
+				controller.abort();
+				await new Promise((resolve) => setImmediate(resolve));
+				if (init.signal?.aborted) throw init.signal.reason;
+			}
+			return answer;
+		};
+		const provider = new MorphProvider({ ...fake.options, fetch });
+		const cancelled = await provider.prepareImage({ signal: controller.signal });
+		assert.equal(cancelled.ok, false, String(during));
+		assert.equal(cancelled.error.code, "aborted", cancelled.error.message);
+		assert.equal(fake.rest.instances.size, 0, `${during}: no build instance left`);
+		assert.deepEqual([...fake.rest.snapshots.keys()], [own], `${during}: the base is deleted; the account's own snapshot stays`);
+	}
+});
+
 // --- the registry and the conformance module ---
 
 test("the registry builds Morph from its options alone, and its source reads no environment and writes nowhere", async () => {
