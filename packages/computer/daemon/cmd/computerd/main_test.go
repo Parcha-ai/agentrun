@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -634,5 +636,34 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 		if code != 2 || stdout != "" || !strings.Contains(stderr, "--diagnose") {
 			t.Errorf("computerd %q: exit %d, stdout %q, stderr %q; want exit 2, nothing on stdout and a refusal that names --diagnose", args, code, stdout, stderr)
 		}
+	}
+}
+
+// attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
+// when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
+func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
+	token := "art_" + strings.Repeat("ab", 32)
+	t.Setenv("AGENTRUN_ATTACH_URL", "")
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
+	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {
+		t.Fatalf("with no URL: exit %d, %s", code, stderr)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token || r.URL.Path != "/v2/computers/attach" {
+			t.Errorf("the upgrade %s with %d bytes of Authorization", r.URL.Path, len(r.Header.Get("Authorization")))
+		}
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "the token is unknown", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	t.Setenv("AGENTRUN_ATTACH_URL", "ws"+strings.TrimPrefix(server.URL, "http")+"/v2/computers/attach")
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token[:len(token)-1])
+	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_TOKEN") || strings.Contains(stderr, token[:len(token)-1]) {
+		t.Fatalf("with a short token: exit %d, %s", code, stderr)
+	}
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
+	code, stderr := computerd(t, 30*time.Second, "attach")
+	if code != 3 || !strings.Contains(stderr, "refused 401 (the token is unknown)") || strings.Contains(stderr, token) {
+		t.Fatalf("refused: exit %d, %s", code, stderr)
 	}
 }
