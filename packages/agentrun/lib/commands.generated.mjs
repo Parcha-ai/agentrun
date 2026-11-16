@@ -111,6 +111,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "delete-agent"
+    ],
+    "operationId": "deleteAgent",
+    "method": "DELETE",
+    "path": "/agents/{agent_id}",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Delete an agent another system owns"
+  },
+  {
+    "command": [
+      "agents",
       "delete-agent-archil"
     ],
     "operationId": "deleteAgentArchil",

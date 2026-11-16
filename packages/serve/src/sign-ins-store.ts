@@ -388,5 +388,16 @@ export function signInsOverStore(store: SignInsStore, sealKey: Buffer, vendors: 
     view: (agentId: string) => signInViews(store, sealKey, agentId),
     ...signInReads(store, sealKey),
     forget: (agentId: string, key: string) => forgetSignInView(store, sealKey, vendors, agentId, key),
+    /** Every live sign-in of the agent forgotten (forgetSignIn), its vendor object deleted best effort: a deleted agent's
+     *  (agent-delete.ts), once no run of it is going. One forgotten meanwhile is passed by. */
+    forgetAll: async (agentId: string): Promise<void> => {
+      for (const row of await store.signIns.list(agentId)) {
+        try {
+          await forgetSignIn(store, sealKey, vendors, agentId, row.provider);
+        } catch (error) {
+          if (!(error instanceof SignInMissing)) throw error;
+        }
+      }
+    },
   };
 }

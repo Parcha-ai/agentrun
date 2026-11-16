@@ -34,6 +34,12 @@ Route: `POST /agents`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun agents delete-agent AGENT_ID`
+
+Delete an agent another system owns.
+
+Route: `DELETE /agents/{agent_id}`.
+
 ### `agentrun agents delete-agent-archil AGENT_ID`
 
 Remove an agent's own Archil disk, and everything on it.

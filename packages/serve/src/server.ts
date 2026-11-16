@@ -88,7 +88,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
-import { answerOf, logged } from "./agents.js";
+import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown } from "./learn/promote.js";
@@ -178,7 +178,11 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
+import { agentComputerHoldKey } from "./workspace/agent-computer.js";
+import { sdkRunKey } from "./sdk/runs.js";
+import { waitEndedKey } from "./browser-wait-ended.js";
+import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -381,6 +385,14 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** The learning module's delete of an agent's learning, step 2 of DELETE /agents/{id} (agent-delete.ts): injected until
+   *  the learning module exports it. With none, that route answers 501 unsupported_here and touches nothing. */
+  deleteLearning?: DeleteLearning;
+  /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
+   *  there stops the delete as a crash would. */
+  agentDeleteAt?: (step: AgentDeleteStep, agentId: string) => void | Promise<void>;
+  /** How long DELETE /agents/{id} waits for the agent's cancelled runs to end (default 30 s), then 409 runs_in_flight. */
+  agentDeleteWaitMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** A test's seam: the GitHub a template import reads, its API's origin and the one host it may be sent to, in place of
@@ -495,6 +507,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)$/, name: "deleteAgent" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
@@ -1953,6 +1966,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a person's start (createRun) and a replay's (startLearnedWorkflowReplay), asks this before it reserves or writes anything. */
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
+    // Another system's agent is archived only by its delete (its archive route is refused).
+    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -1981,6 +1996,63 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       .then((done) => (done ? log?.(logLine("agent_computer", { agent: agentId, ...("deleted" in done ? { deleted: done.deleted } : { failed: done.failed }) })) : undefined))
       .catch((error: unknown) => log?.(logLine("agent_computer", { agent: agentId, failed: error instanceof Error ? error.message : String(error) })));
   };
+  /** The answers kept under idempotency keys (the in-memory map and its file) that `names` picks, by the request's path and
+   *  the answer's body, dropped and the file written again: a deleted agent's and its runs' (agent-delete.ts). */
+  const forgetKept = async (names: (path: string, body: unknown) => boolean): Promise<void> => {
+    let dropped = false;
+    for (const [slot, one] of idempotency) {
+      if (!names(slot.slice(0, slot.indexOf("\n")), one.answer?.body)) continue;
+      idempotency.delete(slot);
+      dropped = true;
+    }
+    if (dropped) await keep();
+  };
+  const deleteInTurn = oneAtATime();
+  /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
+  const agentDeleteHost = (deleteLearning: DeleteLearning): AgentDeleteHost => ({
+    store,
+    deleteLearning,
+    refuse: async (agentId) => void (await triggers.agentArchived(agentId)),
+    cancel: async (runId) => {
+      const moment = await momentOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (!moment) return true;
+      if (moment.importedSource !== undefined) return false;
+      try {
+        await cancel(store, moment);
+        return true;
+      } catch (error) {
+        // An SDK run: only its application ends it (runs-over-store.ts refuseSdkStop).
+        if (error instanceof ApiError && error.code === "not_continuable") return false;
+        throw error;
+      }
+    },
+    removeTrigger: async (triggerId) => void (await triggers.remove(triggerId)),
+    forgetSignIns: (agentId) => signIns.forgetAll(agentId),
+    removeOwnComputer: async (agentId) => {
+      // Archived, the agent has no use for its own computer: deleted at its provider now, waited for.
+      await reconcileAgentComputer(store, agentId, (provider, image) => computersOf().providerFor(provider, image));
+      const left = await agentComputerOf(store, agentId);
+      if (left) throw new ApiError("unavailable", `The agent ${agentId}'s own computer ${left.name} is not deleted yet${left.why ? ` (${left.why})` : ""}. It starts no run meanwhile: send the DELETE again to finish it.`, { retry_after_ms: 5_000 });
+      await store.settings.remove(agentComputerHoldKey(agentId));
+    },
+    removeDisk: async (agentId) => void (await archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) })),
+    forgetRun: async (agentId, runId) => {
+      // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
+      for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
+      await store.settings.remove(sdkRunKey(runId));
+      await store.settings.remove(waitEndedKey(runId));
+      await forgetKept((path, body) => path.startsWith(`/runs/${runId}/`) || (isObject(body) && body.run_id === runId));
+    },
+    forgetAgent: async (agentId) => {
+      // The agent's folder (its runs' folders, its home, its learning folder) and its scratch folder.
+      await rm(agentFolder(data, agentId), { recursive: true, force: true });
+      await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
+      await forgetKept((path, body) => path.startsWith(`/agents/${agentId}/`) || (isObject(body) && body.agent_id === agentId));
+    },
+    waitMs: options.agentDeleteWaitMs ?? 30_000,
+    pollMs: 200,
+    ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
+  });
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
   async function needRun(id: string): Promise<RunMoment> {
@@ -3393,6 +3465,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const moved = await agents.setCurrent(entry, revision);
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
+      }
+      case "deleteAgent": {
+        // Another system's agent, deleted whole (agent-delete.ts); one delete of an agent at a time, the agent read in its
+        // turn, so a DELETE after one that finished is 404.
+        const deleteLearning = options.deleteLearning;
+        if (!deleteLearning) throw unsupported("agents.delete", "This server deletes no agent: it has no learning delete to call. Archive the agent instead (POST /v2/agents/{agent_id}/archive).");
+        await deleteInTurn(id, async () => {
+          const entry = await needAgent(id);
+          if (entry.agent.externalRef === null) throw new ApiError("agent_not_external", `The agent ${id} was made here, not by another system's inline run, and is not deleted: archive it instead (POST /v2/agents/${id}/archive), which keeps its runs and stops new ones.`);
+          await deleteExternalAgent(agentDeleteHost(deleteLearning), id);
+        });
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "archiveAgent":
       case "unarchiveAgent": {

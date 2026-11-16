@@ -586,6 +586,17 @@ export class AgentArchived extends Error {
   }
 }
 
+/** A run of an agent being deleted, or a follow-up that would open one of its runs again: refused, nothing written. An
+ *  agent another system owns is never archived here (its archive route is refused), so its archive time is the mark its
+ *  delete leaves (DELETE /agents/{id}, agent-delete.ts): from that commit runs.create, runs.createInline, runs.reopen and
+ *  triggers.fire refuse it, each in the transaction that would start the run, and a restart keeps the mark. */
+export class AgentDeleting extends Error {
+  override name = "AgentDeleting";
+  constructor(readonly agentId: string) {
+    super(`the agent ${agentId} is being deleted`);
+  }
+}
+
 /** An inline-agent run whose body differs from the one already stored for its external reference and version: refused,
  *  nothing written (Runs.createInline). A version's body is immutable; a changed body needs a new version. */
 export class ExternalBodyConflict extends Error {
@@ -627,6 +638,11 @@ export interface Agents {
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
    *  there is no such revision. */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
+  /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its triggers
+   *  (their scopes, firings and conversations with them), its learning rows and kept proposals, its sign-ins and their
+   *  tombstones, its revisions and the agent. Only once it has no run left (runs.remove each first): refused while one
+   *  is (StoreConstraint), nothing written. An agent with no row is no write. */
+  remove(agentId: string): Promise<void>;
 }
 
 export interface Templates {
@@ -729,6 +745,16 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
+  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
+   *  out): what deleting the agent stops and removes. */
+  every(agentId: string): Promise<{ id: string; state: RunState }[]>;
+  /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
+   *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
+   *  a trigger's conversation that names it, and the run (a firing or trigger that names it keeps no run: ON DELETE SET
+   *  NULL). Only a final run: one that is not is refused (StoreConstraint), nothing written, so no runner's claim is ever
+   *  on a run that goes. A run with no row is no write. From then a late write under an old claim of it is Fenced and
+   *  writes nothing (its row is gone), and a command for it is RunFinal. */
+  remove(runId: string): Promise<void>;
   /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner
    *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
    *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,

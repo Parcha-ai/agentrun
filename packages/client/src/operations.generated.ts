@@ -1273,6 +1273,8 @@ export interface CreateAgentParams {
 }
 export type CreateAgentResponse = Agent;
 
+/** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+
 /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
 export type DeleteAgentArchilResponse = {
   on: boolean;
@@ -5498,6 +5500,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   archiveAgent: {"method":"POST","path":"/agents/{agent_id}/archive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   connectNative: {"method":"POST","path":"/native/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createAgent: {"method":"POST","path":"/agents","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteAgent: {"method":"DELETE","path":"/agents/{agent_id}","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteAgentArchil: {"method":"DELETE","path":"/agents/{agent_id}/archil","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   disconnectNative: {"method":"POST","path":"/agents/{agent_id}/native/disconnect","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   discoverNative: {"method":"POST","path":"/native/discover","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5661,6 +5664,8 @@ export function resources(call: Call) {
       connectNative: (body: ConnectNativeBody, options?: RequestOptions): Promise<ConnectNativeResponse> => call("connectNative", [], body, undefined, options),
       /** Create an agent home (POST /agents). */
       create: (body: CreateAgentBody, params?: CreateAgentParams, options?: RequestOptions): Promise<CreateAgentResponse> => call("createAgent", [], body, params, options),
+      /** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+      deleteAgent: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgent", [agentId], undefined, undefined, options),
       /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
       deleteAgentArchil: (agentId: string, options?: RequestOptions): Promise<DeleteAgentArchilResponse> => call("deleteAgentArchil", [agentId], undefined, undefined, options),
       /** Disconnect future native jobs while retaining source configuration and history (POST /agents/{agent_id}/native/disconnect). */

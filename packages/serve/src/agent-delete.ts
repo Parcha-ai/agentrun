@@ -1,0 +1,139 @@
+// DELETE /v2/agents/{agent_id}: an agent another system owns (made by an inline run, POST /runs with `external`) deleted
+// whole, for a host that must delete what it sent. An agent made here is archived instead (409 agent_not_external).
+//
+// In order, each step finished before the next:
+//   1. The agent refuses new runs, as a mark in the store that outlives a restart: its archive time, which only this
+//      delete writes on an agent another system owns (its archive route is refused), set by the trigger engine with its
+//      triggers off in the same commit. From that commit a person's run, an inline run, a trigger's firing, an SDK run and
+//      a follow-up that would open one of its runs again are refused (store AgentDeleting / AgentArchived, each read in
+//      the transaction that would start the run). Then each of its runs not yet final, its learning runs included, is
+//      cancelled through the cancel path, and waited for until it is final.
+//   2. Its learning, by the learning module's deleteLearning (idempotent; it refuses while learning work is in flight,
+//      which answers 409 learning_busy with the agent left refusing runs).
+//   3. Its things: its triggers through the trigger engine (each one's adapter settings and its registration upstream
+//      with it), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each run's folders,
+//      settings and kept answers, and its rows (store runs.remove); then the agent's folders, settings and kept answers,
+//      and its rows (store agents.remove, which commits last).
+// A DELETE stopped at any step finds the agent still there, marked, and does every step again: each is idempotent, so the
+// next DELETE finishes it. Once the agent's row is gone the agent is unknown: 404.
+import { ApiError } from "./errors.js";
+import { FINAL_STATES, type RunState, type Store } from "./store/index.js";
+
+/** The learning module's delete of an agent's learning: idempotent, and refuses (throws) while learning work of the agent
+ *  is in flight. Given to the server as its `deleteLearning` option. */
+export type DeleteLearning = (store: Store, agentId: string) => Promise<void>;
+
+/** A point of a delete a test may stop it at (AgentDeleteHost.at): after step 1, after step 2, and in step 3 once its
+ *  triggers and the agent's first run are gone. */
+export type AgentDeleteStep = "after_step_1" | "after_step_2" | "in_step_3";
+
+/** What a delete does outside the store's own rows, as the server does it. */
+export interface AgentDeleteHost {
+  readonly store: Store;
+  readonly deleteLearning: DeleteLearning;
+  /** Step 1's mark: the agent archived, its triggers off in the same commit (the trigger engine's agentArchived). */
+  refuse(agentId: string): Promise<void>;
+  /** The cancel path, for one run that is not final: true once a cancel stands for it (written now, or the run is ending
+   *  already), false when this server cannot end it (an SDK run, which only its application ends; an imported run). */
+  cancel(runId: string): Promise<boolean>;
+  /** One trigger removed through the trigger engine: its row, its adapter settings, its registration upstream. */
+  removeTrigger(triggerId: string): Promise<void>;
+  /** Every saved sign-in of the agent forgotten, its object at the vendor deleted. */
+  forgetSignIns(agentId: string): Promise<void>;
+  /** The agent's own computer deleted at its provider, and its record with it; an ApiError while it cannot be yet. */
+  removeOwnComputer(agentId: string): Promise<void>;
+  /** The agent's Archil disk deleted, when it has one (archil-routes.ts removeAgentDisk). */
+  removeDisk(agentId: string): Promise<void>;
+  /** A final run's things outside its rows: its folders, its settings, the answers kept under its idempotency keys. */
+  forgetRun(agentId: string, runId: string): Promise<void>;
+  /** The agent's things outside its rows: its folders, its settings, the answers kept under its idempotency keys. */
+  forgetAgent(agentId: string): Promise<void>;
+  /** How long step 1 waits for the agent's runs to be final, and how often it reads them meanwhile. */
+  readonly waitMs: number;
+  readonly pollMs: number;
+  /** A test's seam: awaited at each step's point, so a throw there stops the delete as a crash would. */
+  at?(step: AgentDeleteStep, agentId: string): void | Promise<void>;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isFinal = (state: RunState) => (FINAL_STATES as readonly RunState[]).includes(state);
+
+/** Deletes agent `agentId` (another system's, as the route checked) in the three steps above. Throws ApiError
+ *  runs_in_flight while a run of it is not final by the wait's end, learning_busy while its learning refuses. */
+export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
+  // 1. No new run, then none in flight.
+  await host.refuse(agentId);
+  await stopRuns(host, agentId);
+  await host.at?.("after_step_1", agentId);
+
+  // 2. Its learning.
+  try {
+    await host.deleteLearning(host.store, agentId);
+  } catch (error) {
+    throw new ApiError(
+      "learning_busy",
+      `The agent ${agentId}'s learning could not be deleted yet (${(error as Error)?.message ?? String(error)}). The agent starts no run meanwhile: send the DELETE again later to finish it.`,
+      { retry_after_ms: 5_000 },
+    );
+  }
+  await host.at?.("after_step_2", agentId);
+
+  // 3. Its things, then its rows; the agent's row last.
+  for (const trigger of await host.store.triggers.list(agentId)) await host.removeTrigger(trigger.id);
+  await host.forgetSignIns(agentId);
+  await host.removeOwnComputer(agentId);
+  await host.removeDisk(agentId);
+  let first = true;
+  for (const run of await host.store.runs.every(agentId)) {
+    await host.forgetRun(agentId, run.id);
+    await host.store.runs.remove(run.id);
+    if (first) await host.at?.("in_step_3", agentId);
+    first = false;
+  }
+  await host.forgetAgent(agentId);
+  await host.store.agents.remove(agentId);
+}
+
+/** Step 1's second half: each run of the agent not final cancelled once, then read again until every one is final. A run's
+ *  end may queue its learning run, so the runs are listed again on each read. A run this server cannot end, or one still
+ *  going at the wait's end, is 409 runs_in_flight, the agent left refusing runs. */
+async function stopRuns(host: AgentDeleteHost, agentId: string): Promise<void> {
+  const deadline = Date.now() + host.waitMs;
+  const asked = new Set<string>();
+  for (;;) {
+    const live = (await host.store.runs.every(agentId)).filter((run) => !isFinal(run.state));
+    if (live.length === 0) return;
+    const unended: string[] = [];
+    for (const run of live) {
+      if (asked.has(run.id)) continue;
+      if (await host.cancel(run.id)) asked.add(run.id);
+      else unended.push(run.id);
+    }
+    if (unended.length) {
+      throw new ApiError("runs_in_flight", `The agent ${agentId} has ${unended.length === 1 ? "a run" : "runs"} this server cannot end (${unended.join(", ")}): an SDK run is ended by its application. It starts no run meanwhile: send the DELETE again once ${unended.length === 1 ? "it has" : "they have"} ended.`, { details: { runs: unended }, retry_after_ms: 5_000 });
+    }
+    if (Date.now() >= deadline) {
+      throw new ApiError("runs_in_flight", `The agent ${agentId}'s runs were cancelled and ${live.length === 1 ? "one has" : `${live.length} have`} not ended yet (${live.map((run) => run.id).join(", ")}). It starts no run meanwhile: send the DELETE again to finish it.`, { details: { runs: live.map((run) => run.id) }, retry_after_ms: 2_000 });
+    }
+    await sleep(host.pollMs);
+  }
+}
+
+/** One delete of an agent at a time: a second DELETE of the same agent waits for the first, then finds it gone (404) or
+ *  finishes what the first left. */
+export function oneAtATime(): <T>(agentId: string, work: () => Promise<T>) => Promise<T> {
+  const turns = new Map<string, Promise<unknown>>();
+  return <T>(agentId: string, work: () => Promise<T>): Promise<T> => {
+    const before = turns.get(agentId) ?? Promise.resolve();
+    const turn = before.then(work, work);
+    const settled = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    turns.set(agentId, settled);
+    void settled.then(() => {
+      if (turns.get(agentId) === settled) turns.delete(agentId);
+    });
+    return turn;
+  };
+}
