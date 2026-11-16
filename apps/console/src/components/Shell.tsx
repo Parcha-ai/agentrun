@@ -8,6 +8,8 @@ import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/t
 
 export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "triggers" | "settings";
 
+/** Each section as the browser's tab names it. */
+const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", triggers: "Triggers", settings: "Settings" };
 const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", triggers: "#/triggers", settings: "#/settings/keys" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
@@ -59,8 +61,13 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
   useEffect(() => { if (agentsActive || building) setAgentsExpanded(true); }, [active, building]);
   const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
   const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
+  // The browser's tab names the place: "Runs · AgentRun".
+  const place = PLACES[active];
+  useEffect(() => { document.title = place ? `${place} · AgentRun` : "AgentRun"; }, [place]);
+  const main = useRef<HTMLElement>(null);
   return (
     <div className="relative flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground roomy:flex-row">
+      <Button type="button" size="sm" onClick={() => main.current?.focus()} className="sr-only focus-visible:not-sr-only focus-visible:absolute focus-visible:left-2 focus-visible:top-2 focus-visible:z-toast focus-visible:inline-flex focus-visible:bg-card focus-visible:px-3">Skip to the page</Button>
       <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 roomy:hidden">
         <button type="button" onClick={() => navigate("mission")} aria-label="AgentRun home"><Wordmark /></button>
         <Button size="icon" aria-label="Navigation" aria-expanded={open} onClick={() => setOpen((v) => !v)}><Menu className="size-4" aria-hidden /></Button>
@@ -110,7 +117,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConnectionBanner />
         {banners}
-        <main className="relative min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+        <main ref={main} tabIndex={-1} className="relative min-h-0 min-w-0 flex-1 overflow-auto outline-none">{children}</main>
       </div>
     </div>
   );

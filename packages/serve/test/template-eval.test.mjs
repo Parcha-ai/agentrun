@@ -738,6 +738,19 @@ test("an eval runs its agents with approvals never, whatever the package's defau
   assert.match(markdownReport(report), /Measured with approvals never \(the package's own default is ask\)\./);
 });
 
+test("an eval of a package with a composio trigger runs its case: the eval's own server can't set the trigger up (no public URL), so its apply skips it, as a github trigger's, and the fake stands in for the need", { timeout: 300_000 }, async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const manifest = join(dir, "agent.md");
+  writeFileSync(manifest, readFileSync(manifest, "utf8")
+    .replace("  - source: url\n    toolkit: crm\n", "  - source: composio\n    toolkit: crm\n    required: true\n")
+    .replace("learning: true", "learning: true\nbudget: { per_run_usd: 0.5 }\ntriggers:\n  - name: contact-updated\n    source: { kind: composio, server: crm, event: CRM_CONTACT_UPDATED, config: {} }\n    target: { kind: start_run, input: { content: \"Answer for the contact.\" } }"));
+  const report = await evalTemplate({ dir, cases: ["mcp-match"], runs: 1, serve: { faux: FAUX } });
+  assert.equal(report.cases[0].error, undefined, JSON.stringify(report.cases[0]));
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  assert.equal(report.cases[0].pass, true, JSON.stringify(report.cases[0].runs[0]?.graders));
+});
+
 test("an eval's agent has none of the package's triggers: market-monitor's weekly schedule is deleted at its apply", { timeout: 300_000 }, async (t) => {
   const { api, baseUrl, token } = await serve(t, { faux: FAUX });
   const report = await evalTemplate({ dir: join(TEMPLATES_DIR, "market-monitor"), cases: ["nothing-changed"], runs: 1, server: { baseUrl, token } });

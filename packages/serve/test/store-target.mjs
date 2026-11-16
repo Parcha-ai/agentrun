@@ -4,6 +4,7 @@
 // next run of the same file sweeps them first. `raw` reads and writes a store's rows directly, on either database, with
 // the same `?` statements.
 import { createHash } from "node:crypto";
+import { connect, createServer } from "node:net";
 import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach } from "node:test";
@@ -180,6 +181,35 @@ export async function dropSchema(schema, tries = 10) {
   } finally {
     await c.end();
   }
+}
+
+/** A loopback link to the test Postgres that holds every chunk `ms` each way before it passes it on: each round trip
+ *  costs at least 2 × `ms`, whatever the database's own speed (a database a few ms away, as a loaded host's is). Its URL,
+ *  and `close()`, which ends it and its connections: call it after the stores opened on the URL are closed. */
+export async function farLink(ms) {
+  const target = new URL(PG_URL);
+  const sockets = new Set();
+  const server = createServer((socket) => {
+    const upstream = connect(Number(target.port || 5432), target.hostname);
+    for (const [from, to] of [[socket, upstream], [upstream, socket]]) {
+      sockets.add(from);
+      from.setNoDelay(true);
+      from.on("error", () => undefined);
+      // Timers of one length fire in the order they were set: the chunks keep their order.
+      from.on("data", (chunk) => setTimeout(() => to.writable && to.write(chunk), ms));
+      from.on("close", () => setTimeout(() => to.destroy(), ms));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = new URL(PG_URL);
+  url.host = `127.0.0.1:${server.address().port}`;
+  return {
+    url: url.toString(),
+    close: () => new Promise((resolve) => {
+      for (const socket of sockets) socket.destroy();
+      server.close(resolve);
+    }),
+  };
 }
 
 /** A store's place as a test passes it around: SQLite's file path, or "pg:<schema>". */

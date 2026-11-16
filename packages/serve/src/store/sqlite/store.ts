@@ -29,7 +29,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
   if (!/^(0|[1-9][0-9]{0,15})$/.test(cursor)) throw new TypeError(`${JSON.stringify(cursor)} is not a run-change cursor this store gave`);
   return Number(cursor);
 };
-import { type Dialect, settledBody } from "../dialect.js";
+import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, readLearningStarts, writeLaunch } from "./run-launch.js";
@@ -342,6 +342,14 @@ const SECOND_ANSWERS_REFUSED = `UPDATE commands SET taken_at = COALESCE(taken_at
 
 /** How many released claims a store remembers, to refuse their journals. */
 const RELEASED_KEPT = 1024;
+
+/** The most claims one statement of renewMany renews. Its WHERE joins each claim's fence with OR, and each OR is one more
+ *  level of the expression tree, whose depth SQLite bounds at 1,000 (SQLITE_MAX_EXPR_DEPTH: 997 claims already fail). 250
+ *  stays a quarter of that, and a runner's 300 claims are still two statements on a database a few ms away. */
+const RENEW_CHUNK = 250;
+/** A claim as renewMany matches it to the rows its update returned: its run, epoch and runner, each string as the store
+ *  writes text (cleanText: a NUL as U+FFFD), so a claim and the row the database wrote for it make one key. */
+const renewKey = (runId: string, epoch: number, runner: string): string => `${cleanText(runId)}\u0000${epoch}\u0000${cleanText(runner)}`;
 
 /** The key of a claim's one journal: its run and epoch. */
 const journalKey = (claim: Pick<Claim, "runId" | "epoch">): string => `${claim.runId}\u0000${claim.epoch}`;
@@ -1718,8 +1726,12 @@ class SqliteStore implements Store {
       );
       const epochs = new Map(rows.map((row) => [row.id, row.epoch]));
       const untils = new Map(rows.map((row) => [row.id, Number(row.claimed_until)]));
-      // A take or reclaim leaves no viewer of an older claim behind: its rows go in this transaction, every kind.
-      for (const row of rows) await tx.run("DELETE FROM computer_viewers WHERE run_id = ? AND epoch < ?", row.id, row.epoch);
+      // A take or reclaim leaves no viewer of an older claim behind: its rows go in this transaction, every kind, in one
+      // statement for the whole batch (each run's epoch is the one just moved to), never one round trip a run.
+      if (rows.length > 0) await tx.run(
+        `DELETE FROM computer_viewers WHERE run_id IN (${rows.map(() => "?").join(", ")}) AND epoch < (SELECT epoch FROM runs WHERE runs.id = computer_viewers.run_id)`,
+        ...rows.map((row) => row.id),
+      );
       // A newer claim of a run supersedes its release here: journal() refuses by epoch, and the newer epoch passes.
       for (const { id } of picked) this.#released.delete(id);
       // A running run that still names its runner was taken from it: that runner's lease ran out mid-run (CLAIMABLE).
@@ -1750,20 +1762,30 @@ class SqliteStore implements Store {
 
   async renewMany(claims: readonly Claim[], { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<(Claim | Fenced)[]> {
     if (claims.length === 0) return [];
-    // One transaction for every claim, each update on its own: a claim another runner took changes no row and is answered
-    // Fenced, never rolling the others back.
+    // One transaction for every claim, in a few statements whatever their count: the rows held in one, then one update
+    // for each RENEW_CHUNK claims, each claim under its own fence. A runner's 300 claims are never 300 round trips with
+    // their rows held, which on a database a few ms away outlast the lease's margin and lose every claim at once. A claim
+    // another runner took changes no row and is answered Fenced, never rolling the others back.
     return this.#db.transaction(async (tx) => {
-      // Held in one order (by run id), so two renews of overlapping runs never wait on each other in a cycle.
-      for (const runId of [...new Set(claims.map((claim) => claim.runId))].sort()) await this.#holdRun(tx, runId);
-      const out: (Claim | Fenced)[] = [];
-      for (const claim of claims) {
+      // Every row held first, in one order (the dialect's, by run id), so two renews of overlapping runs never wait on
+      // each other in a cycle, and the clock below is read once the rows are held.
+      await this.#db.dialect.lockRows(tx, "runs", "id", [...new Set(claims.map((claim) => claim.runId))]);
+      const renewed = new Map<string, number>();
+      for (let at = 0; at < claims.length; at += RENEW_CHUNK) {
+        const chunk = claims.slice(at, at + RENEW_CHUNK);
         // The deadlines' clock (the database's on Postgres) judges each lease and stamps the next one.
         const now = this.#clock();
-        const fence = claimFence(claim, now);
-        const renewed = await tx.all<{ id: string; claimed_until: number }>(`UPDATE runs SET claimed_until = ${now.sql} + ? WHERE ${fence.where} AND runner = ? RETURNING id, claimed_until`, ...now.params, leaseMs, ...fence.params, claim.runner);
-        out.push(renewed.length > 0 ? { ...claim, until: Number(renewed[0]!.claimed_until) } : new Fenced(claim.runId, claim.epoch));
+        const fences = chunk.map((claim) => claimFence(claim, now));
+        const rows = await tx.all<{ id: string; epoch: number; runner: string; claimed_until: number }>(
+          `UPDATE runs SET claimed_until = ${now.sql} + ? WHERE ${fences.map((fence) => `(${fence.where} AND runner = ?)`).join(" OR ")} RETURNING id, epoch, runner, claimed_until`,
+          ...now.params, leaseMs, ...fences.flatMap((fence, i) => [...fence.params, chunk[i]!.runner]),
+        );
+        for (const row of rows) renewed.set(renewKey(row.id, Number(row.epoch), row.runner), Number(row.claimed_until));
       }
-      return out;
+      return claims.map((claim) => {
+        const until = renewed.get(renewKey(claim.runId, claim.epoch, claim.runner));
+        return until === undefined ? new Fenced(claim.runId, claim.epoch) : { ...claim, until };
+      });
       // On the lease connection (TransactionOptions.lease): a runner whose loops hold every pool client still renews.
     }, { lease: true });
   }

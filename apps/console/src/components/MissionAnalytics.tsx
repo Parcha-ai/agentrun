@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type KeyboardEvent, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
 import { Segmented } from "@/components/ui/segmented";
@@ -66,7 +66,7 @@ function HarnessTable({ rows, basis }: { rows: Analytics["by_harness_effort"]; b
   return (
     <Section title="Success by harness and effort">
       {rows.length ? (
-        <div className="overflow-x-auto"><table className="w-full border-collapse text-body">
+        <div className="overflow-x-auto" role="region" aria-label="Success by harness and effort, table" tabIndex={0}><table className="w-full border-collapse text-body">
           <thead><tr className="caps border-b text-label text-muted-foreground">{["Harness", "Effort", "Runs", "Success", "Tokens", "Cost"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((g) => {
@@ -94,7 +94,7 @@ function ToolsTable({ tools }: { tools: Analytics["tools"] }) {
   return (
     <Section title="Top tools">
       {tools.length ? (
-        <div className="overflow-x-auto"><table className="w-full border-collapse text-body">
+        <div className="overflow-x-auto" role="region" aria-label="Top tools, table" tabIndex={0}><table className="w-full border-collapse text-body">
           <thead><tr className="caps border-b text-label text-muted-foreground">{["Tool", "Calls", "Errors", "Error rate"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {tools.map((x) => (
@@ -170,7 +170,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
       </div>
       <details className="border bg-card px-5 py-3">
         <summary className="caps cursor-pointer text-label text-muted-foreground">Table</summary>
-        <div className="overflow-x-auto"><table className="mt-2 w-full border-collapse font-mono text-small">
+        <div className="overflow-x-auto" role="region" aria-label="Per day, table" tabIndex={0}><table className="mt-2 w-full border-collapse font-mono text-small">
           <thead><tr className="caps text-label text-muted-foreground">{["Day", "Runs", "Completed", "Failed", "Other", "Tokens"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
           <tbody>{days.map((d) => <tr key={d.day}><td className="py-0.5 pr-4">{d.day}</td><td className="pr-4">{d.runs}</td><td className="pr-4">{d.completed}</td><td className="pr-4">{d.failed}</td><td className="pr-4">{otherOf(d)}</td><td className="pr-4">{d.tokens === null ? "Unknown" : d.tokens.toLocaleString("en-US")}</td></tr>)}</tbody>
         </table></div>
@@ -180,12 +180,22 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
 }
 
 /** Columns on one baseline, at most 24px wide, segments stacked bottom-up with a 2px surface gap;
- *  a hairline grid at the axis' top and middle. Each column is a focus target; its in-flow caption stays inside narrow cards without clipping. */
+ *  a hairline grid at the axis' top and middle. Its in-flow caption stays inside narrow cards without clipping. The chart is
+ *  one stop for Tab (the day last read, the latest at first); Left, Right, Home and End move between its days. */
 function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLocaleString("en-US") }: {
   days: Analytics["by_day"]; top: number; label: string; format?: (n: number) => string;
   stack: (d: AnalyticsGroup) => { className: string; value: number | null }[]; readout: (d: AnalyticsGroup & { day: string }) => string[];
 }) {
   const H = 140;
+  const [at, setAt] = useState(days.length - 1);
+  const stop = Math.min(at, days.length - 1);
+  const move = (e: KeyboardEvent<HTMLDivElement>) => {
+    const to = e.key === "ArrowRight" ? Math.min(stop + 1, days.length - 1) : e.key === "ArrowLeft" ? Math.max(stop - 1, 0) : e.key === "Home" ? 0 : e.key === "End" ? days.length - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    setAt(to);
+    (e.currentTarget.querySelectorAll<HTMLElement>('[role="listitem"]')[to])?.focus();
+  };
   const [hovered, setHovered] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
   const selected = days.find((day) => day.day === (hovered ?? focused));
@@ -195,16 +205,16 @@ function Bars({ days, top, label, stack, readout, format = (n: number) => n.toLo
         <span>{format(top)}</span><span>{format(top / 2)}</span><span>0</span>
       </div>
       <div className="min-w-0 flex-1">
-        <div className="relative flex items-end gap-px border-b border-border-strong" style={{ height: H }} role="list" aria-label={label} onMouseLeave={() => setHovered(null)}>
+        <div className="relative flex items-end gap-px border-b border-border-strong" style={{ height: H }} role="list" aria-label={label} onMouseLeave={() => setHovered(null)} onKeyDown={move}>
           <div className="pointer-events-none absolute inset-x-0 top-0 border-t border-border" aria-hidden />
           <div className="pointer-events-none absolute inset-x-0 top-1/2 border-t border-border" aria-hidden />
-          {days.map((d) => {
+          {days.map((d, i) => {
             const values = stack(d);
             const unknown = values.some((part) => part.value === null);
             const parts = values.filter((part): part is { className: string; value: number } => part.value !== null && part.value > 0);
             return (
-              <div key={d.day} role="listitem" tabIndex={0} aria-label={`${d.day}: ${readout(d).join(", ")}`}
-                onMouseEnter={() => setHovered(d.day)} onFocus={() => setFocused(d.day)} onBlur={() => setFocused(null)}
+              <div key={d.day} role="listitem" tabIndex={i === stop ? 0 : -1} aria-label={`${d.day}: ${readout(d).join(", ")}`}
+                onMouseEnter={() => setHovered(d.day)} onFocus={() => { setFocused(d.day); setAt(i); }} onBlur={() => setFocused(null)}
                 className="group relative flex h-full min-w-0 flex-1 flex-col items-center justify-end focus-visible:outline-focus focus-visible:outline-ring hover:bg-accent/60 focus-visible:bg-accent/60">
                 {unknown && <span aria-hidden className="font-mono text-small text-muted-foreground">?</span>}
                 <div className="flex w-full max-w-6 flex-col-reverse gap-0.5">

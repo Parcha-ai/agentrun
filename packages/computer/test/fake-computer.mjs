@@ -232,6 +232,7 @@ function fakeDaemon(hello, computer) {
  *   writes them (default none; "no list": a daemon that lists none); `listenerSearchIncomplete`: the tables it could not
  *   read.
  * - `rootRunsWritable`: the paths isolation.root-runs' check reads as writable by the computer's user (default none).
+ * - `readable`: files the computer's user reads, by path, with their text (default none).
  * - `persistence`: capabilities().persistence ({ keepsState: true, resume }), left out unless given. With it, check()
  *   takes spec.owner with no lifetime, create labels the computer with its owner, release "detach" stops an agent's
  *   computer with its files kept (and, with resume, its processes), and attach with a claim brings it back under the
@@ -241,6 +242,8 @@ function fakeDaemon(hello, computer) {
  * - `gpu`: capabilities().gpu, left out unless given (a computer asked with one has it, read back by attach and listed by
  *   nvidia-smi -L inside); `gpuUnseen`: its programs see no GPU (nvidia-smi not found); `gpuReadBack`: what attach
  *   reports instead; `checkIgnoresGpu`: check() takes any spec.gpu, declared or not.
+ * - `wakesDeleted`: a connect to a deleted computer is refused not_found, and brings it back, as a vendor that wakes a
+ *   machine on the next request does.
  */
 export function fakeComputers({
 	id = "fake",
@@ -292,6 +295,7 @@ export function fakeComputers({
 	listeners = [],
 	listenerSearchIncomplete = [],
 	rootRunsWritable = [],
+	readable = {},
 	display,
 	persistence,
 	brokenPersistence,
@@ -299,6 +303,7 @@ export function fakeComputers({
 	gpuUnseen = false,
 	gpuReadBack,
 	checkIgnoresGpu = false,
+	wakesDeleted = false,
 } = {}) {
 	/** The mount as attach and list read it back: its kind and source, never the token unless broken so. An Archil mount
 	 *  is exclusive, under the epoch of the computer's agentrun.epoch label; with no such label it is a mount in words. */
@@ -316,6 +321,8 @@ export function fakeComputers({
 		return asked.kind === "bind" ? asked.path : join(disks[asked.disk], asked.folder);
 	};
 	const computers = new Map();
+	/** The computers release delete removed, by name: wakesDeleted brings one back. */
+	const deleted = new Map();
 	const made = [];
 	const calls = [];
 	let connections = 0;
@@ -392,7 +399,7 @@ export function fakeComputers({
 					processes: [],
 					listPage,
 					tree: new Map(),
-					contents: new Map(),
+					contents: new Map(Object.entries(readable).map(([path, text]) => [path, Buffer.from(text)])),
 					filesPage,
 					bound: folderOf(spec.mount),
 					toolCannotWrite,
@@ -457,7 +464,10 @@ export function fakeComputers({
 		},
 		async connect(ref) {
 			if (connectThrows) throw new Error(connectThrows);
-			if (!computers.has(ref.name)) return fail("not_found", `no computer ${ref.name}`);
+			if (!computers.has(ref.name)) {
+				if (wakesDeleted && deleted.has(ref.name)) computers.set(ref.name, deleted.get(ref.name));
+				return fail("not_found", `no computer ${ref.name}`);
+			}
 			const value = { protocol: PROTOCOL_VERSION, version, os: "linux", kind, arch: "amd64", groups, ...hello };
 			connections++;
 			let closed = false;
@@ -487,7 +497,10 @@ export function fakeComputers({
 			}
 			if (record && how === "stop" && stopDeletes) computers.delete(ref.name);
 			if (record && how === "stop") record.state = "stopped";
-			if (record && how === "delete" && !keepOnRelease) computers.delete(ref.name);
+			if (record && how === "delete" && !keepOnRelease) {
+				computers.delete(ref.name);
+				deleted.set(ref.name, record);
+			}
 			return ok(undefined);
 		},
 	};
