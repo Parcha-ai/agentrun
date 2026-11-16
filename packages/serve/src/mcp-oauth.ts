@@ -286,6 +286,13 @@ export async function mcpServerAt(url: URL, signal: AbortSignal, network: OAuthN
   return checked(`the MCP server at ${url.host}`, url.href, signal, network, reach);
 }
 
+/** Where a read of a calendar's file at `url` may go (calendar/fetch.ts, each redirect hop): `mcpServerAt`'s rule, the
+ *  server's one, in the calendar's words. Dialled with dialAt. */
+export async function calendarAt(url: URL, signal: AbortSignal, network: OAuthNetwork, reach: Reach = {}): Promise<{ refused: string; unresolved?: true } | { address: string | undefined }> {
+  if (reach.loopback && loopbackAllowed(url, url.href, reach.own ?? [])) return { address: undefined };
+  return checked(`the calendar at ${url.host}`, url.href, signal, network, reach);
+}
+
 /** A fetch to the MCP server `mcpServerAt` checked: dialled at `address` (the network's dial, else its fetch), or as
  *  written when there is none (a loopback URL a local install allows), through `plain`. */
 export const dialAt = (network: OAuthNetwork, address: string | undefined, plain: typeof fetch = fetch) => (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {

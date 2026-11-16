@@ -12,6 +12,8 @@
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
 import { CHATGPT_PLAN_ROW } from "../chatgpt-plan.js";
+import { calendarRowSecrets } from "../calendar/address.js";
+import { CALENDAR_ROW } from "../calendar/names.js";
 import { accountRowSecrets, EMAIL_ACCOUNT_ROW } from "../email/account.js";
 import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
@@ -99,7 +101,7 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "run_launch":
       return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     case "sealed_keys":
-      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : [plain], whole: [] };
+      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : row.where.name === CALENDAR_ROW ? calendarRowSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }

@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.screen-timeout",
-  "version": 1,
+  "version": 2,
   "title": "Set the screen timeout in Settings",
   "split": "dev",
   "tags": ["settings", "choice"],
@@ -34,6 +34,7 @@
     }
   ],
   "instruction": "Using the Settings app, make the screen turn off after {{t.say}} of inactivity.",
+  "exec": "deny",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
@@ -52,6 +53,10 @@
     }
   ],
   "oracle": [
-    { "method": "exec.run", "params": { "argv": ["settings", "put", "system", "screen_off_timeout", "{{t.want}}"], "timeoutMs": 20000 } }
+    { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "Scroll the home list until Display shows.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Display", "timeoutMs": 5000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Display" } } } }], "expect": { "text": "Screen timeout", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "15 seconds is on the timeout page only (no pick starts there).", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Screen timeout" } } } }], "expect": { "text": "15 seconds", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "{{t.say}}" } } } }] } }
   ]
 }

@@ -37,6 +37,9 @@ import "./mcp-secret-writes.js";
 // The email account's routes (email/routes.ts), each marked x-agentrun-secret whole, registered with the one gate as it
 // loads: the view among them, so the API token never reads the account.
 import "./email/routes.js";
+// The calendar's routes (calendar/routes.ts), each marked x-agentrun-secret whole, registered the same way: the view
+// among them, so the API token never reads which calendar is saved.
+import "./calendar/routes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
@@ -246,6 +249,20 @@ const EMAIL_ACCOUNT_BODY = {
 };
 /** One half of an email account test. */
 const MAIL_CHECK = closed({ ok: { type: "boolean" }, message: { type: "string", description: "In plain words: \"Signed in to <host>.\", with INBOX's count for IMAP, or why not." } });
+/** GET and PUT /settings/calendar's answer (calendar/address.ts calendarView): the calendar, never its address. */
+const CALENDAR_VIEW = closed({
+  configured: { type: "boolean", description: "A calendar is saved and its address opens with this server's seal key: calendar_events reads it." },
+  host: { type: ["string", "null"], description: "The host its address reads from (calendar.google.com), never the address." },
+  name: { type: ["string", "null"], description: "The calendar's own name (its X-WR-CALNAME), as the save read it; null when that read failed or it has none." },
+  time_zone: { type: ["string", "null"], description: "The calendar's own time zone (its X-WR-TIMEZONE, else the server's), as the save read it; null when that read failed." },
+}, "The server's one calendar, never its iCal address.");
+/** PUT /settings/calendar's and POST /settings/calendar/test's body: the calendar's iCal address. */
+const CALENDAR_BODY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    url: { type: "string", minLength: 1, maxLength: 2048, "x-agentrun-secret": true, description: "The calendar's secret iCal address (https://… or webcal://…, read as https://): Google Calendar's \"Secret address in iCal format\", Outlook's ICS link, iCloud's public calendar link. Sealed, never answered or shown again." },
+  },
+};
 /** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
 const CHATGPT_SIGN_IN = {
   type: "object", additionalProperties: false, required: ["state"],
@@ -2193,6 +2210,44 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: false, content: { "application/json": { schema: EMAIL_ACCOUNT_BODY } } },
       responses: { "200": json(closed({ ok: { type: "boolean", description: "Both signed in." }, imap: MAIL_CHECK, smtp: MAIL_CHECK }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
       "x-agentrun-serve": "email/1",
+    },
+  },
+  "/settings/calendar": {
+    get: {
+      operationId: "getCalendar", tags: ["local"], summary: "This server's calendar: its host, name and time zone, never its address",
+      description: "The one calendar calendar_events reads. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CALENDAR_VIEW, "The calendar."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    put: {
+      operationId: "saveCalendar", tags: ["local"], summary: "Save this server's calendar, its iCal address sealed",
+      description: "Replaces the calendar. The address is https (webcal:// is read as https://; plain http, another scheme, or a user and password in it is refused in words), sealed under the server's seal key, and in no answer, event, log line or run input. The calendar is read once for its own name and time zone; a read that fails saves the address all the same (name and time_zone null): POST /settings/calendar/test says why. 422 by field for a body that does not read. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { ...CALENDAR_BODY, required: ["url"] } } } },
+      responses: { "200": json(CALENDAR_VIEW, "Saved."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    delete: {
+      operationId: "deleteCalendar", tags: ["local"], summary: "Forget this server's calendar",
+      description: "Removes the calendar and its sealed address. calendar_events then answers that no calendar is saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+  },
+  "/settings/calendar/test": {
+    post: {
+      operationId: "testCalendar", tags: ["local"], summary: "Read the calendar and say what it holds",
+      description: "Reads the saved calendar with an empty body, or the address in the body (saved nowhere), as calendar_events reads it (https only; a private address refused unless its host is allowed in Settings → MCP servers; 10 MB, 20 s, 5 redirects), and answers in words: \"Work: 214 events, time zone America/New_York, next: Standup, Mon Nov 17 09:30\" (its name, its events and series, its time zone, and its next event in the next 62 days), or why it couldn't be read, never the address. 422 for a body that does not read, or an empty body with no calendar saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: false, content: { "application/json": { schema: CALENDAR_BODY } } },
+      responses: { "200": json(closed({ ok: { type: "boolean", description: "The calendar was read." }, message: { type: "string", description: "In plain words: what it holds, or why it couldn't be read." } }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
     },
   },
   "/settings/chatgpt": {
