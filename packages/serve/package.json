@@ -67,6 +67,7 @@
     "@secretlint/secretlint-rule-preset-recommend": "13.1.0",
     "croner": "11.0.0",
     "disk": "1.12.0",
+    "fast-xml-parser": "4.5.7",
     "imapflow": "2.11.0",
     "ipaddr.js": "2.5.0",
     "mailparser": "3.14.3",
