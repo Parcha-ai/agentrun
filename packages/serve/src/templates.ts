@@ -278,6 +278,18 @@ export function composioTriggerSkipped(packageName: string, trigger: Json, why: 
   return `The ${packageName} template's trigger ${String(trigger.name)} (Composio ${String(source.event)} on ${String(source.server)}) was not made: ${why}`;
 }
 
+/** Whether a feed trigger, its parameters filled, reads no feed: its urls one whole array parameter the apply was given
+ *  empty. An apply skips it, never itself, as it skips a github trigger with GitHub not connected (a warning under
+ *  triggers.<i>): the agent stands. */
+export const feedLeftEmpty = (trigger: Json): boolean => isObject(trigger.source) && trigger.source.kind === "feed" && Array.isArray(trigger.source.urls) && !trigger.source.urls.length;
+
+/** What an apply says of a feed trigger it skipped (feedLeftEmpty): which, and the parameter to set. `declared` is the
+ *  package's own urls ("${parameters.status_feeds}"). */
+export function feedTriggerEmpty(packageName: string, trigger: Json, declared: unknown): string {
+  const named = (typeof declared === "string" ? [...declared.matchAll(PLACEHOLDER)][0]?.[1] : undefined) ?? "its feeds parameter";
+  return `The ${packageName} template's feed trigger ${String(trigger.name)} was not made: no feeds given in ${named}. Apply again with ${named} set to the feeds it should read.`;
+}
+
 /** Where the owner makes a composio trigger an apply skipped, once what refused it is fixed. */
 export const COMPOSIO_TRIGGER_FIX = "Once that's fixed, make it from Triggers → New app trigger for this agent, with the same event and config.";
 

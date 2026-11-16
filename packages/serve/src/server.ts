@@ -148,7 +148,7 @@ import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
 import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
-import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
+import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
 import { templateInstallLink, templateLink } from "./console-links.js";
 import { GITHUB_HOSTS } from "./template-source.js";
@@ -2288,7 +2288,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Every trigger is checked as POST /triggers checks it, its parameters filled, before anything is made: a schedule
     // from a parameter that does not read, or a date that has passed, refuses the apply (422 under triggers.<i>). "Passed"
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
-    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema);
+    // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
+    const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
+    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !emptyFeeds.has(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
@@ -2304,6 +2306,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const unconnected = new Map<number, ApiError>();
     try {
       for (const [i, trigger] of made.triggers.entries()) {
+        if (emptyFeeds.has(i)) continue;
         try {
           const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
           ids.push(madeId);
@@ -2349,12 +2352,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const refused = unconnected.get(i);
       return refused && isObject(trigger.source) && trigger.source.kind === "composio" ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: composioTriggerSkipped(pkg.name, trigger, refused.message), fix: COMPOSIO_TRIGGER_FIX }] : [];
     });
+    // Each feed trigger it skipped for want of a feed: which, and the parameter to set.
+    const feedsSkipped: InputIssue[] = [...emptyFeeds].map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...appShort] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...appShort] };
     return { applied, minted };
   }
 
