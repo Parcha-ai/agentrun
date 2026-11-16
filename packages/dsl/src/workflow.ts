@@ -5,7 +5,7 @@ import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, quoteCheck, type
 import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, GUARD_FIELDS, GUARD_SIGNALS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type GuardSignal, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
-import { DECISION_ERROR_MAX, DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
+import { DECISION_ERROR_MAX, DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, type DecisionImageDigest, type DecisionKind, type DecisionReceipt, type DecisionRule, type DecisionStateSent } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeIssues } from "./workflow-shape.js";
@@ -389,6 +389,9 @@ export type WorkflowDeps = {
     provider?: string;
     /** The images the request carried, by digest (never the bytes), as the host loaded them. */
     images?: DecisionImageDigest[];
+    /** The state the provider sent, and the values it cut, when it cut any to fit its model's context: the receipt
+     *  records it, not the state asked. A failed request's DecisionProviderError carries it as `stateSent`. */
+    state_sent?: DecisionStateSent;
   }>;
   /** The host's step guards (StepGuard), asked after each guarded step ran and before its state is committed: what the
    *  step saw (`input`), what it wrote (`output`), and its own confidence (`self`: an agent or decide node's submitted
@@ -2335,7 +2338,12 @@ async function decide<T>(
       ...(recorded.evidence ? { evidence: recorded.evidence } : {}), ...(recorded.provider ? { provider: recorded.provider } : {}) };
   }
   const request: JudgeRequest = { label: ask.label, kind: ask.judgeKind, ...(item ? { item } : {}), executionPath: path, signal, state: ask.state, questions: ask.questions, decisionId: id, ...choice, ...(images ? { images } : {}) };
-  const seen = stateSeen(ask.state);
+  /** The state the provider sent and the values it cut, when it sent other than `ask.state`: from its result, or from the
+   *  error of a request that failed after it was prepared. */
+  const sentOf = (result: JudgeResult | undefined, error: unknown): DecisionStateSent | undefined => {
+    const sent = result?.state_sent ?? (error instanceof DecisionProviderError ? error.stateSent : undefined);
+    return sent && typeof sent === "object" && Array.isArray(sent.cut) ? sent : undefined;
+  };
   /** The images a receipt names: as the host loaded them, else by token and reference alone. */
   const imagesOf = (result: JudgeResult | undefined): DecisionImageDigest[] | undefined => {
     if (!images) return undefined;
@@ -2354,6 +2362,9 @@ async function decide<T>(
     const answers = result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {};
     const refused = refusedQuestions(answers);
     const source = result?.confidence_source;
+    // What the judge saw is what its provider sent: a value cut to fit the model's context is kept as cut, and named.
+    const sent = sentOf(result, outcome.error);
+    const seen = stateSeen(sent ? sent.state : ask.state);
     return {
       v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
       status: outcome.status, state_sha256, questions: ask.questions, answers,
@@ -2367,6 +2378,7 @@ async function decide<T>(
       ...(evidenceOf(result) ? { evidence: evidenceOf(result) } : {}),
       ...(images ? { images: imagesOf(result) } : {}),
       state: seen.state, state_truncated: seen.truncated,
+      ...(sent ? { state_cut: sent.cut.map(({ path, bytes, sent_bytes }) => ({ path, bytes, sent_bytes })) } : {}),
       ...(outcome.error !== undefined ? errorOfReceipt(String(outcome.error instanceof EscalationSignal ? outcome.error.escalation.summary : (outcome.error as Error)?.message || outcome.error)) : {}),
     };
   };

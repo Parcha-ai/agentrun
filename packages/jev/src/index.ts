@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { APIConnectionError, APIError, APITimeoutError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
 import { validateAnswers, SystemOneError, isSystemOneResponseReason, checkCapabilities, DecisionProviderError, imageDimensions } from "@parcha/agentrun-dsl";
-import type { WorkflowDeps, SystemOneResponseReason, DecisionProvider, DecisionProviderErrorCode } from "@parcha/agentrun-dsl";
+import type { WorkflowDeps, SystemOneResponseReason, DecisionProvider, DecisionProviderErrorCode, DecisionStateCut, DecisionStateSent } from "@parcha/agentrun-dsl";
 
 /** Injectable client boundary. Custom clients must honor signal and disable their own retries. */
 export interface JevClient {
@@ -128,6 +128,9 @@ export type JevRequestDiagnostic = {
 /** Deliberately excludes provider bodies, headers, input state, and underlying causes. */
 export class JevError extends Error {
   readonly responseDiagnostic?: JevResponseDiagnostic;
+  /** The state the request held as sent, and the values cut, when it was cut to fit Jev's context before sending: a
+   *  decision receipt records it (jevProvider passes it on as the DecisionProviderError's `stateSent`). */
+  stateSent?: DecisionStateSent;
   constructor(readonly code: JevErrorCode, message: string, readonly attempts: number = 0, readonly status?: number,
     readonly requestDiagnostic?: JevRequestDiagnostic, responseDiagnostic?: JevResponseDiagnostic) {
     super(message);
@@ -187,7 +190,7 @@ function retryAfterMs(headers: unknown): number | undefined {
 
 /** What one call sends: the request, the body its hash is taken over, and the image header when it carries an image or a Box. All of it is
  *  checked before anything is sent: a request that cannot be valid throws the `invalid_request` JevError that names why. */
-function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: number | null, provider: JevProvider, longContext: boolean): { request: SystemOneRequest; body: string; headers?: Record<string, string> } {
+function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: number | null, provider: JevProvider, longContext: boolean): { request: SystemOneRequest; body: string; headers?: Record<string, string>; sent?: DecisionStateSent } {
   let body: string;
   let request: SystemOneRequest;
   const invalid = (reason: JevRequestDiagnostic['reason'], message: string, stateBytes?: number) => new JevError(
@@ -219,14 +222,6 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
   const given = params.assets ?? {};
   if (!isRecord(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
   const references = Object.keys(given);
-  // Jev's context: a request that may not fit the default goes with the long-context header; one that may not fit that
-  // either has its longest state values cut. Never sent over it: Jev would refuse it whole (HTTP 400 max_tokens_exceeded).
-  const fit = fitContext(request.state, request.questions, longContext, references);
-  if (fit === null) throw invalid("over_context", `Jev's questions, with the state's names and shape, are over its ${longContext ? JEV_CONTEXT_TOKENS.long : JEV_CONTEXT_TOKENS.perQuestion}-token context even with every state value cut; ask fewer or shorter questions. No request was sent.`);
-  if (fit.cut) request = { ...request, state: fit.state as SystemOneRequest["state"] };
-  // The hash names a long-context request as one: the same state and questions without the header are another request.
-  const long = fit.long ? { long_context: true } : {};
-  if (fit.long || fit.cut) body = JSON.stringify({ ...request, ...long });
   // Images and Box questions: validated whole before any send; the header goes with exactly these requests.
   const hasBox = Object.values(request.questions).some(question => isRecord(question) && question.type === "box");
   const carriesImage = references.length > 0;
@@ -235,6 +230,8 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
   if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
   let assets: Record<string, Image> | undefined;
   let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
+  // The context the images take: each use of a reference adds its image again (https://docs.typesafe.ai/images).
+  let imageTokens = 0, imageUses = 0;
   if (carriesImage) {
     // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
     const texts = [...stringValues(request.state), ...Object.values(request.questions).flatMap(question => isRecord(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
@@ -245,54 +242,95 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
         && isRecord(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
         && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
       if (!sound) throw invalid("invalid_assets", `Each image is a PNG or JPEG file of at most ${MAX_IMAGE_BYTES / 1024 / 1024} MiB, with bytes that are that type and a plain reference. No request was sent.`);
-      if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
+      const uses = texts.reduce((count, text) => count + text.split(reference).length - 1, 0);
+      if (uses === 0) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
       const size = imageDimensions(image.bytes);
       if (size === null) throw invalid("invalid_assets", `The image ${reference} has no width and height its header can be read from. No request was sent.`);
       if (size.width > JEV_MAX_IMAGE_SIDE_PX || size.height > JEV_MAX_IMAGE_SIDE_PX) throw invalid("invalid_assets",
         `The image ${reference} is ${size.width}x${size.height} px; Jev takes at most ${JEV_MAX_IMAGE_SIDE_PX} px on each side. Render it smaller (a letter page at 140 dpi is 1190x1540). No request was sent.`);
+      imageTokens += uses * jevImageTokens(size.width, size.height);
+      imageUses += uses;
       assets[reference] = new Image(image.bytes);
       assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
     }
+  }
+  // Jev's context: a request that may not fit the default goes with the long-context header; one that may not fit that
+  // either has its longest state values cut. Never sent over it: Jev would refuse it whole (HTTP 400 max_tokens_exceeded).
+  const fit = fitContext(request.state, request.questions, longContext, references, imageTokens);
+  const context = longContext ? JEV_CONTEXT_TOKENS.long : JEV_CONTEXT_TOKENS.perQuestion;
+  if (fit === null) throw invalid("over_context", imageTokens > 0
+    ? `Jev's questions and the request's ${imageUses} image use${imageUses === 1 ? "" : "s"} (held at ${imageTokens} tokens, each use of a reference adding its image again), with the state's names and shape, are over its ${context}-token context even with every state value cut; send fewer or smaller images, or ask fewer or shorter questions. No request was sent.`
+    : `Jev's questions, with the state's names and shape, are over its ${context}-token context even with every state value cut; ask fewer or shorter questions. No request was sent.`);
+  const sent: DecisionStateSent | undefined = fit.cut.length ? { state: fit.state, cut: fit.cut } : undefined;
+  if (sent) request = { ...request, state: fit.state as SystemOneRequest["state"] };
+  // The hash names a long-context request as one: the same state and questions without the header are another request.
+  const long = fit.long ? { long_context: true } : {};
+  if (fit.long || sent) body = JSON.stringify({ ...request, ...long });
+  if (carriesImage) {
     // The hash names the images by their own digests, so it identifies the request that was sent without holding the bytes.
     body = JSON.stringify({ ...request, ...long, assets: assetDigests });
     request = { ...request, assets };
   }
   const headers = { ...(carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : {}), ...(fit.long ? { [LONG_CONTEXT_HEADER]: "true" } : {}) };
-  return { request, body, ...(Object.keys(headers).length ? { headers } : {}) };
+  return { request, body, ...(Object.keys(headers).length ? { headers } : {}), ...(sent ? { sent } : {}) };
 }
 
-/** UTF-8 bytes of `value`'s JSON. A token is at least one byte of text, so a request's bytes bound its tokens from above
- *  (images aside: Jev counts an image's tokens by its pixels, which its side limit bounds). */
+/** UTF-8 bytes of `value`'s JSON. A token is at least one byte of text, so a request's bytes bound its text's tokens from
+ *  above. Images are held apart, by their pixels (jevImageTokens). */
 const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
 
+/** The side of the pixel square a request's context is held one token for, in each image it carries. */
+const IMAGE_PATCH_PX = 14;
+/** The tokens a request's context is held for one use of a `width` x `height` image: one per 14x14-pixel patch, each side
+ *  rounded up, so a full-size image (1568x1568) is held 12,544. TypeSafe publishes no figure (its images page, read
+ *  2026-11-16: "We'll be providing guidance on estimating image token usage soon"), only that image tokens count toward
+ *  the context and each use of a reference adds the image again. So this is a bound, not an estimate: four times the
+ *  tokens of a vision encoder that merges 2x2 patches of 14 pixels (28x28 pixels a token, as Qwen2-VL), and about 3.8
+ *  times Claude's 750 square pixels a token at the same 1568-pixel side limit. */
+export function jevImageTokens(width: number, height: number): number {
+  return Math.ceil(width / IMAGE_PATCH_PX) * Math.ceil(height / IMAGE_PATCH_PX);
+}
+
+/** RFC 6901 JSON Pointer of a key path. */
+const pointer = (path: readonly (string | number)[]): string => path.map(key => `/${String(key).replace(/~/g, "~0").replace(/\//g, "~1")}`).join("");
+
 /** What a request sends for `state` and `questions` to stay inside Jev's context (JEV_CONTEXT_TOKENS), measured by the
- *  bytes that bound its tokens: the state as is when it fits the default context; else, with `longContext`, as is under
- *  the long-context header (`long`) when it fits that; else its string values cut, longest first, to one common length
- *  each ends at (JEV_CUT_MARK), as long as the room left allows (`cut`). A string holding an image reference is never
- *  cut. Null when even every value cut would not fit: the questions alone are too long. */
-function fitContext(state: unknown, questions: Record<string, unknown>, longContext: boolean, keep: readonly string[]): { state: unknown; long: boolean; cut: boolean } | null {
+ *  bytes that bound its text's tokens, with `imageTokens` (its images, every use) held apart: the state as is when it fits
+ *  the default context; else, with `longContext`, as is under the long-context header (`long`) when it fits that; else its
+ *  string values cut, longest first, to one common length each ends at (JEV_CUT_MARK), as long as the room left allows,
+ *  each one cut named by its place, its bytes and its bytes as sent (`cut`). A string holding an image reference is never
+ *  cut. Null when even every value cut would not fit: the questions and images alone are too long. */
+function fitContext(state: unknown, questions: Record<string, unknown>, longContext: boolean, keep: readonly string[], imageTokens: number): { state: unknown; long: boolean; cut: DecisionStateCut[] } | null {
   const longest = Math.max(0, ...Object.entries(questions).map(([id, question]) => jsonBytes({ [id]: question })));
   const all = jsonBytes(questions);
-  const room = (perQuestion: number, perRequest: number) => Math.min(perQuestion - longest, perRequest - all) - FRAME_TOKENS;
+  const room = (perQuestion: number, perRequest: number) => Math.min(perQuestion - longest, perRequest - all) - FRAME_TOKENS - imageTokens;
   const bytes = jsonBytes(state);
   const normal = room(JEV_CONTEXT_TOKENS.perQuestion, JEV_CONTEXT_TOKENS.perRequest);
-  if (bytes <= normal) return { state, long: false, cut: false };
+  if (bytes <= normal) return { state, long: false, cut: [] };
   const limit = longContext ? room(JEV_CONTEXT_TOKENS.long, JEV_CONTEXT_TOKENS.long) : normal;
-  if (bytes <= limit) return { state, long: longContext, cut: false };
-  const cutAt = (cap: number) => (value: unknown): unknown => {
-    if (typeof value === "string") return cutText(value, cap, keep);
-    if (Array.isArray(value)) return value.map(cutAt(cap));
-    if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, cutAt(cap)(each)]));
-    return value;
+  if (bytes <= limit) return { state, long: longContext, cut: [] };
+  const cutAt = (cap: number, cuts?: DecisionStateCut[]) => {
+    const walk = (value: unknown, path: (string | number)[]): unknown => {
+      if (typeof value === "string") {
+        const sent = cutText(value, cap, keep);
+        if (cuts && sent !== value) cuts.push({ path: pointer(path), bytes: Buffer.byteLength(value, "utf8"), sent_bytes: Buffer.byteLength(sent, "utf8") });
+        return sent;
+      }
+      if (Array.isArray(value)) return value.map((each, index) => walk(each, [...path, index]));
+      if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, each]) => [key, walk(each, [...path, key])]));
+      return value;
+    };
+    return walk(state, []);
   };
-  if (jsonBytes(cutAt(0)(state)) > limit) return null;
+  if (limit < 0 || jsonBytes(cutAt(0)) > limit) return null;
   // The longest cap that fits: every string longer than it ends at it, so the shortest values (a name, a line) stay whole.
   let fits = 0, over = Math.max(0, ...[...stringValues(state)].map(text => Buffer.byteLength(text, "utf8")));
   while (over - fits > 1) {
     const cap = Math.floor((fits + over) / 2);
-    if (jsonBytes(cutAt(cap)(state)) <= limit) fits = cap; else over = cap;
+    if (jsonBytes(cutAt(cap)) <= limit) fits = cap; else over = cap;
   }
-  return { state: cutAt(fits)(state), long: longContext, cut: true };
+  const cut: DecisionStateCut[] = [];
+  return { state: cutAt(fits, cut), long: longContext, cut };
 }
 
 /** `text`'s first `cap` UTF-8 bytes (never half a character) and JEV_CUT_MARK, when it is longer than that; else as is. */
@@ -391,8 +429,12 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
     if (signal.aborted) throw abortError();
     const timer = timeoutMs === null ? undefined : setTimeout(() => deadline.abort(), timeoutMs);
     const started = Date.now();
+    // The state as sent and the values cut, when the request was cut to fit Jev's context: its result, or its error, says so.
+    let sent: DecisionStateSent | undefined;
     try {
-      const { request, body, headers } = prepareRequest(params, model, maxStateBytes, provider, longContext);
+      const prepared = prepareRequest(params, model, maxStateBytes, provider, longContext);
+      const { request, body, headers } = prepared;
+      sent = prepared.sent;
       // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
       let billable: { status?: number } | undefined;
       for (attempt = 1; ; attempt++) {
@@ -452,8 +494,12 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (error instanceof APIConnectionError) throw new JevError("connection", "Jev transport failed.", attempt);
           throw new JevError("invalid_request", "Jev could not process the request. Check question and transport configuration.", attempt);
         }
-        return readResponse(result, request.questions as typeof params.questions, body, pricing, attempt);
+        const answered = readResponse(result, request.questions as typeof params.questions, body, pricing, attempt);
+        return sent ? { ...answered, state_sent: sent } : answered;
       }
+    } catch (error) {
+      if (sent && error instanceof JevError) error.stateSent = sent;
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -498,12 +544,14 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
         return {
           answers: result.answers, evidence: [], model: result.model ?? null, usage: result.usage ?? null, cost_usd: reported ?? estimate,
           cost_basis: reported !== null ? "reported" : estimate !== null ? "estimate" : "unknown", provider_request_id: null,
+          ...(result.state_sent ? { state_sent: result.state_sent } : {}),
         };
       } catch (error) {
         if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
         const timedOut = Boolean(deadline?.aborted) && !ctx.signal.aborted;
         const code = jevErrorCode(error, timedOut, ctx.signal.aborted);
-        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" || code === "invalid_response" ? { costUsd: null, costBasis: "unknown" as const } : {}), cause: error });
+        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" || code === "invalid_response" ? { costUsd: null, costBasis: "unknown" as const } : {}),
+          ...(error.stateSent ? { stateSent: error.stateSent } : {}), cause: error });
       }
     },
   };

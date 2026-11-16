@@ -46,7 +46,9 @@ separate and token-based. Jev 1.13's and 1.14's documented contract, checked on
 state plus all questions combined, and 262k for both with long context. The Jev
 adapter never sends a request over it: one that may not fit the default goes
 whole with long context, which is slower and less accurate; one that may not fit
-that either has its longest state values cut, each ending ` [cut]`. A judge that
+that either has its longest state values cut, each ending ` [cut]`, and the
+decision's receipt shows the state as cut (`state_cut` names each value). Images
+count toward the context too, each use of a reference again. A judge that
 must read every word partitions its evidence in the graph instead (below); do not
 count on long context or cuts as the design.
 

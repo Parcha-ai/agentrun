@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { evidenceOf } from "./evidence.js";
 import { completeConfidence, validateAnswers, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
-import type { DecisionImageDigest } from "./decision-receipts.js";
+import type { DecisionImageDigest, DecisionStateSent } from "./decision-receipts.js";
 import type { WorkflowDeps } from "./workflow.js";
 
 type RunJudge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -97,6 +97,9 @@ export interface DecisionOutcome {
   cost_usd: number | null;
   cost_basis: CostBasis;
   provider_request_id: string | null;
+  /** The state the provider sent and the values it cut, when it cut any to fit its model's context; absent when it sent
+   *  the state as asked. The decision's receipt records this state. */
+  state_sent?: DecisionStateSent;
 }
 
 /** `outcome_unknown`: the request was sent and its outcome is not known (a 408, a 5xx, a connection lost after
@@ -118,7 +121,10 @@ export class DecisionProviderError extends Error {
    *  judgeFromProviders keeps its code under a node's timeoutMs, where any other cut is taken for a request that may
    *  have been billed. Absent when it may have been sent; `attempts` alone never says so. */
   readonly unsent?: true;
-  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis; unsent?: boolean; cause?: unknown } = {}) {
+  /** The state the request held as the provider prepared it, when it cut values to fit (DecisionOutcome.state_sent): the
+   *  failed decision's receipt records it. */
+  readonly stateSent?: DecisionStateSent;
+  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis; unsent?: boolean; stateSent?: DecisionStateSent; cause?: unknown } = {}) {
     super(message, details.cause !== undefined ? { cause: details.cause } : undefined);
     this.name = "DecisionProviderError";
     this.attempts = details.attempts ?? 0;
@@ -127,6 +133,7 @@ export class DecisionProviderError extends Error {
     if (details.costUsd !== undefined) this.costUsd = details.costUsd;
     if (details.costBasis !== undefined) this.costBasis = details.costBasis;
     if (details.unsent === true) this.unsent = true;
+    if (details.stateSent !== undefined) this.stateSent = details.stateSent;
   }
 }
 
@@ -239,13 +246,13 @@ export function judgeFromProvider(provider: DecisionProvider, options: JudgeFrom
     catch (error) {
       // The provider answered, so the request was paid for: the rejection carries its cost, or null when it reported none.
       const cost = typeof outcome.cost_usd === "number" && Number.isFinite(outcome.cost_usd) ? outcome.cost_usd : null;
-      throw new DecisionProviderError("invalid_response", `${provider.id} answered with ${(error as Error).message.replace(/^System One /, "")}`, { costUsd: cost, costBasis: cost === null ? "unknown" : outcome.cost_basis });
+      throw new DecisionProviderError("invalid_response", `${provider.id} answered with ${(error as Error).message.replace(/^System One /, "")}`, { costUsd: cost, costBasis: cost === null ? "unknown" : outcome.cost_basis, ...(outcome.state_sent ? { stateSent: outcome.state_sent } : {}) });
     }
     const result: JudgeResult = {
       answers, model: outcome.model, usage: outcome.usage, cost_usd: outcome.cost_usd, cost_basis: outcome.cost_basis,
       // Every provider's evidence, a third party's too, through the one sanitizer (evidence.ts).
       evidence: evidenceOf(outcome.evidence), provider_request_id: outcome.provider_request_id, confidence_source,
-      ...(digests ? { images: digests } : {}),
+      ...(digests ? { images: digests } : {}), ...(outcome.state_sent ? { state_sent: outcome.state_sent } : {}),
     };
     return result;
   };
@@ -275,7 +282,8 @@ export function judgeFromProviders(options: { providers: Readonly<Record<string,
     } catch (error) {
       if (cut.signal.aborted && error instanceof DecisionProviderError && !cutBeforeSending.has(error) && error.unsent !== true && (error.code === "aborted" || error.code === "timeout")) {
         throw new DecisionProviderError("outcome_unknown", `${id}: cut by the node's timeoutMs (${node} ms) after it may have been sent`, {
-          attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}), cause: error });
+          attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}),
+          ...(error.stateSent !== undefined ? { stateSent: error.stateSent } : {}), cause: error });
       }
       throw error;
     } finally { if (timer !== undefined) clearTimeout(timer); }

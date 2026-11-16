@@ -83,7 +83,7 @@ Without a key, or with an `apiKey` that is blank, `createJevRunner()` throws `Je
 
 `System One` is TypeSafe's typed-question interface, exposed by the SDK as `systemOne`. A Noul answer is a truth probability from 0 to 1; the DSL converts probabilities of at least 0.5 to `true` and retains the probability beside that value. Choice and Score confidence comes from the response. Jev does not return a separate confidence for Noul; the DSL derives its own gate-strength value from the distance from 0.5, scaled to the range 0 to 1. These numbers are useful gate inputs, not calibrated guarantees.
 
-The public adapter API is `createJevRunner`, `jevProviderFromEnv`, `JevError`, `isJevResponseReason`, the constants `JEV_CONTEXT_TOKENS` and `JEV_CUT_MARK`, and the types `JevOptions`, `JevClient`, `JevProvider`, `JevErrorCode`, `JevResponseReason`, `JevResponseDiagnostic`, `JevRequestDiagnostic`, `JevImage`, `JevJudge`, `JevJudgeParams` and `JevJudgeResult`. The shared question, answer and distribution helpers live in `@parcha/agentrun-dsl`.
+The public adapter API is `createJevRunner`, `jevProviderFromEnv`, `JevError`, `isJevResponseReason`, `jevImageTokens`, the constants `JEV_CONTEXT_TOKENS` and `JEV_CUT_MARK`, and the types `JevOptions`, `JevClient`, `JevProvider`, `JevErrorCode`, `JevResponseReason`, `JevResponseDiagnostic`, `JevRequestDiagnostic`, `JevImage`, `JevJudge`, `JevJudgeParams` and `JevJudgeResult`. The shared question, answer and distribution helpers live in `@parcha/agentrun-dsl`.
 
 ## Configuration
 
@@ -125,10 +125,12 @@ Request state has no local byte cap by default. Set `maxStateBytes` to a positiv
 
 [Jev's context](https://docs.typesafe.ai/models) is 32k tokens for the state plus any one question and 64k for the state plus all of them (`JEV_CONTEXT_TOKENS`); with the `TypeSafe-Danger-Zone-Long-Context: true` header both are 262k, at the same price, slower and less accurate. Past it Jev refuses the whole request (HTTP 400 `max_tokens_exceeded`). The runner never sends a request over it, measured by its UTF-8 JSON bytes, which bound its tokens from above (a token is at least one byte):
 
+- Images count too: [each image's tokens count toward the context, and each use of its reference adds it again](https://docs.typesafe.ai/images). TypeSafe publishes no per-image figure yet, so the runner holds a bound, `jevImageTokens(width, height)`: one token per 14x14-pixel patch, 12,544 for a full-size 1568x1568 image, about four times what common vision encoders spend at that size. Every use of every image is held that room before the text is measured.
 - A request that fits the default context goes as it is.
 - One that may not fit it goes whole with the long-context header, on TypeSafe's route (`longContext`, on by default there). Its `request_sha256` covers that it was long.
 - One that may not fit that either (or the default, with `longContext: false` or on OpenRouter, which documents no long context) has its longest state string values cut to one common length, each ending ` [cut]` (`JEV_CUT_MARK`), so Jev reads that it saw only the start and short values (a name, a URL) stay whole. A string holding an image reference is never cut. To keep every word, partition the evidence in the workflow (a `map` with a judge body) instead.
-- Questions too long for the context even with every value cut are refused before sending: `invalid_request` with reason `over_context`.
+- A cut request's result says what was sent: `state_sent` holds the state as sent and `cut`, each value cut by its JSON Pointer `path`, its `bytes` as asked and its `sent_bytes`. A cut request that fails carries the same as the `JevError`'s `stateSent`. `jevProvider` passes both on, and the DSL's decision receipt records that state (`state`, `state_cut`), never the one asked.
+- Questions and images too long for the context even with every value cut are refused before sending: `invalid_request` with reason `over_context`.
 
 The core allows up to 240 options per choice and 2–10 levels per score rubric. Adapter timeouts are positive integer milliseconds up to 2,147,483,647; retry delays may also be zero. `maxAttempts` is 1–10, with a default of 3.
 
