@@ -77,6 +77,15 @@ test("create takes the spec's size, and a request with no boot env makes nothing
 	assert.equal(fly.calls.length, 1);
 });
 
+test("a size with CPUs and no memory gets the default memory, or the most its shared CPUs take when that is less: one CPU's 2048 MiB", async () => {
+	const fly = fakeFly(() => ({ json: flyMachine("3d8d9e3a5e4d89", "created") }));
+	const { host } = provider(fly);
+	const request = { name: NAME, image: "img", labels: LABELS, lifetimeMs: 1, backstopAt: "", egress: true, boot: { env: BOOT } };
+	for (const cpus of [1, 2, 8]) await host.create({ ...request, cpus }, CTX);
+	assert.deepEqual(fly.calls.map(({ body }) => body.config.guest.memory_mb), [2048, 4096, 4096]);
+	assert.deepEqual(host.check({ cpus: 1 }), []);
+});
+
 test("get reads each Fly state as the adapter's, the labels from metadata, the image from config.image; a destroyed machine is none", async () => {
 	const states = { started: "running", created: "starting", starting: "starting", replacing: "starting", stopped: "stopped", suspended: "stopped", archived: "stopped", destroying: "gone", failed: "gone", launch_failed: "gone" };
 	for (const [state, want] of Object.entries(states)) {

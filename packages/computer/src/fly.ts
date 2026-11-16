@@ -189,6 +189,9 @@ class FlyHost implements MachineHost {
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		if (req.boot === undefined) throw new HostError("invalid", "a Fly machine dials the server, and the request has no boot env for it");
+		// With no memory asked for, the default, or the most the CPUs take when that is less (one shared CPU: 2048 MiB).
+		const cpus = req.cpus ?? DEFAULT_CPUS;
+		const memoryMb = req.memoryMb ?? Math.min(DEFAULT_MEMORY_MB, MEMORY_PER_CPU_MB.most * cpus);
 		const made = (await this.#call(
 			"POST",
 			"",
@@ -199,7 +202,7 @@ class FlyHost implements MachineHost {
 						image: req.image,
 						env: req.boot.env,
 						metadata: req.labels,
-						guest: { cpu_kind: "shared", cpus: req.cpus ?? DEFAULT_CPUS, memory_mb: req.memoryMb ?? DEFAULT_MEMORY_MB },
+						guest: { cpu_kind: "shared", cpus, memory_mb: memoryMb },
 						restart: { policy: "no" },
 						auto_destroy: true,
 					},
