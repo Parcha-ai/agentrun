@@ -30,7 +30,7 @@ import { COST_WINDOW, type RunPath } from "../learning-cost.js";
 export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
-import { endedIn, type GuardRow, guardsOf, replaySkippedIn } from "../learned-nodes.js";
+import { endedIn, type GuardRow, guardsOf, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
 import { sameAnswer } from "../learn/promote.js";
 import type { Skipped } from "../learn/replay-calls.js";
 
@@ -292,12 +292,14 @@ export function reviseOf(entries: readonly { readonly kind: string; readonly dat
  *  (runPathOverStore): the path it took, the learned revision it ran on, the learned workflow it ran (served first, or
  *  called by its agent) and, for one served first, its digest and the promotion it served under (`workflow_promotion`,
  *  which its grade keeps); and from its root `entries`, each step guard's check of its learned workflows' calls
- *  (`guards`, learned-nodes.ts guardsOf), when one ran. learning-cost reads path and workflow from here. None for a run
- *  that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; replay?: ReplayMetrics } {
+ *  (`guards`, learned-nodes.ts guardsOf) and each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second
+ *  pass), when one ran. learning-cost reads path and workflow from here. None for a run that does not learn. */
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; loops?: LoopRow[]; replay?: ReplayMetrics } {
   if (!launch.learning) return {};
   const { path, workflow, digest, promotion } = classified ?? { path: "agent" as const, workflow: null };
   const guards = guardsOf(entries);
+  const loops = loopsOf(entries);
+  const rows = { ...(guards.length ? { guards } : {}), ...(loops.length ? { loops } : {}) };
   if (launch.replay) {
     // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
     // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow).
@@ -308,9 +310,9 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     // evidence. Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run.
     const skipped = replaySkippedIn(entries);
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
-    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...(guards.length ? { guards } : {}), replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
+    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
   }
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(guards.length ? { guards } : {}) };
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...rows };
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */

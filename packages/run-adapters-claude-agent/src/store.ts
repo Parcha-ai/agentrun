@@ -88,6 +88,7 @@ export class JournalSessionStore {
   private readonly loaded = new Map<string, TranscriptLine[]>();
   private readonly calls = new Set<string>();
   private readonly users = new Set<string>();
+  private readonly userWaiters = new Map<string, (() => void)[]>();
   private readonly waiters = new Map<string, (() => void)[]>();
   private readonly results = new Set<string>();
   private readonly resultWaiters = new Map<string, (() => void)[]>();
@@ -131,6 +132,15 @@ export class JournalSessionStore {
    */
   hasUser(uuid: string): boolean {
     return this.users.has(uuid);
+  }
+
+  /**
+   * Resolve once the user message sent with this `uuid` is in the transcript (`hasUser`): the CLI took it, as a turn's
+   * own message or, mid-turn, as a `queued_command` attachment. Never rejects; it waits as long as the store lives.
+   */
+  whenUser(uuid: string): Promise<void> {
+    if (this.users.has(uuid)) return Promise.resolve();
+    return new Promise<void>((resolve) => this.userWaiters.set(uuid, [...(this.userWaiters.get(uuid) ?? []), resolve]));
   }
 
   /** Whether an assistant entry that made this tool call is in the transcript. */
@@ -224,9 +234,9 @@ export class JournalSessionStore {
   }
 
   private note(entry: TranscriptLine): void {
-    if (entry.type === 'user' && entry.uuid) this.users.add(entry.uuid);
+    if (entry.type === 'user' && entry.uuid) this.user(entry.uuid);
     const attachment = entry.type === 'attachment' ? (entry.attachment as { type?: unknown; source_uuid?: unknown } | undefined) : undefined;
-    if (attachment?.type === 'queued_command' && typeof attachment.source_uuid === 'string') this.users.add(attachment.source_uuid);
+    if (attachment?.type === 'queued_command' && typeof attachment.source_uuid === 'string') this.user(attachment.source_uuid);
     for (const id of toolUseIds(entry)) {
       this.calls.add(id);
       for (const w of this.waiters.get(id) ?? []) w();
@@ -237,6 +247,12 @@ export class JournalSessionStore {
       for (const w of this.resultWaiters.get(id) ?? []) w();
       this.resultWaiters.delete(id);
     }
+  }
+
+  private user(uuid: string): void {
+    this.users.add(uuid);
+    for (const w of this.userWaiters.get(uuid) ?? []) w();
+    this.userWaiters.delete(uuid);
   }
 
   /**

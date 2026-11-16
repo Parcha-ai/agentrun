@@ -1,6 +1,6 @@
 // The harness conformance suite derives the cases a harness does not do by design from the facts its adapter declares
-// (AdapterFacts), never from a list kept by hand: steer false rules out the mid-turn steer and the steer's origin (taken
-// by the turn in flight); rerunsStarted false (a CLI,
+// (AdapterFacts), never from a list kept by hand: steer false rules out the mid-turn steer, the steer's origin (taken
+// by the turn in flight) and a runner lost after placing a steer; rerunsStarted false (a CLI,
 // whose started call is never run again, only its model calls again) rules out the replay-safe rerun and the bounded
 // restarts of a call that faults every time. Flip a fact and its cases run.
 import assert from "node:assert/strict";
@@ -11,10 +11,11 @@ import { factsRuleOut, registerHarnessConformance } from "../dist/runner/conform
 
 test("steer false and rerunsStarted false rule out their cases, each with why", () => {
   const out = factsRuleOut({ id: "a-cli", steer: false, rerunsStarted: false });
-  assert.deepEqual(Object.keys(out).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+  assert.deepEqual(Object.keys(out).sort(), ["fault-restarts-bounded", "replay-safe-rerun", "steer-mid-turn", "steer-origin", "steer-placed-crash"]);
   assert.match(out["replay-safe-rerun"], /a CLI never reruns a call that started; only the model calls again/);
   assert.match(out["steer-mid-turn"], /steer false/);
   assert.match(out["steer-origin"], /steer false/);
+  assert.match(out["steer-placed-crash"], /steer false/);
 });
 
 test("recoversCutAnswers rules out one output-limit case: above 0 the cut final answer, 0 the run going on from a cut", () => {
@@ -27,14 +28,15 @@ test("a harness that steers and reruns a started call has nothing ruled out", ()
   assert.deepEqual(factsRuleOut({ id: "pi", steer: true }), {});
   assert.deepEqual(factsRuleOut(undefined), {});
 });
-test("claude-agent's own facts rule out the eight cases: its CLI resumes a cut answer itself, so a single cut never ends its run; it defers MCP tools behind its own tool search, so the host's tools_search and tools_call are not offered", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "length-ends-failed", "meta-call-deny", "meta-call-park", "meta-search", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+test("claude-agent's own facts rule out the six cases: it steers mid-turn, so its steer cases run; its CLI resumes a cut answer itself, so a single cut never ends its run; it defers MCP tools behind its own tool search, so the host's tools_search and tools_call are not offered", () => {
+  assert.equal(claudeFacts.steer, true);
+  assert.deepEqual(Object.keys(factsRuleOut(claudeFacts)).sort(), ["fault-restarts-bounded", "length-ends-failed", "meta-call-deny", "meta-call-park", "meta-search", "replay-safe-rerun"]);
   assert.match(factsRuleOut(claudeFacts)["meta-search"], /ownToolSearch/);
   assert.match(factsRuleOut(claudeFacts)["length-ends-failed"], /up to 3 times in one turn/);
 });
 
-test("codex's own facts rule out the seven cases: a cut ends its turn, so no later step of the turn follows one; it runs scripts in its own code mode, so the host's codemode is not offered", () => {
-  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "length-mid-run", "meta-codemode-crash", "meta-codemode-park", "meta-codemode-stop", "replay-safe-rerun", "steer-mid-turn", "steer-origin"]);
+test("codex's own facts rule out the nine cases: it takes no message mid-turn; a cut ends its turn, so no later step of the turn follows one; it runs scripts in its own code mode, so the host's codemode is not offered", () => {
+  assert.deepEqual(Object.keys(factsRuleOut(codexFacts)).sort(), ["fault-restarts-bounded", "length-mid-run", "meta-codemode-crash", "meta-codemode-park", "meta-codemode-stop", "replay-safe-rerun", "steer-mid-turn", "steer-origin", "steer-placed-crash"]);
   assert.match(factsRuleOut(codexFacts)["meta-codemode-park"], /ownCodemode/);
 });
 

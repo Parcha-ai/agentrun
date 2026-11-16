@@ -502,6 +502,20 @@ test("the local browser's provider is built with the server's Chrome lookup (CHR
   for (const [, options] of built) assert.deepEqual(options.env, { CHROME_PATH: "/opt/chrome/chrome", PI_BROWSER_CHROME: "/opt/pi/chrome", PATH: "/opt/bin:/usr/bin" });
 });
 
+test("every remote provider is built with the server's dial, the one the server holds, and a local one with none; a runner of its own process gives none", async () => {
+  const dial = { url: "https://agentrun.example.com", tokens: { mint: async () => `art_${"0".repeat(64)}`, revoke: async () => undefined }, hub: {} };
+  const built = new Map();
+  const { factories } = computerDepsFrom({ env: {}, store: memoryStore(), sealKey: undefined, dial, load: async (id, options) => (built.set(id, options), {}) });
+  for (const { id } of PROVIDERS) await factories[id]({});
+  for (const { id, local } of PROVIDERS) assert.equal(built.get(id).dial, local ? undefined : dial, `${id}${local ? ", local," : ""} is built with ${local ? "no" : "the server's"} dial`);
+  assert.ok(PROVIDERS.some(({ local }) => local) && PROVIDERS.some(({ local }) => !local), "both kinds are in the registry");
+
+  const alone = new Map();
+  const own = computerDepsFrom({ env: {}, store: memoryStore(), sealKey: undefined, load: async (id, options) => (alone.set(id, options), {}) });
+  for (const { id } of PROVIDERS) await own.factories[id]({});
+  for (const { id } of PROVIDERS) assert.equal(alone.get(id).dial, undefined, `${id} on a runner of its own process`);
+});
+
 // AGENTRUN_DOCKER_HOST_ADDRESSES: the Docker host's own addresses, for a Docker provider that isn't on that host (the
 // server in a container). The provider's egress proxy refuses them as the host's; without them it refuses any
 // allow-list there. Each entry is an IP address or the setting is refused in words; nothing is ever made up.

@@ -13,10 +13,11 @@
 // build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
 // Its monid endpoints are pinned beside them (revisions.monid_pin, REVISIONS_MONID_PIN), added at a server open the same way.
 // A run's cost says whether it is the most the run can have cost (runs.cost_upper_bound, RUNS_COST_UPPER_BOUND), added at a
-// server open the same way.
+// server open the same way. A run's labels (runs.labels, RUNS_LABELS) are added at a server open the same way.
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
-// (IMPORTED_TEMPLATES), as it does the one-answer index.
+// (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
+// added the same way.
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -55,6 +56,9 @@ const COST_UPPER_BOUND = "cost_upper_bound INTEGER NOT NULL DEFAULT 0 CHECK (cos
 /** The bound beside a run's cost: in STORE_DDL, and added at a server open to a store an earlier build of this version made,
  *  as REVISIONS_MCP_PIN is (a run it ended reads 0: an exact cost or an unknown one, as it was read then). */
 export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_BOUND}`;
+/** A run's labels (JSON, null for none): in STORE_DDL, and added at a server open to a store an earlier build of this version
+ *  made, as RUNS_COST_UPPER_BOUND is (a run started before reads as given none). */
+export const RUNS_LABELS = `ALTER TABLE runs ADD COLUMN ${json("labels", true)}`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -68,6 +72,22 @@ export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates
     publisher TEXT NOT NULL,
     ${json("files")},
     imported_at INTEGER NOT NULL
+  ) STRICT`;
+
+/** A hosted machine's minted token (a dial provider's create, spec/computer/attach.md): its computerd dials the attach
+ *  socket and fetches the daemon with it. By the machine (its name, from its create's request id): the token's SHA-256
+ *  alone (hex), what the machine must say it is at hello (kind, os, arch), and when the token ends (`expires_at`, the
+ *  machine's backstop) or was revoked (its delete). A row past its end goes at the next mint. In STORE_DDL, and added at
+ *  a server open to a store an earlier build of this version made. */
+export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
+    machine TEXT PRIMARY KEY,
+    token_sha256 TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    os TEXT NOT NULL,
+    arch TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL
   ) STRICT`;
 
 export const STORE_DDL: readonly string[] = [
@@ -156,6 +176,10 @@ export const STORE_DDL: readonly string[] = [
     -- the write-back (sign-ins-store.ts / runs.update's save decision). Null until it first leaves running. Other vendors
     -- free the lease the instant it leaves running (no settle window), so this is read only with one.
     left_running_at INTEGER,
+    -- The caller's labels (RunLabels): a JSON object of strings, set once with the queued run (runs.create), opaque to the
+    -- server and only filtered on (runs.list). Null when it was given none. Added at a server open to a store an earlier
+    -- build of this version made (RUNS_LABELS), its runs reading as given none.
+    ${json("labels", true)},
     started_at INTEGER NOT NULL,
     ended_at INTEGER
   ) STRICT`,
@@ -401,6 +425,7 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
   IMPORTED_TEMPLATES,
+  MINTED_TOKENS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
