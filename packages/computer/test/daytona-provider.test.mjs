@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
-import { checkLifetime, kindRefusals } from "../dist/index.js";
+import { checkLifetime, DAYTONA, kindRefusals, mountsOf } from "../dist/index.js";
+import { fakeHost } from "./fake-host.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const KEY = "daytona_fake_computer_key_0123456789";
@@ -25,6 +26,20 @@ const REF = { id: "sb-0001", name: "computer-0123456789ab" };
 const dir = mkdtempSync(join(tmpdir(), "computer-daytona-"));
 const DAEMON = join(dir, "computerd");
 writeFileSync(DAEMON, Buffer.from("a stand-in for computerd, linux/amd64\n"));
+
+/** An Archil egress relay's address: a documentation address (RFC 5737), the mount lane and the data lane. */
+const EGRESS = "192.0.2.40:18100:42050";
+
+/**
+ * The Daytona provider's host with its calls played by the adapter's one fake host (fake-host.mjs), its descriptor and
+ * facts the provider's own: what the adapter does with the Daytona provider's options (archilEgress) is then what the
+ * fake records, with no Daytona request.
+ */
+function fakeHostFor(provider) {
+	const fake = fakeHost({ descriptor: provider.host.descriptor, facts: { ...provider.host.facts }, box: { reached: [] } });
+	for (const call of ["create", "get", "list", "delete", "exec", "upload", "errorCode"]) provider.host[call] = fake.host[call].bind(fake.host);
+	return { host: provider.host, rootRuns: fake.rootRuns };
+}
 
 const stray = [];
 const real = { fetch: globalThis.fetch, WebSocket: globalThis.WebSocket };
@@ -139,6 +154,20 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 	assert.equal(rec.requests.length, 0);
 });
 
+test("capabilities with an Archil egress: the provider declares an Archil mount, as the descriptor's mountsWith says for DAYTONA_ARCHIL_EGRESS; its GPU computers still take none", () => {
+	const { provider, rec } = setup({}, { archilEgress: EGRESS });
+	assert.deepEqual(provider.capabilities().mount, ["archil"]);
+	assert.deepEqual(provider.capabilities().gpu.mounts, [], "Daytona's GPU host gives no /dev/fuse");
+	// The provider's facts and the descriptor's agree: what mountsOf gives for the key set, and for none.
+	assert.deepEqual({ mounts: provider.host.descriptor.mounts, unmounted: provider.host.descriptor.unmounted }, mountsOf(DAYTONA, (name) => name === "DAYTONA_ARCHIL_EGRESS"));
+	assert.deepEqual(provider.host.descriptor.unmounted, {}, "no reason left for the kind it now takes");
+	const plain = setup().provider.host.descriptor;
+	assert.deepEqual({ mounts: plain.mounts, unmounted: plain.unmounted }, mountsOf(DAYTONA, () => false));
+	assert.deepEqual(DAYTONA.mounts, [], "the static descriptor declares no mount: hosted Daytona is the default");
+	assert.deepEqual(setup({}, { archilEgress: "" }).provider.capabilities().mount, [], "an empty egress is none");
+	assert.equal(rec.requests.length, 0);
+});
+
 test("the constructor refuses what it cannot run with, in words", () => {
 	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), ...options });
 	assert.throws(make({ apiKey: "" }), /the Daytona API key, is required/);
@@ -155,7 +184,9 @@ test("the constructor refuses what it cannot run with, in words", () => {
 		assert.throws(make({ autoDeleteMinutes: value }), /autoDeleteMinutes is a whole number of minutes/, String(value));
 	}
 	assert.throws(make({ gpuSnapshot: "someone-elses-gpu" }), /not a GPU snapshot of box\/Dockerfile/);
-	assert.throws(make({ archilEgress: "192.0.2.40:18100:42050" }), /Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes, so it takes no archilEgress/);
+	assert.throws(make({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
+	assert.throws(make({ archilEgress: "relay.example:18100:42050" }), /the Archil egress is/);
+	assert.doesNotThrow(make({ archilEgress: EGRESS }), "a well-formed egress is taken");
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -187,27 +218,59 @@ test("check() refuses in words, field by field, before any request", () => {
 	assert.equal(rec.requests.length, 0, "check makes no request");
 });
 
-// Archil's client (0.10.1) never answers its own FUSE INIT on Daytona's container (Sysbox) sandboxes, on every kernel and
-// mount shape tried (live 11-14), and the org is offered no linux-vm class. So Daytona declares no mount, and a create
-// that asks for one is refused up front in one sentence saying why: never a sandbox made and a 120 s timeout.
+// On Daytona's hosted cloud, Archil's client (0.10.1) never answers its own FUSE INIT on its container (Sysbox)
+// sandboxes, on every kernel and mount shape tried (live 11-14). So a provider made with no Archil egress declares no
+// mount, and a create that asks for one is refused up front in one sentence saying why: never a sandbox made and a 120 s
+// timeout. A self-hosted Daytona target whose sandboxes reach Archil through the operator's egress relay mounts it (live
+// 11-14): a provider made with archilEgress takes the mount.
 const ARCHIL_SPEC = {
 	...SPEC,
 	labels: { "agentrun.run": "r1", "agentrun.epoch": "3" },
 	mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "tok-daytona-archil-0123456789abcdef" },
 };
-const NO_ARCHIL = "Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes";
+const NO_ARCHIL = "Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS";
 
-test("an Archil mount is refused up front, in one sentence saying why, and nothing is asked of Daytona", async () => {
+test("with no Archil egress (hosted Daytona), an Archil mount is refused up front, in one sentence saying why, and nothing is asked of Daytona", async () => {
 	const { provider, rec } = setup();
 	assert.deepEqual(provider.capabilities().mount, [], "Daytona declares no mount kind");
-	assert.deepEqual(provider.check(ARCHIL_SPEC), [{ field: "mount", message: NO_ARCHIL }]);
+	assert.deepEqual(provider.check(ARCHIL_SPEC), [{ field: "mount", message: NO_ARCHIL }], "exactly one refusal");
 	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, gpu: GPU, image: "daytona-gpu" }).map((r) => r.message)[0], NO_ARCHIL, "a GPU computer's own refusal comes after it");
 	const made = await provider.create(ARCHIL_SPEC, { requestId: "r-archil" });
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "refused", "a mount kind Daytona doesn't declare");
-	assert.match(made.error.message, /Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes/);
+	assert.ok(made.error.message.includes(NO_ARCHIL), made.error.message);
 	assert.ok(!made.error.message.includes(ARCHIL_SPEC.mount.token), "the refusal holds no token");
+	assert.ok(!made.error.message.includes(KEY), "the refusal holds no key");
 	assert.equal(rec.requests.length, 0, "no request: no sandbox is made to time out");
+});
+
+test("with an Archil egress, check() takes an Archil mount and create() asks Daytona for a sandbox with egress for the mount's root steps; a GPU computer still takes none, in its own words", async () => {
+	const rec = refusedCreate();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, archilEgress: EGRESS });
+	assert.deepEqual(provider.check(ARCHIL_SPEC), [], "the mount is taken");
+	const gpu = provider.check({ ...ARCHIL_SPEC, gpu: GPU, image: "daytona-gpu" }).map((r) => r.message);
+	assert.equal(gpu.length, 1, gpu.join("; "));
+	assert.ok(!gpu[0].includes(NO_ARCHIL), "a GPU computer is refused by its GPU's words, not hosted Daytona's");
+	const made = await provider.create(ARCHIL_SPEC, { requestId: "r-archil-egress" });
+	assert.equal(made.ok, false, "the fake refuses the create (400)");
+	assert.equal(posted(rec).networkBlockAll, false, "the sandbox may reach the relay: the mount's root steps need it");
+	for (const text of [made.error.message, JSON.stringify(rec.requests.map((r) => r.body ?? null))]) {
+		assert.ok(!text.includes(ARCHIL_SPEC.mount.token), "no token in the error or in what Daytona is sent");
+		assert.ok(!text.includes(KEY), "no key in the error or in a request's body");
+	}
+});
+
+test("with an Archil egress, the helper's mount names it as its last word: the Daytona provider's own option, through the adapter (its host's calls played by the adapter's fake host)", async () => {
+	// The listing's stability window 0, as the adapter's own fake-host tests run it: two consecutive polls suffice.
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request to Daytona"), timeouts: { ...TIMEOUTS, listedStableMs: 0 }, archilEgress: EGRESS });
+	const { host, rootRuns } = fakeHostFor(provider);
+	assert.equal(host.descriptor.mounts.includes("archil"), true);
+	const made = await provider.create(ARCHIL_SPEC, { requestId: "r-archil-fake" });
+	assert.equal(made.ok, true, made.ok ? "" : `${made.error.code}: ${made.error.message}`);
+	const mount = rootRuns.find(({ verb }) => verb === "mount");
+	assert.ok(mount, "the helper's mount ran");
+	assert.equal(mount.argv.at(-1), `egress=${EGRESS}`);
+	assert.ok(!mount.argv.join(" ").includes(ARCHIL_SPEC.mount.token), "the token goes on stdin alone, never in argv");
 });
 
 test("create() asks Daytona for the request's name and labels, a TTL in whole minutes, no public port, network none, and no resources", async () => {

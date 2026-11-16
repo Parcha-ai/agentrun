@@ -123,7 +123,7 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
-import { mcpServersOverStore } from "./mcp-servers-store.js";
+import { type ComposioDropped, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
@@ -176,7 +176,7 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -429,6 +429,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
    *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
   localInstall: boolean;
+  /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
+   *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
+   *  never reach this server, as its own reads never do. */
+  own: readonly string[];
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number } };
 
@@ -1278,6 +1282,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store, process.env)()) === "disk" ? 2 : 1);
   /** The registry a run's claim resolves against (claimKinds), as its runner composes it. */
   const claimRegistry = () => claimKinds(options.faux ? { faux: fauxOf() } : {});
+  /** A key as the runner reads it: the secrets this process was started with (withSecrets "own"), else the saved one. */
+  const runnerKeys = () => keyReader(store, sealKey, own(withSecrets(process.env, "own")));
   // A paired computer is one more provider of the registry (workspace/attached-computers.ts), ready while its driver is
   // attached to this process's hub.
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) => {
@@ -1285,13 +1291,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const row = paired.find((one) => one.id === setting.provider);
     const offline = row ? pairedRefusal(row, attachHub) : undefined;
     if (offline) return { refused: offline };
-    return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), keyReader(store, sealKey, own(withSecrets(process.env, "own"))), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
+    return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), runnerKeys(), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   };
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
    *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
   const shellOf = async (setting: { kind: string; provider?: string; image?: string }) =>
-    runShellOf(setting, await modeNow(), setting.provider === undefined ? claimRegistry() : withPaired(claimRegistry(), await store.pairedComputers.list()));
+    runShellOf(setting, await modeNow(), await registryHere(setting.provider === undefined ? claimRegistry() : withPaired(claimRegistry(), await store.pairedComputers.list()), runnerKeys()));
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
@@ -1749,6 +1755,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  /** What a save refused while Composio triggers use the server says to do once they are gone (composio-triggers.ts inUse). */
+  const SAVE_AFTER_TRIGGERS = "then save the server again";
+  /** What a save over a preset server left at Composio (ComposioDropped), removed there with the key it was made with, in
+   *  words; when that key doesn't open here, all of it said to remove by hand. */
+  const composioLeft = async (name: string, dropped: ComposioDropped) =>
+    "unusable" in dropped && (dropped.mcp || dropped.cleanup.remove.length) ? composioNote(name, dropped.cleanup, dropped.mcp ?? false, true)
+      : await composioForget(options.composioControl ?? {}, "key" in dropped ? dropped.key : "", dropped.mcp, name, stopping.signal, dropped.cleanup);
+  // The Composio preset's saves, the saves of the servers it made, and the MCP servers' deletes, one at a time, Composio's
+  // calls included: a delete never removes there an auth config or account that a save still at Composio reuses (it would
+  // find no record of it yet), and a save never reuses one a delete is removing. A failure of one never stops the next.
+  let composioLast: Promise<unknown> = Promise.resolve();
+  const inComposioTurn = <T>(work: () => Promise<T>): Promise<T> => {
+    const turn = composioLast.then(work, work);
+    composioLast = turn.catch(() => undefined);
+    return turn;
+  };
   // A repair of the GitHub installations (below) stops before the triggers close, in a start that fails as in close.
   stops.push(() => githubConnect.close());
   stops.push(async () => triggers.close());
@@ -3803,9 +3825,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
-        const saved = await mcpServers.save(id, await bodyOf(req), stopping.signal, secretSeen as McpCredentialMark | undefined);
+        const body = await bodyOf(req);
+        // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
+        if (!(await mcpServers.composioPreset(id))) {
+          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined);
+          await refreshMcpMeta();
+          return send(res, 200, saved);
+        }
+        // A preset server's: listed as any save is, at once; then its write and cleanup in the Composio turn and its
+        // project's. A save that moves it off Composio is refused while Composio triggers use it, in the delete's words;
+        // else it removes there what its save made (the MCP server, then what no other saved server uses), as a delete
+        // does, with the key it was saved with, and says so.
+        const over: { dropped?: ComposioDropped; note?: Awaited<ReturnType<typeof composioLeft>> } = {};
+        const guard: SaveGuard = {
+          turn: (work) => inComposioTurn(async () => {
+            const done = await composioTriggers.inTurnOf(id, work);
+            if (over.dropped) over.note = await composioLeft(id, over.dropped);
+            return done;
+          }),
+          inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS),
+        };
+        const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard);
         await refreshMcpMeta();
-        return send(res, 200, saved);
+        return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
       case "listComposioTools":
@@ -3814,8 +3856,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
         const body = await bodyOf(req);
-        const answer = await composioSave(body, options.composioControl ?? {}, (mcp, made) => mcpServers.save(id, mcp, stopping.signal, undefined, made), id, stopping.signal, async () => (await mcpServers.get(id)).url);
-        await refreshMcpMeta();
+        // In the Composio turn. A save over a preset server removes there, once it is saved, the MCP server the save before
+        // made and what that save made that this one no longer stands on (an account of another user, an auth config of
+        // another toolkit), with the key it was made with, and says so as a delete does; what another saved server uses is
+        // that one's now, and said too. A save as another user or auth config is refused while Composio triggers use the
+        // server, in the delete's words, checked in its project's turn before the row is written.
+        const answer = await inComposioTurn(async () => {
+          const over: { dropped?: ComposioDropped } = {};
+          const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
+          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands, (left) => (over.dropped = left), guard), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+          await refreshMcpMeta();
+          return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
+        });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "listComposioEvents":
@@ -3870,14 +3922,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await privateHostsRoute(mcpServers, { method: "PUT", body: () => bodyOf(req) }), { "cache-control": "no-store" });
       case "deleteMcpServer": {
         // Our row goes first, by the checked removal (a 412 sends Composio nothing), and answers what it removed: a Composio
-        // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key.
-        // Composio refusing or not answering, or a key that does not open, never keeps our row: the answer says what to
-        // remove there by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
-        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting).
-        const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
-        await refreshMcpMeta();
-        const forgotten = !made ? undefined : "unusable" in made ? composioNote(id) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal);
-        if (forgotten && !forgotten.removed) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
+        // preset server's MCP server on Composio is deleted next, as the row removed named it and with its saved key, then
+        // what its save made for it there that no other saved server uses (its connect link's account, its auth config).
+        // Composio refusing or not answering, or a key that does not open, never keeps our row. A preset's answer says in
+        // words what went there, what stays and why, and what to remove by hand. One that Composio triggers still use is kept: refused, naming them, checked and deleted in
+        // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting). All of
+        // it in the Composio turn, so a Composio save still at work finishes first and its record is counted.
+        const forgotten = await inComposioTurn(async () => {
+          const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
+          await refreshMcpMeta();
+          return !made ? undefined : "unusable" in made ? composioNote(id, made.cleanup) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal, made.cleanup);
+        });
+        if (forgotten) return send(res, 200, { deleted: true, composio: forgotten }, { "cache-control": "no-store" });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
       case "getToolSettings":
@@ -4625,6 +4681,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     attachHub,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
+    own: mcpServers.own,
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

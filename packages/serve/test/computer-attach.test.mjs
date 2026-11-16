@@ -133,7 +133,8 @@ test("a paired computer is listed as its hello says, the live one's while attach
   // A driver's malformed features are left out of the list: only true or {off: words} reach the console.
   const live = { ...row.hello, version: "0.2.1", osVersion: "11 24H2", device: { maker: "Acme", model: "Book" }, screen: { width: 1920, height: 1080, scale: 1 }, features: { ...features, "apps.launch": null, "ui.act": { off: 3 }, "ui.wait": "yes" } };
   const deadline = new Date(5000);
-  const hub = (attached, holder) => ({ online: () => attached, hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
+  const liveSince = new Date(7000);
+  const hub = (attached, holder) => ({ online: () => attached, since: () => (attached ? liveSince : undefined), hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
     id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
     driver: "0.2.0", online: false, held_by_run: null, held_until: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
@@ -141,6 +142,11 @@ test("a paired computer is listed as its hello says, the live one's while attach
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
   assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features, driver: "0.2.1", online: true });
   assert.deepEqual({ held_by_run: held.held_by_run, held_until: held.held_until }, { held_by_run: "run-1", held_until: deadline.toISOString() });
+  assert.equal(held.seen_at, liveSince.toISOString(), "attached, it was seen when its live socket said hello");
+  // The hub has the socket live before the store keeps its first hello: listed between the two, it is online and seen.
+  const first = pairedView({ ...row, seenAt: null }, hub(true), ["desktop"]);
+  assert.deepEqual({ online: first.online, seen_at: first.seen_at }, { online: true, seen_at: liveSince.toISOString() }, "online is never listed as never seen");
+  assert.equal(pairedView({ ...row, seenAt: null }, hub(false), ["desktop"]).seen_at, null, "never attached, never seen");
   const lacking = pairedView({ ...row, hello: { ...row.hello, groups: ["screen"] } }, hub(false), []);
   assert.equal(lacking.unserved, "desk's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on desk", "one that serves no kind says why");
 });

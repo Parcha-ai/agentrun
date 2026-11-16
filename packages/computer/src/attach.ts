@@ -256,6 +256,8 @@ interface Live {
 	hello: HelloResult;
 	/** The order the computer dialed in: a socket replaces only one dialed before it. */
 	dial: number;
+	/** When its hello was taken and it went live. */
+	since: Date;
 }
 
 /**
@@ -329,7 +331,7 @@ export class AttachHub {
 			return fail("refused", why);
 		}
 		if (closed) return fail("gone", `${paired.name}'s socket closed while it said hello`);
-		mine = { socket, client, hello: hello.value, dial };
+		mine = { socket, client, hello: hello.value, dial, since: new Date() };
 		this.#live.set(paired.id, mine);
 		older?.socket.close(ATTACH_CLOSE.replaced, "the computer dialed again");
 		return hello;
@@ -338,6 +340,11 @@ export class AttachHub {
 	/** Whether the computer is attached now. */
 	online(id: string): boolean {
 		return this.#live.has(id);
+	}
+
+	/** When the computer's live connection said hello and went live; undefined while it is not attached. */
+	since(id: string): Date | undefined {
+		return this.#live.get(id)?.since;
 	}
 
 	/** The hello of the computer's live connection: its driver's version and groups now, which an update may change. */

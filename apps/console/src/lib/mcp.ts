@@ -142,7 +142,8 @@ export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?
   if (e.status === 424) return { text: `The server failed: ${e.message}` };
   // A sign-in finishes only in a browser that started it at the address the authorization server sends it back to.
   if (e.code === "wrong_origin") return { text: "Sign in from this server's own address: the sign-in comes back there.", ...(typeof e.details?.open === "string" ? { detail: `Open ${e.details.open} and sign in from it.` } : {}) };
-  if (e.fields?.length) return { text: e.fields.map((f) => f.message).join(" ") };
+  // A Composio preset save refused on a field says what it left at Composio in `details.composio` (its message's end).
+  if (e.fields?.length) return { text: e.fields.map((f) => f.message).join(" "), ...(typeof e.details?.composio === "string" ? { detail: e.details.composio } : {}) };
   return { text: `${e.code}: ${e.message}` };
 }
 
