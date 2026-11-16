@@ -4,6 +4,16 @@
 
 ## 0.1.0-beta.40 (2026-11-16)
 
+**Known issues:**
+
+- Mode 2 (the run folder on your Archil disk):
+  - Works: sandboxes on Agent37, Modal and E2B, and desktops on Agent37 and E2B, in any account. The first computer in an account starts from AgentRun's public box image: Agent37 registers it once ("pulling" for about 15 s), Modal pulls it once (about 35 s), E2B starts from a public template in about 5-10 s. Shell commands start in /workspace, the run folder.
+  - Not yet: Modal sandboxes with GPUs (the Archil mount isn't proven on Modal's GPU runtime), and Daytona (no Archil mount yet).
+  - What to do: for those two, use another provider for Mode 2, or set the computer to none.
+- Spend caps: a cap below what the model needs for one step and an answer wraps up early; saving such an agent now warns.
+
+**Changes:**
+
 - A hosted vendor's `exec` now has to keep UTF-8 text intact both ways (every code point, long lines, `\r` and `\r\n`, no terminal), where it had to carry every byte value. The daemon's upload through exec, for a host with no `upload`, goes as base64 text through `head -c <length> | base64 -d`, so it needs no end of stdin, and nothing the adapter runs waits for one: a vendor with no end of stdin leaves `end()` doing nothing. `framedExec` (`src/hosted/framed-exec.ts`) builds a `MachineProcess` from a vendor's split calls (start, an event stream as text, NDJSON or base64, a call per write, end and kill optional): it queues the writes in order, decodes output as one stream, and kills by pid when the vendor has no kill. The REST client gains `stream`, a call whose body is read as it comes, bounded on its headers alone. The exec pre-check (`--exec-stream`) checks text: every class of code point, `\r`, `\r\n`, a 1 MiB line and 8 MiB of random UTF-8 by sha256, and never ends stdin.
 
   Breaking: the pre-check's `stdout-bytes` and `stdin-bytes` checks are `stdout-text` and `stdin-text`, `bytesProblem` is `textProblem`, and `runToExit`'s `stdin` is an iterable of pieces, each whole UTF-8 text.
