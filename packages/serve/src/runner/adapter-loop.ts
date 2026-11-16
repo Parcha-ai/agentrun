@@ -431,7 +431,8 @@ export interface AdapterLoopOptions {
   /** The gate's clock (epoch ms): when an ask was asked and answered, and when a wait in the claim on the person's answer
    *  started. Default Date.now. */
   readonly now?: () => number;
-  /** For tests: awaited as a wait in the claim on the person's answer starts, before it takes their messages. */
+  /** For tests: awaited once a turn ended on its question to the person, before the wait in the claim (or the park, with
+   *  nothing to hold open) takes their messages. */
   readonly beforePersonWait?: () => Promise<void>;
 }
 
@@ -1014,6 +1015,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** Set once the claim's last turn has ended and nothing more is sent: a message after it waits for the run's end, as one
    *  during the end-of-run turn does. */
   let turnsOver = false;
+  /** Set, synchronously, once the claim has decided to park on its question (no wait in the claim holds, or the wait
+   *  lapsed): from here to the park's seal (its host's release can take a while), a person's message is left untaken for
+   *  the resume. Placed now, it would start a turn the seal then cuts, its row taken and the run parked with nothing to
+   *  wake it, the message lost. */
+  let askParking = false;
+  /** The claim parks on its question: no message is placed from here (askParking). */
+  const parkingOnAsk = (): undefined => {
+    askParking = true;
+    return undefined;
+  };
   /** While the run's learned workflow runs first (AdapterRunSpec.workflowFirst): a message waits for it, then goes the way
    *  any message goes once the workflow answered (the run is ending) or handed the job back (the agent's turn runs). */
   let servingFirst: Promise<void> | undefined;
@@ -1324,7 +1335,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** A person's message placed (steer): as the run's next turn, into the turn in flight, or after it. */
   const placeSteer = async (command: Command): Promise<CommandOutcome> => {
-    if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    if (!gate || !session || gate.sealed || askParking) return { later: "the run is parking: the steer waits for its resume" };
     // The session is still new and this is no reopen's message: the claim has yet to send the run's input. Placed now,
     // the message would be the session's first prompt and the input would follow it; it waits for the input instead, then
     // goes into that turn as any message does.
@@ -1355,6 +1366,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // workflow answered, said to the agent between the job and the message, which is a word on that answer.
     const servedAnswer = reopen && !reopen.sent && session.state === "new" && root !== undefined ? servedAnswerOf(await entriesOf(gate.journal, root.id, context)) : undefined;
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // The claim parks on its question (askParking), its seal still to come: the message is the resume's answer.
+    if (askParking) return { later: "the run is parking on its question: the message answers it on the resume" };
     // A message that may not answer a person (a trigger's), delivered once the run waits on its person (in its claim, or
     // between the question's turn end and that wait): never the wait's answer, never placed now. Its firing reads sent (the
     // door took the row), so it is never refused either: left untaken, it runs as a turn of its own after the person's
@@ -3299,6 +3312,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  the run's next user message and resumes it on the next claim, as on main: the ask_person tool result stays what pi
    *  wrote, so nothing is re-asked or re-billed. The summary is plain words, never the question. */
   async function parkOnAsk(on: Harness, conversation: Conversation, theGate: Gate, callId: string): Promise<LoopEnd> {
+    parkingOnAsk();
     const parkedAt = theGate.expect(writesEntry(KINDS.personAsked, (entry) => entry.callId === callId), { run: { state: "parked", summary: ASK_PERSON_WAITING } });
     parkedAt.catch(() => undefined);
     await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.personAsked, data: { callId } }), context);
@@ -3388,8 +3402,16 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  or the session went), and the run parks on its question. Undefined when no host holds anything: the run parks. */
   async function waitInClaim(on: Harness, callId: string): Promise<{ next: Promise<TurnEnd | "lapsed"> } | undefined> {
     const holders = specNow?.lifecycle?.personWait ?? [];
-    if (!holders.length || !session || !gate || gate.sealed || !root) return undefined;
     await options.beforePersonWait?.();
+    if (!session || !gate || gate.sealed || !root) return parkingOnAsk();
+    if (!holders.length) {
+      // Nothing to hold open: the run parks, unless the answer already came, between the question's turn end and here,
+      // placed as a steer of the idle session (steer): then its turn is the next, at once, never cut by the park's seal.
+      const early = idleSteer;
+      idleSteer = undefined;
+      if (early && (await early.placed)) return { next: turnOfRequest(on, root, early.requestId) };
+      return parkingOnAsk();
+    }
     // Set before anything else: an answer sent from here is the claim's next turn, never a steer into no turn.
     const [theSession, theGate, conversation] = [session, gate, root];
     const mine: { sent?: Promise<void>; placed?: () => void } = {};
@@ -3421,7 +3443,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // Nothing held, and no answer placed meanwhile: the run parks.
     if (!waitHolds.length && !mine.sent) {
       endWait(mine);
-      return undefined;
+      return parkingOnAsk();
     }
     // The wait's start, once, in the journal, with the row's waiting summary (the server tells run.needs_input by it).
     if (!marked && !mine.sent) {
@@ -3436,7 +3458,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
-        if (value === "lapsed") for (const hold of waitHolds) hold.confirmed?.();
+        if (value === "lapsed") {
+          for (const hold of waitHolds) hold.confirmed?.();
+          // The run parks on its question (the turn loop's "lapsed"): the person's next message is the resume's.
+          parkingOnAsk();
+        }
         endWait(mine);
         resolve(value);
       };
