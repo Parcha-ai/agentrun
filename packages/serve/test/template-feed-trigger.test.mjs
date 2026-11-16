@@ -174,3 +174,14 @@ test("vendor-outage-watch applied with its feeds left empty: the feed trigger is
     assert.deepEqual((await api("GET", "/triggers")).body.triggers, []);
   }
 });
+
+test("a feed's urls as one array parameter whose default is []: the package reads, and its apply skips the trigger as not set up here, so validate and apply agree", { timeout: 60_000 }, async (t) => {
+  const status = await feed(t, { format: "atom", title: "Faux Status - Incident History", items: [incident(1, "Old outage", "2026-05-10T10:00:00Z")] });
+  const options = { urls: '"${parameters.status_feeds}"', parameters: [FEEDS_PARAMETER([])] };
+  assert.deepEqual(await problemsOf(t, options), [], "the empty default reads");
+  const { api } = await served(t, options, status);
+  const applied = await api("POST", "/templates/pulls/apply", { parameters: {} });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  assert.deepEqual(applied.body.trigger_ids, []);
+  assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0").map((w) => w.reason), ["not_set_up_here"]);
+});
