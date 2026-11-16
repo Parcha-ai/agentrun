@@ -1,7 +1,8 @@
 // A template's feed trigger. Its `urls` take parameters, filled at apply: a placeholder inside a literal URL (pr-alert's
 // `https://api.github.com/repos/${parameters.owner}/${parameters.repo}/pulls`), or the whole list as one placeholder
 // naming an array-of-strings parameter (vendor-outage-watch's `"${parameters.status_feeds}"`), each parameter required or
-// with a default so the trigger never fills empty, and each filled value an http(s) URL, refused at apply otherwise.
+// with a default, and each filled value an http(s) URL, refused at apply otherwise. An array given empty skips the
+// trigger with a warning, never the apply.
 // Its accept rules' where `in` values take a parameter as a github, webhook or composio trigger's do. Its every_s, items
 // and id are the package's own, and a feed has no key in a package.
 import assert from "node:assert/strict";
@@ -157,4 +158,19 @@ test("a feed trigger's accept rules take a parameter in a where condition's in v
   assert.deepEqual(trigger.source.accept, [{ event: "item", where: [{ pointer: "/item/user/login", in: ["acme"] }] }]);
   const problems = await problemsOf(t, { parameters: REPO_PARAMETERS({ optional: ["owner"] }), extra: accept });
   assert.ok(problems.some((one) => /^agent\.md: parameters\.owner is used in triggers\[0\]\.source\.accept/.test(one) && /required or has a default/.test(one)), JSON.stringify(problems));
+});
+
+test("vendor-outage-watch applied with its feeds left empty: the feed trigger is skipped with a warning under triggers.0, never the apply, and the agent stands", { timeout: 60_000 }, async (t) => {
+  const status = await feed(t, { format: "atom", title: "Faux Status - Incident History", items: [incident(1, "Old outage", "2026-05-10T10:00:00Z")] });
+  const urls = '"${parameters.status_feeds}"';
+  const words = "The pulls template's feed trigger new-pr was not made: no feeds given in status_feeds. Apply again with status_feeds set to the feeds it should read.";
+  for (const parameters of [[FEEDS_PARAMETER()], [FEEDS_PARAMETER(["https://www.githubstatus.com/history.atom"])]]) {
+    const { api } = await served(t, { urls, parameters }, status);
+    const applied = await api("POST", "/templates/pulls/apply", { parameters: { status_feeds: [] } });
+    assert.equal(applied.status, 201, JSON.stringify(applied.body));
+    assert.deepEqual(applied.body.trigger_ids, []);
+    assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: words }]);
+    assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).status, 200);
+    assert.deepEqual((await api("GET", "/triggers")).body.triggers, []);
+  }
 });

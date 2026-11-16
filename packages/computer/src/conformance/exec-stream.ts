@@ -104,7 +104,11 @@ const range = (from: number, to: number) => String.fromCodePoint(...Array.from({
  */
 const CODE_POINTS = `\u{feff}${range(0x01, 0x7f)}${range(0x80, 0xff)}ĀſΩЖאعह中文日本語한국어€  ﻿�𝄞😀\u{10ffff}éä\u{1f469}‍\u{1f4bb}carriage\rreturn\r\nline`;
 /** 16 KiB of text of every width (1, 2, 3 and 4 bytes a character), no newline: 64 of them are the 1 MiB line. */
-const LONG_PIECE = `${"aé€𝄞".repeat(1638)}abcd`;
+const LONG_UNIT = "aé€𝄞";
+const LONG_UNITS = 1638;
+/** ASCII, so the script writes it as it is. */
+const LONG_TAIL = "abcd";
+const LONG_PIECE = `${LONG_UNIT.repeat(LONG_UNITS)}${LONG_TAIL}`;
 const LONG_PIECES = 64;
 /** What stdout-text and stdin-text carry: every class of code point, \r and \r\n, a line of 1 MiB, and a lone \n at the end. */
 const TEXT = Buffer.from(`${CODE_POINTS}${LONG_PIECE.repeat(LONG_PIECES)}\n`, "utf8");
@@ -410,10 +414,14 @@ class Deadline {
 type CheckBody = (session: Session, options: Required<Pick<ExecStreamOptions, "longMs" | "largeBytes" | "largeMs" | "unreadMs">>, earlier: Map<ExecStreamCheckId, ExecStreamCheck>) => Promise<string>;
 
 const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
-	/** Text of every kind out, on stdout alone: printf in the machine writes it, the 1 MiB line a piece at a time. */
+	/**
+	 * Text of every kind out, on stdout alone: printf in the machine writes it, the 1 MiB line a piece at a time. Only the
+	 * piece's short unit crosses argv; sh repeats it, doubling, into the piece, so the command stays far under a vendor's
+	 * 64 KiB argv cap (Modal's).
+	 */
 	async "stdout-text"(s) {
-		const script = `printf "$1"; i=0; while [ "$i" -lt ${LONG_PIECES} ]; do printf "$2"; i=$((i+1)); done; printf '\\n'`;
-		const run = await s.start(["sh", "-c", script, "sh", printfOf(CODE_POINTS), printfOf(LONG_PIECE)], false);
+		const script = `printf "$1"; u=$(printf "$2"); n=${LONG_UNITS}; p=; while [ "$n" -gt 0 ]; do if [ $((n % 2)) -eq 1 ]; then p="$p$u"; fi; u="$u$u"; n=$((n / 2)); done; p="$p"${LONG_TAIL}; i=0; while [ "$i" -lt ${LONG_PIECES} ]; do printf '%s' "$p"; i=$((i+1)); done; printf '\\n'`;
+		const run = await s.start(["sh", "-c", script, "sh", printfOf(CODE_POINTS), printfOf(LONG_UNIT)], false);
 		if (!(await run.out.end(s.stepMs, s.signal))) throw new Problem(`stdout of printf did not end within ${secondsOf(s.stepMs)} of its start`);
 		const code = await s.exit(run, s.stepMs, "printf");
 		if (code !== 0) throw new Problem(`printf of the text exited ${code} (stderr: ${run.err.bytes().toString("utf8").trim().slice(0, 200) || "none"})`);

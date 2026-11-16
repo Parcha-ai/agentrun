@@ -426,6 +426,35 @@ test('the scan stays linear on a long line of host characters and still finds an
   assert.ok(receipt.findings.some(finding => finding.path === 'docs/host.md' && finding.rule === 'internal_domain'));
 });
 
+test('a Northflank docs URL in the provider scorecard is a reviewed citation; the domain anywhere else still blocks', async t => {
+  const f = await fixture(t);
+  // Built from parts so this file carries none of the internal domains it tests.
+  const northflank = ['northflank', 'com'].join('.');
+  const scorecard = 'packages/computer/SCORECARD.md';
+  await f.write(scorecard, `exec ([execute command](https://${northflank}/docs/v1/api/execute-command.md)), sandboxes ([cloud](https://${northflank}/docs/v1/application/sandboxes))\n`);
+  await f.run();
+  const passed = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.deepEqual(passed.findings, []);
+  assert.deepEqual(passed.reviewedFindings.map(finding => [finding.path, finding.rule, finding.reason]), [[scorecard, 'internal_domain', 'public vendor documentation citation']]);
+  const blocking = [
+    [scorecard, `pricing: https://${northflank}/pricing\n`],
+    [scorecard, `an app URL: https://app.${northflank}/docs/v1/api\n`],
+    [scorecard, `[docs](https://${northflank}/docs/v1/api) and the console at ${northflank}\n`],
+    [scorecard, `a service at build-box.${['code', 'run'].join('.')}\n`],
+    [scorecard, `a box at build-box.example.${['ts', 'net'].join('.')}\n`],
+    ['packages/computer/PROVIDERS.md', `see https://${northflank}/docs/v1/api/execute-command.md\n`],
+    ['docs/vendors.md', `see https://${northflank}/docs/v1/application/sandboxes\n`],
+  ];
+  for (const [path, text] of blocking) {
+    await f.write(scorecard, '# Provider scorecard\n');
+    await f.write(path, text);
+    await assert.rejects(f.run(), /Source export blocked/, text);
+    const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+    assert.deepEqual(blocked.findings.map(finding => [finding.path, finding.rule]), [[path, 'internal_domain']], text);
+    await rm(join(f.root, path));
+  }
+});
+
 test('vendored code an app keeps is listed apart, with its source, licenses and size, and a license the inventory does not take is flagged', async t => {
   const f = await fixture(t);
   const manifest = (license) => JSON.stringify({ name: 'some-lib', version: '1.2.3', license: 'MIT', source: 'https://registry.example.org/some-lib-1.2.3.tgz',

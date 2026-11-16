@@ -36,6 +36,9 @@ const fixed = (name) => HELPER.match(new RegExp(`^${name}=(\\S+)$`, "m"))?.[1];
 const ARCHIL_VERSION = "0.10.1-1793222256";
 /** What an unpinned package sum reads until its sha256 is fetched and pinned. */
 const UNPINNED = "unpinned";
+/** The image's first process: agentrun-dial when the create set AGENTRUN_ATTACH_URL (a machine that dials the server),
+ *  else nothing but a wait, for the provider's own process to run what a computer runs. */
+const CMD = 'CMD ["sh", "-c", "[ -z \\"${AGENTRUN_ATTACH_URL-}\\" ] || exec agentrun-dial; exec sleep infinity"]';
 
 test("the Dockerfile's one build step is install.sh, with the helper beside it, run as root on the base; the recipe and every build's name cover it", async () => {
   // install.sh is the build a vendor without a Docker build runs on its own base: one source, so the Dockerfile has no
@@ -45,7 +48,7 @@ test("the Dockerfile's one build step is install.sh, with the helper beside it, 
     `COPY agentrun-archil ${STAGE}/agentrun-archil`,
     `RUN sh ${STAGE}/install.sh && rm -rf ${STAGE}`,
     "USER root",
-    'CMD ["sleep", "infinity"]',
+    CMD,
   ]);
   const { RECIPE } = await import("../box/recipe.mjs");
   assert.deepEqual([...RECIPE], ["Dockerfile", "install.sh", "agentrun-archil"], "a change to install.sh is a new image");
@@ -59,7 +62,7 @@ test("install.sh is POSIX shell that stops at the first failure, runs its steps 
   const code = INSTALL.split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
   assert.ok(!/\[\[|\bfunction\b|\$\{[A-Za-z_]+\[|<<<|\bsource\b/.test(code), "no bash: no [[, function, arrays, here-strings or source");
   assert.ok(spawnSync("sh", ["-n", fileURLToPath(box("install.sh"))]).status === 0, "sh reads it");
-  assert.match(INSTALL, /^case "\$\*" in\n""\) packages; desktop; helper; checked ;;\nchecked\) checked ;;\n/m, "the whole build in order, or the last step alone");
+  assert.match(INSTALL, /^case "\$\*" in\n""\) packages; desktop; helper; dial; checked ;;\nchecked\) checked ;;\n/m, "the whole build in order, or the last step alone");
   // A vendor's snapshot flow may retry the build on the same machine: each step that makes something checks first.
   assert.match(step("packages"), /getent group agentrun-tool >\/dev\/null \|\| groupadd /);
   assert.match(step("packages"), /id -u agentrun-tool >\/dev\/null 2>&1 \|\| useradd /);
@@ -118,7 +121,7 @@ test("no sudo: the image installs none and has no sudoers file, its user is root
   const sudoers = checked.indexOf("rm -rf /etc/sudoers /etc/sudoers.d");
   const guard = checked.indexOf("! command -v sudo >/dev/null 2>&1");
   assert.ok(purge > 0 && sudoers > 0 && purge < guard && sudoers < guard, "sudo and sudoers are taken away before the guard checks there are none");
-  assert.equal(INSTRUCTIONS.at(-1), 'CMD ["sleep", "infinity"]');
+  assert.equal(INSTRUCTIONS.at(-1), CMD);
 });
 
 test("the image has every program the helper runs, at the helper's paths, and an empty /workspace; the sync socket's folder is serve's own", () => {
@@ -188,7 +191,7 @@ test("on the published image, the E2B template runs install.sh's last step again
   const lines = dockerfile.replace(/\\\n/g, " ").split("\n").filter(Boolean);
   assert.deepEqual(
     lines,
-    [`FROM ${image}`, `COPY install.sh ${STAGE}/install.sh`, `RUN sh ${STAGE}/install.sh checked && rm -rf ${STAGE}`, "USER root", 'CMD ["sleep", "infinity"]'],
+    [`FROM ${image}`, `COPY install.sh ${STAGE}/install.sh`, `RUN sh ${STAGE}/install.sh checked && rm -rf ${STAGE}`, "USER root", CMD],
     "install.sh's checked step, then root, then the same first process",
   );
   assert.ok(step("checked").includes("rm -rf /etc/sudoers /etc/sudoers.d") && step("checked").includes("! command -v sudo"), "the step takes sudo away and checks it gone");
@@ -320,7 +323,10 @@ test("box/ holds no file named like a key or a credential and no key material, a
     assert.doesNotMatch(line.split(/\s+/)[1].split("=")[0], /KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE/i, `${line}: a build argument or variable named like a secret`);
   }
   assert.deepEqual(INSTRUCTIONS.filter((line) => /^(ARG|ENV) /.test(line)), [], "the pins are install.sh's, so a vendor's build has them too");
-  assert.doesNotMatch(INSTALL, /\$\{?[A-Z_]*(KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE)/, "install.sh reads no variable named like a secret");
+  // agentrun-dial, which the build only writes, reads the machine's token at boot (test/agentrun-dial.test.mjs).
+  const build = INSTALL.replace(/<<'EOF'\n[^]*?\nEOF\n/, "");
+  assert.ok(build.length < INSTALL.length && build.includes("dial() {"), "the build without agentrun-dial's text");
+  assert.doesNotMatch(build, /\$\{?[A-Z_]*(KEY|TOKEN|SECRET|PASS|CRED|AUTH|PRIVATE)/, "install.sh reads no variable named like a secret");
   // The patterns catch what they are for.
   assert.match("id_ed25519", CREDENTIAL_NAME);
   assert.match("deploy.pem", CREDENTIAL_NAME);
@@ -385,7 +391,7 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   for (const name of ["xvfb", "xfwm4", "x11-xserver-utils", "xfce4-terminal", "mousepad", "firefox-esr", "xdotool"]) assert.ok(packages.includes(name), name);
   assert.ok(!packages.some((name) => /vnc|sudo/.test(name)), "no VNC server and no sudo");
   assert.ok(!INSTRUCTIONS.some((line) => /^(CMD|ENTRYPOINT) /.test(line) && /Xvfb|xfwm4/.test(line)), "nothing of the desktop starts with the image");
-  assert.ok(INSTALL.indexOf("desktop() {") < INSTALL.indexOf("checked() {") && /packages; desktop; helper; checked/.test(INSTALL), "the sudo guard runs after the desktop's packages");
+  assert.ok(INSTALL.indexOf("desktop() {") < INSTALL.indexOf("checked() {") && /packages; desktop; helper; dial; checked/.test(INSTALL), "the sudo guard runs after the desktop's packages");
   const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
   // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).

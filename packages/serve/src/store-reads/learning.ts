@@ -127,9 +127,13 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   const left = row.left?.length ? { problems: row.left } : {};
   const proposed: RunLearningEnd = { state: "proposed", reason: null, detail: row.detail ?? null, at, ...left };
   if (!kept.learningRunId) return proposed;
-  const learningRun = await records.runs.get(kept.learningRunId);
+  let learningRun = await records.runs.get(kept.learningRunId);
   const { merged, dropped, graded } = await learningEndEntries(store, kept.learningRunId, learningRun);
   if (!merged && !dropped) return proposed;
+  // The loop saves its end entry and the learning run's end (state, ended_at) in one transaction, and the row was read
+  // before the journal: an end the row had not seen landed between the two reads. The row read again from the store (past
+  // any list read before) is the ended one, so the end is at its ended_at, never once at the proposal's time.
+  if (!(learningRun && FINAL_STATES.includes(learningRun.state))) learningRun = await store.runs.get(kept.learningRunId);
   const endedAt = learningRun?.endedAt ? timeOf(learningRun.endedAt) : at;
   // What the grade spent: the graded entry's, or what a grade that failed spent before it did.
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);

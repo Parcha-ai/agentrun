@@ -90,7 +90,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
 	 */
 	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
-	/** Its built providers have prepareImage(): the image a computer starts from is made or pulled before the first create. */
+	/**
+	 * Its built providers have prepareImage(), the declaration: the image a computer starts from is made or pulled before
+	 * the first create. Settings reads this without loading the provider; the Core case provider.prepare-image holds the
+	 * two to agree.
+	 */
 	readonly prepareImage?: boolean;
 	/**
 	 * The server's environment variable that, when its operator sets it, names the image every computer of this provider

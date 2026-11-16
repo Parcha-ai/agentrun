@@ -1259,7 +1259,9 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   stdio command runs the daemon only while its path is root's alone. Root with no capability would still own every one
   of them. attach reads the user back from inside and refuses root.
 - **The stream** is the adapter's stdio command through `sandbox.exec`: its stdin and stdout are the `DaemonClient`'s
-  stream. Modal has no kill for an exec, so the host's `kill` ends the bridge's stdin, which ends it.
+  stream. Modal has no kill for an exec, so every exec starts under the shared pid wrapper (`PID_WRAPPER`,
+  `src/hosted/scripts.ts`), and the host's `kill` runs a second exec that kills that pid and every process under it,
+  while it has the start time the wrapper read, then ends the exec's stdin.
 - **Lifetime is Modal's.** Every sandbox's `timeoutMs` is its lifetime, rounded up to whole seconds, so Modal ends it
   then whatever runs in it. The longest is 24 hours, or less with the `maxLifetimeMs` option; `check` refuses a longer
   one with `checkLifetime`, the rule every provider shares. `sweep` refuses a Modal provider.
@@ -1420,7 +1422,10 @@ does. The provider itself never stops one: `release` takes `delete` alone and re
 Daytona runs its own toolbox daemon as the sandbox's first process, and a snapshot we do not build has no `computerd`.
 So the provider pushes it in at create and starts it, and reaches it the same way. Every command is a session command
 of its own (`runAsync`, `suppressInputEcho`), its argv one shell line, its output read from the command's log stream,
-its exit code from the session; the session is deleted once the command ends, or when the provider ends it:
+its exit code from the session once that stream ends (the toolbox ends it once the command's exit code is written,
+`apps/daemon/internal/util/log_reader.go`), so a command that runs for hours costs no call while it runs. These are
+`framedExec`'s pieces (`src/hosted/framed-exec.ts`). The session is deleted once the command ends, or when the
+provider ends it:
 
 1. Upload the static binary through the toolbox's file upload, to `/tmp/agentrun-computerd-<random>`:
    `/files/upload-v2`, or `/files/upload` when the toolbox answers 404 for it. An older toolbox, as a self-hosted
@@ -2015,13 +2020,14 @@ label and keeps the oldest by `created` (whole seconds; ties go to the lowest id
 
 Agent37 has no SSH port on the internet: the instance's sshd answers on 22022 inside it, and the edge carries the SSH
 stream as binary WebSocket frames. `exec` opens a WebSocket (Node's global one takes `headers`), wraps it as a Duplex
-for ssh2's `Client.connect({ sock })`, and runs argv as `sh -c` under a wrapper that writes the shell's pid to
-`/tmp/.agentrun-exec-<random>` and removes it when the command ends. stdout and stderr are the channel's, piped; stdin
+for ssh2's `Client.connect({ sock })`, and runs argv under the shared pid wrapper (`PID_WRAPPER`,
+`src/hosted/scripts.ts`), which puts the process's pid and start time first on stderr; the provider takes that line
+off. stdout and stderr are the channel's, piped; stdin
 is open until `end()`, which the adapter calls at once for a command it gives no input. `wait()` answers at the channel's close with the exit-status, or -1 for an exit by
 signal or none; its listeners go on inside ssh2's callback, since one read off the tunnel can hold the open, the exit
 and the close together (seen live: a listener added after an `await` missed the exit). `kill()` runs a second command
-on the same connection that kills the pid's process group (the sshd starts each command as a session and group leader,
-seen live), then closes the exec's channel, never a connection. An SSH signal request is not used: ssh2 sends one only
+on the same connection, `pidKill`, that kills the pid and every process under it while it has that start time (a child
+that left the process group too), then closes the exec's channel, never a connection. An SSH signal request is not used: ssh2 sends one only
 while stdin is open (`ssh2@1.17.0` `lib/Channel.js:237-246`), and it reaches one process, not its children.
 
 Every exec on an instance is a channel on one SSH connection that the provider shares: the daemon's upload, its install,
@@ -2032,7 +2038,7 @@ opens at the first exec (the four tries below), and a connection that closed or 
 channel that fails to open (the connection died under it, or its sshd took no more sessions) is opened once more on a
 fresh connection. One connection carries at most 10 channels at once, execs and kills alike, and the next opens a second:
 OpenSSH's sshd takes 10 sessions on a connection (`MaxSessions`). A kill's channel goes on any connection with room, since
-the pid file is the instance's. With no channel left, a connection waits 2 s for the next exec, then ends: an open one
+the pid is the instance's. With no channel left, a connection waits 2 s for the next exec, then ends: an open one
 keeps the process alive (ssh2's keepalive timer and the WebSocket's socket), so a process done with its computers exits
 at most that late. `delete` ends every connection to the instance at once, a retired one still carrying channels too.
 

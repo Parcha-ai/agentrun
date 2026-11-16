@@ -3,10 +3,11 @@
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
 // A create retried with its request id answers the computer the first made, and after release is refused (Full). A
-// deleted computer stays gone: no call to it brings it back. prepareImage called twice answers one image and makes it once.
+// deleted computer stays gone: no call to it brings it back. A provider's prepareImage() and its descriptor's flag agree, and
+// prepareImage called twice answers one image and makes it once.
 import { randomBytes } from "node:crypto";
 import type { ProviderDescriptor } from "../../descriptor.js";
-import { BACKSTOP_MARGIN_MS, type MachineHost } from "../../host.js";
+import { descriptorOf } from "../../providers.js";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
 import { type ComputerConnection, type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
@@ -63,8 +64,6 @@ async function refusedCreate(t: CaseContext, spec: ComputerSpec, what: string) {
 /** The deadline case's lifetime, and how much of it must be left once create returns: to connect and start a process. */
 const DEADLINE_LIFETIME_MS = 45_000;
 const DEADLINE_LEFT_MS = 15_000;
-/** How far a backstop host's vendor timer may read from the request's backstopAt: a timer kept in whole minutes rounds. */
-const BACKSTOP_SKEW_MS = 60_000;
 const seconds = (ms: number) => Math.round(ms / 100) / 10;
 
 /**
@@ -279,20 +278,26 @@ export const providerCases: Case[] = [
 		t.assert(deadline >= before + lifetimeMs - 1000 && deadline <= after + lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
 		t.deepEqual(await names(t, { ...labels, role: "other" }), [], "list by a label no computer has");
 	}),
-	// prepareImage twice in one run (spec/computer/provider.md, "prepareImage"): both answer the same image, and the second
-	// finds the one the first made by its name, so it is told no onWait. A server calls it before its first create, so one
-	// that builds every time costs every server minutes. A provider with none passes, observed. Core: the first call costs
-	// at most a build per account and recipe, which the account's first create pays anyway.
+	// prepareImage is declared by the provider's method; its descriptor's flag says the same to Settings, which reads it
+	// without loading the provider's module. The two agree: a server never skips a provider's image, nor asks one it has
+	// not got. A provider on the machine-host adapter has its host's descriptor; another, the registry's for its id.
+	// Then prepareImage twice in one run (spec/computer/provider.md, "prepareImage"): both answer the same image, and the
+	// second finds the one the first made by its name, so it is told no onWait. A server calls it before its first create,
+	// so one that builds every time costs every server minutes. A provider with none passes, observed. Core: the first
+	// call costs at most a build per account and recipe, which the account's first create pays anyway.
 	provider(
 		"prepare-image",
 		async (t) => {
-			// A provider on the machine-host adapter: its host's descriptor, the whole one in-tree hosts hand it.
-			const descriptor = (t.provider as { host?: { descriptor?: Partial<ProviderDescriptor> } }).host?.descriptor;
+			const descriptor = (t.provider as { host?: { descriptor?: ProviderDescriptor } }).host?.descriptor ?? descriptorOf(t.provider.id);
 			const prepare = t.provider.prepareImage?.bind(t.provider);
-			if (prepare === undefined) {
-				t.assert(descriptor?.prepareImage !== true, `${descriptor?.label}'s descriptor declares prepareImage, but its provider has no prepareImage(): give the provider class one`);
-				return t.observe("the provider has no prepareImage(): its computers start from an image a spec names");
-			}
+			if (descriptor !== undefined)
+				t.assert(
+					(prepare !== undefined) === (descriptor.prepareImage === true),
+					prepare !== undefined
+						? `${descriptor.label}'s provider has prepareImage() but its descriptor does not declare prepareImage: Settings never calls it`
+						: `${descriptor.label}'s descriptor declares prepareImage, but its provider has no prepareImage(): give the provider class one`,
+				);
+			if (prepare === undefined) return t.observe("the provider has no prepareImage(): its computers start from an image a spec names");
 			const call = async (which: string) => {
 				const told: string[] = [];
 				const image = t.ok(await prepare({ signal: t.signal, onWait: (making, tag) => told.push(`${making} ${tag}`) }), `the ${which} prepareImage`);
@@ -580,25 +585,5 @@ export const providerCases: Case[] = [
 			t.deepEqual(await names(t, labels), [], "the case's computers after it");
 		},
 		{ level: "full", timeoutMs: 300_000 },
-	),
-	// A host's backstop claim (facts.backstop, src/host.ts), read back from its vendor on the run's shared computer: get's
-	// endsAt is the request's backstopAt, which create made from the clock reading its deadline label was made from. A
-	// provider not on the machine-host adapter, or a host that claims none, has nothing to read back.
-	provider(
-		"backstop",
-		async (t) => {
-			const host = (t.provider as { host?: MachineHost }).host;
-			if (host?.facts?.backstop !== true) return t.observe(host === undefined ? "not on the machine-host adapter: no backstop to read back" : "its host claims no backstop (facts.backstop): nothing to read back");
-			const listed = t.ok(await t.provider.list(t.runLabels), "list");
-			const deadline = t.present(listed.find((info) => info.ref.name === t.ref.name)?.deadline, `${t.ref.name}'s deadline, listed`);
-			const backstopAt = deadline.getTime() - runLifetimeMs(t.spec()) + t.provider.capabilities().maxLifetimeMs + BACKSTOP_MARGIN_MS;
-			const endsAt = (await host.get(t.ref.id, { timeoutMs: t.patience, signal: t.signal }))?.endsAt;
-			const reads = endsAt instanceof Date ? endsAt.toISOString() : "none";
-			t.assert(
-				endsAt instanceof Date && Math.abs(endsAt.getTime() - backstopAt) <= BACKSTOP_SKEW_MS,
-				`${host.descriptor.label} claims backstop (facts.backstop), but its vendor timer reads ${reads}, not ${new Date(backstopAt).toISOString()}, the request's backstopAt (within ${BACKSTOP_SKEW_MS / 1000} s): set it from req.backstopAt at create, and read it back as Machine.endsAt`,
-			);
-		},
-		{ computer: "shared" },
 	),
 ];

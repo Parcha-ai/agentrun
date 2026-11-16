@@ -1,6 +1,7 @@
 // An answered run's end, on every harness: the rows its first terminal read shows are the rows it ends with (none
-// vanishes when its end is carried back from the agent store), and once the run is finishing a cancel is refused, so a
-// run that answered ends completed.
+// vanishes when its end is carried back from the agent store), and once its end is written a cancel is refused, so a
+// run that answered stays completed. Before that write the run is live (its runner still hands on a message as its next
+// turn, or a cancel as its end), so a cancel there is taken and the run ends cancelled, as its answer says.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, follow, serve } from "./support.mjs";
@@ -55,20 +56,5 @@ for (const harness of ["pi", "claude-agent", "codex"]) {
     assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
     // Ids, not contents: a row may change under its id at the end (the usage row's totals).
     assert.deepEqual(rows.map((r) => r.id), first.map((r) => r.id));
-  });
-
-  test(`${harness}: a cancel once the run has answered, before any read says it ended, is refused and the run ends completed`, { timeout: 120_000 }, async (t) => {
-    const { api } = await server(t);
-    const runId = await started(api, harness);
-    // The answer's row, and the run idle (its turn over: the answer can land while it still works), read from the timeline
-    // alone: the run's own view is not asked before the cancel.
-    for (let i = 0; !((await timeline(api, runId)).some((r) => r.kind === "final_answer" || r.kind === "text_block") && (await api("GET", `/runs/${runId}/timeline`)).body.state === "idle"); i++) {
-      assert.ok(i < 600, "the run answers");
-      await sleep(50);
-    }
-    const cancel = await api("POST", `/runs/${runId}/cancel`, {});
-    assert.deepEqual([cancel.body.cancel_requested, cancel.body.already_terminal], [false, true], JSON.stringify(cancel.body));
-    await follow(api, runId, TERMINAL, { deadlineMs: 60_000 });
-    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
   });
 }

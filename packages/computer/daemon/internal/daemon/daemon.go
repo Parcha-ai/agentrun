@@ -244,12 +244,23 @@ var afterHalfClose func()
 // Bridge copies in to the daemon at socket and the daemon's replies to out, until either side ends. With no daemon to
 // reach it says so on errOut and returns 1; it returns 0 when its input ended first.
 func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
-	conn, err := dial(socket)
+	conn, err := Dial(socket)
 	if err != nil {
 		fmt.Fprintf(errOut, "computerd stdio: no daemon listens at %s (%v); the computer's first process must be `computerd init`, and %s names another socket\n", socket, err, SocketEnv)
 		return 1
 	}
 	defer conn.Close()
+	if Carry(conn, in, out) {
+		return 0
+	}
+	fmt.Fprintln(errOut, "computerd stdio: the daemon closed the connection")
+	return 1
+}
+
+// Carry copies in to conn, a connection to the daemon, and its replies to out, until either side ends: true when in
+// ended first (conn is then half-closed and the daemon's answers to what was sent are carried), false when the daemon
+// closed first. Its goroutine reading in may outlive it.
+func Carry(conn *net.UnixConn, in io.Reader, out io.Writer) bool {
 	// Read once here: the goroutine below may outlive this call.
 	halfClosed := afterHalfClose
 	inputEnded := make(chan struct{})
@@ -271,20 +282,19 @@ func Bridge(socket string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	case <-inputEnded:
 		// The daemon answers what was sent, then closes its end.
 		<-replies
-		return 0
+		return true
 	case <-replies:
 		select {
 		case <-inputEnded:
-			return 0
+			return true
 		default:
+			return false
 		}
-		fmt.Fprintln(errOut, "computerd stdio: the daemon closed the connection")
-		return 1
 	}
 }
 
-// dial connects to socket, waiting up to dialFor while it is missing or not yet listening.
-func dial(socket string) (*net.UnixConn, error) {
+// Dial connects to init's socket, waiting up to dialFor while it is missing or not yet listening.
+func Dial(socket string) (*net.UnixConn, error) {
 	deadline := time.Now().Add(dialFor)
 	for {
 		conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})

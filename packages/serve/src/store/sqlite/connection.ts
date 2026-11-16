@@ -27,6 +27,11 @@ const OPEN = new Set<{ readonly opened: Error; readonly began: number; readonly 
  *  the answers of two workers come back in no set order, so a wait that ran out then can be read before that begin's
  *  answer adds it to OPEN (lockWait). */
 const BEGINNING = new Set<{ readonly where: string }>();
+/** How many interactive transactions of this process have ended on each database (`where`), counted once the worker has
+ *  answered their commit or rollback. A wait whose busy answer is read after a holder of this process let go (its
+ *  commit's answer read first: two workers' answers come back in no set order) finds it in neither set, yet that holder
+ *  held the lock through the wait: the count moved since the wait was sent says so (lockWait). */
+const ENDED = new Map<string, number>();
 
 /** `opened`'s frames: where a transaction was asked for, without the Error line itself. */
 const framesOf = (opened: Error): string => (opened.stack ?? "").split("\n").slice(1).join("\n");
@@ -277,19 +282,21 @@ export class Connection implements SqliteDatabase, StoreConnection {
    *  way, and the holder, once it runs again, commits or meets its deadline. A wait on another process's write, or one
    *  this process could run through, ends StoreBusy as ever.
    *  Every wait is measured, and the holder looked for when it runs out, never when it is sent: a holder's begin posted
-   *  in the same turn may take the lock before its answer makes it known. `self`: this request's own begin (BEGINNING),
-   *  never its own holder. */
+   *  in the same turn may take the lock before its answer makes it known. A holder that ended while the wait was out
+   *  counts too: its commit's answer may be read before the wait's busy answer. `self`: this request's own begin
+   *  (BEGINNING), never its own holder. */
   async #lockWait<T>(send: (busyMs: number | undefined) => Promise<T>, self?: { readonly where: string }): Promise<T> {
     let left = this.#busyTimeoutMs;
     for (;;) {
       const clock = runnableDeadline(left, () => {});
       const sent = performance.now();
+      const ended = ENDED.get(this.#where) ?? 0;
       try {
         return await send(left < this.#busyTimeoutMs ? left : undefined);
       } catch (error) {
         if (!(error instanceof StoreBusy)) throw error;
         const held = clock.held();
-        if (held === 0 || !this.#heldHere(self)) throw error;
+        if (held === 0 || !(this.#heldHere(self) || (ENDED.get(this.#where) ?? 0) !== ended)) throw error;
         left -= performance.now() - sent - held;
         if (left <= 0) throw error;
       } finally {
@@ -428,6 +435,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
       } finally {
         // Kept until the worker has answered the commit or rollback: until then this transaction still holds the lock.
         OPEN.delete(open);
+        ENDED.set(open.where, (ENDED.get(open.where) ?? 0) + 1);
       }
     });
     if (until === undefined) return run;

@@ -19,16 +19,24 @@
 //    stdin window with backpressure, as it should be).
 import { spawn } from "node:child_process";
 
-/** A stream fed by a process, read as an async iterable until it ends; `unread` is the bytes not yet taken from it. */
+/**
+ * A stream fed by a process, read as an async iterable until it ends; `unread` is the bytes not yet taken from it, and
+ * taken() answers once the reader takes the next piece, or the stream ends.
+ */
 function feed() {
 	const queue = [];
 	let ended = false;
 	let wake;
 	let unread = 0;
+	const took = [];
+	const tookOne = () => {
+		for (const done of took.splice(0)) done();
+	};
 	return {
 		get unread() {
 			return unread;
 		},
+		taken: () => (ended ? Promise.resolve() : new Promise((done) => took.push(done))),
 		push(bytes) {
 			if (ended) return;
 			queue.push(bytes);
@@ -38,6 +46,7 @@ function feed() {
 		end() {
 			ended = true;
 			wake?.();
+			tookOne();
 		},
 		iterable: {
 			async *[Symbol.asyncIterator]() {
@@ -45,6 +54,7 @@ function feed() {
 					if (queue.length > 0) {
 						const bytes = queue.shift();
 						unread -= bytes.byteLength;
+						tookOne();
 						yield bytes;
 					}
 					else if (ended) return;
@@ -109,7 +119,7 @@ export function fakeExecHost(options = {}) {
 				async write(bytes) {
 					stalled ||= stdinWaitsOnStdout && out.unread >= 64 * 1024;
 					if (stalled) return new Promise(() => {});
-					while (stdinWaitsForReader && out.unread >= 64 * 1024 && children.has(child)) await new Promise((done) => setTimeout(done, 20));
+					while (stdinWaitsForReader && out.unread >= 64 * 1024 && children.has(child)) await Promise.race([out.taken(), exited]);
 					if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
 					if (holdStdin) pending.push(Buffer.from(bytes));
 					else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));

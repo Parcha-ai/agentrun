@@ -1,13 +1,12 @@
 // MachineHost.exec over SSH, for a vendor whose machines run an sshd: one connection per machine shared by its execs,
-// each process under a wrapper that names its process group, through the stream the host gives to the machine's sshd
-// (Agent37's WebSocket tunnel) and as the login the host gives (Agent37's root and key). Every error it throws or
+// each process under the wrapper that names its pid (./scripts.ts, PID_WRAPPER), through the stream the host gives to
+// the machine's sshd (Agent37's WebSocket tunnel) and as the login the host gives (Agent37's root and key). Every error it throws or
 // rejects with is redacted of the login's secrets. The host's own ssh2 package does the protocol; this package names
 // only the slice it uses (Ssh2Module) and imports nothing at load.
-import { randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
 import { boundOf, redact } from "./process.js";
-import { shellLine } from "./scripts.js";
+import { PID_WRAPPER, pidKill, pidStderr, shellLine } from "./scripts.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
 export interface Ssh2Readable {
@@ -17,7 +16,7 @@ export interface Ssh2Readable {
 
 /**
  * The slice of an ssh2 channel this provider uses (ssh2@1.17.0 lib/Channel.js): the channel is stdout. No signal
- * request: ssh2 sends one only while stdin is open (Channel.js:237-246), so a kill goes by the process group instead.
+ * request: ssh2 sends one only while stdin is open (Channel.js:237-246), so a kill goes by the pid instead (pidKill).
  */
 export interface Ssh2Channel extends Ssh2Readable {
 	readonly stderr: Ssh2Readable;
@@ -88,27 +87,6 @@ const CHANNELS_PER_CONNECTION = 10;
  * socket are both referenced), so the wait is short: a process that is done with its computers exits at most this late.
  */
 const IDLE_MS = 2_000;
-/**
- * Every command runs under this sh, which writes its pid to $0 first and removes the file when the command ends. The
- * instance's sshd starts each command as a session and group leader (seen live: sh's PID, PGID and SID are one), so
- * the pid names the group a kill ends; ssh2 sends no signal once stdin has ended, and a signal ends one process only.
- */
-const WRAPPER = '{ echo $$ > "$0"; } 2>/dev/null; "$@"; c=$?; rm -f "$0"; exit $c';
-/**
- * The kill: waits up to a second for the pid file, then kills the group when the pid leads one (the process alone
- * otherwise, so a kill never reaches past what it started) and removes the file.
- */
-const KILL_SCRIPT = [
-	"i=0",
-	'while [ ! -s "$0" ] && [ $i -lt 10 ]; do sleep 0.1; i=$((i+1)); done',
-	'p=$(cat "$0" 2>/dev/null); rm -f "$0"',
-	'[ -n "$p" ] || exit 0',
-	'g=$(cut -d" " -f5 "/proc/$p/stat" 2>/dev/null)',
-	// No "--": dash's kill reads it as a pid (seen live: "Illegal number: -").
-	'if [ "$g" = "$p" ]; then kill -KILL "-$p"; else kill -KILL "$p"; fi 2>/dev/null',
-	"exit 0",
-].join("\n");
-
 /** A tunnel failed before its SSH handshake, or while it carried the stream: the one failure a retry may repeat. */
 export class SshTunnelError extends Error {
 	override name = "SshTunnelError";
@@ -447,22 +425,23 @@ export class SshExec {
 	}
 
 	/**
-	 * argv as the host's login over SSH, under WRAPPER, as one channel on the machine's shared connection (#start).
-	 * stdout and stderr are the channel's, piped; end sends end of file. wait answers once the channel closes, with the
-	 * exit-status, or -1 for an exit by signal or none. kill ends the process group over a channel of its own (on a
-	 * connection with room), then closes the exec's channel, never a connection; if the close does not come, wait
-	 * answers -1 and the connection takes no new channel.
+	 * argv as the host's login over SSH, under PID_WRAPPER (./scripts.ts), as one channel on the machine's shared
+	 * connection (#start). stdout and stderr are the channel's, piped, the wrapper's line taken off stderr; end sends end
+	 * of file. wait answers once the channel closes, with the exit-status, or -1 for an exit by signal or none. kill
+	 * starts pidKill over a channel of its own (on a connection with room), which ends the process and every process
+	 * under it, then closes the exec's channel, never a connection; if the close does not come, wait answers -1 and the
+	 * connection takes no new channel.
 	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-		const pidFile = `/tmp/.agentrun-exec-${randomBytes(8).toString("hex")}`;
-		const opened = await this.#start(id, shellLine(["sh", "-c", WRAPPER, pidFile, ...argv]), ctx, `the exec in ${id}`).catch((error: unknown) => {
+		const opened = await this.#start(id, shellLine([...PID_WRAPPER, ...argv]), ctx, `the exec in ${id}`).catch((error: unknown) => {
 			throw this.#redacted(id, error);
 		});
 		const { link: held, channel } = opened;
 		const stdout = new PassThrough();
-		const stderr = new PassThrough();
+		const raw = new PassThrough();
 		channel.pipe(stdout);
-		channel.stderr.pipe(stderr);
+		channel.stderr.pipe(raw);
+		const { stderr, pid } = pidStderr(raw);
 		let ended = false;
 		let closed = false;
 		// ssh2 closes every channel when the connection goes (utils.js, ChannelManager.cleanup), so the close is enough.
@@ -492,9 +471,11 @@ export class SshExec {
 			wait: () => exited,
 			kill: async () => {
 				if (closed) return;
-				// The pid file is the machine's, so the kill's channel goes on any connection with room, counted like an exec's.
-				try {
-					const killer = await this.#start(id, shellLine(["sh", "-c", KILL_SCRIPT, pidFile]), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
+				// The pid is the machine's, so the kill's channel goes on any connection with room, counted like an exec's. No
+				// pid line within the grace (or the process ended meanwhile): closing the channel below is what is left.
+				const target = await pid(KILL_GRACE_MS);
+				if (target !== undefined && !closed) try {
+					const killer = await this.#start(id, shellLine(pidKill(target)), { timeoutMs: KILL_GRACE_MS }, `the kill in ${id}`);
 					killer.channel.resume();
 					killer.channel.stderr.resume();
 					killer.channel.eof();

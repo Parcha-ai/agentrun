@@ -1272,7 +1272,8 @@ Exa takes keyless use only over IPv4, straight to its endpoint (through a proxy 
 free limit Exa answers a `429` with a Retry-After, or a tool result it marks rate-limited (`ai.exa/rateLimited`); the
 search is tried once more after a jittered 1 to 3 s, or the Retry-After Exa names when it is 5 s or less (a longer one, as
 for its daily limit, is not waited out). Still limited, the tool answers `{error}` in our words: `Free web search is
-rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.` Any
+rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant
+the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key.` Any
 other failure Exa answers reads `Free web search failed. Exa said: "<the first sentence of its text>"`, cut at 120
 characters; Exa's own instructions (a key for its MCP URL) are never passed on.
 
@@ -1775,7 +1776,9 @@ another loopback address, the IPv6 loopback, or a name for this machine in its p
 loopback endpoint is refused the same way. The host is pinned, not the port, as a local authorization server listens on
 its own port. What that leaves: such an authorization server can still have this server send its sign-in and refresh
 requests to other ports on that same loopback host (a port Docker publishes there, say), blind, learning only the
-endpoint and its status, never a body. That is why the allowance is for development only. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
+endpoint and its status, never a body. That is why the allowance is for development only. A sign-in at Google's authorization endpoint
+(`accounts.google.com`) asks for offline access (`access_type=offline` and `prompt=consent`), the one way Google gives a
+refresh token; any other authorization server's page is opened as it was. The callback exchanges the code, seals the token set (access and refresh tokens, expiry,
 scopes, the client and its secret) under `AGENTRUN_SEAL_KEY`, bound to the server's name, lists the tools as a `PUT`
 does, and redirects to the console's MCP servers page, `/#/settings/mcp?server=<name>&sign_in=ok` (or
 `sign_in=failed&error=<code>`). The redirect URI is this server's own callback under its address: on loopback, the

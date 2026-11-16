@@ -106,3 +106,15 @@ test("a trigger whose feed starts declaring entities says so in words and stays 
   assert.equal(payload.title, "New 1");
   assert.doesNotMatch(content, /root:/);
 });
+
+test("an Atom entry's xhtml content reads as its summary, its text in the order it is written, its blocks each a line", () => {
+  const atom = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">Status <em>of</em> things</div></title>
+<entry><id>tag:status.example,2026:incident-7</id><title>Recovered</title><updated>2026-06-01T09:30:00Z</updated>
+<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Service <b>restored</b> at 09:30.</p><ul><li>API</li><li>Console</li></ul><p>No data lost &amp; nothing <i>queued</i> &lt;anywhere&gt;.</p></div></content></entry>
+<entry><id>tag:status.example,2026:incident-6</id><title>Watching</title><updated>2026-06-01T08:00:00Z</updated><summary type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">Service restored</div></summary></entry>
+</feed>`;
+  const parsed = parseFeed(atom);
+  assert.equal(parsed.title, "Status of things");
+  assert.deepEqual(parsed.items.map((one) => one.summary), ["Service restored at 09:30.\nAPI\nConsole\nNo data lost & nothing queued <anywhere>.", "Service restored"]);
+});
