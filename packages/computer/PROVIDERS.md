@@ -486,6 +486,57 @@ vendor lists one while it is still being made, wait for it, bounded by `ctx.sign
 ends the same when run twice on one machine, so a retried build is safe. A first build takes minutes, once per account and recipe. The Core case `provider.prepare-image` calls
 `prepareImage` twice and fails a second call that builds, pulls or answers another image.
 
+Two more shapes take `box/Dockerfile` as it is, with no other base, layer or entrypoint:
+
+- **Your vendor takes an image from its own registry** (Vercel Sandbox, from Vercel Container Registry): build the box
+  image and push it there under the tag `agentrun-box:<hash>` (`vercel vcr build docker . agentrun-box:<hash> --push`,
+  run in `box/`).
+- **Your vendor builds from a Dockerfile on its side** (Hyperbrowser, `hx vm image build --remote`, which uploads the
+  build context): send `box/Dockerfile` with the rest of `RECIPE` (`install.sh` and `agentrun-archil`) as the context,
+  and name the result `agentrun-box-<hash>`. A Hyperbrowser team image is a name, not an OCI tag.
+
+Either way, find the image by that tag or name before you build, so a second call is no build. The provider in
+`test/conformance-image.test.mjs` runs this on the fake host, with an in-memory builder that finds images only by
+listing them, as Hyperbrowser does:
+
+```ts
+async prepareImage(ctx: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
+	const name = `agentrun-box-${boxRecipeHash()}`; // Vercel: the tag agentrun-box:<hash> in your project's VCR
+	const vendor = (this.host as VendorHost).client;
+	try {
+		const image = (await vendor.listImages(ctx)).find((one) => one.name === name); // no get by name: list
+		if (image?.status === "failed") throw new Error(`its last build failed (${image.error}): delete ${name} in the account, then call again`);
+		if (image === undefined) {
+			ctx.onWait?.("build", name); // only here: a second call finds the image and is told nothing
+			const box = (file: string) => readFile(new URL(`../box/${file}`, import.meta.url));
+			const context = { Dockerfile: await box("Dockerfile"), "install.sh": await box("install.sh"), "agentrun-archil": await box("agentrun-archil") };
+			await vendor.build(name, context, ctx).catch(async (error) => {
+				// refused because another server's build took the name since the list: wait on that one
+				if (!(await vendor.listImages(ctx)).some((one) => one.name === name)) throw error;
+			});
+		}
+		return ok(await vendor.ready(name, ctx)); // ready now, or once a build (this one, or another server's) is
+	} catch (error) {
+		return fail(codeOfError(this.host, error), `building the box image ${name}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+```
+
+An image of that name the vendor is still making (VCR's `Preparing`, a Hyperbrowser build under way) is another
+server's build of it: `ready` waits for it, bounded by `ctx.signal`, and nothing builds again. One that failed (VCR's
+`Error`) is a failure, in the vendor's words and with the next step; building over it would hide why.
+
+What the two vendors say, read 11-16:
+- Vercel ([concepts/images](https://vercel.com/docs/sandbox/concepts/images)): VCR serves an image to Sandbox only once
+  it has an optimized `linux/amd64` build, and reads `Ready` (`Preparing` until then; a create before it answers
+  `image_not_ready`). Sandbox never runs an image's `ENTRYPOINT` or `CMD`, which suits the box: the adapter starts what
+  a computer runs through exec.
+- Hyperbrowser ([sandboxes/custom-images](https://hyperbrowser.ai/docs/sandboxes/custom-images)): `--remote` uploads
+  the build context and runs its Dockerfile in a remote builder; images are amd64. There is no get by name, only the
+  list (`hx vm image list`), and a build is followed by its build id (`hx vm image status <build-id>`, `wait`).
+
+A vendor that needs its own base image (Blaxel, Baseten, Fly Sprites) doesn't fit this path yet.
+
 The tests that cover every provider read the descriptors, so your descriptor is the only list you add to.
 
 A credential of several parts is several `keys`. A value that isn't secret but has a default that works for everyone

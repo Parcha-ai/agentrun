@@ -180,11 +180,19 @@ A provider whose computers start from an image it makes declares `prepareImage: 
 the box image: `packages/computer/box/install.sh` holds every step of its build, as POSIX shell run as root on the
 Dockerfile's base, with `agentrun-archil` beside it, and the box Dockerfile only runs it.
 
-- A vendor that builds images in the account (a snapshot, a blueprint, a template, its own registry): `prepareImage`
-  boots the vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
-- It is idempotent by name. The name carries the box recipe's hash (`boxRecipeHash()`, which covers `install.sh`), so
-  a second call finds the image by that name and answers it, with no build and no `onWait`. A name the vendor refuses
-  as taken is another build of it: wait for that one.
+- A vendor that builds images from a running machine (a snapshot, a blueprint, a template): `prepareImage` boots the
+  vendor's base, runs `install.sh` there as root, then snapshots or registers the result.
+- A vendor that takes an image from its own registry (Vercel Sandbox, from Vercel Container Registry): push the box
+  image there, built from `box/Dockerfile` as it is, under the tag `agentrun-box:<hash>`.
+- A vendor that builds from a Dockerfile on its side (Hyperbrowser's remote builder): send `box/Dockerfile` with the
+  rest of the recipe (`RECIPE` in `box/recipe.mjs`: `install.sh` and `agentrun-archil`) as the build's context, and
+  name the result `agentrun-box-<hash>`, a name and not an OCI tag.
+- A vendor that needs its own base image (Blaxel, Baseten, Fly Sprites) doesn't fit these paths yet.
+- It is idempotent by name. The name or tag carries the box recipe's hash (`boxRecipeHash()`, which covers
+  `install.sh`), so a second call finds the image by it and answers it, with no build and no `onWait`. Where the vendor
+  has no get by name, `prepareImage` lists its images and takes the one of that name, in any state. A name the vendor
+  refuses as taken, or one it is still making (VCR's `Preparing`, a build under way), is another build of it: wait for
+  that one, bounded by `ctx.signal`. One whose build failed is a failure in the vendor's words, never built over.
 - It calls `ctx.onWait("build" | "pull", tag)` once, and only when it really builds or pulls.
 - It answers the image a create then names: ok with it, or an error in the vendor's words.
 
