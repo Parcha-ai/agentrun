@@ -62,16 +62,17 @@ test("a switched-off guard: the refit's score is the one scorer's at its chosen 
     { node: "extract", label: "facts", guard: { signal: "jev", threshold: 0.7 } },
     { node: "agent", label: "answer", guard: { signal: "jev", threshold: 0.2 } },
   ] } });
-  // facts says nothing of right and wrong (off); answer is 0.3 on the two wrong drafts (raised past them).
+  // facts says nothing of right and wrong and catches none of the three wrong drafts (off); answer is 0.3 on them (raised
+  // past them).
   const rows = Array.from({ length: 10 }, (_, i) => {
-    const wrong = i < 2;
+    const wrong = i === 1 || i === 3 || i === 5;
     const facts = i % 2 ? 0.9 : 0.06;
     return row(`g${i}`, { answer: wrong ? "no" : "yes", recorded: "yes", guards: [guard("facts", facts), guard("answer", wrong ? 0.3 : 0.9)] });
   });
   const refit = refitGuards(text, refitRowsOf(rows), NOW);
   assert.deepEqual(refit.guards.map(({ node, threshold }) => [node, threshold]), [["facts", null], ["answer", 0.9]]);
   assert.deepEqual(scoreOf(refit), score(rows, chosen(text, refit)));
-  assert.deepEqual(scoreOf(refit), { n: 10, agree: 8, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 2 }, "the eight right drafts the off guard no longer hands back agree");
+  assert.deepEqual(scoreOf(refit), { n: 10, agree: 7, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 3 }, "the seven right drafts the off guard no longer hands back agree");
 });
 
 test("a soft escalate switched off: the refit's score is the one scorer's at its chosen thresholds", () => {
@@ -81,16 +82,17 @@ test("a soft escalate switched off: the refit's score is the one scorer's at its
     { node: "judge", label: "check", state: { answer: "{answer.answer}" }, out: "Check", as: "check" },
     { node: "escalate", label: "unsupported", when: { predicate: "field_equals", path: "check.unsupported", value: true }, kind: "unsupported", stage: "check", summary: "unsupported" },
   ] } });
-  // The check fires on most inputs, and the drafts it stops are right as often as the agent is: switched off.
+  // The check fires on most inputs, and the drafts it stops are right as often as the agent is; the three wrong drafts it
+  // let through (DROP_MIN_WRONG) it never stopped: switched off.
   const rows = [
     ...Array.from({ length: 8 }, (_, i) => row(`f${i}`, { answer: "42", guards: [esc(true)] })),
     row("n1", { answer: "42", guards: [esc(false)] }),
-    row("n2", { answer: "41", recorded: "42", correct: false, guards: [esc(false)] }),
+    ...["n2", "n3", "n4"].map((of) => row(of, { answer: "41", recorded: "42", correct: false, guards: [esc(false)] })),
   ];
   assert.equal(score(rows, new Map()).handed_back, 8, "served as it is, the check hands back eight");
   const refit = refitGuards(text, refitRowsOf(rows), NOW);
   assert.deepEqual(refit.guards, [{ node: "unsupported", was: null, threshold: null, escalate: true }]);
   assert.deepEqual(scoreOf(refit), score(rows, chosen(text, refit)));
-  // n2's draft (41) differs from the agent's answer graded wrong (42), nothing expected: proves nothing, wrong on both sides.
-  assert.deepEqual(scoreOf(refit), { n: 10, agree: 9, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 0 });
+  // n2-n4's draft (41) differs from the agent's answer graded wrong (42), nothing expected: proves nothing, wrong on both sides.
+  assert.deepEqual(scoreOf(refit), { n: 12, agree: 9, agent_acc: 0.75, wf_acc: 0.75, delta: 0, handed_back: 0 });
 });

@@ -7,15 +7,19 @@
 // worked example the checks pass. Its answer is checked as a look-back's draft is (propose.ts: the static checks, then a
 // dry run); what they refuse goes back to the model, as data, and the turn answers again, up to COMPILE_RETRIES times.
 // Every attempt is recorded (CompiledRecord), and a draft that never passed is never silent: its errors go with the
-// run's learning (`draft_errors`), and the problems it was left out with go to its end beside the notes.
+// run's learning (`draft_errors`), and the problems it was left out with go to its end beside the notes. A revision of a
+// workflow with a champion (the revision that serves) takes the champion's guards before it is checked: each guarded step
+// it keeps takes the champion's fitted threshold, fit and off switch, and only a new step keeps the compiled default
+// (learn/promote.ts inheritGuards); its record names the steps that did (`inherited`).
 // The notes a kept draft does the work of get `compiled_into: <workflow>` in their front matter when it merges
 // (learn/commit.ts), and stay served: a run the workflow hands back is done by hand with them.
 import { createHash } from "node:crypto";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
-import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
+import { childNodes, draftFiles, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
-import { answersAlone, championOf, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf, replayingOf } from "./promote.js";
+import { answersAlone, championOf, inheritGuards, type InheritedGuard, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf, replayingOf } from "./promote.js";
+import { workflowNodes } from "./workflow-nodes.js";
 import { redactSecrets } from "./secrets.js";
 
 /** How many active notes an agent keeps before its look-back compiles its job. */
@@ -101,6 +105,10 @@ export type CompileAsk = {
   /** The commit of main `current` was read at: the revision's conflict base (its merge refuses a change to the workflow
    *  on main after this read, never one before it, which the revision was written over). Never told the model. */
   readonly base?: string;
+  /** The workflow's champion (learn/promote.ts championOf: the revision that serves), when it has one: its digest, its
+   *  text and the steps a refit switched off on its way (switchedOffOf). The revision takes its guards (inheritGuards).
+   *  Never told the model. */
+  readonly champion?: { readonly digest: string; readonly text: string; readonly off: readonly string[] };
   readonly handedBack?: true; readonly revise?: ReviseAsk; readonly graded?: GradedAsk; readonly held?: HeldAsk;
 });
 
@@ -108,9 +116,10 @@ export type CompileAsk = {
 export type CompileAttempt = { readonly ok: boolean; readonly errors: readonly string[] };
 /** The compile record a run's learning keeps (SPEC: the `compiled` event): the workflow, the notes it does the work of,
  *  every attempt in order, and the kept draft's digest (workflowDigest of its workflow.json: what a run serving it
- *  records). `promoted` is read from the agent's promotion records when the run's learning is read (promotedOf), never
- *  kept. */
-export type CompiledRecord = { readonly workflow: string; readonly from_notes: readonly string[]; readonly attempts: readonly CompileAttempt[]; readonly digest?: string; readonly promoted?: boolean };
+ *  records). `inherited`: the kept draft's guarded steps that took its champion's setting (`from`, the champion's digest;
+ *  inheritGuards), when any did. `promoted` is read from the agent's promotion records when the run's learning is read
+ *  (promotedOf), never kept. */
+export type CompiledRecord = { readonly workflow: string; readonly from_notes: readonly string[]; readonly attempts: readonly CompileAttempt[]; readonly digest?: string; readonly inherited?: { readonly from: string; readonly guards: readonly InheritedGuard[] }; readonly promoted?: boolean };
 
 /** Whether the draft a compile kept at `digest` serves (learn/promote.ts records, newest wins): true once promoted, or
  *  once a threshold refit of it was (its new revision serves in its place); false while held, or once a newer revision
@@ -506,14 +515,19 @@ function nodesOf(value: unknown, out: Record<string, unknown>[] = []): Record<st
 
 /** What a draft's guards leave out of the ones the compile turn asked for (learnedHost's rules), one line each: a
  *  judgment step with no guard; with Jev, an extract or call step with none, or one reading its own confidence (it
- *  reports none); without Jev, a guard that reads it (it would hand every case back). None when every one is there. */
-export function guardProblems(doc: unknown, options: { readonly jev: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): string[] {
+ *  reports none); without Jev, a guard that reads it (it would hand every case back). None when every one is there. A
+ *  step named in `off` (by label, a child's prefixed) is one whose guard the revision took off from its champion
+ *  (inheritGuards): its missing guard is no problem. */
+export function guardProblems(doc: unknown, options: { readonly jev: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[]; readonly off?: ReadonlySet<string> }): string[] {
   if (options.workflowAdapters !== undefined) return nodesOf((doc as { root?: unknown } | null)?.root).filter(node => node.guard !== undefined).map(() => "the SDK bridge has no guardStep callback: omit step guards");
   const own = options.jev ? "both" : "self";
+  const off = options.off;
+  const inheritedOff = new Set(off?.size ? workflowNodes(doc).filter(({ node, prefix }) => typeof node.label === "string" && off.has(`${prefix}${node.label}`)).map(({ node }) => node) : []);
   const problems: string[] = [];
   for (const node of nodesOf((doc as { root?: unknown } | null)?.root)) {
     const kind = node.node as string;
     if (!SELF_KINDS.has(kind) && !UNREPORTED_KINDS.has(kind)) continue;
+    if (inheritedOff.has(node) && node.guard === undefined) continue;
     const step = `the ${kind} step ${JSON.stringify(String(node.label ?? "(no label)").slice(0, 64))}`;
     const guard = node.guard as { signal?: unknown } | undefined;
     const signal = guard !== null && typeof guard === "object" ? guard.signal : undefined;
@@ -530,8 +544,9 @@ export function guardProblems(doc: unknown, options: { readonly jev: boolean; re
 }
 
 /** The guards draft `name` as the checks kept it (its workflow.json's text in the proposal) leaves out (guardProblems),
- *  each the checks' way, `guard: ` in front; one problem when its text can't be read. */
-function draftGuardErrorsOf(checked: CheckedLike, name: string, ask: CompileAsk): string[] {
+ *  each the checks' way, `guard: ` in front; one problem when its text can't be read. `off`: the steps whose guard it took
+ *  off from its champion. */
+function draftGuardErrorsOf(checked: CheckedLike, name: string, ask: CompileAsk, off: ReadonlySet<string>): string[] {
   const file = checked.state === "proposed" ? ((checked.proposal as { files?: { file?: unknown; text?: unknown }[] } | null)?.files ?? []).find((one) => one?.file === draftPaths(name)[0]) : undefined;
   let doc: unknown;
   try {
@@ -539,7 +554,22 @@ function draftGuardErrorsOf(checked: CheckedLike, name: string, ask: CompileAsk)
   } catch {
     return ["guard: its workflow.json as the checks kept it could not be read for its guards"];
   }
-  return guardProblems(doc, { jev: ask.jev === true, ...(ask.workflowAdapters !== undefined ? { workflowAdapters: ask.workflowAdapters } : {}) }).slice(0, ERRORS_MAX).map((problem) => `guard: ${problem}`.slice(0, ERROR_MAX));
+  return guardProblems(doc, { jev: ask.jev === true, off, ...(ask.workflowAdapters !== undefined ? { workflowAdapters: ask.workflowAdapters } : {}) }).slice(0, ERRORS_MAX).map((problem) => `guard: ${problem}`.slice(0, ERROR_MAX));
+}
+
+/** Draft `name`'s block (readCompile's) with its workflow's champion's guards carried onto its workflow.json (a revision
+ *  of a workflow with a champion: learn/promote.ts inheritGuards); as it is otherwise, or when nothing moved. Its front
+ *  matter and the text around the JSON are kept as they are. */
+function inheritedBlock(name: string, block: string, ask: CompileAsk): { block: string; inherited: InheritedGuard[] } {
+  if (ask.mode !== "revise" || !ask.champion) return { block, inherited: [] };
+  const open = `\`\`\`\`${WORKFLOW_BLOCK} ${name}\n`;
+  if (!block.startsWith(open) || !block.endsWith("````")) return { block, inherited: [] };
+  const text = block.slice(open.length, -4).replace(/\r\n/g, "\n");
+  const { json } = draftFiles(name, text);
+  const carried = inheritGuards(json, ask.champion.text, new Set(ask.champion.off));
+  if (carried.text === json) return { block, inherited: carried.inherited };
+  const tail = /\s*$/.exec(json)?.[0] ?? "";
+  return { block: `${open}${text.slice(0, text.length - json.length)}${carried.text}${tail}\`\`\`\``, inherited: carried.inherited };
 }
 
 /** The record's workflow when no attempt named one. */
@@ -589,15 +619,20 @@ export async function compileTurn<C extends CheckedLike>(input: {
     else {
       name = read.name;
       fromNotes = read.from_notes;
-      const answer = withCompiled(input.answer, read.block);
+      // A revision of a workflow with a champion takes the champion's guards before it is checked: the checks, its dry
+      // run, the grader and the merge all read the text that will serve, and its digest is that text's.
+      const { block, inherited } = inheritedBlock(read.name, read.block, input.compile);
+      const answer = withCompiled(input.answer, block);
       const checked = await input.check(answer).catch(() => undefined);
       errors = draftErrorsOf(checked, read.name);
       // The guards the turn asked for, on the draft as the checks kept it: a judgment it runs unguarded never hands back.
-      if (!errors.length && checked) errors = draftGuardErrorsOf(checked, read.name, input.compile);
+      const off = new Set(inherited.filter((one) => one.threshold === null).map((one) => one.node));
+      if (!errors.length && checked) errors = draftGuardErrorsOf(checked, read.name, input.compile, off);
       if (!errors.length && checked) {
         attempts.push({ ok: true, errors: [] });
         const digest = draftDigestOf(checked, read.name);
-        return { record: { workflow: read.name, from_notes: fromNotes, attempts, ...(digest ? { digest } : {}) }, kept: { answer, checked }, draftErrors: [] };
+        const from = input.compile.mode === "revise" ? input.compile.champion?.digest : undefined;
+        return { record: { workflow: read.name, from_notes: fromNotes, attempts, ...(digest ? { digest } : {}), ...(from && inherited.length ? { inherited: { from, guards: inherited } } : {}) }, kept: { answer, checked }, draftErrors: [] };
       }
     }
     attempts.push({ ok: false, errors });

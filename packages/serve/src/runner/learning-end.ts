@@ -30,14 +30,15 @@ import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/in
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
 import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type GradedAsk, type HeldAsk, heldNamesOf } from "../learn/compile.js";
-import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
+import { championOf, type PromotionRecord, promotionOf, promotionsOf, scoreOf, switchedOffOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
 import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { META_TOOLS } from "../meta-tool-names.js";
-import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown } from "../learning.js";
+import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown, type Shown } from "../learning.js";
+import { workflowsAt } from "./learning-seed.js";
 import type { RunPath } from "../learning-cost.js";
 import { reflects, type Reflect } from "../reflect-range.js";
 import { said, STOPPED } from "../learning-words.js";
@@ -408,9 +409,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const gradedOf = fed?.round === "revise" && fed.workflow ? fed.workflow : undefined;
   let revising = served?.outcome === "handed_back" ? served.workflow : (stopped?.workflow ?? gradedOf);
   // The workflows whose newest revision other than their champion (learn/promote.ts championOf: it serves while that one
-  // is held) is held: the run's own may be one (its champion served it, or it went by hand).
-  const records: PromotionRecord[] = revising ? [] : await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
-  const heldNames = heldNamesOf(records);
+  // is held) is held: the run's own may be one (its champion served it, or it went by hand). A revision reads its
+  // workflow's champion from them too (championFor).
+  const records: PromotionRecord[] = await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
+  const heldNames = revising ? new Set<string>() : heldNamesOf(records);
   // The agent's latest runs, newest first: those after the ending one in the list started before it.
   const listed = await deps.store.runs.list({ agentId: input.agentId, limit: 200 });
   const at = listed.findIndex((run) => run.id === input.runId);
@@ -523,7 +525,9 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
   const graded: GradedAsk | undefined = revising && gradedOf && fed ? { answer: cut(servedAnswerOf(entries)?.answer ?? ""), words: cut(fed.text) } : undefined;
   // A revision is of main's text as read here, whatever the run started from: that commit is its conflict base (`base`).
-  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(read.main ? { base: read.main } : {}), ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
+  // It takes its workflow's champion's guards (learn/compile.ts), never told the model.
+  const champion = revising ? await championFor(deps, input.agentId, records, revising, read.current!, shown) : undefined;
+  const ask: CompileAsk = !revising ? { mode: "new", ...base } : { mode: "revise", workflow: revising, current: read.current!, ...(read.main ? { base: read.main } : {}), ...(champion ? { champion } : {}), ...(served?.outcome === "handed_back" ? { handedBack: true as const } : stopped ? { revise: { workflow: stopped.workflow, served_usd: stopped.served_usd, by_hand_usd: stopped.by_hand_usd, runs: stopped.runs } } : graded ? { graded } : held ? { held } : {}), ...base };
   sayLeftOut();
   // Last, the prompt itself, whatever it is told now or later (a tool's description, the agent's output schema): one that
   // still holds a secret asks nothing.
@@ -532,6 +536,22 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     return undefined;
   }
   return ask;
+}
+
+/** The champion of learned workflow `name` (learn/promote.ts championOf: the revision that serves) a revision of it takes
+ *  its guards from: its digest, its text (main's, `current`, when that is it; else as the learning folder held it at its
+ *  record's commit, its digest checked) and the steps a refit switched off on its way (switchedOffOf). Undefined when it
+ *  has none, or its text can't be read. */
+export async function championFor(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, records: readonly PromotionRecord[], name: string, current: string, shown: Shown): Promise<NonNullable<Extract<CompileAsk, { mode: "revise" }>["champion"]> | undefined> {
+  const champion = championOf(records, name);
+  if (!champion) return undefined;
+  let text = workflowDigest({ workflow: current }) === champion.digest ? current : undefined;
+  if (text === undefined && champion.commit) {
+    const at = await workflowsAt({ folder: () => deps.learningFolder(agentId), shown: async () => shown }, champion.commit).catch(() => []);
+    const one = at.find((flow) => flow.name === name);
+    if (one && workflowDigest(one) === champion.digest) text = one.workflow;
+  }
+  return text === undefined ? undefined : { digest: champion.digest, text, off: [...switchedOffOf(records, name, champion.digest)] };
 }
 
 /** The tools a workflow draft may name (learning-run.ts draftTools): the revision's own, as its run's gate reads them

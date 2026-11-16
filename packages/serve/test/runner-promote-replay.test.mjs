@@ -255,7 +255,10 @@ const judgedFlow = {
   ] },
 };
 
-test("a judge-driven escalate is recorded in the replay, not obeyed: held for never answering alone, the refit switches it off, and the new revision promotes and answers alone", { timeout: 180_000 }, async (t) => {
+// Was (before guard-keep-value): the refit switched the escalate off over these six rows and the new revision served. Six
+// rows are under REFIT_MIN (10: five to fit on, five held out), and every draft is right, so the rows show nothing the
+// escalate is worth (mayLower: no wrong draft it let through): no refit, and the held digest stays held.
+test("a judge-driven escalate is recorded in the replay, not obeyed: held for never answering alone; six rows and no wrong draft get no refit, and the next run is the agent's", { timeout: 180_000 }, async (t) => {
   const env = { TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV };
   const { server, start, replays, logs } = await world(t, { flows: [{ name: "answer", description: "Answers a question as a number", workflow: judgedFlow }], env });
   const first = await start("run-1", "What is six times seven");
@@ -275,12 +278,9 @@ test("a judge-driven escalate is recorded in the replay, not obeyed: held for ne
   assert.equal(held.digest, workflowDigest({ workflow: JSON.stringify(judgedFlow) }));
   assert.deepEqual({ n: held.replay.n, handed_back: held.replay.handed_back }, { n: 6, handed_back: 6 });
   assert.match(held.reason, /it would never answer alone/);
-  const refit = records.at(-1);
-  assert.deepEqual({ decided: refit.decided, source: refit.source, from: refit.refit.from, guards: refit.refit.guards }, { decided: "promote", source: "refit", from: held.digest, guards: [{ node: "unsupported", was: null, threshold: null, escalate: true }] });
-  assert.deepEqual({ wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, n: refit.replay.n, handed_back: refit.replay.handed_back, alone: "alone" in refit.replay }, { wf_acc: 1, delta: 0, n: 6, handed_back: 0, alone: false });
-  assert.ok(logs.some((line) => /refit answer's guards over its replay held it \(6 rows\): unsupported escalate off/.test(line)), logs.join("\n"));
-  // The refit serves this same run, alone: no escalate left to hand it back.
-  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", refit.digest], JSON.stringify(second.metrics));
+  assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "replay"], ["hold", "replay"]], "no refit record");
+  assert.ok(logs.some((line) => /answer's guards are not refit over its replay held it: 6 rows, fewer than 10 \(5 to fit on, 5 held out\)/.test(line)), logs.join("\n"));
+  assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
 });
 
 test("a replay more than 2 points under the agent holds the digest: the next run is the agent's", { timeout: 180_000 }, async (t) => {
@@ -322,14 +322,16 @@ const guardedFlow = (threshold) => ({
 test("a replay held with a guard set too low gets one refit: the cheapest threshold within the bar lands as a new revision, promoted, and serves", { timeout: 180_000 }, async (t) => {
   // Odd questions: a wrong answer at confidence 0.3; even ones: right at 0.9. At threshold 0.1 the wrong ones serve.
   const submit = (text) => (/Question (\d+)/.exec(text)?.[1] % 2 === 1 ? { answer: 41, confidence: 0.3 } : { answer: 42, confidence: 0.9 });
+  // Ten graded inputs: a refit is fit on five and checked on the other five (REFIT_MIN). The split (halvesOf) puts
+  // Questions 3, 5 and 7 (wrong) and 4 and 8 in the half it is fit on.
   const flow = guardedFlow(0.1);
-  const { server, start, replays, logs } = await world(t, { flows: [{ name: "answer", description: "Answers a question as a number", workflow: flow }], submit });
+  const { server, start, replays, logs } = await world(t, { graded: 10, flows: [{ name: "answer", description: "Answers a question as a number", workflow: flow }], submit });
   const first = await start("run-1", "What is six times seven");
   assert.equal(first.metrics?.path, "agent");
   const runs = await until(async () => {
     const all = await replays();
-    return all.length === 6 && all.every((row) => ["ended", "failed", "stopped"].includes(row.state) && row.runner === null) && all;
-  }, "the six replay runs ended");
+    return all.length === 10 && all.every((row) => ["ended", "failed", "stopped"].includes(row.state) && row.runner === null) && all;
+  }, "the ten replay runs ended");
   // Record-only: every replay answered, its guard read at the least threshold the DSL takes.
   for (const row of runs) {
     assert.equal(row.metrics?.replay?.outcome, "answered", JSON.stringify(row.metrics));
@@ -342,8 +344,9 @@ test("a replay held with a guard set too low gets one refit: the cheapest thresh
   assert.deepEqual({ wf_acc: held.replay.wf_acc, agent_acc: held.replay.agent_acc }, { wf_acc: 0.5, agent_acc: 1 });
   const refit = records.at(-1);
   assert.deepEqual({ decided: refit.decided, source: refit.source, from: refit.refit.from, guards: refit.refit.guards }, { decided: "promote", source: "refit", from: held.digest, guards: [{ node: "answer", was: 0.1, threshold: 0.9 }] });
-  assert.deepEqual({ wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, handed_back: refit.replay.handed_back }, { wf_acc: 1, delta: 0, handed_back: 3 });
-  assert.ok(logs.some((line) => /refit answer's guards over its replay held it \(6 rows\): answer 0\.1 -> 0\.9/.test(line)), logs.join("\n"));
+  assert.deepEqual({ n: refit.replay.n, wf_acc: refit.replay.wf_acc, delta: refit.replay.delta, handed_back: refit.replay.handed_back }, { n: 10, wf_acc: 1, delta: 0, handed_back: 5 });
+  assert.match(refit.reason, /on the 5 rows held out of the fit the workflow 100\.0%, the agent 100\.0%$/);
+  assert.ok(logs.some((line) => /refit answer's guards over its replay held it \(10 rows\): answer 0\.1 -> 0\.9/.test(line)), logs.join("\n"));
   // The held digest never serves: its refit, promoted on its rows, is the champion and serves this same run from its commit.
   assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", refit.digest], JSON.stringify(second.metrics));
   assert.equal(typeof refit.commit, "string", "the refit's record names its learning commit");

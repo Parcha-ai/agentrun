@@ -482,6 +482,70 @@ export function walkGuards(doc: unknown, visit: (label: string, guard: Record<st
   }
 }
 
+/** The guarded steps a refit switched off on the way to `digest` of `workflow`: each refit record's guard gone off
+ *  (RefitGuard threshold null; an escalate is a step, never counted), back along its refit records' `from`. A refit never
+ *  gives a guard back, so each is off at `digest` too. A lineage cut by the records' trim names fewer, never more. */
+export function switchedOffOf(records: readonly PromotionRecord[], workflow: string, digest: string): Set<string> {
+  const off = new Set<string>();
+  const seen = new Set<string>();
+  for (let at: string | undefined = digest; at !== undefined && !seen.has(at); ) {
+    seen.add(at);
+    const refit = records.findLast((one) => one.workflow === workflow && one.digest === at && one.source === "refit" && one.refit);
+    for (const guard of refit?.refit?.guards ?? []) if (!guard.escalate && guard.threshold === null) off.add(guard.node);
+    at = refit?.refit?.from;
+  }
+  return off;
+}
+
+/** One guarded step a new revision took from its workflow's champion (inheritGuards): its label, and the champion's
+ *  threshold there (null: switched off, its guard dropped). */
+export interface InheritedGuard {
+  readonly node: string;
+  readonly threshold: number | null;
+}
+
+/** A new revision's draft `draft` with its workflow's champion's guards carried onto it (`champion`, the champion's text;
+ *  `off`, the steps a refit switched off on its way, switchedOffOf). Each guarded step the draft keeps, by label (a
+ *  child's prefixed), takes the champion's threshold and fit there (no fit when the champion's guard has none) when the
+ *  champion's guard reads the same signal; a step whose guard went off on the champion's way, and that is the same kind
+ *  of node with no guard there now, goes off too (its guard dropped). A step the champion does not have, or whose guard
+ *  reads another signal there (its fit and threshold mean something else), keeps the default it was compiled with.
+ *  Escalates are steps the draft writes, never carried. The draft's text (as given when nothing moved) and each step that
+ *  took the champion's setting, in document order. */
+export function inheritGuards(draft: string, champion: string, off: ReadonlySet<string>): { text: string; inherited: InheritedGuard[] } {
+  let doc: unknown;
+  let from: unknown;
+  try {
+    doc = JSON.parse(draft);
+    from = JSON.parse(champion);
+  } catch {
+    return { text: draft, inherited: [] };
+  }
+  const theirs = new Map<string, Record<string, unknown>>();
+  for (const { node, prefix } of workflowNodes(from)) if (typeof node.label === "string") theirs.set(`${prefix}${node.label}`, node);
+  const inherited: InheritedGuard[] = [];
+  let moved = false;
+  walkGuards(doc, (label, guard, node) => {
+    const there = theirs.get(label);
+    if (!there) return;
+    const own = there.guard;
+    if (own && typeof own === "object" && !Array.isArray(own)) {
+      const { signal, threshold, fit } = own as Record<string, unknown>;
+      if (signal !== guard.signal || typeof threshold !== "number") return;
+      if (guard.threshold !== threshold || JSON.stringify(guard.fit) !== JSON.stringify(fit)) moved = true;
+      guard.threshold = threshold;
+      if (fit === undefined) delete guard.fit;
+      else guard.fit = structuredClone(fit);
+      inherited.push({ node: label, threshold });
+    } else if (own === undefined && off.has(label) && there.node === node.node) {
+      delete node.guard;
+      moved = true;
+      inherited.push({ node: label, threshold: null });
+    }
+  });
+  return { text: moved ? JSON.stringify(doc) : draft, inherited };
+}
+
 /** The threshold a soft escalate's row (GuardRow signal `escalate`) is read at: its p is 0 when it fired, else 1, so it
  *  hands back at its serving setting exactly when it fired. */
 export const SOFT_ESCALATE_THRESHOLD = 0.5;

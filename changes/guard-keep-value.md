@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A learned workflow's step guards keep the value they were fit to. A revision compiled while its workflow has a champion takes the champion's threshold, fit and off switch for every guarded step it keeps (same label); only a new step keeps the compiled default, and the compile record's `inherited` names the steps that took one. A refit lowers a guard or switches it off, or switches an escalate off, only when the rows hold at least 3 wrong workflow answers that went past the step and it caught none of them at its current threshold; raising a guard stays allowed. A refit is fit on one half of its rows (a fixed hash split) and is written only when it also clears the bar on the other half, and a workflow with fewer than 10 rows (5 to fit on, 5 held out) is not refit: its revision stays as it is. Before, a refit fit on every row could switch off a guard that had no wrong answers to catch in that sample, and the next compile reset every threshold to its default.

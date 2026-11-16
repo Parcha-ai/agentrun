@@ -5,8 +5,9 @@
 // taking the runs meanwhile. A later claim that finds every replay run ended scores them (learn/refit.ts scoreRows at the serving
 // thresholds: a hand-back is the agent's recorded answer) and promotes the digest when it is within PROMOTE_BAR of the
 // agent path and answers alone on at least one input, else holds it; a held digest gets one refit over the replay's rows
-// (learn/refit.ts: its guards' thresholds, and its guards and recorded escalates on or off), a new revision that serves
-// when the refit clears the bar. A replay records an escalate that reads a judge's field instead of obeying it
+// (learn/refit.ts: its guards' thresholds, and its guards and recorded escalates on or off, a guard lowered or switched
+// off only when it caught none of at least 3 wrong answers past it), a new revision that serves when the refit, fit on
+// one half of the rows, clears the bar on both halves (fewer than REFIT_MIN rows: no refit). A replay records an escalate that reads a judge's field instead of obeying it
 // (the DSL's softEscalates): it scores as a hand-back where it fired, and the refit may switch it off. Fewer than
 // REPLAY_MIN graded inputs: the digest is promoted on its passing dry run, as before, and its record says so. A serving
 // digest is checked once per REFIT_EVERY more graded runs it served: its thresholds refit (a new revision when they move
@@ -72,7 +73,7 @@ import { answersAlone, championOf, clears, type Grade, gradesOf, PROMOTE_BAR, ty
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
-import { type RefitRow, refitGuards, refitRowsOf, scoreRows } from "../learn/refit.js";
+import { REFIT_MIN, type RefitRow, refitHeldOut, refitRowsOf, scoreRows } from "../learn/refit.js";
 import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import { learningCommit } from "../learn/commit.js";
 import type { LearningFolder } from "../learn/folder.js";
@@ -813,7 +814,7 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
     const run = await store.runs.get(grade.run);
     const m = metricsOf(run);
     const guards = Array.isArray(m.guards) ? (m.guards as GuardRow[]) : [];
-    rows.push(grade.path === "workflow" ? { guards, answered: true, wfCorrect: grade.correct, agentCorrect: agentAcc } : { guards, answered: false, wfCorrect: null, agentCorrect: grade.correct ? 1 : 0 });
+    rows.push(grade.path === "workflow" ? { run: grade.run, guards, answered: true, wfCorrect: grade.correct, agentCorrect: agentAcc } : { run: grade.run, guards, answered: false, wfCorrect: null, agentCorrect: grade.correct ? 1 : 0 });
   }
   const replayed = record.source === "replay" && record.runs?.length ? (await replayRows(deps, record))?.scored ?? [] : [];
   const wrote = await refitAndWrite(deps, workflow, digest, [...rows, ...replayed], `${plural(served.length, "graded run")} it served`);
@@ -832,14 +833,25 @@ async function stillServing(deps: PromotionDeps, workflow: LearnedWorkflow, dige
   return marked.record;
 }
 
-/** One refit of `workflow` over `rows`; when it moves a guard and the rows clear the bar at the new thresholds, the new
- *  text is written as a new revision (a merge from the claim's seed) and promoted with the rows' numbers. True when one
- *  was written. */
+/** One refit of `workflow` over `rows`, fit on one half of them and checked on the other (learn/refit.ts refitHeldOut);
+ *  when it moves a guard and clears the bar on both halves at the new thresholds, the new text is written as a new
+ *  revision (a merge from the claim's seed) and promoted with the rows' numbers. Fewer than REFIT_MIN rows (REPLAY_MIN
+ *  each half): no refit, and the revision stays as it is. True when one was written. */
 async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, rows: RefitRow[], why: string): Promise<boolean> {
-  if (!deps.commit || rows.length < REPLAY_MIN) return false;
+  if (!deps.commit) return false;
+  if (rows.length < REFIT_MIN) {
+    deps.log(`workflow-first: ${workflow.name}'s guards are not refit over ${why}: ${plural(rows.length, "row")}, fewer than ${REFIT_MIN} (${REPLAY_MIN} to fit on, ${REPLAY_MIN} held out)`);
+    return false;
+  }
   const now = deps.now ?? Date.now;
-  const refit = refitGuards(workflow.workflow, rows, iso(now()));
-  if (!refit.text || !clears(refit)) return false;
+  const refit = refitHeldOut(workflow.workflow, rows, iso(now()));
+  if (!refit.text || !clears(refit.fitted)) return false;
+  const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
+  const heldOut = `on the ${plural(refit.held_out.n, "row")} held out of the fit the workflow ${pct(refit.held_out.wf_acc)}, the agent ${pct(refit.held_out.agent_acc)}`;
+  if (!clears(refit.held_out)) {
+    deps.log(`workflow-first: ${workflow.name}'s refit over ${why} cleared the ${plural(refit.fitted.n, "row")} it was fit on, but not the rest: ${heldOut}; it keeps its thresholds`);
+    return false;
+  }
   const next = workflowDigest({ workflow: refit.text });
   const moved = refit.guards.map((one) => (one.escalate ? `${one.node} escalate off` : one.threshold === null ? `${one.node} guard off` : `${one.node} ${one.was} -> ${one.threshold}${one.fit ? " (fit)" : ""}`)).join(", ");
   const reason = `refit ${workflow.name}'s guards over ${why} (${plural(rows.length, "row")}): ${moved}`;
@@ -850,7 +862,7 @@ async function refitAndWrite(deps: PromotionDeps, workflow: LearnedWorkflow, dig
   }
   await recordPromotion(deps.store.settings, deps.agentId, {
     workflow: workflow.name, digest: next, at: iso(now()), decided: "promote", source: "refit",
-    reason: `${reason}: the workflow ${(refit.wf_acc * 100).toFixed(1)}%, the agent ${(refit.agent_acc * 100).toFixed(1)}% on those rows`,
+    reason: `${reason}: the workflow ${pct(refit.wf_acc)}, the agent ${pct(refit.agent_acc)} on those rows; ${heldOut}`,
     replay: { ...scoreOf(refit), of: rows.flatMap((row) => (row.of === undefined ? [] : [row.of])) },
     refit: { from: digest, guards: refit.guards }, commit: landed,
   }, (was) => was === undefined);

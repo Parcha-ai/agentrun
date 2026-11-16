@@ -109,13 +109,16 @@ test("record-only text puts every guard's threshold at the least the DSL takes; 
   assert.equal(recordOnly('{"v":2,"root":{"node":"code","label":"x"}}'), '{"v":2,"root":{"node":"code","label":"x"}}', "no guard: unchanged");
 });
 
-test("refit: each guard's cheapest threshold that keeps the bar; a too-high guard comes down, a too-low one goes up", () => {
-  const text = JSON.stringify(FLOW);
-  // read: every row right whatever its p, so its guard can go to the bottom. pick: wrong exactly when its p is under 0.4.
+test("refit: each guard's cheapest threshold that keeps the bar; a guard that caught none of the wrong answers comes down, a too-low one goes up", () => {
+  // pick starts too low (0.2): it lets wrong answers through.
+  const text = JSON.stringify({ ...FLOW, root: { ...FLOW.root, steps: [FLOW.root.steps[0], { ...FLOW.root.steps[1], guard: { signal: "both", threshold: 0.2 } }] } });
+  // read: high on every wrong row (it catches none of the eight) and under its 0.7 on right ones, so its guard can go to
+  // the bottom. pick: wrong exactly when its p is under 0.4.
   const rows = [];
   for (let i = 0; i < 20; i++) {
     const pick = i / 20;
-    rows.push({ guards: [{ node: "read", signal: "self", self: 0.5, p: 0.5, threshold: 0, escalated: false }, { node: "pick", signal: "both", self: pick, jev: pick, p: pick, threshold: 0, escalated: false }], answered: true, wfCorrect: pick >= 0.4, agentCorrect: 1 });
+    const read = pick < 0.4 ? 0.9 : 0.5;
+    rows.push({ guards: [{ node: "read", signal: "self", self: read, p: read, threshold: 0, escalated: false }, { node: "pick", signal: "both", self: pick, jev: pick, p: pick, threshold: 0, escalated: false }], answered: true, wfCorrect: pick >= 0.4, agentCorrect: 1 });
   }
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
   const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
@@ -134,20 +137,21 @@ test("refit: each guard's cheapest threshold that keeps the bar; a too-high guar
 });
 
 test("refit raises the guard that catches the wrong answers, not the first one: never a hand-back of every input when one step's guard does it", () => {
-  // The walk's case: read's p is 0.9 on every row (never wrong); pick's p is 0.3 on the two rows it gets wrong, else 0.9.
-  // Taking the steps in order, read alone could only meet the bar at 0.999 (every row back to the agent), and pick then
-  // fell to the bottom: the refit served a workflow that hands back everything. Both start under every p they see.
+  // The walk's case: read's p is 0.9 on every row (it catches none of the wrong ones); pick's p is 0.3 on the three rows
+  // it gets wrong, else 0.9. Taking the steps in order, read alone could only meet the bar at 0.999 (every row back to the
+  // agent), and pick then fell to the bottom: the refit served a workflow that hands back everything. Both start under
+  // every p they see.
   const text = JSON.stringify({ ...FLOW, root: { ...FLOW.root, steps: [{ ...FLOW.root.steps[0], guard: { signal: "jev", threshold: 0.5 } }, { ...FLOW.root.steps[1], guard: { signal: "jev", threshold: 0.2 } }] } });
   const rows = [];
   for (let i = 0; i < 8; i++) {
-    const wrong = i < 2;
+    const wrong = i < 3;
     rows.push({ guards: [{ node: "read", signal: "jev", jev: 0.9, p: 0.9, threshold: 0.5, escalated: false }, { node: "pick", signal: "jev", jev: wrong ? 0.3 : 0.9, p: wrong ? 0.3 : 0.9, threshold: 0.2, escalated: false }], answered: true, wfCorrect: !wrong, agentCorrect: 1 });
   }
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
   const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
   assert.equal(by.pick.threshold, 0.9, "pick goes up past its wrong rows' 0.3");
   assert.equal(by.read.threshold, null, "read never hurt: it is switched off");
-  assert.equal(refit.handed_back, 2, "only the two wrong rows go back");
+  assert.equal(refit.handed_back, 3, "only the three wrong rows go back");
   assert.equal(refit.delta, 0);
 });
 
@@ -239,10 +243,13 @@ test("a refit never brings a guard down past hand-backs whose answer nobody read
   // A hand-back on a failed step (no guard escalated) says nothing of the thresholds: it never moves one either way.
   const failed = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.9, p: 0.9, threshold: 0.5, escalated: false }], answered: false, wfCorrect: null, agentCorrect: 1 }));
   assert.equal(refitGuards(text, [...handed, ...failed], "t").text, undefined);
-  // Rows that answered alone still bring it down where their answers say so.
+  // Rows that answered alone bring it down only where their answers say it caught none of the wrong ones: every answer
+  // right says nothing of what it is worth, and it stays; three wrong answers it let through, and it goes.
   const right = Array.from({ length: 20 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.3, p: 0.3, threshold: 0.1, escalated: false }], answered: true, wfCorrect: true, agentCorrect: 1 }));
-  const low = refitGuards(text, right, "t");
-  assert.equal(low.guards.find((one) => one.node === "pick")?.threshold, null, "every answer right: switched off");
+  assert.equal(refitGuards(text, right, "t").text, undefined, "every answer right: it keeps 0.5");
+  const missed = Array.from({ length: 3 }, () => ({ guards: [{ node: "pick", signal: "self", self: 0.9, p: 0.9, threshold: 0.1, escalated: false }], answered: true, wfCorrect: false, agentCorrect: 0 }));
+  const low = refitGuards(text, [...right, ...missed], "t");
+  assert.equal(low.guards.find((one) => one.node === "pick")?.threshold, null, "it caught none of three wrong answers: switched off");
 });
 
 test("each grade takes the next seq, a re-grade a new one, and the seq keeps climbing past the grades kept", async () => {
@@ -311,18 +318,19 @@ test("a call's args shaped like a guard are data: record-only and the refit leav
   const args = { label: "check", guard: { threshold: 0.8 } };
   const flow = { v: 2, name: "answer", schemas: { Args: { type: "object", properties: { label: { const: "check" }, guard: { type: "object", properties: { threshold: { const: 0.8 } } } } } }, output: { schemaId: "Args" }, root: { node: "chain", steps: [
     { node: "call", label: "send", via: "tool", tool: "mcp:crm/update", args, as: "sent", metadata: { label: "check", guard: { threshold: 0.8 } } },
-    { node: "agent", label: "check", guard: { signal: "self", threshold: 0.7 } },
+    { node: "agent", label: "check", guard: { signal: "self", threshold: 0.3 } },
   ] } };
   const text = JSON.stringify(flow);
-  assert.deepEqual([...thresholdsOf(text)], [["check", 0.7]], "only the step's guard");
+  assert.deepEqual([...thresholdsOf(text)], [["check", 0.3]], "only the step's guard");
   const replayed = JSON.parse(recordOnly(text));
   assert.equal(replayed.root.steps[1].guard.threshold, 1e-9, "the step's guard reads record-only");
   assert.equal(JSON.stringify(replayed.root.steps[0]), JSON.stringify(flow.root.steps[0]), "the call node (args, metadata) byte-identical");
   assert.deepEqual(replayed.schemas, flow.schemas, "the schemas unchanged");
-  // The refit moves the step `check` (wrong exactly under 0.5); the arg labelled "check" keeps its 0.8.
+  // The refit raises the step `check` (wrong exactly under 0.5, so 0.3 lets wrong answers through); the arg labelled
+  // "check" keeps its 0.8.
   const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "check", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.5, agentCorrect: 1 }; });
   const refit = refitGuards(text, rows, "2026-11-14T00:00:00.000Z");
-  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["check", 0.7, 0.5]]);
+  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["check", 0.3, 0.5]]);
   const saved = JSON.parse(refit.text);
   assert.equal(saved.root.steps[1].guard.threshold, 0.5);
   assert.equal(JSON.stringify(saved.root.steps[0]), JSON.stringify(flow.root.steps[0]), "the call node byte-identical in the promoted workflow");
@@ -342,11 +350,11 @@ test("a guard in a child workflow is read by its prefixed name: served at its ow
   // A row at p 0.6 on sub/pick, record-only: served at 0.8, it hands back (never the replay's 1e-9).
   const row = { of: "g", recorded: { answer: "a", correct: true }, outcome: "answered", answer: "b", guards: [{ node: "sub/pick", signal: "self", self: 0.6, p: 0.6, threshold: 1e-9, escalated: false }] };
   assert.equal(handsBack(row, thresholdsOf(text)), true);
-  // The refit moves the nested guard it has rows for: wrong exactly under 0.5.
-  const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "sub/pick", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.5, agentCorrect: 1 }; });
+  // The refit moves the nested guard it has rows for: wrong exactly under 0.85, so 0.8 lets one through and goes up.
+  const rows = Array.from({ length: 20 }, (_, i) => { const p = i / 20; return { guards: [{ node: "sub/pick", signal: "self", self: p, p, threshold: 0, escalated: false }], answered: true, wfCorrect: p >= 0.85, agentCorrect: 1 }; });
   const refit = refitGuards(text, rows, "2026-11-13T00:00:00.000Z");
-  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["sub/pick", 0.8, 0.5]]);
-  assert.equal(JSON.parse(refit.text).root.steps[0].workflow.root.steps[0].guard.threshold, 0.5);
+  assert.deepEqual(refit.guards.map(({ node, was, threshold }) => [node, was, threshold]), [["sub/pick", 0.8, 0.85]]);
+  assert.equal(JSON.parse(refit.text).root.steps[0].workflow.root.steps[0].guard.threshold, 0.85);
 });
 
 // Review on #2644 (r7, repeated labels): a guard row names its step by label, so two steps with one label would share a

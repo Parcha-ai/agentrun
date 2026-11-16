@@ -3,14 +3,18 @@
 // step's threshold becomes the cheapest one (the fewest hand-backs) that keeps the workflow's accuracy over the rows within
 // PROMOTE_BAR of the agent's; a `both` guard's fit (logistic over [self, jev], Platt-style) is refit first when the rows
 // hold at least FIT_MIN_ROWS with at least FIT_MIN_WRONG wrong, else kept. A guard may also be switched off (OFF: it never
-// hands back, and the revision drops it): the cheapest setting of all, so a guard whose p says nothing of right and wrong
-// goes. So may an escalate node a replay recorded instead of obeying (the DSL's softEscalates), on the same rule:
-// one that stops right drafts is dropped from its chain, one that stops wrong ones stays. Pure: the rows in, the new
-// workflow text and what changed out; runner/promotion.ts reads the rows (replays and graded served runs) and writes the
-// revision.
+// hands back, and the revision drops it), so a guard whose p says nothing of right and wrong goes. So may an escalate node
+// a replay recorded instead of obeying (the DSL's softEscalates): one that stops right drafts is dropped from its chain,
+// one that stops wrong ones stays. A guard comes down (a lower threshold, or off), and an escalate goes off, only on
+// evidence it is worth nothing (mayLower): at least DROP_MIN_WRONG wrong answers the workflow gave past its step, not one
+// of which it caught. Rows with fewer wrong answers can't show what a guard is worth, and on them off always looks free;
+// raising one stays allowed. A refit that is written (refitHeldOut) is fit on one half of its rows and must clear the bar
+// on the other half too. Pure: the rows in, the new workflow text and what changed out; runner/promotion.ts reads the
+// rows (replays and graded served runs) and writes the revision.
+import { createHash } from "node:crypto";
 import { softEscalates } from "@parcha/agentrun-dsl";
 import type { GuardRow } from "../learned-nodes.js";
-import { agentRight, answerCorrect, PROMOTE_BAR, type RefitGuard, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, walkGuards } from "./promote.js";
+import { agentRight, answerCorrect, PROMOTE_BAR, type RefitGuard, REPLAY_MIN, type ReplayRow, type ReplayScore, sameAnswer, SOFT_ESCALATE_THRESHOLD, walkGuards } from "./promote.js";
 import { workflowNodes } from "./workflow-nodes.js";
 
 /** A switch set off: the guard or the escalate never hands back. Never a threshold the DSL takes (one is in (0, 1)). */
@@ -21,13 +25,19 @@ export const FIT_MIN_ROWS = 30;
 export const THRESHOLD_MIN = 0.001;
 export const THRESHOLD_MAX = 0.999;
 export const FIT_MIN_WRONG = 5;
+/** How many wrong answers past a step its guard must have let through, catching none, before a refit lowers it or
+ *  switches it off (or switches an escalate off): mayLower. */
+export const DROP_MIN_WRONG = 3;
+/** The fewest rows a refit is written from: REPLAY_MIN to fit on and REPLAY_MIN held out of the fit (refitHeldOut).
+ *  Fewer: no refit, and the revision stays as it is (held, or serving until its graded check). */
+export const REFIT_MIN = 2 * REPLAY_MIN;
 
 /** One row the scorer (scoreRows) reads: the guard rows of one input (each step's p known up to where it stopped,
  *  `escalated` on the one that handed it back), whether the workflow answered it alone with every guard passing
  *  record-only (`answered`), and if so whether that answer was right (`wfCorrect`; null: unknown) and said what the
  *  agent's recorded answer said (`agrees`); `agentCorrect`, the chance the agent's answer to it is right (1 or 0 when
  *  known: a replayed row's agentRight; the agent's mean accuracy when not); `of`, the graded run a replayed row replays (refitRowsOf; a served
- *  run's row has none). */
+ *  run's row has none); `run`, a served run's own row: that run (halvesOf reads one or the other). */
 export interface RefitRow {
   readonly guards: readonly GuardRow[];
   readonly answered: boolean;
@@ -35,6 +45,7 @@ export interface RefitRow {
   readonly agrees?: boolean;
   readonly agentCorrect: number;
   readonly of?: string;
+  readonly run?: string;
 }
 
 /** What a refit chose: the workflow's new text (undefined when nothing changed), each guard it changed, and the rows'
@@ -42,6 +53,13 @@ export interface RefitRow {
 export interface Refit extends ReplayScore {
   readonly text?: string;
   readonly guards: RefitGuard[];
+}
+
+/** A refit fit on one half of its rows (halvesOf): what it chose, its score over every row, and over each half apart:
+ *  `fitted`, the half it was fit on; `held_out`, the other. */
+export interface HeldOutRefit extends Refit {
+  readonly fitted: ReplayScore;
+  readonly held_out: ReplayScore;
 }
 
 /** A replay's rows as the scorer reads them: those its workflow answered or handed back, never one it failed on or skipped
@@ -169,15 +187,60 @@ function switchableEscalates(doc: unknown): Set<string> {
   return out;
 }
 
+/** Whether `rows` give the switch of step `label` at `at` (its threshold now; SOFT_ESCALATE_THRESHOLD for an escalate)
+ *  leave to come down, to a lower threshold or off: at least DROP_MIN_WRONG answers the workflow gave alone and wrong
+ *  with the step reached (a p read there), and not one of them read under `at` (it caught none). Its p as the row read
+ *  it, through the fit it has now. With fewer wrong answers the rows can't show what it is worth. */
+export function mayLower(rows: readonly RefitRow[], label: string, at: number): boolean {
+  let wrong = 0;
+  for (const row of rows) {
+    if (!row.answered || row.wfCorrect !== false) continue;
+    const ps = row.guards.flatMap((guard) => (guard.node === label && guard.p !== null ? [guard.p] : []));
+    if (!ps.length) continue;
+    if (ps.some((p) => p < at)) return false;
+    wrong += 1;
+  }
+  return wrong >= DROP_MIN_WRONG;
+}
+
+/** `rows` cut in two for a refit (refitHeldOut): ranked by a hash of each row's run (`of`, else `run`, else its place), the
+ *  even ranks to fit on and the odd ones held out of the fit. The same rows always split the same way, and never by their
+ *  order, which can follow the inputs (every second question wrong, say). */
+export function halvesOf<T extends Pick<RefitRow, "of" | "run">>(rows: readonly T[]): { fit: T[]; held: T[] } {
+  const ranked = rows.map((row, i) => ({ row, key: createHash("sha256").update(`refit-half\u0000${row.of ?? row.run ?? `#${i}`}`).digest("hex") }));
+  ranked.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { fit: ranked.filter((_, i) => i % 2 === 0).map(({ row }) => row), held: ranked.filter((_, i) => i % 2 === 1).map(({ row }) => row) };
+}
+
 /** The workflow `text`'s guards, and the escalates its replay recorded, refit over `rows` (`now`: the fit's fitted_at). A
- *  guard whose step no row reached keeps what it has, and so does an escalate no row recorded. Nothing changes (no
- *  `text`) when every guard keeps its threshold and fit and every escalate stays. */
+ *  guard whose step no row reached keeps what it has, and so does an escalate no row recorded; one the rows give no leave
+ *  to come down (mayLower) keeps its threshold or goes up. Nothing changes (no `text`) when every guard keeps its
+ *  threshold and fit and every escalate stays. */
 export function refitGuards(text: string, rows: readonly RefitRow[], now: string): Refit {
+  const fit = fitOn(text, rows, now);
+  if (!fit) return { guards: [], n: rows.length, agree: 0, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
+  return { ...(fit.text !== undefined ? { text: fit.text } : {}), guards: fit.guards, ...scoreRows(rows, fit.at, fit.pOf) };
+}
+
+/** refitGuards fit on one half of `rows` (halvesOf) and scored on each: what a refit that is written reads. It is
+ *  written only when it clears the bar on both halves (runner/promotion.ts refitAndWrite), so a guard dropped on the
+ *  rows it was fit on must not have been earning its keep on rows it never saw. */
+export function refitHeldOut(text: string, rows: readonly RefitRow[], now: string): HeldOutRefit {
+  const { fit: fitRows, held } = halvesOf(rows);
+  const fit = fitOn(text, fitRows, now);
+  const at = fit?.at ?? new Map<string, number>();
+  const pOf = fit?.pOf ?? ((row: GuardRow) => row.p);
+  return { ...(fit?.text !== undefined ? { text: fit.text } : {}), guards: fit?.guards ?? [], ...scoreRows(rows, at, pOf), fitted: scoreRows(fitRows, at, pOf), held_out: scoreRows(held, at, pOf) };
+}
+
+/** The one fit refitGuards and refitHeldOut read: the new text (undefined when nothing changed), each guard changed, and
+ *  the thresholds and p reader the rows are scored with. Undefined when `text` is not JSON. */
+function fitOn(text: string, rows: readonly RefitRow[], now: string): { text?: string; guards: RefitGuard[]; at: Map<string, number>; pOf: (row: GuardRow) => number | null } | undefined {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
   } catch {
-    return { guards: [], n: rows.length, agree: 0, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 };
+    return undefined;
   }
   const guards: { label: string; guard: Record<string, unknown>; node: Record<string, unknown> }[] = [];
   walkGuards(doc, (label, guard, node) => guards.push({ label, guard, node }));
@@ -206,12 +269,14 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
   const meets = (at: ReadonlyMap<string, number>) => scoreAt(rows, at, pOf).wf_acc >= agentAcc - PROMOTE_BAR - 1e-9;
   // Each guard's candidates: OFF (hands back nothing), THRESHOLD_MIN (nothing but a missing p or one under it), each p its
   // rows read within the DSL's range, its own threshold, and THRESHOLD_MAX; a step no row reached keeps its own. Each
-  // recorded escalate's: off or on.
-  const candidatesOf = new Map<string, number[]>(escalates.map((label) => [label, [OFF, SOFT_ESCALATE_THRESHOLD]]));
+  // recorded escalate's: off or on. A switch the rows give no leave to come down (mayLower) keeps only its own and those
+  // above it: on.
+  const candidatesOf = new Map<string, number[]>(escalates.map((label) => [label, mayLower(rows, label, SOFT_ESCALATE_THRESHOLD) ? [OFF, SOFT_ESCALATE_THRESHOLD] : [SOFT_ESCALATE_THRESHOLD]]));
   for (const [label, own] of was) {
     const seen = rows.flatMap((row) => row.guards.filter((g) => g.node === label).map(pOf)).filter((p): p is number => p !== null);
     const at = (p: number) => Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, round(p, 6)));
-    if (seen.length) candidatesOf.set(label, [...new Set([OFF, THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), THRESHOLD_MAX])].sort((a, b) => a - b));
+    const floor = mayLower(rows, label, own) ? OFF : own;
+    if (seen.length) candidatesOf.set(label, [...new Set([OFF, THRESHOLD_MIN, ...seen.map(at), ...(own > 0 && own < 1 ? [own] : []), THRESHOLD_MAX])].filter((candidate) => candidate >= floor).sort((a, b) => a - b));
   }
   const kept = new Map(thresholds);
   // Up from the bottom: while the bar is not met, the one raise (a guard to a higher candidate) that buys the most accuracy
@@ -260,5 +325,5 @@ export function refitGuards(text: string, rows: readonly RefitRow[], now: string
     }
     for (const label of off) changed.push({ node: label, was: null, threshold: null, escalate: true });
   }
-  return { ...(changed.length ? { text: JSON.stringify(doc) } : {}), guards: changed, ...scoreRows(rows, thresholds, pOf) };
+  return { ...(changed.length ? { text: JSON.stringify(doc) } : {}), guards: changed, at: thresholds, pOf };
 }

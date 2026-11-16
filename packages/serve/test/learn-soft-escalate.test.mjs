@@ -109,17 +109,18 @@ const draftRow = ({ right, fired, agent = 1 }) => ({ guards: [esc(fired)], answe
 
 test("refit: an escalate that stops right drafts is switched off, its node dropped; the new text runs and answers alone", () => {
   // The calibration's shape: the check fires on most inputs, and the drafts it stops are right as often as the agent is.
+  // Three drafts it let through are wrong (DROP_MIN_WRONG), none of them stopped: the rows give leave to switch it off.
   const rows = [
     ...Array.from({ length: 8 }, () => draftRow({ right: true, fired: true })),
     draftRow({ right: true, fired: false }),
-    draftRow({ right: false, fired: false, agent: 0 }),
+    ...Array.from({ length: 3 }, () => draftRow({ right: false, fired: false, agent: 0 })),
   ];
   const text = JSON.stringify(judged());
   const before = scoreRows(rows, new Map());
   assert.equal(before.handed_back, 8);
   const refit = refitGuards(text, rows, NOW);
   assert.deepEqual(refit.guards, [{ node: "unsupported", was: null, threshold: null, escalate: true }]);
-  assert.deepEqual({ handed_back: refit.handed_back, delta: refit.delta, wf_acc: refit.wf_acc }, { handed_back: 0, delta: 0, wf_acc: 0.9 });
+  assert.deepEqual({ handed_back: refit.handed_back, delta: refit.delta, wf_acc: refit.wf_acc }, { handed_back: 0, delta: 0, wf_acc: 0.75 });
   assert.equal(clears(refit), true);
   const doc = JSON.parse(refit.text);
   assert.deepEqual(doc.root.steps.map((step) => step.label), ["draft", "check"], "the escalate is gone; the rest as it was");
@@ -143,9 +144,10 @@ test("refit: a guard whose p says nothing of right and wrong is switched off; a 
     { node: "extract", label: "facts", guard: { signal: "jev", threshold: 0.7 } },
     { node: "agent", label: "answer", guard: { signal: "jev", threshold: 0.2 } },
   ] } };
-  // facts: p 0.06 or 0.9 whatever the answer (no signal; at 0.7 it hands back half); answer: 0.3 on the two wrong rows.
+  // facts: p 0.06 or 0.9 whatever the answer (no signal; at 0.7 it hands back half, and none of the three wrong rows);
+  // answer: 0.3 on the three wrong rows.
   const rows = Array.from({ length: 10 }, (_, i) => {
-    const wrong = i < 2;
+    const wrong = i === 1 || i === 3 || i === 5;
     const facts = i % 2 ? 0.9 : 0.06;
     return { guards: [{ node: "facts", signal: "jev", jev: facts, p: facts, threshold: 0.7, escalated: false }, { node: "answer", signal: "jev", jev: wrong ? 0.3 : 0.9, p: wrong ? 0.3 : 0.9, threshold: 0.2, escalated: false }], answered: true, wfCorrect: !wrong, agentCorrect: 1 };
   });
@@ -153,7 +155,7 @@ test("refit: a guard whose p says nothing of right and wrong is switched off; a 
   const by = Object.fromEntries(refit.guards.map((one) => [one.node, one]));
   assert.deepEqual(by.facts, { node: "facts", was: 0.7, threshold: null }, "off");
   assert.equal(by.answer.threshold, 0.9, "past its wrong rows' 0.3");
-  assert.equal(refit.handed_back, 2);
+  assert.equal(refit.handed_back, 3);
   const doc = JSON.parse(refit.text);
   assert.equal("guard" in doc.root.steps[0], false, "the revision has no guard on facts");
   assert.equal(doc.root.steps[1].guard.threshold, 0.9);
