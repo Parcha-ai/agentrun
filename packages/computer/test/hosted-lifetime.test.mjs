@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fakeHost } from "./fake-host.mjs";
+import { deferred, fakeHost } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { conformanceCases } = await import("../dist/conformance/index.js");
@@ -115,6 +115,33 @@ test("attach keeps a computer it did not make alive (a restarted server); a crea
 	assert.equal((await create(provider(failing))).ok, false, "the install fails, so create gives up and deletes the machine");
 	await tick(t, 60_000);
 	assert.deepEqual(keepalives(failing), [], "no keepalive of the deleted machine");
+});
+
+test("a keepalive the vendor never answers holds the next ones off past its timeout, until it settles; a release refused as another's leaves the timer running", { timeout: 30_000 }, async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const hung = deferred();
+	let hold = true;
+	const fake = fakeHost({ facts: { idleMs: 30_000 }, keepalive: true, onStep: async (step) => step === "keepalive" && hold && (await hung.promise) });
+	const notes = [];
+	const on = provider(fake, { timeouts: { ...TIMEOUTS, requestMs: 20 }, onNote: (note) => notes.push(note) });
+	const ref = made(await create(on));
+	await tick(t, 10_000);
+	assert.equal(keepalives(fake).length, 1, "the first, which hangs");
+	// The adapter stops waiting at requestMs and its race's slack (5 s); the vendor's call is still out.
+	await new Promise((done) => setTimeout(done, 5_200));
+	assert.equal(notes.length, 1, "the timed-out keepalive is told");
+	await tick(t, 10_000);
+	assert.equal(keepalives(fake).length, 1, "no second call while the first is out");
+	hold = false;
+	hung.resolve();
+	await tick(t, 0);
+	await tick(t, 10_000);
+	assert.equal(keepalives(fake).length, 2, "the next, once the first settled");
+	const other = await on.release({ id: ref.id, name: "computer-000000000000" }, "delete");
+	assert.equal(other.ok ? "ok" : other.error.code, "not_found", "a release under another computer's name is refused");
+	await tick(t, 10_000);
+	assert.equal(keepalives(fake).length, 3, "the held computer is still kept alive");
+	made(await on.release(ref, "delete"));
 });
 
 test("lifetime.idle on the hosted adapter, a 5 min vendor idle timer on the run's clock: a host with idleMs and keepalive passes; one without fails in the case's words", async (t) => {

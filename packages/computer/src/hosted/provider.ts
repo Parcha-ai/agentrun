@@ -826,8 +826,9 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * Calls the host's keepalive on the machine every idleMs / 3 (facts.idleMs), from create or attach until release or
-	 * the delete of a create that gave up, one call at a time. One that fails is told through onNote and the next tries
-	 * again; a machine the vendor no longer has stops it. The timer holds no process open.
+	 * the delete of a create that gave up, one call at a time: a tick while the host's last call has not settled, even
+	 * past its timeout, is skipped. One that fails is told through onNote and the next tries again; a machine the vendor
+	 * no longer has stops it. The timer holds no process open.
 	 */
 	#keepAlive(ref: ComputerRef): void {
 		const { idleMs } = this.host.facts;
@@ -837,8 +838,10 @@ export class HostedProvider implements ComputerProvider {
 		const timer = setInterval(async () => {
 			if (calling) return;
 			calling = true;
-			const kept = await this.#call(`the keepalive of ${ref.name}`, (ctx) => keepalive(ref.id, ctx), this.#timeouts.requestMs);
-			calling = false;
+			let call: Promise<void> = Promise.resolve();
+			const kept = await this.#call(`the keepalive of ${ref.name}`, (ctx) => (call = keepalive(ref.id, ctx)), this.#timeouts.requestMs);
+			const free = () => (calling = false);
+			call.then(free, free);
 			if (kept.ok || this.#kept.get(ref.id) !== timer) return;
 			if (kept.error.code === "not_found") this.#unkeep(ref.id);
 			else this.#onNote?.({ computer: ref.name, note: `${kept.error.message}; the next keepalive tries again in ${seconds(idleMs / 3)}` });
@@ -1446,10 +1449,12 @@ export class HostedProvider implements ComputerProvider {
 		if (how === "detach") return this.#fail("unsupported", `the ${this.#label} provider keeps no computer for an agent (it declares no persistence), so release detach is refused: release it with delete`);
 		if (how === "stop") return this.#fail("unsupported", `${a(this.#label)} computer is deleted, never stopped and kept: release it with delete`);
 		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
-		this.#unkeep(ref.id);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found;
-		if (found.value === undefined) return ok(undefined);
+		if (found.value === undefined) {
+			this.#unkeep(ref.id);
+			return ok(undefined);
+		}
 		if (!ours(found.value.labels, ref.name)) return this.#fail("not_found", `no ${this.#label} computer is ${ref.name} (${ref.id}): the machine is not this provider's, so it is left as it is`);
 		this.#end(ref.name);
 		const { letGo, gone: done } = await this.#remove(ref, found.value, signal);
