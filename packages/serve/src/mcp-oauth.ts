@@ -358,12 +358,15 @@ export class McpSignIns {
   /** Whether this server is a local install (McpServersOverStore.attach): only then may a loopback MCP server's
    *  authorization server be on loopback too. */
   loopback = false;
+  /** A runner's registry (mcp-pin-first.ts registryListing), which listens nowhere: the own addresses of the
+   *  local-install server beside it (Serve.own), held to as this server's own are. Set by McpServersOverStore.attach. */
+  beside: readonly string[] = [];
   /** This server's own local addresses, whose ports a loopback authorization server may never name: where it listens,
    *  and its public address too when that is on loopback (a local https proxy on another port, in front of the
-   *  listener, reaches this server). */
+   *  listener, reaches this server); on a runner, the server's beside it. */
   get own(): string[] {
     const base = URL.parse(this.base);
-    return [this.listening, ...(base && LOOPBACK.test(base.hostname) ? [this.base] : [])].filter(Boolean);
+    return [this.listening, ...(base && LOOPBACK.test(base.hostname) ? [this.base] : []), ...this.beside].filter(Boolean);
   }
 
   /** CIMD only from a public https address: an authorization server must be able to fetch the document. */
