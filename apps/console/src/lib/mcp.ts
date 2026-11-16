@@ -33,7 +33,7 @@ const TOOLKIT = /^[a-z][a-z0-9-]{0,31}$/;
 export type McpPreset = { id: string; label: string; name: string; url: string; auth: "none" | "bearer" | "oauth"; note: string; readOnly?: string };
 /** The one list of URL presets, in the add form's order. */
 export const MCP_URL_PRESETS = [
-  { id: "parallel", label: "Parallel Search", name: "parallel", url: "https://search.parallel.ai/mcp", auth: "none", note: "Web search, free for light use: no key, no account." },
+  { id: "parallel", label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: "Web search, free for light use: no key, no account." },
   { id: "firecrawl", label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: "Search, scrape and parse, free without a key and rate limited: add your Firecrawl key later as a bearer token for more." },
   { id: "github-token", label: "GitHub (token)", name: "github", url: GITHUB_MCP_URL, readOnly: `${GITHUB_MCP_URL}readonly`, auth: "bearer", note: "A fine-grained personal access token for the repositories it may use, with Contents, Issues and Pull requests (read-only, or read and write)." },
   { id: "linear", label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: "Sign in with your Linear account: this server keeps the tokens." },
