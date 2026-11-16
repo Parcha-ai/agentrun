@@ -1,13 +1,18 @@
 // The Morph host: Morph Cloud instances, each a VM started from a snapshot (kind linux). The control plane is Morph's
 // REST API over fetch (https://cloud.morph.so/api, a Bearer key; OpenAPI https://cloud.morph.so/api/openapi.json). Every
 // command (the daemon's upload, its install, init's start, the stdio bridge) goes over SSH through the shared SshExec
-// (./hosted/ssh-exec.ts), to Morph's gateway ssh.cloud.morph.so:22 as the user "<instance id>:<API key>" with any key,
-// as both SDKs log in (morph-python-sdk morphcloud/api.py ssh_connect, a throwaway key from _dummy_key(); morph-typescript-sdk
-// src/api.ts:12-13, 704-711). Morph's REST exec (POST /instance/{id}/exec) answers once the command ends, with no stdin,
-// so it is not used. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts).
+// (./hosted/ssh-exec.ts), to Morph's gateway ssh.cloud.morph.so:22 (morph-typescript-sdk src/api.ts:12-13) as the user
+// "<instance id>" with the instance's own key pair, which GET /instance/{id}/ssh/key answers over TLS (OpenAPI
+// InstanceSshKey: "an ephemeral SSH key for establishing connections", api.ts sshKey()). Both SDKs log in as
+// "<instance id>:<API key>" with any key (morph-python-sdk morphcloud/api.py ssh_connect; api.ts:704-711); that is not
+// used, since Morph publishes no host key for its gateway, so a host posing as it would read the account's key out of
+// the username. A public-key login hands an impostor nothing to reuse: its signature is bound to the session. That the
+// gateway takes the instance's key for the user "<instance id>" is **unverified**. Morph's REST exec (POST
+// /instance/{id}/exec) answers once the command ends, with no stdin, so it is not used. The rest of the computer is the
+// shared machine-host adapter's (./hosted/provider.ts).
 //
 // Facts the docs do not settle are marked **unverified**; d7/morph-branch-1 (the lane's live kit) settles most of them.
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP, connect as tcp } from "node:net";
 import { boxRecipeHash } from "./box-image.js";
@@ -17,7 +22,7 @@ import { type HostCall, HostError, type HostFacts, type Machine, type MachineHos
 import { orThrow, pause, runToExit, uploadThroughExec } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
-import { type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
+import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
 import { DOMAIN, dateOf, sizeRefusals } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
@@ -159,15 +164,16 @@ class MorphHost implements MachineHost {
 	readonly #ssh: SshExec;
 	readonly #sshHost: string;
 	readonly #sshPort: number;
+	/** Each instance's SSH private key (GET /instance/{id}/ssh/key), read before its first exec and kept until delete or a refused login. */
+	readonly #keys = new Map<string, string>();
 
 	constructor(options: { apiKey: string; ssh2: Ssh2Module; fetch: typeof fetch; apiUrl: string; sshHost: string; sshPort: number }) {
 		const { apiKey } = options;
 		this.#sshHost = options.sshHost;
 		this.#sshPort = options.sshPort;
-		// The gateway takes the key in the username and any public key (the SDKs send a throwaway one): made at first use.
-		let key: string | undefined;
-		const throwaway = () => (key ??= generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs1", format: "pem" } }).privateKey);
-		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: (id) => ({ username: `${id}:${apiKey}`, privateKey: throwaway(), secrets: [apiKey] }), tunnelOf: () => this.#tunnel() });
+		// The user is the instance id alone and the key is the instance's: the account's key never goes over SSH. An
+		// instance whose key was let go logs in with none, which the gateway refuses (denied).
+		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: (id) => ({ username: id, ...(this.#keys.has(id) ? { privateKey: this.#keys.get(id) } : {}), secrets: [apiKey] }), tunnelOf: () => this.#tunnel() });
 		this.#client = rest({
 			base: options.apiUrl,
 			headers: () => ({ Authorization: `Bearer ${apiKey}`, Accept: "application/json" }),
@@ -188,7 +194,7 @@ class MorphHost implements MachineHost {
 
 	/**
 	 * A TCP connection to the gateway. No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's
-	 * AutoAddPolicy); the login is the key in the username either way.
+	 * AutoAddPolicy). The login is a public key, so a host posing as the gateway learns no credential.
 	 */
 	#tunnel(): SshTunnel {
 		const host = `${this.#sshHost}:${this.#sshPort}`;
@@ -203,9 +209,28 @@ class MorphHost implements MachineHost {
 		return { duplex: socket, opened, host };
 	}
 
-	/** argv over SSH through the gateway (hosted/ssh-exec.ts), as the user it lands as: root, unverified. */
+	/**
+	 * argv over SSH through the gateway (hosted/ssh-exec.ts), as the user it lands as: root, unverified. The instance's
+	 * key is read first when this host has none for it; a refused login lets it go, so the next exec reads it again (a
+	 * key rotated in the account).
+	 */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
-		return this.#ssh.exec(instanceId(id), argv, ctx);
+		instanceId(id);
+		if (!this.#keys.has(id)) this.#keys.set(id, await this.#keyOf(id, ctx));
+		try {
+			return await this.#ssh.exec(id, argv, ctx);
+		} catch (error) {
+			if (codeOf(error) === "denied") this.#keys.delete(id);
+			throw error;
+		}
+	}
+
+	/** GET /instance/{id}/ssh/key (OpenAPI InstanceSshKey): its private key, in the PEM armor ssh2 reads. The answer's password and token are not kept. */
+	async #keyOf(id: string, ctx: HostCall): Promise<string> {
+		const { private_key: given } = (await this.#rest<{ private_key?: unknown }>("GET", `/instance/${id}/ssh/key`, undefined, ctx)) ?? {};
+		const key = typeof given === "string" ? pemOf(given) : undefined;
+		if (key === undefined) throw new HostError("vendor", `GET /instance/${id}/ssh/key answered no private key in PEM armor`);
+		return key;
 	}
 
 	/** One REST call, bounded by ctx: its JSON answer; a failure throws a HostError in Morph's words. */
@@ -260,6 +285,7 @@ class MorphHost implements MachineHost {
 			await this.#rest("DELETE", `/instance/${instanceId(id)}`, undefined, { timeoutMs: ctx.timeoutMs });
 		} finally {
 			this.#ssh.closeAll(id);
+			this.#keys.delete(id);
 		}
 	}
 
@@ -327,8 +353,9 @@ class MorphHost implements MachineHost {
 	 * morphvm-minimal at BOX_SIZE (POST /snapshot), starts an instance from it (POST /instance), runs box/install.sh as
 	 * root over SSH, and snapshots the instance with the digest (POST /instance/{id}/snapshot, synchronous by default),
 	 * with no TTL, so it never expires (OpenAPI SnapshotModel.ttl). The instance is deleted after, and has a TTL of its
-	 * own besides. The base snapshot is kept, with no TTL: whether a snapshot still needs the one its instance started from
-	 * is unverified. install.sh needs apt (morphvm-minimal's distro is unverified) and root.
+	 * own besides. The base snapshot is kept once the box snapshot is asked for, with no TTL: whether a snapshot still needs
+	 * the one its instance started from is unverified. A build that fails before then deletes its base, so repeated
+	 * failures leave nothing. install.sh needs apt (morphvm-minimal's distro is unverified) and root.
 	 */
 	async boxSnapshot(name: string, building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		const end = Date.now() + BUILD_MS;
@@ -338,31 +365,43 @@ class MorphHost implements MachineHost {
 		building();
 		const marked = { [BUILD_LABEL]: name };
 		const base = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: marked }, call);
-		await this.#snapshotReady(base.id, end, signal);
-		const vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base.id, metadata: marked, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, call)).id);
+		if (typeof base?.id !== "string" || !SNAPSHOT_ID.test(base.id)) throw new HostError("vendor", `POST /snapshot answered no snapshot id: ${show(base?.id)}`);
+		// Set once the box snapshot is asked for: from then on it may need the base, which is kept.
+		let snapshotted = false;
+		let vm: string | undefined;
 		try {
-			await this.#until(`the build instance ${vm}`, end, signal, async () => {
-				const { state, why } = machineOf(await this.#rest<MorphInstance>("GET", `/instance/${vm}`, undefined, call));
-				if (state === "gone") throw new HostError("vendor", `the build instance ${vm} is gone: ${why ?? "no reason given"}`);
-				return state === "running" ? true : undefined;
-			});
-			const run = async (argv: string[], what: string) => {
-				const ran = orThrow(await runToExit(this, vm, argv, { ms: Math.max(1, end - Date.now()), ...(signal ? { signal } : {}), what }));
-				if (ran.exitCode !== 0) throw new HostError("vendor", `${what} exited with ${ran.exitCode}: ${`${ran.stderr} ${ran.stdout}`.trim().slice(-300)}`);
-			};
-			await run(["mkdir", "-p", "/tmp/agentrun-box"], "the build folder's mkdir");
-			for (const file of RECIPE_FILES) orThrow(await uploadThroughExec(this, vm, `/tmp/agentrun-box/${file}`, await readFile(new URL(`../box/${file}`, import.meta.url)), BUILD_CALL_MS, signal));
-			await run(["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], "box/install.sh");
-			const made = await this.#rest<MorphSnapshot>("POST", `/instance/${vm}/snapshot`, { digest: name, metadata: { "agentrun-box": name } }, { ...call, timeoutMs: Math.max(1, end - Date.now()) });
-			await this.#snapshotReady(made.id, end, signal);
+			await this.#snapshotReady(base.id, end, signal);
+			vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base.id, metadata: marked, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, call)).id);
+			await this.#build(vm, name, end, signal, call, () => (snapshotted = true));
 		} finally {
-			// Its own bound, not the caller's signal: a cancelled build still deletes its instance (its TTL backs this).
-			await this.delete(vm, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
+			// Their own bound, not the caller's signal: a cancelled build still deletes its instance (its TTL backs this),
+			// and a build that never asked for the box snapshot deletes its base too, so a failing build leaves nothing.
+			if (vm !== undefined) await this.delete(vm, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
+			if (!snapshotted) await this.#rest("DELETE", `/snapshot/${base.id}`, undefined, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
 		}
 		// Another server's build of the same recipe may have finished first: every caller answers the oldest.
 		const box = await this.#boxOf(name, end, signal);
 		if (box === undefined) throw new HostError("vendor", `the box snapshot ${name} was made, then not listed by its digest`);
 		return box;
+	}
+
+	/** The build on its running instance vm: install.sh as root over SSH, then the box snapshot by digest (asking() told first). */
+	async #build(vm: string, name: string, end: number, signal: AbortSignal | undefined, call: HostCall, asking: () => void): Promise<void> {
+		await this.#until(`the build instance ${vm}`, end, signal, async () => {
+			const { state, why } = machineOf(await this.#rest<MorphInstance>("GET", `/instance/${vm}`, undefined, call));
+			if (state === "gone") throw new HostError("vendor", `the build instance ${vm} is gone: ${why ?? "no reason given"}`);
+			return state === "running" ? true : undefined;
+		});
+		const run = async (argv: string[], what: string) => {
+			const ran = orThrow(await runToExit(this, vm, argv, { ms: Math.max(1, end - Date.now()), ...(signal ? { signal } : {}), what }));
+			if (ran.exitCode !== 0) throw new HostError("vendor", `${what} exited with ${ran.exitCode}: ${`${ran.stderr} ${ran.stdout}`.trim().slice(-300)}`);
+		};
+		await run(["mkdir", "-p", "/tmp/agentrun-box"], "the build folder's mkdir");
+		for (const file of RECIPE_FILES) orThrow(await uploadThroughExec(this, vm, `/tmp/agentrun-box/${file}`, await readFile(new URL(`../box/${file}`, import.meta.url)), BUILD_CALL_MS, signal));
+		await run(["sh", "-c", "sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box"], "box/install.sh");
+		asking();
+		const made = await this.#rest<MorphSnapshot>("POST", `/instance/${vm}/snapshot`, { digest: name, metadata: { "agentrun-box": name } }, { ...call, timeoutMs: Math.max(1, end - Date.now()) });
+		await this.#snapshotReady(made.id, end, signal);
 	}
 }
 

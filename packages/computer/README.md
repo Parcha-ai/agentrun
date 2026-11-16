@@ -2158,19 +2158,24 @@ A Morph computer is kind `linux`, an instance (a VM) started from a snapshot thr
 | `list` | `GET /instance`, the account's every instance; the adapter matches the labels (the `metadata[...]` filter is not used: whether a dotted key survives it is **unverified**) |
 | `delete` | `DELETE /instance/{id}`, then this host's SSH connections to it end |
 | `extend` | `POST /instance/{id}/ttl`, never past the max-deadline label, its read-back end held to the call's now plus the seconds; then `POST /instance/{id}/metadata` with the deadline label moved |
-| `exec` | SSH through the gateway `ssh.cloud.morph.so:22` as `<instance id>:<key>` with a throwaway key, as both Morph SDKs log in; one channel per process on the shared connection, and the shared pid wrapper for `kill` |
+| `exec` | SSH through the gateway `ssh.cloud.morph.so:22` as `<instance id>` with the instance's own key (`GET /instance/{id}/ssh/key`, read once and kept until delete or a refused login); one channel per process on the shared connection, and the shared pid wrapper for `kill` |
 | `check` | an image is a snapshot id (`snapshot_...`); a size is the snapshot's, so `cpus` and `memoryMb` are refused |
 
-Morph's REST exec (`POST /instance/{id}/exec`) answers when the command ends, with no stdin, so it is not used. Morph has
-no egress control: network `none`, `open` and a list are init's. No Archil mount and no desktop yet.
+Morph's REST exec (`POST /instance/{id}/exec`) answers when the command ends, with no stdin, so it is not used. Both
+Morph SDKs log in as `<instance id>:<API key>` with any key; this provider does not, since Morph publishes no host key
+for its gateway, and a host posing as it would read the account's key out of the username. A public-key login with the
+instance's key hands such a host nothing to reuse. Morph has no egress control: network `none`, `open` and a list are
+init's. No Archil mount and no desktop yet.
 
 **The box snapshot.** `prepareImage()` answers the snapshot whose digest is `agentrun-box-<recipe hash>` in the key's
 account, or builds it once: a base snapshot of `morphvm-minimal` at 2 vCPUs, 4 GiB and 16 GiB of disk (`POST
 /snapshot`), an instance from it with a 2 h TTL of its own, `box/install.sh` run as root over SSH, then `POST
 /instance/{id}/snapshot` with the digest, and the instance deleted. The box snapshot and its base have no TTL, so
-neither expires. A failed box snapshot, with none other, is refused in words until it is deleted in the account.
+neither expires. A build that fails before it asks for the box snapshot deletes its base as well, so it leaves nothing.
+A failed box snapshot, with none other, is refused in words until it is deleted in the account.
 
-**Unverified** (the lane's live kit settles them): that SSH lands as root; that `morphvm-minimal` has apt and dpkg;
+**Unverified** (the lane's live kit settles them): that the gateway takes the instance's key for the user `<instance
+id>`; that SSH lands as root; that `morphvm-minimal` has apt and dpkg;
 that `/ttl` counts from the call; whether `/metadata` merges or replaces (the whole map is sent); that a deleted instance
 answers 404; the arch (amd64) and the guest's sshd port (22); Morph's longest lifetime (24 h is taken) and whether
 activity resets a TTL; whether a snapshot needs its base; and whether instances started from one snapshot share the

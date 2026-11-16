@@ -1,10 +1,12 @@
 // A fake Morph Cloud for the unit tests: its REST API as a fetch, in the OpenAPI's shapes (InstanceModel, SnapshotModel,
-// FastAPI's { detail } errors; https://cloud.morph.so/api/openapi.json), and its SSH gateway as ssh2's Server on
-// loopback (fake-agent37.mjs's sshd) that takes the user "<instance id>:<key>" with any public key, as Morph's does. A
-// command runs as the test machine's bash, except the box build's (anything under /tmp/agentrun-box), which the gateway
-// answers itself, so a test never runs install.sh here.
+// InstanceSshKey, FastAPI's { detail } errors; https://cloud.morph.so/api/openapi.json), and its SSH gateway as ssh2's
+// Server on loopback (fake-agent37.mjs's sshd) that takes the user "<instance id>" with that instance's own key, which
+// GET /instance/{id}/ssh/key answers. A command runs as the test machine's bash, except the box build's (anything under
+// /tmp/agentrun-box), which the gateway answers itself, so a test never runs install.sh here.
 import ssh2 from "ssh2";
-import { fakeSshd } from "./fake-agent37.mjs";
+import { fakeSshd, keyPair } from "./fake-agent37.mjs";
+
+const { utils } = ssh2;
 
 export const KEY = "morph_fake_key_0123456789abcdef";
 export const API_URL = "https://morph.test/api";
@@ -19,6 +21,8 @@ const detail = (status, words) => json(status, { detail: words });
  */
 export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 	const instances = new Map();
+	/** Each instance's SSH key pair, OpenSSH form; POST /instance/{id}/ssh/key rotates it. */
+	const sshKeys = new Map();
 	const snapshots = new Map();
 	const calls = [];
 	const failures = [];
@@ -49,6 +53,7 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 			const id = `morphvm_${String(next++).padStart(8, "0")}`;
 			const instance = { id, object: "instance", created: now(), status: "pending", metadata: body.metadata ?? {}, spec: { vcpus: 2, memory: 4096, disk_size: 16384 }, refs: { snapshot_id: body.snapshot_id, image_id: "morphvm-minimal" }, networking: { internal_ip: "10.0.0.2", http_services: [] }, ttl: ttlOf(body.ttl_seconds, body.ttl_action), wake_on: {} };
 			instances.set(id, instance);
+			sshKeys.set(id, keyPair());
 			return json(200, instance);
 		}
 		if (path === "/instance" && method === "GET") return json(200, { object: "list", data: [...instances.values()] });
@@ -68,6 +73,13 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 			const answer = { ...found };
 			if (found.status === "pending") found.status = "ready";
 			return json(200, answer);
+		}
+		const sshKey = /^\/instance\/([^/]+)\/ssh\/key$/.exec(path);
+		if (sshKey) {
+			if (!instances.has(sshKey[1])) return detail(404, `Instance ${sshKey[1]} not found`);
+			if (method === "POST") sshKeys.set(sshKey[1], keyPair());
+			const pair = sshKeys.get(sshKey[1]);
+			return json(200, { object: "instance_ssh_key", private_key: pair.private, public_key: pair.public, password: "not-a-secret", access_token: "not-a-secret" });
 		}
 		const match = /^\/instance\/([^/]+)(\/[a-z]+)?$/.exec(path);
 		const instance = match ? instances.get(match[1]) : undefined;
@@ -98,6 +110,7 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 	return {
 		fetch,
 		instances,
+		sshKeys,
 		snapshots,
 		calls,
 		snapshot,
@@ -106,18 +119,21 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 }
 
 /**
- * The SSH gateway: a login is "<id>:<key>" for an instance the REST API has, with any public key. The box build's
- * commands are answered here: the pid line, stdin read to its end, then exit build.exit (0) for install.sh and 0 else;
- * build.commands lists them, build.uploads the bytes of each upload, as base64 text.
+ * The SSH gateway: a login is "<id>" for an instance the REST API has, with that instance's key (its signature checked).
+ * The box build's commands are answered here: the pid line, stdin read to its end, then exit build.exit (0) for
+ * install.sh and 0 else; build.commands lists them, build.uploads the bytes of each upload, as base64 text.
  */
-export async function fakeGateway(rest, { key = KEY } = {}) {
+export async function fakeGateway(rest) {
 	const build = { commands: [], uploads: [], exit: 0 };
 	const logins = [];
 	const sshd = await fakeSshd({
 		accept: (ctx) => {
 			logins.push({ username: ctx.username, method: ctx.method });
-			const [id, given] = ctx.username.split(/:(.*)/s);
-			return ctx.method === "publickey" && given === key && rest.instances.has(id);
+			const pair = rest.sshKeys.get(ctx.username);
+			if (ctx.method !== "publickey" || pair === undefined || !rest.instances.has(ctx.username)) return false;
+			const allowed = utils.parseKey(pair.public);
+			if (ctx.key.algo !== allowed.type || !ctx.key.data.equals(allowed.getPublicSSH())) return false;
+			return !ctx.signature || allowed.verify(ctx.blob, ctx.signature, ctx.hashAlgo) === true;
 		},
 		run: (command, stream) => {
 			if (!command.includes("/tmp/agentrun-box")) return false;
@@ -139,6 +155,6 @@ export async function fakeGateway(rest, { key = KEY } = {}) {
 /** Both, wired: the provider's options reach the fake REST API and the gateway on loopback. */
 export async function fakeMorph(options = {}) {
 	const rest = fakeRest(options);
-	const gateway = await fakeGateway(rest, options);
+	const gateway = await fakeGateway(rest);
 	return { rest, ...gateway, options: { apiKey: KEY, ssh2, fetch: rest.fetch, apiUrl: API_URL, sshHost: "127.0.0.1", sshPort: gateway.sshd.port } };
 }

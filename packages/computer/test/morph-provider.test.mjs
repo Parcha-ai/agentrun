@@ -282,26 +282,42 @@ test("the error codes: the status, 503 as Morph's admission refusal, FastAPI's d
 
 // --- SSH through the gateway ---
 
-test("exec logs in to the gateway as <instance id>:<key> with a throwaway key, and runs argv as given: stdout, stderr and the exit code", async (t) => {
+test("exec logs in to the gateway as the instance id with the instance's own key, read once over REST, and runs argv as given: stdout, stderr and the exit code", async (t) => {
 	const { fake, snapshot, host } = await setup(t);
 	const value = await host.create(request(snapshot), CTX);
+	fake.rest.calls.length = 0;
 	const result = await run(host, value.id, ["sh", "-c", 'echo "out $1"; echo err >&2; exit 3', "sh", "a b'c"]);
 	assert.deepEqual(result, { code: 3, stdout: "out a b'c\n", stderr: "err\n" }, "the pid wrapper's line never reaches stderr");
 	assert.ok(fake.logins.some((login) => login.method === "publickey"), "ssh2 asks none first, then logs in with the key");
-	for (const login of fake.logins) assert.equal(login.username, `${value.id}:${KEY}`);
+	for (const login of fake.logins) assert.equal(login.username, value.id, "the user is the instance id alone: the account's key never goes over SSH");
 	assert.deepEqual(await run(host, value.id, ["printf", "%s|", "$HOME", "*", ""]), { code: 0, stdout: "$HOME|*||", stderr: "" });
 	assert.deepEqual(await run(host, value.id, ["cat"], "line one\nline two\n"), { code: 0, stdout: "line one\nline two\n", stderr: "" }, "stdin written, then ended");
+	fake.sshd.dropAll();
+	assert.equal((await run(host, value.id, ["true"])).code, 0, "a new connection logs in with the key held");
+	assert.deepEqual(
+		fake.rest.calls.map((call) => [call.method, call.path, call.auth]),
+		[["GET", `/api/instance/${value.id}/ssh/key`, `Bearer ${KEY}`]],
+		"the key is read once, over REST",
+	);
 });
 
-test("a key the gateway refuses is denied, and the error carries no key", async (t) => {
+test("a login the gateway refuses (a key rotated in the account) is denied with no key in the error, and the next exec reads the key again", async (t) => {
 	const { fake, snapshot, host } = await setup(t);
 	const value = await host.create(request(snapshot), CTX);
-	const wrong = new MorphProvider({ ...fake.options, apiKey: BARE });
-	const error = await thrown(wrong.host.exec(value.id, ["true"], CTX));
-	assert.equal(wrong.host.errorCode(error), "denied");
-	assert.doesNotMatch(error.message, new RegExp(BARE));
-	assert.doesNotMatch(error.message, new RegExp(KEY));
-	assert.ok(fake.logins.some((login) => login.username === `${value.id}:${BARE}`));
+	assert.equal((await run(host, value.id, ["true"])).code, 0);
+	const held = fake.rest.sshKeys.get(value.id).private;
+	await fake.rest.fetch(`${API_URL}/instance/${value.id}/ssh/key`, { method: "POST", headers: { Authorization: `Bearer ${KEY}` } });
+	fake.sshd.dropAll();
+	const error = await thrown(host.exec(value.id, ["true"], CTX));
+	assert.equal(host.errorCode(error), "denied");
+	for (const secret of [KEY, held, fake.rest.sshKeys.get(value.id).private]) assert.equal(error.message.includes(secret) || String(error.stack).includes(secret), false);
+	assert.equal((await run(host, value.id, ["true"])).code, 0, "the rotated key is read and taken");
+	assert.equal(fake.rest.calls.filter((call) => call.path.endsWith("/ssh/key") && call.method === "GET").length, 2);
+	assert.equal(host.errorCode(await thrown(host.exec("morphvm_99999999", ["true"], CTX))), "not_found", "no instance, no key, no login");
+	fake.rest.fail("GET", /\/ssh\/key$/, new Response(JSON.stringify({ private_key: "not a key" }), { status: 200 }));
+	const other = await host.create(request(snapshot), CTX);
+	assert.match((await thrown(host.exec(other.id, ["true"], CTX))).message, /no private key in PEM armor/);
+	assert.ok(fake.logins.every((login) => !login.username.includes(KEY)));
 });
 
 test("a gateway that does not answer fails the exec in words; delete ends the instance's SSH connections at once", async (t) => {
@@ -363,6 +379,11 @@ test("prepareImage builds the box snapshot once: a base of morphvm-minimal, an i
 	const made = rest.snapshots.get(ready.value);
 	assert.equal(made.digest, BOX);
 	assert.deepEqual(made.metadata, { "agentrun-box": BOX });
+	assert.deepEqual(
+		rest.calls.filter((one) => one.path.endsWith("/ssh/key")).map((one) => one.method),
+		["GET"],
+		"the build instance's key, read once",
+	);
 	const posts = rest.calls.filter((one) => one.method !== "GET");
 	assert.deepEqual(
 		posts.map((one) => [one.method, one.path.replace(/morphvm_\d+/, "{vm}")]),
@@ -388,7 +409,7 @@ test("prepareImage builds the box snapshot once: a base of morphvm-minimal, an i
 		build.uploads.map((text) => Buffer.from(text, "base64")),
 		[box("install.sh"), box("agentrun-archil")],
 	);
-	assert.ok(fake.logins.every((login) => login.username.endsWith(`:${KEY}`)));
+	assert.ok(fake.logins.length > 0 && fake.logins.every((login) => /^morphvm_\d+$/.test(login.username)), "the build logs in as its instance");
 	// A second call finds it.
 	rest.calls.length = 0;
 	waits.length = 0;
@@ -397,16 +418,23 @@ test("prepareImage builds the box snapshot once: a base of morphvm-minimal, an i
 	assert.equal(rest.calls.filter((one) => one.method !== "GET").length, 0);
 });
 
-test("a build whose install.sh fails answers vendor in words, makes no box snapshot, and still deletes its instance", async (t) => {
-	const { fake, provider } = await setup(t);
+test("a build whose install.sh fails answers vendor in words, makes no box snapshot, and deletes its instance and its base, so a failing build leaves nothing", async (t) => {
+	const { fake, snapshot, provider } = await setup(t);
 	fake.build.exit = 7;
-	const failed = await provider.prepareImage();
-	assert.equal(failed.ok, false);
-	assert.equal(failed.error.code, "vendor");
-	assert.match(failed.error.message, new RegExp(`${BOX} as a Morph snapshot: box/install\\.sh exited with 7`));
+	for (const attempt of [1, 2]) {
+		const failed = await provider.prepareImage();
+		assert.equal(failed.ok, false);
+		assert.equal(failed.error.code, "vendor");
+		assert.match(failed.error.message, new RegExp(`${BOX} as a Morph snapshot: box/install\\.sh exited with 7`));
+		assert.equal(fake.rest.instances.size, 0, `attempt ${attempt}: the build instance is deleted`);
+		assert.deepEqual([...fake.rest.snapshots.keys()], [snapshot], `attempt ${attempt}: the base is deleted too; the account's own snapshot stays`);
+	}
+	// One whose base never gets ready deletes it the same way, and makes no instance.
+	fake.rest.fail("GET", /^\/api\/snapshot\/snapshot_/, new Response(JSON.stringify({ id: "x", status: "failed" }), { status: 200 }));
+	const unready = await provider.prepareImage();
+	assert.match(unready.error.message, /is "failed", not ready/);
 	assert.equal(fake.rest.instances.size, 0);
-	assert.equal([...fake.rest.snapshots.values()].some((one) => one.digest === BOX), false);
-	assert.equal(fake.rest.calls.at(-1).method, "DELETE");
+	assert.deepEqual([...fake.rest.snapshots.keys()], [snapshot]);
 });
 
 // --- the registry and the conformance module ---

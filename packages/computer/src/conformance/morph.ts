@@ -56,7 +56,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"morph: every computer is a Morph instance started from a snapshot (the box snapshot, built in the key's account, unless COMPUTER_MORPH_SNAPSHOT names one), with a TTL whose action is stop, read back from Morph and probed from inside; the daemon is a child, started over SSH through Morph's gateway (ssh.cloud.morph.so, the key in the username), and every command goes over that SSH. Morph has no egress control: network none, open and a list are all init's. No Archil mount yet and no desktop; no stream(), so screen.stream is skipped.",
+	"morph: every computer is a Morph instance started from a snapshot (the box snapshot, built in the key's account, unless COMPUTER_MORPH_SNAPSHOT names one), with a TTL whose action is stop, read back from Morph and probed from inside; the daemon is a child, started over SSH through Morph's gateway (ssh.cloud.morph.so, as the instance id with the instance's own key), and every command goes over that SSH. Morph has no egress control: network none, open and a list are all init's. No Archil mount yet and no desktop; no stream(), so screen.stream is skipped.",
 ];
 
 export interface MorphModuleOptions extends Pick<MorphOptions, "ssh2" | "fetch" | "daemonPath" | "timeouts" | "onNote" | "sshHost" | "sshPort"> {
