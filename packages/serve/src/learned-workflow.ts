@@ -372,7 +372,8 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
       const keep = (signal: Context, ended?: LearnedEnded) => {
         const skipped = run.replay?.skipped;
-        if (!trace.length && !guards.length && !skipped && !(run.replay && ended)) return undefined;
+        // A loop's exit counts too: a loop over an empty map ends no node, yet its row is the run's (metrics `loops`).
+        if (!trace.length && !guards.length && !loops.length && !skipped && !(run.replay && ended)) return undefined;
         return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
       };
       let said: Awaited<ReturnType<typeof runLearned>>;

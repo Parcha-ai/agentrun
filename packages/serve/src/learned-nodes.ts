@@ -38,7 +38,7 @@ export type LoopRow = { readonly node: string; readonly iterations: number; read
 
 /** The LEARNED_NODES entry that counts for each learned_workflow call in `entries`, by the call's id, as its index in
  *  `entries`. A call run again (after a park or a crash: it nests calls) keeps an entry each time; the one that counts is
- *  its last that ran a node or made a check, as it holds every node and check its rerun made again. A rerun refused before
+ *  its last that ran a node, made a check or exited a loop, as it holds every node and check its rerun made again. A rerun refused before
  *  any node ran (a replay run keeps that entry: `nodes: []`, ended `failed`) leaves the attempt before it standing; a call
  *  none of whose entries ran a node counts its last. What the run's guard rows (guardsOf) and its timeline rows'
  *  `learned_nodes` (store-reads/journal.ts) both read, so the two never pick apart. */
@@ -47,9 +47,10 @@ export function learnedCallEntries(entries: readonly { readonly kind: string; re
   const ran = new Set<string>();
   entries.forEach((entry, index) => {
     if (entry.kind !== LEARNED_NODES) return;
-    const data = entry.data as { call?: unknown; nodes?: unknown; guards?: unknown } | undefined;
+    const data = entry.data as { call?: unknown; nodes?: unknown; guards?: unknown; loops?: unknown } | undefined;
     if (typeof data?.call !== "string") return;
-    const made = (Array.isArray(data.nodes) && data.nodes.length > 0) || (Array.isArray(data.guards) && data.guards.length > 0);
+    // A loop's exit is a run's row as a check is (a loop over an empty map exits with no node ended).
+    const made = [data.nodes, data.guards, data.loops].some((rows) => Array.isArray(rows) && rows.length > 0);
     if (made) ran.add(data.call);
     if (made || !ran.has(data.call)) last.set(data.call, index);
   });

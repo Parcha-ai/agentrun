@@ -228,7 +228,10 @@ Over a cap is refused, never cut.
   Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
   `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
   `pages`), its body the step that answers, which reads the failed draft in its state. A quote found first costs no
-  re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. A loop's
+  re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. The check
+  is a step of the top-level chain after the loop, never inside it: a `quote_missing` escalate anywhere in the loop's
+  body (a composed workflow's included) hands back on the first draft's miss, so the loop never re-picks, and a draft
+  with one there is refused. A loop exit is kept in the call's journal entry even when no node ended. A loop's
   `until` is one predicate and none joins two, so the answer's quotes have one check: a draft whose quotes need two
   different checks (`quotes: string | [{quote}]`, or quotes in two places) is refused, since a loop watching one would
   let the other hand back with no re-pick; the detail asks for one place one check reads. On H5d

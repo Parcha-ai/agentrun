@@ -444,6 +444,14 @@ const repicks = (step: unknown, check: QuoteRead): boolean => {
   const of = step.until.of;
   return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
+/** The labels of the quote_missing escalates inside `node` (a loop's body), a composed workflow's included: each hands
+ *  back on the first pass's miss, so a re-pick loop around one never re-picks. */
+const quoteEscalatesIn = (node: unknown, depth = 0): string[] => {
+  if (!isNode(node) || depth > 32) return [];
+  if (node.node === "escalate") return isObject(node.when) && node.when.predicate === "quote_missing" ? [String(node.label ?? "(no label)").slice(0, 64)] : [];
+  const inner = node.node === "workflow" && isObject(node.workflow) ? [node.workflow.root] : childNodes(node);
+  return inner.flatMap((child) => quoteEscalatesIn(child, depth + 1));
+};
 
 /** quoteCheckProblems for one workflow (the draft's, or a composed workflow node's child, its schemas its own else
  *  `schemasAround`): whether the rule applies (its answer carries quotes and it fetches pages), and why it fails. Only a
@@ -509,8 +517,11 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     const distinct = new Set(checks.map(quoteMissingText)).size;
     if (!problems.length && distinct > 1) {
       problems.push(`the answer's quotes are checked by ${distinct} different quote_missing escalates, and a re-pick loop's "until" reads one check (no predicate joins two), so the loop would let the others hand back with no re-pick: give the answer's quotes one place one check reads (a quote, a list of quotes or a list of records each holding its quote at one field), one quote_missing escalate on it after the step that writes the answer, and that step the body of a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": <that same quote_missing>}, "body": <the step>}`);
+    } else if (!problems.length && first && isNode(writer) && writer.node === "loop" && quoteEscalatesIn(writer.body).length) {
+      // A check inside the loop's body hands back on the first draft's miss: the loop never re-picks.
+      problems.push(`the re-pick loop ${JSON.stringify(String(writer.label ?? "(no label)").slice(0, 64))} holds the quote_missing escalate ${JSON.stringify(quoteEscalatesIn(writer.body)[0])} in its body, which hands back on the first draft's miss, so the loop never re-picks: the check after the loop, never inside it, as a step of the top-level chain`);
     } else if (!problems.length && first && !checks.every((check) => repicks(writer, check))) {
-      problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back`);
+      problems.push(`the step ${JSON.stringify(String(isNode(writer) ? writer.label ?? writer.node : "(no label)").slice(0, 64))} writes the answer and the escalate ${JSON.stringify(first.label)} hands it back on its first quote miss: give it one re-pick first, the step in a loop {"node": "loop", "label": "repick", "maxIters": ${REPICK_PASSES}, "until": {"predicate": "not", "of": ${quoteMissingText(first)}}, "body": <the step>} in its place, its instructions saying that a draft already in state failed the quote check, so a draft quoting text no page holds is written once more and only a second miss hands back: the check after the loop, never inside it`);
     }
   }
   // A composed workflow writing the answer that applies the rule and fails it: its own check is the one to fix.
