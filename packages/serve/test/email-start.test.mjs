@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { follow, serve } from "./support.mjs";
-import { fakeClock, firings, keyOf, made } from "./trigger-support.mjs";
+import { fakeClock, firings, keyOf, made, until } from "./trigger-support.mjs";
 import { checked, emailTrigger, mailbox, saved } from "./email-support.mjs";
 
 const T0 = "2026-06-01T00:00:30Z";
@@ -86,6 +86,69 @@ test("an edit of the mailbox takes a new start; an edit of the filter keeps the 
   const later = await firings(api, id, 4);
   assert.deepEqual([later[0].status, later[0].key], ["started", keyOf("email", id, fresh.messageId)], JSON.stringify(statuses(later)));
   await follow(api, later[0].run_id, ["completed"]);
+});
+
+/** A trigger made while its start is held at the mail server (INBOX's EXAMINE): the POST in flight, the trigger's id
+ *  once it is stored, and the release that lets the start answer. */
+async function heldStart(api, faux, body) {
+  const release = faux.hold(/^EXAMINE "?INBOX"?/i);
+  const creating = api("POST", "/triggers", body);
+  const id = await until(async () => faux.commands().some((c) => /^EXAMINE "?INBOX"?/i.test(c)) && (await api("GET", "/triggers")).body.triggers.find((one) => one.name === body.name)?.id);
+  assert.ok(id, "the start reached the mail server, the trigger stored");
+  return { id, release, creating };
+}
+
+for (const [what, edit, at] of [
+  ["its filter", { kind: "email", every_s: 60, accept: [{ event: "message", where: [{ pointer: "/subject", prefix: "After" }] }] }, minute(1)],
+  ["every_s", { kind: "email", every_s: 120 }, minute(2)],
+]) {
+  test(`an edit of ${what} while the start is still being taken keeps that start: mail after it starts a run`, { timeout: 150_000 }, async (t) => {
+    const clock = fakeClock(T0);
+    const { api } = await serve(t, { triggerClock: clock });
+    const faux = await mailbox(t);
+    faux.seed({ from: "old@example.com", subject: "Before" });
+    await saved(api, faux);
+    await made(api, "mail");
+    const { id, release, creating } = await heldStart(api, faux, emailTrigger("mail", { every_s: 60 }));
+    await patched(api, id, { source: edit });
+    release();
+    assert.equal((await creating).status, 201);
+    const [watching] = await firings(api, id, 1);
+    assert.deepEqual([watching.status, watching.reason], ["skipped", WATCHING("INBOX", 1)], "the held start is kept, said at the creation");
+
+    const after = faux.seed({ from: "ana@example.com", subject: "After the edit" });
+    clock.to(at);
+    await checked(api, id, at);
+    const shown = await firings(api, id, 1);
+    assert.ok(shown.some((f) => f.status === "started" && f.key === keyOf("email", id, after.messageId)), `the message after the start started a run: ${JSON.stringify(statuses(shown))}`);
+    assert.equal(shown.filter((f) => f.reason?.startsWith("Watching")).length, 1, "one start: the first poll took none");
+    const started = shown.find((f) => f.status === "started");
+    if (started) await follow(api, started.run_id, ["completed"]);
+  });
+}
+
+test("an edit of the mailbox while the start is still being taken takes the new start; the held one is dropped", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api } = await serve(t, { triggerClock: clock });
+  const faux = await mailbox(t);
+  faux.seed({ mailbox: "Archive", subject: "Archived before" });
+  await saved(api, faux);
+  await made(api, "mail");
+  const { id, release, creating } = await heldStart(api, faux, emailTrigger("mail", { every_s: 60 }));
+  await patched(api, id, { source: { kind: "email", every_s: 60, mailbox: "Archive" } });
+  release();
+  assert.equal((await creating).status, 201);
+  const made1 = await firings(api, id, 1);
+  assert.deepEqual(made1.filter((f) => f.reason?.startsWith("Watching")).map((f) => f.reason), [WATCHING("Archive", 1)], `only the move's start is said: ${JSON.stringify(statuses(made1))}`);
+
+  const inbox = faux.seed({ from: "old@example.com", subject: "Into INBOX" });
+  const archived = faux.seed({ mailbox: "Archive", from: "bo@example.com", subject: "Into Archive" });
+  clock.to(minute(1));
+  await checked(api, id, minute(1));
+  const shown = await firings(api, id, 2);
+  assert.deepEqual(shown.filter((f) => f.status === "started").map((f) => f.key), [keyOf("email", id, archived.messageId)], JSON.stringify(statuses(shown)));
+  assert.ok(!shown.some((f) => f.key === keyOf("email", id, inbox.messageId)), "INBOX is no longer read");
+  await follow(api, shown.find((f) => f.status === "started").run_id, ["completed"]);
 });
 
 test("turned on again, a trigger takes a new start: mail that came while it was off starts no run, and that is said", { timeout: 150_000 }, async (t) => {

@@ -605,9 +605,12 @@ export class Triggers {
         return { check: { ok: false, message }, note: start.unchecked(trigger.source, why) };
       });
       const result = await Promise.race([taken, late]).finally(() => clearTimeout(timer));
-      // Edited, turned off or deleted meanwhile, or started again: this start is not its own any more.
+      // Turned off, deleted, moved (an edit of where it reads: start.on) or started again meanwhile: this start is not its
+      // own any more. An edit of anything else (accept, every_s) keeps it: that edit took no start of its own, and the
+      // cursor removed above would otherwise stay gone, its first poll starting from then and skipping the mail between.
       const current = await this.find(trigger.id);
-      if (this.closed || this.starts.get(trigger.id) !== generation || !current?.enabled || JSON.stringify(current.source) !== JSON.stringify(trigger.source)) return;
+      const readsAt = (source: Source) => [source.kind, ...start.on.map((field) => source[field])];
+      if (this.closed || this.starts.get(trigger.id) !== generation || !current?.enabled || JSON.stringify(readsAt(current.source)) !== JSON.stringify(readsAt(trigger.source))) return;
       for (const [field, value] of Object.entries(result.cursor ?? {})) await settings?.set(trigger.id, field, value);
       await settings?.set(trigger.id, LAST_CHECK, JSON.stringify({ at: iso(now), ok: result.check.ok, message: result.check.message, refused: 0 }));
       const at = Math.floor(now / 1000) * 1000;
