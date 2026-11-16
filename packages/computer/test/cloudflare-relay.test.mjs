@@ -244,7 +244,7 @@ test("delete destroys the container and drops the row, its alarm and its index e
 	assert.equal(container.starts.length, 2);
 });
 
-test("an index write that fails strands nothing: a create's starts nothing, and a delete's is finished by the next delete", async () => {
+test("an index write that fails strands nothing: a create's starts nothing, a stray container ends, and a delete's is finished by the next delete", async () => {
 	const cf = fakeCloudflare();
 	const names = async () => (await cf.call("GET", "/v1/computers")).json.computers.map(({ name }) => name);
 	// The create's index write fails first: no container, no row, so the provider's create again starts it once.
@@ -254,11 +254,12 @@ test("an index write that fails strands nothing: a create's starts nothing, and 
 	assert.deepEqual([container.starts.length, storage.map.size, await names()], [0, 0, []]);
 	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
 	assert.deepEqual([container.starts.length, await names()], [1, [NAME]]);
-	// A start that throws takes its index entry back: nothing listed for a sweep to chase.
+	// A start that throws on a stray container (one a failed delete left) ends that container before it takes its
+	// index entry back: nothing runs that a sweep by name cannot find.
 	const busy = "computer-00000000000b";
 	cf.computer(busy).container.start({});
 	assert.equal((await cf.call("POST", "/v1/computers", create({ name: busy }))).status, 500);
-	assert.deepEqual(await names(), [NAME]);
+	assert.deepEqual([cf.computer(busy).container.running, await names()], [false, [NAME]]);
 	// The delete's index write fails after the container and the row are gone: the entry stays listed, and the next
 	// delete, with no row to end, drops it.
 	cf.failIndex(1);
@@ -266,9 +267,9 @@ test("an index write that fails strands nothing: a create's starts nothing, and 
 	assert.deepEqual([container.running, storage.map.size, await names()], [false, 0, [NAME]]);
 	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 204);
 	assert.deepEqual(await names(), []);
-	// The busy name's stray container ends on its delete too.
-	assert.equal((await cf.call("DELETE", `/v1/computers/${busy}`)).status, 204);
-	assert.equal(cf.computer(busy).container.running, false);
+	// The busy name, its stray gone, starts on the provider's create again.
+	assert.equal((await cf.call("POST", "/v1/computers", create({ name: busy }))).status, 201);
+	assert.deepEqual(await names(), [busy]);
 });
 
 test("the alarm sets the idle timeout again each hour, and at backstopAt destroys the container and drops its row", async (t) => {

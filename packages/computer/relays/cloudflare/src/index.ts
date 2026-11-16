@@ -157,7 +157,9 @@ export class Computer {
 			try {
 				container.start({ image: container.images.box, env: body.env, entrypoint: [DIAL], enableInternet: true, instance: body.instance });
 			} catch (error) {
-				// A: start() throws while a container runs; with no row, one a failed delete left, which a DELETE ends.
+				// A: start() throws while a container runs; with no row, one a failed delete left. It ends before its entry
+				// goes, so nothing runs unlisted: a destroy that throws keeps the entry, and the sweep's DELETE ends it.
+				if (container.running) await container.destroy("stray");
 				await this.#index("DELETE", made);
 				return refuse(500, `Cloudflare did not start the container: ${error instanceof Error ? error.message : String(error)}`);
 			}
