@@ -100,6 +100,35 @@ test("email_send on allow: a run's first 5 sends go unasked; the 6th asks, sayin
   assert.equal(faux.sent().length, 6);
 });
 
+test("email_send on allow, a turn's sends at once past the cap: after 4 sent, of 3 sends made together one goes unasked and the other two ask", { timeout: 150_000 }, async (t) => {
+  const server = await served(t);
+  const { api, decide } = server;
+  const faux = await mailbox(t);
+  await saved(api, faux);
+  assert.equal((await api("POST", "/agents", mailAgent("batch", { tool_settings: ALLOW }))).status, 201);
+  const send = (n) => ["email_send", { to: ["ana@example.com"], subject: `Note ${n}`, text: `Note ${n}.` }];
+  const started = await api("POST", "/agents/batch/runs", { input: { content: calls([send(1), send(2), send(3), send(4), [send(5), send(6), send(7)]]) } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+
+  // Each ask the run makes, denied: the two over the cap, each saying the run's sends so far.
+  const asked = [];
+  for (;;) {
+    const now = await until(async () => {
+      const one = await settled(api, runId);
+      return one.status !== "input_required" || !asked.some((a) => a.id === one.pending?.id) ? one : undefined;
+    }, 55_000);
+    if (now?.status !== "input_required") break;
+    asked.push(now.pending);
+    assert.deepEqual([now.pending?.kind, now.pending?.tool], ["approval", "email_send"]);
+    assert.match(shown(now.pending), /this run has sent 5 emails/, `the ask says why: ${shown(now.pending)}`);
+    assert.equal(await decide(runId, now.pending.id, "deny"), 204);
+  }
+  assert.equal(faux.sent().length, 5, "the 4 sent first and one of the 3 at once");
+  assert.equal(asked.length, 2, "the other two asked");
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
+});
+
 test("on a thread run with email_send on allow, a send to the thread's sender goes unasked; one that also reaches someone outside the thread asks, naming them", { timeout: 150_000 }, async (t) => {
   const server = await served(t);
   const faux = await mailbox(t);

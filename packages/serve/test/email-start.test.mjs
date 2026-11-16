@@ -128,6 +128,39 @@ for (const [what, edit, at] of [
   });
 }
 
+test("a create whose start an edit of its filter drops answers once the start after it is taken: mail right after the answer starts a run", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api } = await serve(t, { triggerClock: clock });
+  const faux = await mailbox(t);
+  faux.seed({ from: "old@example.com", subject: "After, but before" });
+  await saved(api, faux);
+  await made(api, "mail");
+  const { id, release, creating } = await heldStart(api, faux, emailTrigger("mail", { every_s: 60 }));
+  await patched(api, id, { source: { kind: "email", every_s: 60, accept: [{ event: "message", where: [{ pointer: "/subject", prefix: "After" }] }] } });
+  // The start after the edit's, held at the server too: the create answers before it only if it doesn't wait for it.
+  const next = faux.hold(/^EXAMINE "?INBOX"?/i);
+  release();
+  let answered;
+  void creating.then((res) => (answered = res));
+  const examined = () => faux.commands().filter((c) => /^EXAMINE "?INBOX"?/i.test(c)).length;
+  assert.ok(await until(() => answered || examined() >= 2, 15_000), "the create answered, or the start after the edit reached the server");
+  if (!answered) {
+    next();
+    await creating;
+  }
+  assert.equal(answered?.status, 201, JSON.stringify(answered?.body));
+  // Mail right after the create's answer: after the start, so it starts a run.
+  const after = faux.seed({ from: "ana@example.com", subject: "After the answer" });
+  next();
+  clock.to(minute(1));
+  await checked(api, id, minute(1));
+  const shown = await firings(api, id, 2);
+  assert.ok(shown.some((f) => f.status === "started" && f.key === keyOf("email", id, after.messageId)), `the message after the answer started a run: ${JSON.stringify(statuses(shown))}`);
+  assert.deepEqual(shown.filter((f) => f.reason?.startsWith("Watching")).map((f) => f.reason), [WATCHING("INBOX", 1)], "one start, said once");
+  const started = shown.find((f) => f.status === "started");
+  if (started) await follow(api, started.run_id, ["completed"]);
+});
+
 test("an edit of the mailbox while the start is still being taken takes the new start; the held one is dropped", { timeout: 150_000 }, async (t) => {
   const clock = fakeClock(T0);
   const { api } = await serve(t, { triggerClock: clock });
