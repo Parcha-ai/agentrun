@@ -381,13 +381,16 @@ export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && se
  * be. Otherwise it kills the process and every process under it (an upload's head and base64 would wait on the open
  * stdin, and hold stderr open, past their sh; a child that left the process group too): each is stopped as it is found,
  * so none forks away, by its parent pid (field 4 of its stat) until a pass over /proc finds no more, and then all are
- * killed.
+ * killed. When the pid leads its own process group (field 5), as a command an sshd starts does, every process in that
+ * group is taken too: a background job whose parent exited is under no process the walk finds, but still in the group.
+ * A pid that leads no group of its own is let be past its tree, so a kill never reaches what it didn't start.
  */
 export const PID_KILL = [
 	"pid=$1 start=$2",
 	'read -r s 2>/dev/null <"/proc/$pid/stat" || exit 0',
 	'set -- ${s##*") "}',
 	'[ "${20}" = "$start" ] || exit 0',
+	'group=; [ "$3" = "$pid" ] && group=$pid',
 	'kill -STOP "$pid" 2>/dev/null',
 	'all=" $pid " new=$pid',
 	'while [ -n "$new" ]; do',
@@ -397,7 +400,8 @@ export const PID_KILL = [
 	"\t\tp=${s%% *}",
 	'\t\tset -- ${s##*") "}',
 	'\t\tcase "$all" in *" $p "*) continue ;; esac',
-	'\t\tcase "$all" in *" $2 "*) all="$all$p " new="$new $p"; kill -STOP "$p" 2>/dev/null ;; esac',
+	'\t\tcase "$all" in *" $2 "*) ;; *) [ -n "$group" ] && [ "$3" = "$group" ] || continue ;; esac',
+	'\t\tall="$all$p " new="$new $p"; kill -STOP "$p" 2>/dev/null',
 	"\tdone",
 	"done",
 	"kill -KILL $all 2>/dev/null",

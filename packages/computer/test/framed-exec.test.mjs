@@ -266,6 +266,35 @@ test("the pid wrapper's line is the pid and its start time, and the kill script 
 	assert.deepEqual(kids.filter(running), [], "every process under it is killed");
 });
 
+test("the kill script also kills a process left in the group the pid leads, whose parent exited: an sshd session's background job", async (t) => {
+	if (!HAS_PROC) return t.skip(NO_PROC);
+	// detached: the wrapper leads its own group, as a command an sshd starts does. The subshell's sleep is orphaned at
+	// once (its parent, the subshell, exits), so it is under no process the tree walk finds, but still in the group.
+	const child = spawn(PID_WRAPPER[0], [...PID_WRAPPER.slice(1), "sh", "-c", "(sleep 600 </dev/null >/dev/null 2>&1 &); exec sleep 601"], { stdio: ["ignore", "ignore", "pipe"], detached: true });
+	const stat = (pid) => {
+		try {
+			return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ");
+		} catch {
+			return undefined;
+		}
+	};
+	const [line] = await once(child.stderr, "data");
+	const [pid, start] = line.toString().trim().split(" ");
+	const inGroup = () => readdirSync("/proc").filter((p) => /^\d+$/.test(p) && p !== pid && stat(p)?.[2] === pid && stat(p)?.[0] !== "Z");
+	t.after(() => {
+		for (const kid of [pid, ...inGroup()]) spawnSync("kill", ["-KILL", kid]);
+	});
+	let orphans = [];
+	for (let at = 0; at < 100 && orphans.length === 0; at++) {
+		await pause(20);
+		orphans = inGroup().filter((p) => stat(p)?.[1] !== pid);
+	}
+	assert.equal(orphans.length, 1, "the background sleep, out of the tree, in the group");
+	assert.equal(spawnSync("sh", ["-c", PID_KILL, "sh", pid, start]).status, 0);
+	for (let at = 0; at < 100 && inGroup().length > 0; at++) await pause(20);
+	assert.deepEqual(inGroup(), [], "nothing is left in the group the pid led");
+});
+
 test("framedExec reads events no faster than stdout is read, and kill() lets a held reader go", async () => {
 	const { pieces, stream } = memoryPieces({ kill: true });
 	const proc = await framedExec(pieces, ["yes"], ctx);
