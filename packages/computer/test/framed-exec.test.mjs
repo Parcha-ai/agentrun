@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +25,10 @@ const TIMEOUTS = { requestMs: 2_000, createMs: 2_000, uploadMs: 5_000, execMs: 2
 /** The Core cases the adapter's fake host answers (its daemon is a stand-in): the ones a byte exec passes there too. */
 const HOSTED_CORE = ["health.hello", "health.kind-consistent", "health.kind-served", "exec.abort", "provider.check-refuses", "provider.list", "provider.stop", "provider.owner", "provider.detach", "provider.network-change", "drift.hello-matches", "drift.network"];
 
+/** The pid wrapper and its kill read /proc/<pid>/stat, which a Linux machine has; macOS has no /proc. */
+const HAS_PROC = existsSync("/proc/self/stat");
+const NO_PROC = "no /proc here: the pid wrapper and its kill read /proc/<pid>/stat";
+
 const dir = mkdtempSync(join(tmpdir(), "computer-framed-"));
 const DAEMON_PATH = join(dir, "computerd");
 /** A stand-in daemon of every byte value: no text, so only the base64 upload carries it through a text exec. */
@@ -33,6 +37,7 @@ writeFileSync(DAEMON_PATH, DAEMON_BYTES);
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 test("a text-only exec in pieces (a start, NDJSON events, a call per write; no end of stdin, no kill) on framedExec passes every check of the exec pre-check", async (t) => {
+	if (!HAS_PROC) return t.skip(NO_PROC);
 	const local = fakeExecHost();
 	const vendor = await textVendor(local);
 	t.after(async () => {
@@ -211,6 +216,7 @@ test("framedExec with no vendor kill still kills by pid when the event stream br
 });
 
 test("the pid wrapper's line is the pid and its start time, and the kill script kills that pid only while the start time matches", async (t) => {
+	if (!HAS_PROC) return t.skip(NO_PROC);
 	const child = spawn(PID_WRAPPER[0], [...PID_WRAPPER.slice(1), "sleep", "600"], { stdio: ["ignore", "ignore", "pipe"] });
 	t.after(() => child.kill("SIGKILL"));
 	const [line] = await once(child.stderr, "data");
