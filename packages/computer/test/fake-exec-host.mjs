@@ -13,6 +13,8 @@
 //  - slowWriteMs: each write() answers this many ms late.
 //  - stdinWaitsOnStdout: once 64 KiB of stdout sits unread, write() never answers again, read or not (a stdin window
 //    that a stalled reader deadlocks).
+//  - stdinWaitsForReader: while 64 KiB of stdout sits unread, write() waits, and goes on once the reader drains it (a
+//    stdin window with backpressure, as it should be).
 import { spawn } from "node:child_process";
 
 /** A stream fed by a process, read as an async iterable until it ends; `unread` is the bytes not yet taken from it. */
@@ -52,7 +54,7 @@ function feed() {
 }
 
 export function fakeExecHost(options = {}) {
-	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0, stdinWaitsOnStdout = false } = options;
+	const { decodeUtf8 = false, bufferOutput = false, holdStdin = false, mergeStderr = false, commandTimeoutMs, exitCode, killDetaches = false, closeStdoutEarly = false, slowWriteMs = 0, stdinWaitsOnStdout = false, stdinWaitsForReader = false } = options;
 	const children = new Set();
 	const host = {
 		descriptor: { id: "fake-exec" },
@@ -105,6 +107,7 @@ export function fakeExecHost(options = {}) {
 				async write(bytes) {
 					stalled ||= stdinWaitsOnStdout && out.unread >= 64 * 1024;
 					if (stalled) return new Promise(() => {});
+					while (stdinWaitsForReader && out.unread >= 64 * 1024 && children.has(child)) await new Promise((done) => setTimeout(done, 20));
 					if (slowWriteMs > 0) await new Promise((done) => setTimeout(done, slowWriteMs));
 					if (holdStdin) pending.push(Buffer.from(bytes));
 					else await new Promise((done, fail) => child.stdin.write(Buffer.from(bytes), (error) => (error ? fail(error) : done())));

@@ -468,18 +468,22 @@ const CHECKS: Record<ExecStreamCheckId, CheckBody> = {
 		const sent: Buffer[] = [];
 		let written = 0;
 		try {
-			for (let i = 0; i < UNREAD_WRITES && Date.now() < readAt && !s.signal?.aborted; i++) {
+			// Every write, paced over unreadMs: one that waits for the reader goes on once stdout is read, and the rest follow.
+			// All of them are answered within stepMs of stdout being read: one deadline, not a step per write.
+			for (let i = 0; i < UNREAD_WRITES && !s.signal?.aborted; i++) {
 				await pause(started + (i * unreadMs) / UNREAD_WRITES - Date.now(), s.signal);
 				const chunk = Buffer.alloc(UNREAD_CHUNK, `write ${String(i + 1).padStart(2, "0")} `);
+				const madeUnread = Date.now() < readAt;
 				const answered = await within(
 					Promise.resolve().then(() => run.proc.write(chunk)),
-					Math.max(readAt, Date.now()) + s.stepMs - Date.now(),
+					Math.max(1, readAt + s.stepMs - Date.now()),
 					LATE,
 					s.signal,
 				).catch((error: unknown) => {
 					throw new Problem(`write() to cat failed while its stdout was left unread, with ${written} bytes written: ${words(error)}`);
 				});
 				if (answered === LATE && s.signal?.aborted) throw new Problem(`writing to cat was stopped, with ${written} bytes written`);
+				if (answered === LATE && !madeUnread) throw new Problem(`the ${UNREAD_WRITES} writes to cat ran past ${secondsOf(s.stepMs)} after stdout was read, with ${written} bytes written: your exec's writes are too slow`);
 				if (answered === LATE) {
 					throw new Problem(
 						`write ${i + 1} to cat, made while its stdout was left unread, still had no answer ${secondsOf(s.stepMs)} after stdout was read again (${written} bytes written): your exec's stdin waits for stdout to be read and does not go on once it is, so one stalled reader deadlocks the stream. Let stdin wait only until stdout is read`,
@@ -581,10 +585,10 @@ export const CAPABILITY_SCRIPT = [
 	'line uid "$(id -u 2>&1)"',
 	'line arch "$(uname -m 2>&1)"',
 	'line kernel "$(uname -sr 2>&1)"',
-	'line gvisor "$(dmesg 2>/dev/null | grep -i gvisor | head -n 1)"',
+	`if d=$(dmesg 2>/dev/null); then line gvisor "$(printf '%s' "$d" | grep -i gvisor | head -n 1)"; else line gvisor unread; fi`,
 	'if command -v unshare >/dev/null 2>&1; then e=$(unshare -n true 2>&1); line netns "$? $e"; e=$(unshare -Urn true 2>&1); line userns "$? $e"; else line netns none; fi',
 	'if [ -e /dev/fuse ]; then e=$( (: <>/dev/fuse) 2>&1); line fuse "$? $e"; else line fuse absent; fi',
-	`for f in /proc/net/tcp /proc/net/tcp6; do [ -r "$f" ] && while read -r l; do printf 'tcp\\t%s\\n' "$l"; done < "$f"; done`,
+	`for f in /proc/net/tcp /proc/net/tcp6; do if [ -r "$f" ]; then line table "$f"; while read -r l; do printf 'tcp\\t%s\\n' "$l"; done < "$f"; else line unreadable "$f"; fi; done`,
 	"true",
 ].join("\n");
 
@@ -623,11 +627,15 @@ function ranOf(text: string | undefined): { ok: boolean; said: string } | undefi
 export function readFacts(output: string): ExecStreamFact[] {
 	const values = new Map<string, string>();
 	const tcp: string[] = [];
+	/** The TCP tables read, and those that could not be. */
+	const tables = { read: [] as string[], unreadable: [] as string[] };
 	for (const line of output.split("\n")) {
 		const tab = line.indexOf("\t");
 		if (tab < 0) continue;
 		const [key, value] = [line.slice(0, tab), line.slice(tab + 1).trim()];
 		if (key === "tcp") tcp.push(value);
+		else if (key === "table") tables.read.push(value);
+		else if (key === "unreadable") tables.unreadable.push(value);
 		else if (!values.has(key)) values.set(key, value);
 	}
 	const facts: ExecStreamFact[] = [];
@@ -657,19 +665,24 @@ export function readFacts(output: string): ExecStreamFact[] {
 	const goArch = arch === "x86_64" || arch === "amd64" ? "amd64" : arch === "aarch64" || arch === "arm64" ? "arm64" : undefined;
 	facts.push({ id: "arch", value: arch || "not read", means: goArch ? `facts.arch "${goArch}"` : "neither amd64 nor arm64: computerd is built for those two alone" });
 	const kernel = values.get("kernel") || "not read";
-	const gvisor = values.get("gvisor") ?? "";
-	facts.push(
-		gvisor !== ""
-			? { id: "kernel", value: `gVisor (${kernel} as it reports; dmesg: ${gvisor.slice(0, 80)})`, means: "gVisor: root has no CAP_SYS_ADMIN and the network stack is gVisor's own, so run the isolation cases here; a Docker stand-in does not show how it behaves" }
-			: { id: "kernel", value: `${kernel} (no gVisor marker in dmesg)`, means: "a Linux kernel: computerd's fences behave as they do on Docker" },
-	);
+	const gvisor = values.get("gvisor") ?? "unread";
+	const isolationCases = "the isolation cases show how its fences hold";
+	if (gvisor !== "unread" && gvisor !== "") {
+		facts.push({ id: "kernel", value: `gVisor (${kernel} as it reports; dmesg: ${gvisor.slice(0, 80)})`, means: "gVisor: root has no CAP_SYS_ADMIN and the network stack is gVisor's own, so run the isolation cases here; a Docker stand-in does not show how it behaves" });
+	} else {
+		const marker = gvisor === "" ? "no gVisor marker in dmesg" : "dmesg could not be read, so gVisor is not ruled out";
+		facts.push({ id: "kernel", value: `${kernel} (${marker})`, means: `the kernel as it reports itself: ${isolationCases}` });
+	}
 	const listeners = tcpListeners(tcp);
 	const shownListeners = listeners.length > MAX_LISTENERS_SHOWN ? `${listeners.slice(0, MAX_LISTENERS_SHOWN).join(", ")} and ${listeners.length - MAX_LISTENERS_SHOWN} more` : listeners.join(", ");
-	facts.push(
-		listeners.length > 0
-			? { id: "listeners", value: shownListeners, means: "TCP listeners before AgentRun runs anything: the vendor's agent and services. Put the agent's ports in facts.vendorAgentPorts, so isolation.vendor-agent checks the computer's programs reach none of them" }
-			: { id: "listeners", value: "none", means: "no TCP listener before AgentRun runs anything: facts.vendorAgentPorts may be []" },
-	);
+	const unread = tables.unreadable.length > 0 ? ` (${tables.unreadable.join(" and ")} could not be read)` : "";
+	if (tables.read.length === 0) {
+		facts.push({ id: "listeners", value: `not read${unread}`, means: "the listeners are unknown: find the vendor agent's ports some other way before you set facts.vendorAgentPorts" });
+	} else if (listeners.length > 0) {
+		facts.push({ id: "listeners", value: `${shownListeners}${unread}`, means: "TCP listeners before AgentRun runs anything: the vendor's agent and services. Put the agent's ports in facts.vendorAgentPorts, so isolation.vendor-agent checks the computer's programs reach none of them" });
+	} else {
+		facts.push({ id: "listeners", value: `none${unread}`, means: unread === "" ? "no TCP listener before AgentRun runs anything: facts.vendorAgentPorts may be []" : `no TCP listener in ${tables.read.join(" or ")}: check the table that could not be read before you set facts.vendorAgentPorts to []` });
+	}
 	return facts;
 }
 
@@ -677,7 +690,9 @@ export function readFacts(output: string): ExecStreamFact[] {
 async function probe(session: Session): Promise<ExecStreamFact[]> {
 	const run = await session.start(["sh", "-c", CAPABILITY_SCRIPT], false);
 	if (!(await run.out.end(session.stepMs, session.signal))) throw new Problem(`its stdout did not end within ${secondsOf(session.stepMs)}`);
-	await session.exit(run, session.stepMs, "the probe");
+	// The script ends in `true`: any other exit is a shell that broke partway, whose output is not read as facts.
+	const code = await session.exit(run, session.stepMs, "the probe");
+	if (code !== 0) throw new Problem(`the probe's sh exited ${code} (stderr: ${run.err.bytes().toString("utf8").trim().slice(0, 200) || "none"})`);
 	return readFacts(run.out.bytes().toString("utf8"));
 }
 

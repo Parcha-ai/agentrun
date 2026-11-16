@@ -93,6 +93,7 @@ test("large holds one deadline across its writes: slow writes fail it once large
 	assert.equal(byId.large.status, "fail");
 	assert.match(byId.large.words, /^writing 1048576 random bytes ran past 1 s, with \d+ bytes written/);
 	assert.equal(byId["stdin-bytes"].status, "pass");
+	assert.match(byId["stdout-unread"].words, /^the 64 writes to cat ran past 3 s after stdout was read, with \d+ bytes written: your exec's writes are too slow$/, "one deadline there too");
 	assert.ok(Date.now() - started < 30_000);
 });
 
@@ -195,6 +196,12 @@ test("an exec whose stdin waits on stdout being read, and never goes on once it 
 	assert.equal(byId["stdin-live"].status, "pass", "a reader that keeps up never stalls it");
 });
 
+test("an exec whose stdin waits while stdout is unread, and goes on once it is read, passes stdout-unread with every write", async () => {
+	const { byId } = await run({ stdinWaitsForReader: true });
+	assert.equal(byId["stdout-unread"].status, "pass", byId["stdout-unread"].words);
+	assert.equal(byId["stdout-unread"].words, "4194304 bytes written to cat while its stdout was left unread for 1 s all came back, in order, once it was read");
+});
+
 /** A directory holding stand-ins for the probe's programs, each a sh script, put first on PATH for every exec. */
 function shadowed(host, programs) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-exec-probe-"));
@@ -267,14 +274,33 @@ test("readFacts and tcpListeners: listeners from the kernel's tables, v4 and v6,
 		"1: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 5 1",
 	];
 	assert.deepEqual(tcpListeners(tables), ["127.0.0.1:50051", "0.0.0.0:22", "[::1]:631", "[::]:22"]);
-	const facts = Object.fromEntries(readFacts(["uid\t0", "arch\taarch64", "kernel\tLinux 6.1.0", "gvisor\t", "netns\tnone", "fuse\tabsent", ...tables.map((l) => `tcp\t${l}`)].join("\n")).map((f) => [f.id, f]));
+	const read = ["table\t/proc/net/tcp", "table\t/proc/net/tcp6", ...tables.map((l) => `tcp\t${l}`)];
+	const facts = Object.fromEntries(readFacts(["uid\t0", "arch\taarch64", "kernel\tLinux 6.1.0", "gvisor\t", "netns\tnone", "fuse\tabsent", ...read].join("\n")).map((f) => [f.id, f]));
 	assert.equal(facts.root.value, "uid 0");
 	assert.equal(facts.arch.means, 'facts.arch "arm64"');
 	assert.match(facts.netns.means, /^not read: the machine has no unshare/);
 	assert.equal(facts.fuse.means, "no Archil mount (mount:archil) on this vendor: the Archil client needs /dev/fuse");
-	assert.equal(facts.kernel.value, "Linux 6.1.0 (no gVisor marker in dmesg)");
+	assert.deepEqual([facts.kernel.value, facts.kernel.means], ["Linux 6.1.0 (no gVisor marker in dmesg)", "the kernel as it reports itself: the isolation cases show how its fences hold"]);
 	assert.equal(facts.listeners.value, "127.0.0.1:50051, 0.0.0.0:22, [::1]:631, [::]:22");
-	assert.equal(Object.fromEntries(readFacts("uid\t0").map((f) => [f.id, f])).listeners.means, "no TCP listener before AgentRun runs anything: facts.vendorAgentPorts may be []");
+});
+
+test("readFacts never reads a table it could not open as no listeners, nor a dmesg it could not read as no gVisor", () => {
+	const of = (lines) => Object.fromEntries(readFacts(["uid\t0", ...lines].join("\n")).map((f) => [f.id, f]));
+	const both = of(["table\t/proc/net/tcp", "table\t/proc/net/tcp6", "gvisor\t"]);
+	assert.deepEqual([both.listeners.value, both.listeners.means], ["none", "no TCP listener before AgentRun runs anything: facts.vendorAgentPorts may be []"]);
+	const one = of(["table\t/proc/net/tcp", "unreadable\t/proc/net/tcp6"]);
+	assert.deepEqual([one.listeners.value, one.listeners.means], ["none (/proc/net/tcp6 could not be read)", "no TCP listener in /proc/net/tcp: check the table that could not be read before you set facts.vendorAgentPorts to []"]);
+	const neither = of(["unreadable\t/proc/net/tcp", "unreadable\t/proc/net/tcp6", "gvisor\tunread"]);
+	assert.equal(neither.listeners.value, "not read (/proc/net/tcp and /proc/net/tcp6 could not be read)");
+	assert.match(neither.listeners.means, /^the listeners are unknown/);
+	assert.match(neither.kernel.value, /\(dmesg could not be read, so gVisor is not ruled out\)$/);
+	assert.doesNotMatch(neither.kernel.means, /Docker/);
+});
+
+test("a probe whose sh exits other than 0 is a facts problem, never facts read from what it printed", async () => {
+	const { report } = await run({ exitCode: 3 });
+	assert.deepEqual(report.facts, []);
+	assert.equal(report.factsProblem, "the probe's sh exited 3 (stderr: none)");
 });
 
 test("bytesProblem names the usual manglings: Latin-1 read as UTF-8, \\n to \\r\\n, a short read, bytes added", () => {
