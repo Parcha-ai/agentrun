@@ -129,7 +129,9 @@ declares `backstop: true` claims it does, and its `get` reads the timer back as 
 only that claim lets a janitor's host keep its labels in the machine. A vendor that ends
 or pauses a quiet machine is declared with `HostFacts.idleMs`, its window, and a `keepalive(id, ctx)`, its cheapest call
 that restarts the timer: the adapter calls it every `idleMs / 3` from create or attach until release, and once at attach, and refuses a host
-with `idleMs` and no `keepalive`.
+with `idleMs` and no `keepalive`. A host's `get` answers `undefined` for a machine the vendor no longer has, and for
+a record the vendor keeps of one that is deleted and won't come back, which its `list` leaves out; `gone` is a machine
+still being destroyed, and release waits on it after the delete.
 
 ## The descriptor
 

@@ -25,21 +25,42 @@ export const GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/";
 export type McpSource = "composio" | "github" | "url";
 export const SOURCE_LABEL: Record<McpSource, string> = { composio: "Composio", github: "GitHub", url: "URL" };
 const TOOLKIT = /^[a-z][a-z0-9-]{0,31}$/;
+
+/** A URL preset of the add form: a remote MCP server the free templates use, filled in one click. `name` is both the
+ *  server's name (the first free one) and its toolkit, the name a template gives its tools; `note`, one line about it;
+ *  `readOnly`, an address that offers only its read tools. Preview and Save are the form's own: the server checks a
+ *  preset's address as it checks any. */
+export type McpPreset = { id: string; label: string; name: string; url: string; auth: "none" | "bearer" | "oauth"; note: string; readOnly?: string };
+/** The one list of URL presets, in the add form's order. */
+export const MCP_URL_PRESETS = [
+  { id: "parallel", label: "Parallel Search", name: "parallel", url: "https://search.parallel.ai/mcp", auth: "none", note: "Web search, free for light use: no key, no account." },
+  { id: "firecrawl", label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: "Search, scrape and parse, free without a key and rate limited: add your Firecrawl key later as a bearer token for more." },
+  { id: "github-token", label: "GitHub (token)", name: "github", url: GITHUB_MCP_URL, readOnly: `${GITHUB_MCP_URL}readonly`, auth: "bearer", note: "A fine-grained personal access token for the repositories it may use, with Contents, Issues and Pull requests (read-only, or read and write)." },
+  { id: "linear", label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: "Sign in with your Linear account: this server keeps the tokens." },
+  { id: "notion", label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: "Sign in with your Notion workspace: this server keeps the tokens." },
+] as const satisfies readonly McpPreset[];
+export type McpPresetId = (typeof MCP_URL_PRESETS)[number]["id"];
+/** The URL preset of `id`, or undefined for any other. */
+export const urlPresetOf = (id: string | undefined): McpPreset | undefined => MCP_URL_PRESETS.find((p) => p.id === id);
+
 /** What `#/settings/mcp?add=` opens, for a server a template needs: the add form with its name (for GitHub's own, its
- *  address and credential; for a url server, its toolkit) filled, or, with `preset=composio`, the Composio form with its
- *  toolkit and the actions to tick. */
-export type McpAdd = { name: string; auth?: "github_app"; preset?: "composio"; toolkit?: string; tools?: string[] };
-/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`. Undefined when the query
- *  asks for none. */
+ *  address and credential; for a url server, its toolkit; for a URL preset, its address, credential and note) filled,
+ *  or, with `preset=composio`, the Composio form with its toolkit and the actions to tick. */
+export type McpAdd = { name: string; auth?: "github_app"; preset?: "composio" | McpPresetId; toolkit?: string; tools?: string[] };
+/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=<URL preset id> | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`.
+ *  Undefined when the query asks for none; a preset id that is none of them opens the plain form. */
 export function addOf(query: string | undefined): McpAdd | undefined {
   const q = new URLSearchParams(query ?? "");
   const name = q.get("add");
   if (!name || !TOOLKIT.test(name)) return undefined;
   const toolkit = q.get("toolkit") ?? "";
-  if (q.get("preset") === "composio" && TOOLKIT.test(toolkit)) {
+  const preset = q.get("preset") ?? undefined;
+  if (preset === "composio" && TOOLKIT.test(toolkit)) {
     const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
     return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}) };
   }
+  const url = urlPresetOf(preset);
+  if (url) return { name, preset: url.id as McpPresetId };
   return { name, ...(q.get("auth") === "github_app" ? { auth: "github_app" as const } : {}) };
 }
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
