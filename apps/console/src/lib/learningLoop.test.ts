@@ -38,13 +38,13 @@ describe("markers on the run axis", () => {
     expect(markersOf([], [record({})])).toEqual([]);
   });
   it("names a kind from its record", () => {
-    expect([kindOf(record({ decided: "replaying" })), kindOf(record({ source: "refit" })), kindOf(record({ decided: "hold" })), kindOf(record({ decided: "superseded", superseded_by: "b".repeat(16) }))]).toEqual(["revision", "refit", "hold", "superseded"]);
+    expect([kindOf(record({ decided: "replaying" })), kindOf(record({ source: "refit" })), kindOf(record({ decided: "hold" })), kindOf(record({ decided: "queued" })), kindOf(record({ decided: "skipped", skipped_by: "b".repeat(16) }))]).toEqual(["revision", "refit", "hold", "queued", "skipped"]);
   });
 });
 
 describe("a revision's standing and numbers", () => {
-  it("says serving, held, replaying, superseded or not decided", () => {
-    expect([standingOf(record({}), { serving: "a".repeat(16) }).word, standingOf(record({})).word, standingOf(record({ decided: "hold" })).word, standingOf(record({ decided: "replaying" })).word, standingOf(record({ decided: "superseded" })).word, standingOf(undefined).word]).toEqual(["Serving", "Served", "Held", "Replaying", "Superseded", "Not decided"]);
+  it("says serving, held, replaying, queued, skipped or not decided", () => {
+    expect([standingOf(record({}), { serving: "a".repeat(16) }).word, standingOf(record({})).word, standingOf(record({ decided: "hold" })).word, standingOf(record({ decided: "replaying" })).word, standingOf(record({ decided: "queued" })).word, standingOf(record({ decided: "skipped" })).word, standingOf(undefined).word]).toEqual(["Serving", "Served", "Held", "Replaying", "Queued", "Skipped", "Not decided"]);
   });
   // Review on #2654: the money rule (serve learning-cost.ts) stops a serving revision from running first without a
   // promotion record; the cost read says so (`needs_revision`), and the standing follows it.

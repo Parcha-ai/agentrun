@@ -2150,7 +2150,7 @@ class _ListLearningPromotionsResponsePromotionsItemRequired(TypedDict):
     workflow: str
     digest: str
     at: str
-    decided: Literal["promote", "hold", "replaying", "superseded"]
+    decided: Literal["promote", "hold", "replaying", "queued", "skipped"]
     source: Literal["replay", "dry_run", "refit", "graded"]
     reason: str
 
@@ -2165,7 +2165,7 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     since: int
     held_on: list[str]
     commit: str
-    superseded_by: str
+    skipped_by: str
 
 
 class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
@@ -3620,7 +3620,7 @@ class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
 
 
 class GetLearnedWorkflowReplayResponse(_GetLearnedWorkflowReplayResponseRequired, total=False):
-    decided: Literal["promote", "hold", "superseded"]
+    decided: Literal["promote", "hold"]
     reason: str
 
 
