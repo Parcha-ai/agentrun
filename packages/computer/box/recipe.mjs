@@ -11,7 +11,7 @@
 //
 // And a vendor's Dockerfile (vendorDockerfile): the box image on the vendor's own base, with its agent where the vendor
 // needs one in the image, which prepareImage has built under that file's recipe hash. A vendor that builds from a
-// Dockerfile on our base (Hyperbrowser, Vercel) builds this folder's Dockerfile as it is.
+// Dockerfile on our base, or from the account's registry, builds this folder's Dockerfile as it is.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
