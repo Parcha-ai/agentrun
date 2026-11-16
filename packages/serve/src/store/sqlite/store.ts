@@ -29,7 +29,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
   if (!/^(0|[1-9][0-9]{0,15})$/.test(cursor)) throw new TypeError(`${JSON.stringify(cursor)} is not a run-change cursor this store gave`);
   return Number(cursor);
 };
-import { type Dialect, settledBody } from "../dialect.js";
+import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, writeLaunch } from "./run-launch.js";
@@ -343,10 +343,13 @@ const SECOND_ANSWERS_REFUSED = `UPDATE commands SET taken_at = COALESCE(taken_at
 /** How many released claims a store remembers, to refuse their journals. */
 const RELEASED_KEPT = 1024;
 
-/** The most claims one statement of renewMany renews: well inside both databases' bound parameters (five a claim). */
-const RENEW_CHUNK = 1_000;
-/** A claim as renewMany matches it to the rows its update returned: its run, epoch and runner. */
-const renewKey = (runId: string, epoch: number, runner: string): string => `${runId}\u0000${epoch}\u0000${runner}`;
+/** The most claims one statement of renewMany renews. Its WHERE joins each claim's fence with OR, and each OR is one more
+ *  level of the expression tree, whose depth SQLite bounds at 1,000 (SQLITE_MAX_EXPR_DEPTH: 997 claims already fail). 250
+ *  stays a quarter of that, and a runner's 300 claims are still two statements on a database a few ms away. */
+const RENEW_CHUNK = 250;
+/** A claim as renewMany matches it to the rows its update returned: its run, epoch and runner, each string as the store
+ *  writes text (cleanText: a NUL as U+FFFD), so a claim and the row the database wrote for it make one key. */
+const renewKey = (runId: string, epoch: number, runner: string): string => `${cleanText(runId)}\u0000${epoch}\u0000${cleanText(runner)}`;
 
 /** The key of a claim's one journal: its run and epoch. */
 const journalKey = (claim: Pick<Claim, "runId" | "epoch">): string => `${claim.runId}\u0000${claim.epoch}`;
