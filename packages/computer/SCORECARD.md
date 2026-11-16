@@ -23,8 +23,8 @@ documented calls, not from written code. The size column is an estimate, and siz
 
 ## The table
 
-Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 6 fit if unverified facts hold,
-13 need a workaround, 11 are blocked.
+Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 0 clean, 5 fit if unverified facts hold,
+14 need a workaround, 11 are blocked.
 
 | Vendor | Rents | Fit | Size (estimate) | Shared pieces it would use |
 | --- | --- | --- | --- | --- |
@@ -36,7 +36,7 @@ Of 30 rows (26 vendors; Google, Fly.io, Beam and boxes.dev have two rows each): 
 | [Beam VM](https://docs.beam.cloud/v2/vm/overview) | persistent microVMs | needs a workaround (`extend` rewrites the whole metadata map, or is left out) | 300-350 | [ssh-exec][se], [prepareImage][pi] |
 | [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview.md) | microVMs with standby | needs a workaround (the box image needs Blaxel's sandbox-api added by hand; a size rule held by hand) | 250-280 | [framedExec][fe], [packed labels][pl], [prepareImage][pi] |
 | [boxes.dev](https://boxes.dev/help) as a provider | devboxes, Firecracker VMs on E2B | blocked (no public create, exec or delete API; the CLI is tied to a signed-in user; exec is one-shot; a box sleeps after 5 minutes idle and stays awake 4 hours at most; the VMs are E2B's, which AgentRun already drives) | none | none |
-| [boxes.dev](https://boxes.dev/help) as a bring-your-own machine | the user's own devbox, with computerd dialing in | fits if (unverified: an open outbound connection keeps the box awake; needs Linux pairing, planned) | no provider file | [attach binding](../../spec/computer/attach.md) |
+| [boxes.dev](https://boxes.dev/help) as a bring-your-own machine | the user's own devbox, with computerd dialing in | needs a workaround (Linux pairing, which is planned and not built; unverified: an open outbound connection keeps the box awake) | no provider file | [attach binding](../../spec/computer/attach.md) |
 | [Cloudflare Sandbox](https://developers.cloudflare.com/sandbox/) | containers in Firecracker microVMs, driven from a Worker | needs a workaround (on the dial path, a relay Worker of ours in the user's account carries create, get, list and delete, and no exec; an alarm keeps the container alive, since an open outbound socket is not activity; the image is fixed at deploy) | 250-330, plus a relay Worker | none |
 | [Cube Sandbox](https://github.com/TencentCloud/CubeSandbox) | self-hosted KVM microVMs behind an E2B-compatible API | needs a workaround (a copy of E2B's host, which takes no API URL; one arch per deployment) | about 320 | [prepareImage][pi] |
 | [DigitalOcean MicroVMs](https://docs.digitalocean.com/products/microvms) | a microVM running one OCI image | blocked (the idle pause can't be switched off; exec would also need a shim of ours over the pty console) | about 300 if the pause could be switched off | [packed labels][pl], [prepareImage][pi] |
@@ -178,7 +178,7 @@ provider spec.
   there is no stdio bridge. A box sleeps after about 5 minutes idle, "Keep awake" runs 1 to 4 hours, and "nothing runs
   while it sleeps" ([sleep, wake, recover](https://boxes.dev/help/sleep-wake-recover)). The machines are E2B's, which
   AgentRun already drives, so a provider adds no compute.
-- **As a bring-your-own machine, fits if Linux pairing lands.** The user runs one command in their box and computerd
+- **As a bring-your-own machine, needs Linux pairing, which is planned.** The user runs one command in their box and computerd
   dials in ([attach binding](../../spec/computer/attach.md#pairing-bring-your-own-machine)), inside boxes.dev's sleep
   and 4 hour limits. Linux pairing is planned, not built.
 - **Unverified:** whether an open outbound connection from inside the box keeps it awake. The help pages list what does:
