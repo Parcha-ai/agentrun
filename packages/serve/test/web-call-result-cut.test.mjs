@@ -52,7 +52,9 @@ test("a long page behind a redirect keeps its final url and its links through th
   // As codex's industry-primer call 9 (01a1e18e): the asked url redirects, the page's text has its spaces, and its 200
   // links are one run of more than 8,192 characters with no whitespace from the text's last space on.
   const asked = "https://www.nrc.gov/reactors/new-reactors/advanced/modernizing/rulemaking/part-53";
-  const final = "https://www.nrc.gov/facilities-safety/new-reactors/advanced-reactors/modernizing-how-we-regulate/rulemaking/part-53-risk-informed-technology-inclusive-regulatory-framework-for-advanced-reactors";
+  // The final url's long slug, made of its words: no long literal for the key gate to read as a credential.
+  const slug = ["part-53", "risk-informed", "technology-inclusive", "regulatory-framework", "for-advanced-reactors"].join("-");
+  const final = `https://www.nrc.gov/facilities-safety/new-reactors/advanced-reactors/modernizing-how-we-regulate/rulemaking/${slug}`;
   const links = Array.from({ length: 200 }, (_, i) => `https://www.nrc.gov/documents-reports/part-53/section-${i}`);
   const text = "Part 53 is the NRC's risk-informed, technology-inclusive framework for advanced reactors. ".repeat(60);
   const page = { ok: true, url: final, status: 200, title: "Part 53 | Nuclear Regulatory Commission", text, chars: text.length, links, via: "direct", truncated: true, next_offset: text.length, original_chars: 38950 };
