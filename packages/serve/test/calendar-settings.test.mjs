@@ -230,6 +230,41 @@ test("a calendar whose own name (X-WR-CALNAME) quotes its address: PUT, GET and 
   for (const answer of [put, got, tested]) assert.ok(!JSON.stringify(answer.body).includes(token) && !holds(JSON.stringify(answer.body), faux.address), JSON.stringify(answer.body));
 });
 
+test("a calendar whose address redirects to another secret address, its name quoting that one: PUT, GET and the test (a fresh read and a revalidated one) never show it or its token; nor a failed read's words there", { timeout: 120_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const { api } = await serve(t, { runner: false });
+  const { forgetCalendarsForTests, staleCalendarsForTests } = await import("../dist/calendar/fetch.js");
+  forgetCalendarsForTests();
+  t.after(() => forgetCalendarsForTests());
+  const faux = await calendarFaux(t);
+  const second = `/calendar/ical/agent%40faux.example/private-${randomBytes(16).toString("hex")}/basic.ics`;
+  const there = faux.at(second);
+  faux.serve(FAUX_CALENDAR.replace("X-WR-CALNAME:Work", `X-WR-CALNAME:Work ${there}`), second);
+  faux.move(new URL(faux.address).pathname, second);
+  const put = await api("PUT", "/settings/calendar", { url: faux.address });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.equal(put.body.name, "Work [the calendar's address]", "the name, the address it was redirected to cut out");
+  const got = await api("GET", "/settings/calendar");
+  const tested = await api("POST", "/settings/calendar/test", {});
+  assert.match(tested.body.message, /^Work \[the calendar's address\]: 6 events, /);
+  staleCalendarsForTests();
+  const revalidated = await api("POST", "/settings/calendar/test", {});
+  assert.match(revalidated.body.message, /^Work \[the calendar's address\]: 6 events, /);
+  assert.equal(faux.requests().at(-1)?.status, 304, "the revalidated read is a 304");
+  for (const answer of [put, got, tested, revalidated]) {
+    const text = JSON.stringify(answer.body);
+    assert.ok(!text.includes(tokenOf(there)) && !holds(text, there) && !text.includes(tokenOf(faux.address)), text);
+  }
+
+  // A read whose redirect lands on a file the parser refuses, its broken line that address's path: the test's words cut it.
+  const broken = `/calendar/ical/agent%40faux.example/private-${randomBytes(16).toString("hex")}/basic.ics`;
+  faux.serve(icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", broken, "END:VCALENDAR"]), broken);
+  faux.move("/start.ics", broken);
+  const failed = await api("POST", "/settings/calendar/test", { url: faux.at("/start.ics") });
+  assert.equal(failed.body.ok, false, JSON.stringify(failed.body));
+  assert.ok(!failed.body.message.includes(tokenOf(faux.at(broken))) && !holds(failed.body.message, faux.at(broken)), failed.body.message);
+});
+
 /** A calendar of `n` series in UTC, each `rule` from `start`, and one event an hour from now. */
 function repeating(n, rule, start) {
   const soon = new Date(Date.now() + 3_600_000).toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");

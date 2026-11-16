@@ -170,3 +170,27 @@ test("a description, and the calendar's own name, that quote the address at a le
     assert.ok(!text.includes(token), `${what} holds the token`);
   }
 });
+
+test("a calendar whose address redirects to another secret address, quoted in its name, an event's location and a description cut inside its last path segment: the tool's answer, the run, its rows and the log never hold it or its token", { timeout: 150_000 }, async (t) => {
+  withEnv(t, SEAL);
+  const lines = [];
+  const { api } = await serve(t, { faux: FAUX_EMAIL, log: (line) => lines.push(line) });
+  assert.equal((await api("POST", "/agents", agent("hops", { harness: "pi", tools: ["calendar_events"] }))).status, 201);
+  const faux = await calendarFaux(t);
+  const second = `/calendar/ical/agent%40faux.example/private-${randomBytes(16).toString("hex")}/basic.ics`;
+  const there = faux.at(second);
+  const token = second.split("/").find((segment) => segment.startsWith("private-"));
+  const description = `${"x".repeat(499 - (there.length - 4))}${there}`;
+  faux.serve(FAUX_CALENDAR.replace("X-WR-CALNAME:Work", `X-WR-CALNAME:Work ${there}`).replace("LOCATION:Room 4\\, second floor", `LOCATION:${there}`).replace("SUMMARY:Lunch", `SUMMARY:Lunch\r\nDESCRIPTION:${description}`), second);
+  faux.move(new URL(faux.address).pathname, second);
+  assert.equal((await api("PUT", "/settings/calendar", { url: faux.address })).status, 200);
+  const run = await ran(api, "hops", [["calendar_events", { from: "2026-11-02", to: "2026-11-30" }]]);
+  const [answer] = run.saw;
+  assert.equal(answer.events.length, 8, JSON.stringify(answer));
+  assert.equal(answer.calendar, "Work [the calendar's address]", "the name, the address it was redirected to cut out");
+  assert.equal(answer.events.find((e) => e.title === "Standup")?.location, "[the calendar's address]");
+  assert.match(answer.events.find((e) => e.title === "Lunch")?.description ?? "", /^x+\[the calendar's address\]$/);
+  for (const [what, text] of [["the answer", JSON.stringify(answer)], ["the run view", JSON.stringify(run.view)], ["the rows", JSON.stringify(run.rows)], ["the run's events", JSON.stringify((await api("GET", `/runs/${run.runId}/events`)).body)], ["the log", lines.join("\n")]]) {
+    assert.ok(!text.includes(token) && !holds(text, there), `${what} holds the address it was redirected to`);
+  }
+});

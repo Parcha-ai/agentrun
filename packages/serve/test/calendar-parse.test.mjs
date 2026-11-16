@@ -70,6 +70,37 @@ test("wall-clock time holds across a DST change: the standup at 09:30 New York b
   ]);
 });
 
+test("a local time a spring-forward skips takes the offset from before the change (RFC 5545), east of UTC or west, by name or by the file's own VTIMEZONE: 02:30 reads 03:30; a time a fall-back repeats is its first occurrence", () => {
+  const timed = (uid, tzid, start, end, title, more = []) => ["BEGIN:VEVENT", `UID:${uid}@test`, "DTSTAMP:20261001T000000Z", `DTSTART;TZID=${tzid}:${start}`, `DTEND;TZID=${tzid}:${end}`, ...more, `SUMMARY:${title}`, "END:VEVENT"];
+  const own = (tzid, std, dst, spring, fall) => ["BEGIN:VTIMEZONE", `TZID:${tzid}`, "BEGIN:DAYLIGHT", `TZOFFSETFROM:${std}`, `TZOFFSETTO:${dst}`, `DTSTART:${spring[0]}`, `RRULE:${spring[1]}`, "END:DAYLIGHT", "BEGIN:STANDARD", `TZOFFSETFROM:${dst}`, `TZOFFSETTO:${std}`, `DTSTART:${fall[0]}`, `RRULE:${fall[1]}`, "END:STANDARD", "END:VTIMEZONE"];
+  const calendar = parseCalendar(icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//AgentRun//test//EN", "X-WR-TIMEZONE:America/New_York",
+    ...own("Office East", "+0100", "+0200", ["19700329T020000", "FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU"], ["19701025T030000", "FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU"]),
+    ...own("Office West", "-0500", "-0400", ["19700308T020000", "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU"], ["19701101T020000", "FREQ=YEARLY;BYMONTH=11;BYDAY=1SU"]),
+    ...timed("madrid-gap", "Europe/Madrid", "20260329T023000", "20260329T040000", "Madrid gap"),
+    ...timed("madrid-daily", "Europe/Madrid", "20260328T023000", "20260328T030000", "Madrid daily", ["RRULE:FREQ=DAILY;COUNT=3"]),
+    ...timed("ny-gap", "America/New_York", "20260308T023000", "20260308T040000", "New York gap"),
+    ...timed("east-gap", "Office East", "20260329T023000", "20260329T040000", "East gap"),
+    ...timed("west-gap", "Office West", "20260308T023000", "20260308T040000", "West gap"),
+    ...timed("madrid-twice", "Europe/Madrid", "20261025T023000", "20261025T033000", "Madrid twice"),
+    ...timed("ny-twice", "America/New_York", "20261101T013000", "20261101T023000", "New York twice"),
+    ...timed("east-twice", "Office East", "20261025T023000", "20261025T033000", "East twice"),
+    ...timed("west-twice", "Office West", "20261101T013000", "20261101T023000", "West twice"),
+    "END:VCALENDAR"]), "test");
+  const at = (from, to, title) => read(calendar, from, to).events.filter((e) => e.title === title).map((e) => [e.start, e.end]);
+  // Madrid jumps 02:00 → 03:00 (+01:00 → +02:00) on Mar 29: 02:30 is 01:30Z, 03:30 the new time.
+  assert.deepEqual(at("2026-03-27", "2026-03-31", "Madrid gap"), [["2026-03-29T03:30:00+02:00", "2026-03-29T04:00:00+02:00"]], "Madrid 02:30 on the spring-forward day");
+  assert.deepEqual(at("2026-03-27", "2026-03-31", "Madrid daily"), [["2026-03-28T02:30:00+01:00", "2026-03-28T03:00:00+01:00"], ["2026-03-29T03:30:00+02:00", "2026-03-29T04:00:00+02:00"], ["2026-03-30T02:30:00+02:00", "2026-03-30T03:00:00+02:00"]], "a daily series at 02:30 in Madrid");
+  // New York jumps 02:00 → 03:00 (-05:00 → -04:00) on Mar 8: 02:30 is 07:30Z.
+  assert.deepEqual(at("2026-03-07", "2026-03-09", "New York gap"), [["2026-03-08T03:30:00-04:00", "2026-03-08T04:00:00-04:00"]], "New York 02:30 on the spring-forward day");
+  assert.deepEqual(at("2026-03-27", "2026-03-31", "East gap"), [["2026-03-29T03:30:00+02:00", "2026-03-29T04:00:00+02:00"]], "a VTIMEZONE east of UTC");
+  assert.deepEqual(at("2026-03-07", "2026-03-09", "West gap"), [["2026-03-08T03:30:00-04:00", "2026-03-08T04:00:00-04:00"]], "a VTIMEZONE west of UTC");
+  // Madrid's 02:00-03:00 on Oct 25 is read twice (+02:00, then +01:00), New York's 01:00-02:00 on Nov 1 (-04:00, then -05:00).
+  assert.deepEqual(at("2026-10-24", "2026-10-26", "Madrid twice"), [["2026-10-25T02:30:00+02:00", "2026-10-25T03:30:00+01:00"]], "Madrid 02:30 on the fall-back day: the first");
+  assert.deepEqual(at("2026-10-31", "2026-11-02", "New York twice"), [["2026-11-01T01:30:00-04:00", "2026-11-01T02:30:00-05:00"]], "New York 01:30 on the fall-back day: the first");
+  assert.deepEqual(at("2026-10-24", "2026-10-26", "East twice"), [["2026-10-25T02:30:00+02:00", "2026-10-25T03:30:00+01:00"]], "a VTIMEZONE east of UTC, the first");
+  assert.deepEqual(at("2026-10-31", "2026-11-02", "West twice"), [["2026-11-01T01:30:00-04:00", "2026-11-01T02:30:00-05:00"]], "a VTIMEZONE west of UTC, the first");
+});
+
 test("a moved instance is gone from its old day and found on its new one, whichever window holds it", () => {
   assert.deepEqual(read(parsed(), "2026-11-16", "2026-11-16").events.map(brief), [], "Nov 16: its standup moved away");
   assert.deepEqual(read(parsed(), "2026-11-17", "2026-11-17").events.map((e) => e.title), ["Standup (moved)"]);
