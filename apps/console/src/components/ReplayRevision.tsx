@@ -14,7 +14,7 @@ export const POLL_MS = 3000;
 
 /** Whether a revision's standing offers Replay: one the server would take (not serving, served before, refit, or
  *  replaying already, which it refuses: 409). */
-export const replayable = (standing: Pick<Standing, "word">): boolean => standing.word === "Held" || standing.word === "Not decided" || standing.word === "Superseded";
+export const replayable = (standing: Pick<Standing, "word">): boolean => standing.word === "Held" || standing.word === "Not decided" || standing.word === "Skipped";
 
 type State =
   | { at: "idle" }
@@ -38,7 +38,7 @@ export function progressLine(read: ReplayRead | null): string {
 /** The decision of a replay in one sentence, the read's own words after its verdict, and its score. */
 export function decisionLine(read: ReplayRead): { text: string; score: string | null } {
   const reason = read.reason ? ` ${read.reason.charAt(0).toUpperCase()}${read.reason.slice(1)}` : "";
-  const text = read.status === "failed" ? `The replay did not finish.${reason}` : read.decided === "promote" ? `Promoted: it serves first now.${reason}` : read.decided === "hold" ? `Still held.${reason}` : read.decided === "superseded" ? `Superseded.${reason}` : `Decided.${reason}`;
+  const text = read.status === "failed" ? `The replay did not finish.${reason}` : read.decided === "promote" ? `Promoted: it serves first now.${reason}` : read.decided === "hold" ? `Still held.${reason}` : `Decided.${reason}`;
   const s = read.score;
   return { text, score: s.n > 0 ? `Workflow ${pct(s.wf_acc)} vs agent ${pct(s.agent_acc)} on ${inputs(s.n)} (${pts(s.delta)}), ${s.handed_back} handed back` : null };
 }

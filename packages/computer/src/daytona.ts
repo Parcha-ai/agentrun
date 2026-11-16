@@ -243,7 +243,8 @@ class DaytonaHost implements MachineHost {
 	 * POST /sandbox: its native name and labels, the lifetime as a TTL in whole minutes, the idle stop and auto-delete,
 	 * no public port, and network none (block-all), the one network check() takes. A GPU
 	 * computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
-	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists.
+	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists,
+	 * and the adapter adopts the sandbox the name lists, as a retry does.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const gpu = req.gpu !== undefined;
@@ -266,8 +267,7 @@ class DaytonaHost implements MachineHost {
 			// names a snapshot and sends any (400 "Cannot specify Sandbox resources when using a snapshot"). A GPU computer's
 			// GPU is the snapshot's, held by the adapter's GPU label.
 		};
-		const posted = await this.#rest.json("POST", sandboxUrl(this.#rest), { json: body, timeoutMs: ctx.timeoutMs });
-		if (!posted.ok && /: 409 /.test(posted.error.message)) throw new HostError("exists", `Daytona already has a sandbox named ${req.name}: ${posted.error.message}`);
+		const posted = await this.#rest.json("POST", sandboxUrl(this.#rest), { json: body, timeoutMs: ctx.timeoutMs, named: true });
 		const id = (orThrow(posted) as Sandbox | null)?.id;
 		if (typeof id !== "string" || id === "") throw new Error("POST /sandbox: no sandbox id in the answer");
 		return { id };

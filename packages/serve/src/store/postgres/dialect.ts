@@ -45,6 +45,10 @@ export function postgresDialect(schema: string, { testClock = false }: { testClo
     lockRow: async (tx: LockExecutor, table: string, column: string, value: string, mode?: "update") => {
       await tx.run(`SELECT 1 FROM ${table} WHERE ${column} = ? FOR ${mode === "update" ? "UPDATE" : "NO KEY UPDATE"}`, value);
     },
+    lockRows: async (tx: LockExecutor, table: string, column: string, values: readonly string[]) => {
+      if (values.length === 0) return;
+      await tx.run(`SELECT 1 FROM ${table} WHERE ${column} IN (${values.map(() => "?").join(", ")}) ORDER BY ${column} FOR NO KEY UPDATE`, ...values);
+    },
     lockKey: async (tx: LockExecutor, key: string) => {
       await tx.run("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))", schema, key);
     },

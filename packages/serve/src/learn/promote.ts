@@ -84,8 +84,10 @@ export const answersAlone = (score: Pick<ReplayScore, "n" | "handed_back">): boo
 
 /** A learned workflow's promotion record at one digest. `decided`: `promote` (it serves first), `hold` (it does not: the
  *  champion, championOf, takes its runs, else the agent, until a new revision), `replaying` (its replay runs, `runs`,
- *  are at work; the champion serves meanwhile, else the agent), or `superseded` (a newer revision, `superseded_by`, came
- *  while it replayed: one challenger at a time, so its replay runs were cancelled and it never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
+ *  are at work; the champion serves meanwhile, else the agent), `queued` (it came while another revision replayed: one
+ *  replays at a time, and a running replay finishes; it replays next once that one is decided, unless a newer revision
+ *  comes first), or `skipped` (a newer revision, `skipped_by`, came while it was queued: only the newest queued one
+ *  replays next, so it never replayed and never serves). `source`: `replay` (decided on its replay), `dry_run` (fewer than REPLAY_MIN graded inputs: promoted on
  *  its passing dry run), `refit` (a threshold refit wrote this revision, decided on the rows it was fit on), `graded` (a
  *  serving revision's graded runs fell below the bar: held). `replay`: the numbers it was decided on, with the graded runs
  *  replayed (`of`), what its replay runs cost (`cost_usd`, null when one's is unknown), its runs' outcomes (`outcomes`,
@@ -101,7 +103,7 @@ export interface PromotionRecord {
   readonly workflow: string;
   readonly digest: string;
   readonly at: string;
-  readonly decided: "promote" | "hold" | "replaying" | "superseded";
+  readonly decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
   readonly source: "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
   readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
@@ -133,8 +135,8 @@ export interface PromotionRecord {
    *  inputs), and on a replay's hold: a replay of the revision promotes it only once it answered (or handed back) on every
    *  one (runner/promotion.ts heldOn). */
   readonly held_on?: readonly string[];
-  /** A superseded revision's newer one: the digest whose claim cancelled its replay. */
-  readonly superseded_by?: string;
+  /** A skipped revision's newer one: the digest that came while it was queued, and replays in its place. */
+  readonly skipped_by?: string;
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
    *  recorded it, or a refit's own commit. What the digest serves from as the champion (championOf) once a newer revision
    *  is on the folder's main. */
@@ -265,20 +267,21 @@ function lastPromotedOf(records: readonly PromotionRecord[], workflow: string): 
   return last;
 }
 
-/** The revisions of `workflow` other than `digest` whose newest record still says replaying, newest first: at most one
- *  once each new revision supersedes the one replaying (runner/promotion.ts). */
-export function replayingOf(records: readonly PromotionRecord[], workflow: string, digest: string | null): PromotionRecord[] {
+/** The revisions of `workflow` other than `digest` whose newest record still says `decided` (replaying, else queued),
+ *  newest first: at most one replaying (one replay at a time, the reservation's guarded write), and at most one queued
+ *  once each newer one skips the one queued before it (runner/promotion.ts). */
+export function replayingOf(records: readonly PromotionRecord[], workflow: string, digest: string | null, decided: "replaying" | "queued" = "replaying"): PromotionRecord[] {
   const out: PromotionRecord[] = [];
   for (const one of [...records].reverse()) {
     if (one.workflow !== workflow || one.digest === digest || out.some((seen) => seen.digest === one.digest)) continue;
-    if (promotionOf(records, workflow, one.digest) === one && one.decided === "replaying") out.push(one);
+    if (promotionOf(records, workflow, one.digest) === one && one.decided === decided) out.push(one);
   }
   return out;
 }
 
 /** What each learned workflow with a record serves, by name: `digest`, its champion's (championOf; null: none serves,
- *  the agent takes its runs), and `replaying`, the revision other than it whose replay is at work (null: none; a
- *  superseded one's replay was cancelled, never at work). What the promotions list says beside the records
+ *  the agent takes its runs), and `replaying`, the revision other than it whose replay is at work (null: none; a queued
+ *  one is not at work yet). What the promotions list says beside the records
  *  (GET /agents/{id}/learning/promotions). */
 export function servingOf(records: readonly PromotionRecord[]): { workflow: string; digest: string | null; replaying: string | null }[] {
   const names = [...new Set(records.map((one) => one.workflow))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -310,8 +313,9 @@ export type Recorded = { readonly record: PromotionRecord | undefined; readonly 
 
 /** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
  *  and of every record kept (`items`: a check across revisions, one challenger at a time, in the same guarded write): so
- *  of two claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
+ *  of two claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). `also`:
+ *  records kept after it in the same write, all or none (a queue change and the skips it makes, runner/promotion.ts). */
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, also: readonly PromotionRecord[] = []): Promise<Recorded> {
   let out: Recorded = { record, won: true };
   await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => {
     const now = promotionOf(items, record.workflow, record.digest);
@@ -320,7 +324,7 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
       return items;
     }
     out = { record, won: true };
-    return trimPromotions([...items, record]);
+    return trimPromotions([...items, record, ...also]);
   });
   return out;
 }
@@ -331,13 +335,17 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
  *  never reads as a newer promotion), and the digest promoted last, its latest win and its newest record (so a held last
  *  revision is never trimmed into handing the champion back). The kept records are a run of the newest plus those wins,
  *  and a win's own run reaches no further back than it: a record that ended an older run of the same digest is newer
- *  than every record of that run, so a run is never joined to an older one by the trim. */
+ *  than every record of that run, so a run is never joined to an older one by the trim. The queue's state is kept too,
+ *  whatever its age: a replaying revision's newest record (what its settle, its runs' claims and the one-replay-at-a-time
+ *  check read: dropped, a newer revision would start a second replay while its runs run, and its verdict would never
+ *  land) and a queued one's (what replays next). Neither is a promote record, so championOf reads the same. */
 export function trimPromotions(items: readonly PromotionRecord[]): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
   const wins = winsOf(items);
   const placeOf = (i: number): number | undefined => wins.get(i);
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
+    for (const one of [...replayingOf(items, workflow, null), ...replayingOf(items, workflow, null, "queued")]) keep.add(items.lastIndexOf(one));
     const last = lastPromotedOf(items, workflow);
     if (last === undefined) continue;
     const newest = items.findLastIndex((one) => one.workflow === workflow && one.digest === last);

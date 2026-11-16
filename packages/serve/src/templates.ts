@@ -228,11 +228,12 @@ export class PackageError extends Error {
   }
 }
 
-/** The source kinds whose accept rules a parameter may fill: a github trigger's, and a webhook trigger's (a provider that
- *  sends every trigger of a project to one URL, as Composio does, is filtered to the owner's own repository by them). */
-const FILTERED_KINDS = ["github", "webhook"];
+/** The source kinds whose accept rules a parameter may fill: a github trigger's, a webhook trigger's (a provider that
+ *  sends every trigger of a project to one URL is filtered to the owner's own repository by them), and a composio
+ *  trigger's. */
+const FILTERED_KINDS = ["github", "webhook", "composio"];
 
-/** A github or webhook source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+/** A github, webhook or composio source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
  *  condition's list, and `rest`, the source without them. */
 function whereIns(source: Json): { ins: unknown[]; rest: Json } {
   const ins: unknown[] = [];
@@ -257,6 +258,28 @@ export function githubTriggerWords(packageName: string, source: Json): string {
   return `${subject} runs on each ${or(events)} ${repos.length ? `to ${or(repos)}` : "to a repository the GitHub App is installed on"}.`;
 }
 const GITHUB_EVENT_WORDS: Record<string, string> = { pull_request: "pull request", pull_request_review: "pull request review", pull_request_review_comment: "review comment", issue_comment: "comment", issues: "issue", release: "release" };
+
+/** The refusals of a trigger's create that mean this server can't set it up yet, by the trigger's source kind: an apply
+ *  skips that trigger, never the apply, and says so under triggers.<i> (not_set_up_here). Any other refusal (a bad event
+ *  or config, a 422, Composio's own error on the create) undoes the apply. GitHub's: no GitHub App here. Composio's: no
+ *  public URL to send to, no connected account (or several) for the saved server's user, or the project's subscription
+ *  at another address, which only the owner moves, from the console. */
+export const TRIGGER_NOT_SET_UP_YET: Readonly<Record<string, readonly string[]>> = {
+  github: ["github_not_connected"],
+  composio: ["composio_no_public_url", "composio_not_connected", "composio_account_ambiguous", "composio_subscription_elsewhere"],
+};
+
+/** Whether refusal `code` of a trigger of source kind `kind` is one TRIGGER_NOT_SET_UP_YET skips. */
+export const notSetUpYet = (kind: unknown, code: string): boolean => typeof kind === "string" && Object.hasOwn(TRIGGER_NOT_SET_UP_YET, kind) && TRIGGER_NOT_SET_UP_YET[kind]!.includes(code);
+
+/** What an apply says of a composio trigger it skipped (notSetUpYet): which trigger, and the refusal's own words. */
+export function composioTriggerSkipped(packageName: string, trigger: Json, why: string): string {
+  const source = isObject(trigger.source) ? trigger.source : {};
+  return `The ${packageName} template's trigger ${String(trigger.name)} (Composio ${String(source.event)} on ${String(source.server)}) was not made: ${why}`;
+}
+
+/** Where the owner makes a composio trigger an apply skipped, once what refused it is fixed. */
+export const COMPOSIO_TRIGGER_FIX = "Once that's fixed, make it from Triggers → New app trigger for this agent, with the same event and config.";
 
 /** What an apply says of a github trigger it skipped because GitHub is not connected here: what to do, and what the
  *  trigger would then run on, in the package's own words ("Code review runs on each pull request to acme/widgets."). */
@@ -297,12 +320,15 @@ const inputFilled = (value: unknown, given: Record<string, unknown>): unknown =>
   return value;
 };
 
-/** A trigger filled from the apply's parameters: its target.input typed (inputFilled), its enabled the boolean its one
- *  placeholder names, the rest as text. */
+/** A trigger filled from the apply's parameters: its target.input and a composio source's config typed (inputFilled),
+ *  its enabled the boolean its one placeholder names, the rest as text. */
 const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   const out = filled(trigger, given) as Json;
   if (isObject(trigger.target) && trigger.target.input !== undefined) out.target = { ...(out.target as Json), input: inputFilled(trigger.target.input, given) };
   if (typeof trigger.enabled === "string" && WHOLE.test(trigger.enabled)) out.enabled = typedFilled(trigger.enabled, given);
+  // A composio trigger's config is typed as a pin's values are: a value that is one placeholder alone takes the
+  // parameter's type (an integer config field gets an integer).
+  if (isObject(trigger.source) && trigger.source.kind === "composio" && isObject(trigger.source.config)) out.source = { ...(out.source as Json), config: inputFilled(trigger.source.config, given) };
   return out;
 };
 
@@ -675,6 +701,14 @@ export function readPackage(from: string | PackageFiles): Package {
     const source = isObject(trigger) ? trigger.source : undefined;
     const set = isObject(source) && source.kind === "composio" ? COMPOSIO_SET.filter((field) => source[field] !== undefined) : [];
     if (set.length) bad(MANIFEST, `triggers[${i}].source holds ${set.join(" and ")}, which this server sets when it makes a composio trigger on Composio: a template can't carry ${set.length > 1 ? "them" : "it"}. Leave ${set.length > 1 ? "them" : "it"} out, or make the trigger from the console on this server (Triggers → New app trigger) once the agent is made.`);
+    // Its server is one of the package's own needs, by its toolkit, as mcp:<toolkit>/<tool> names its tools: no saved
+    // server's name, which is only the author's. The apply makes it on the saved server that need resolves to
+    // (onServers). A required need: one with no saved server refuses the apply, so the trigger is never made without one.
+    if (isObject(source) && source.kind === "composio") {
+      const need = mcp.find((one) => one.toolkit === source.server);
+      if (!need || need.source !== "composio") bad(MANIFEST, `triggers[${i}].source.server ${JSON.stringify(source.server)} names no MCP need of the package with source: composio: a template's composio trigger names that need's toolkit (server: github for the need {source: composio, toolkit: github}), and the apply makes it on the saved Composio server the need resolves to`);
+      else if (!need.required) bad(MANIFEST, `triggers[${i}].source.server ${need.toolkit}: the trigger's server is the mcp need of the toolkit ${need.toolkit}, so that need is required: true. An optional one may have no saved server here, and the trigger would have none`);
+    }
   });
   if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
   let outputSchema: unknown;
@@ -698,11 +732,12 @@ export function readPackage(from: string | PackageFiles): Package {
   for (const value of strings([instructions, triggers, f.display_name, mcp.map((need) => need.pin)])) {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(fields, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
-  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), and a
-  // github or webhook trigger's where `in` values (the repository it takes, say); a trigger's other settings are the
-  // package's own, checked here. A parameter that sets a time has a default, so the schedule the package ships is checked
-  // here too; one a github or webhook trigger's where takes is required or has a default, so the trigger never fills
-  // empty and takes no event.
+  // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), a
+  // github, webhook or composio trigger's where `in` values (the repository it takes, say), and a composio trigger's
+  // config values (what Composio watches for it: the owner's repository, team or label); a trigger's other settings,
+  // a composio trigger's server and event among them, are the package's own, checked here. A parameter that sets a time
+  // has a default, so the schedule the package ships is checked here too; one a where or a composio config takes is
+  // required or has a default, so the trigger never fills empty.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
@@ -710,10 +745,11 @@ export function readPackage(from: string | PackageFiles): Package {
     const fixed = Object.entries(trigger).flatMap(([key, value]) =>
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
+      : key === "source" && filtered && isObject(value) && value.kind === "composio" ? Object.entries(whereIns(value).rest).filter(([k]) => k !== "config").map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
       : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values`);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github, webhook or composio trigger's where in values, a composio trigger's config values, or an mcp pin's values`);
     // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
     // or off by the owner's answer, and by the package's default when the apply leaves it out.
     if (typeof trigger.enabled === "string") {
@@ -727,6 +763,11 @@ export function readPackage(from: string | PackageFiles): Package {
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
         if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
+      }
+    }
+    if (isObject(trigger.source) && trigger.source.kind === "composio") {
+      for (const used of new Set(strings(trigger.source.config).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
+        if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.config, so it is required or has a default: a composio trigger filled empty watches nothing of the owner's (Composio refuses a required config value left empty)`);
       }
     }
     if (!timed) return;
@@ -1203,7 +1244,16 @@ export function onServerNames(text: string, servers: Readonly<Record<string, str
 }
 
 /** `p` as the agent an apply makes on `servers` sees it: its instructions and each skill file with the package's tool
- *  names on the saved servers' (onServerNames). Nothing else of it names a server: its pins and allow are by tool. */
+ *  names on the saved servers' (onServerNames), and each composio trigger's server, its need's toolkit, the saved server
+ *  that need resolved to (onServerTrigger). Nothing else of it names a server: its pins and allow are by tool. */
 export function onServers(p: Package, servers: Readonly<Record<string, string>>): Package {
-  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])) };
+  return { ...p, instructions: onServerNames(p.instructions, servers), skills: Object.fromEntries(Object.entries(p.skills).map(([path, text]) => [path, onServerNames(text, servers)])), triggers: p.triggers.map((trigger) => onServerTrigger(trigger, servers)) };
+}
+
+/** Trigger `trigger` on the saved servers of `servers` ({toolkit: saved name}): a composio one's `source.server`, the
+ *  toolkit of the package's need (readPackage), the saved server the apply resolved that need to. Any other as it is. */
+function onServerTrigger(trigger: Json, servers: Readonly<Record<string, string>>): Json {
+  const source = trigger.source;
+  if (!isObject(source) || source.kind !== "composio" || typeof source.server !== "string" || !Object.hasOwn(servers, source.server)) return trigger;
+  return { ...trigger, source: { ...source, server: servers[source.server]! } };
 }

@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
+import { FINAL_STATES, openPostgresStore } from "../dist/store/index.js";
 import { fauxLoops, observed, queue, recorder, sleep, stores, until } from "./runner-support.mjs";
+import { farLink, postgresOnly, schemaOf } from "./store-target.mjs";
 
 const RUNS = 310;
 const LOOPS = 300;
@@ -17,16 +19,19 @@ const LAG_P99_MS = 250;
 const FILL_MS = 1_000;
 const id = (i) => `run-${String(i).padStart(3, "0")}`;
 
-test("310 runs on a runner of 300 loops: at most 300 held at once, every run ends and is released, lag bounded", async (t) => {
-  const { server, runners: [store] } = await stores({ runners: 1 });
-  const record = recorder();
-  // Each turn does a little synchronous work, as a harness parsing a model's reply would. Runs of about 250 ms: the
-  // runner fills its 300 loops in one batch claim (store.runs.claimMany), long before the first run ends.
-  const faux = fauxLoops({ turns: 5, turnMs: 50, work: () => JSON.parse(JSON.stringify({ text: "x".repeat(2_000) })) });
+/** `RUNS` runs queued on `server`. */
+async function queueAll(server) {
   for (let i = 0; i < RUNS; i++) await queue(server, id(i));
+}
 
-  const lag = monitorEventLoopDelay({ resolution: 10 });
-  lag.enable();
+/** A runner of `LOOPS` loops on `store` (recorded in `record`) running the queued runs: faux loops of five 50 ms turns,
+ *  each turn a little synchronous work, as a harness parsing a model's reply would (runs of about 250 ms: the runner
+ *  fills its 300 loops in one batch claim, store.runs.claimMany, long before the first ends). Answers the runner, the
+ *  faux loops, `said` (the claims lost and the first error the runner said) and `where()`, the runs by state, the claims
+ *  and `said` in words, for a failure to name. The runner closes after the test. */
+function manyLoops(t, server, store, record) {
+  const faux = fauxLoops({ turns: 5, turnMs: 50, work: () => JSON.parse(JSON.stringify({ text: "x".repeat(2_000) })) });
+  const said = { lost: 0, firstError: undefined };
   const runner = startRunner({
     store: observed(store, record),
     createLoop: faux.createLoop,
@@ -37,8 +42,31 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
     stopMarginMs: 2_000,
     pollMs: 20,
     commandPollMs: 200,
+    // What a failure names (where() below): the claims lost, and the first error the runner said.
+    onEvent: (event) => {
+      if (event.type === "claim-lost") said.lost += 1;
+      if (event.type === "error") said.firstError ??= `${event.step}: ${event.message}`;
+    },
   });
   t.after(() => runner.close());
+  const where = async () => {
+    const states = {};
+    for (const run of await server.runs.list({})) {
+      const key = `${run.state}${run.runner === null ? "" : " held"}`;
+      states[key] = (states[key] ?? 0) + 1;
+    }
+    return `runs ${JSON.stringify(states)}, ${record.claims.length} claims, ${said.lost} lost, first error ${said.firstError ?? "none"}`;
+  };
+  return { runner, faux, said, where };
+}
+
+test("310 runs on a runner of 300 loops: at most 300 held at once, every run ends and is released, lag bounded", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  const record = recorder();
+  await queueAll(server);
+  const lag = monitorEventLoopDelay({ resolution: 10 });
+  lag.enable();
+  const { runner, faux, where } = manyLoops(t, server, store, record);
 
   let most = 0;
   let full;
@@ -51,7 +79,10 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   await until(async () => {
     const runs = await server.runs.list({ state: "ended" });
     return runs.length === RUNS && runs.every((run) => run.runner === null);
-  }, "every run ends and is released", 60_000);
+  }, "every run ends and is released", 60_000).catch(async (error) => {
+    // Where the runs stand at the timeout, so a slow store (claims lost, runs failed) says so by itself.
+    throw new Error(`${error.message}: ${await where()}`);
+  });
   lag.disable();
   await sleep(20);
 
@@ -62,4 +93,37 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   assert.equal(record.claims.length, RUNS, "each run claimed once");
   const p99 = lag.percentile(99) / 1e6;
   assert.ok(p99 < LAG_P99_MS, `event-loop lag p99 ${p99.toFixed(1)} ms (bound ${LAG_P99_MS})`);
+});
+
+// The same runner with its store's Postgres 3 ms away each way (a loaded host's): each transaction is several round trips,
+// so the pool's 10 clients carry about a hundred commits a second while 300 loops each want one every 50 ms, and a loop's
+// commit waits behind the others' for a free client for seconds. That wait is a busy pool, not a database that does not
+// answer: it runs to the write's own deadline, and every run completes. A wait bounded by the connect timeout instead
+// (4 s, meant for a new connection's connect and startup) failed dozens of these runs for good.
+const FAR_MS = 3;
+
+test(`310 runs on a runner of 300 loops whose store's Postgres is ${FAR_MS} ms away each way: every run completes, none fails for a busy pool`, postgresOnly("a Postgres pool's wait for a free client"), async (t) => {
+  const { server, file, now } = await stores({ runners: 0 });
+  const link = await farLink(FAR_MS);
+  const store = await openPostgresStore({ url: link.url, schema: schemaOf(file), role: "runner", testClock: now });
+  const record = recorder();
+  await queueAll(server);
+  const { where } = manyLoops(t, server, store, record);
+  // After the runner's own close (registered first, so it runs first): its store, then the link under it.
+  t.after(async () => {
+    await store.close();
+    await link.close();
+  });
+  await until(async () => {
+    const runs = await server.runs.list({});
+    return runs.length === RUNS && runs.every((run) => FINAL_STATES.includes(run.state) && run.runner === null);
+  }, "every run is over and released", 120_000).catch(async (error) => {
+    throw new Error(`${error.message}: ${await where()}`);
+  });
+  const failed = await server.runs.list({ state: "failed" });
+  const why = {};
+  for (const run of failed) why[String(run.summary).slice(0, 120)] = (why[String(run.summary).slice(0, 120)] ?? 0) + 1;
+  assert.equal(failed.length, 0, `${failed.length} of ${RUNS} runs failed: ${JSON.stringify(why)}`);
+  assert.equal((await server.runs.list({ state: "ended" })).length, RUNS, `every run completed: ${await where()}`);
+  assert.equal(record.claims.length, RUNS, "each run claimed once");
 });

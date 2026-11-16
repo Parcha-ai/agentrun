@@ -21,6 +21,13 @@ export const words = (error: unknown) => {
 	return `${typeof name === "string" && name !== "Error" ? `${name}: ` : ""}${message}`.replace(/\s+/g, " ").slice(0, 300);
 };
 
+/** text with every secret in it written [redacted], the longest first; an empty or missing secret is skipped. */
+export const redact = (text: string, secrets: readonly (string | undefined)[]) =>
+	secrets
+		.filter((secret): secret is string => !!secret)
+		.sort((a, b) => b.length - a.length)
+		.reduce((said, secret) => said.replaceAll(secret, "[redacted]"), text);
+
 /** A pause that ends early when signal aborts; never rejects. */
 export const pause = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((done) => {
@@ -157,7 +164,7 @@ export interface RunResult {
 	stderr: string;
 }
 
-const OUTPUT_MAX = 64 * 1024;
+export const OUTPUT_MAX = 64 * 1024;
 
 /**
  * argv run in the machine as root through exec, stdin (when given) written and ended, waited for until it ends, within
