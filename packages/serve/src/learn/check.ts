@@ -584,16 +584,15 @@ const repicks = (step: unknown, check: QuoteRead): boolean => {
   const of = step.until.of;
   return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
-/** Whether a step's `state` map reads state key `key` through an optional placeholder (`"{answer?}"`, `"{answer.x?}"`, a
- *  whole string): null on a re-pick loop's first pass, before any draft exists, and the failed draft on its second. The
- *  path resolves by the engine's own lookup (placeholderValue) over a state holding `key` and a real `state` key, as the
- *  run's input or a fast step may write one: `"{state.answer?}"` reads that key's `answer` first, on both passes, so it
- *  is no draft read. */
-function readsDraft(state: unknown, key: string, marks = pageStateOf(new Set(["state", key])), depth = 0): boolean {
+/** Whether a step's `state` map names state key `key` as the whole marked placeholder `"{answer?}"` (a whole string):
+ *  null on a re-pick loop's first pass, before any draft exists, and the failed draft on its second. No path below the
+ *  key counts (`"{answer.x?}"`, `"{state.answer?}"`, unmarked `"{answer}"`): paths are not validated, so only the key
+ *  itself is sure to hold the draft. */
+function readsDraft(state: unknown, key: string, depth = 0): boolean {
   if (depth > 32) return false;
-  if (typeof state === "string") return placeholdersOf(state).some(({ path, optional }) => optional && markRead(marks, path) === key);
-  if (Array.isArray(state)) return state.some((one) => readsDraft(one, key, marks, depth + 1));
-  return isObject(state) && Object.values(state).some((one) => readsDraft(one, key, marks, depth + 1));
+  if (typeof state === "string") return placeholdersOf(state).some(({ path, optional }) => optional && path === key);
+  if (Array.isArray(state)) return state.some((one) => readsDraft(one, key, depth + 1));
+  return isObject(state) && Object.values(state).some((one) => readsDraft(one, key, depth + 1));
 }
 /** The labels of the model steps inside `node` (a loop's body) that write state key `key` without reading their own
  *  draft through their `state` map (readsDraft). The DSL sends a step with a map only the keys it names (each pass a

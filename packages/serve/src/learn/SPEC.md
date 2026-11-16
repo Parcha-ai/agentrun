@@ -250,9 +250,9 @@ Over a cap is refused, never cut.
   map, the draft as the DSL's optional placeholder `"draft": "{answer?}"`: null on the first pass, before any draft
   exists, and the failed draft on the second. The DSL sends a step with a map only the keys it names, each pass a
   fresh model session, so a map without the draft never sees it; naming it unmarked (`"{answer}"`) fails the first
-  pass; and a step with no map reads the whole state, the pages included (compact state, above). The draft's path
-  resolves by `placeholderValue` to the answer's key itself: `"{state.answer?}"` reads a real `state` key's
-  `answer` first, which the run's input or a fast step may write, on both passes, so it is no draft read. A draft whose model
+  pass; and a step with no map reads the whole state, the pages included (compact state, above). The draft is exactly the
+  whole marked answer key, `"{answer?}"`: no path is validated, so none below the key (`"{answer.x?}"`, which the answer
+  may not hold) or under `state.` (`"{state.answer?}"`, which reads a real `state` key first) counts. A draft whose model
   step writing the answer in the loop does not read it so is refused. A quote found first costs no
   re-pick; a second miss hands back. Otherwise the draft is refused, the detail naming the loop to write. The check
   is a step of the top-level chain after the loop, never inside it: a `quote_missing` escalate anywhere in the loop's
