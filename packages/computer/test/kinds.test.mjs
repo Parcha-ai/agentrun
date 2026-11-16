@@ -102,7 +102,12 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
 	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }]));
-	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
+	assert.deepEqual(extra.modal.settings, [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	]);
+	// How E2B's and Modal's machines are reached: the provider's exec unless a server's settings say dial.
+	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
 	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
@@ -120,6 +125,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
+	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
@@ -128,10 +135,10 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// Cloudflare's containers start from the box image its relay was deployed FROM, which the relay's health names.
 	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
-		if (id !== "modal") assert.equal(fields.settings, undefined, id);
+		if (id !== "modal" && id !== "e2b") assert.equal(fields.settings, undefined, id);
 		if (!["docker", "agent37", "modal", "e2b", "cloudflare"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.

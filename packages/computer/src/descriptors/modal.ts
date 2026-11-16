@@ -37,8 +37,13 @@ export const MODAL = defineProvider({
 		{ name: "MODAL_TOKEN_ID", option: "tokenId", required: true },
 		{ name: "MODAL_TOKEN_SECRET", option: "tokenSecret", required: true },
 	],
-	// The Modal app its computers live in: the server's own when its settings name none.
-	settings: [{ name: "modalApp", option: "app", default: "agentrun" }],
+	// The Modal app its computers live in: the server's own when its settings name none. How the server reaches its
+	// machines: exec (the provider's default, when the settings name none), a bridge through Modal's exec per
+	// connection, or dial, the machine dials the server.
+	settings: [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	],
 	metered: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
