@@ -390,9 +390,11 @@ const DEAL_STAGE = {
   slug: "HUBSPOT_DEAL_STAGE_UPDATED_TRIGGER", name: "Deal Stage Updated", description: "Triggered when a deal's stage changes.", polled: false, sealed: ["developer_api_key"],
   config: { type: "object", required: ["app_id", "developer_api_key"], properties: { app_id: { type: "string", title: "App Id" }, developer_api_key: { type: "string", title: "Developer Api Key" } } },
 };
+/** What the server answers in place of a sealed config value. */
+const SEALED_MASK = "[sealed]";
 const DEALS = {
   ...ISSUES, id: "trg_d", name: "deal stages",
-  source: { kind: "composio", server: "gh", event: DEAL_STAGE.slug, config: { app_id: "4242", developer_api_key: "[sealed]" }, sealed_config: ["developer_api_key"], instance_id: "ti_2", hook: HOOK_ID },
+  source: { kind: "composio", server: "gh", event: DEAL_STAGE.slug, config: { app_id: "4242", developer_api_key: SEALED_MASK }, sealed_config: ["developer_api_key"], instance_id: "ti_2", hook: HOOK_ID },
 } as Trigger;
 
 describe("A trigger from an app: a config field the server seals", () => {

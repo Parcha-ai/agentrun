@@ -284,7 +284,9 @@ triggers:
       kind: composio
       server: hubspot
       event: ${DEAL_STAGE.slug}
-      config: { app_id: "\${parameters.app_id}", developer_api_key: "\${parameters.developer_api_key}" }
+      config:
+        app_id: "\${parameters.app_id}"
+        developer_api_key: \${parameters.developer_api_key}
     target: { kind: start_run, input: { content: "Note the deal's new stage." } }
 ---
 Note the deal's new stage with mcp:hubspot/HUBSPOT_LIST_DEALS.
