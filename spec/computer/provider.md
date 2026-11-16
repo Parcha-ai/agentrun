@@ -231,8 +231,9 @@ Each failure says what the exec did wrong, such as "U+000A (at byte 12) came bac
 
 The vendor's exec may be any transport that keeps these rules: its own stream, SSH, its SDK, a relay in the image over
 any two-way stream, or split calls (one starts a process, one streams its events, one per write), which
-`framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns into a `MachineProcess`. A request and response
-exec, which answers a command's output when it ends, can't carry the bridge.
+`framedExec` (`packages/computer/src/hosted/framed-exec.ts`) turns into a `MachineProcess`; `ndjson` and `sse`
+(`hosted/rest.ts`) read events that come as NDJSON or as server-sent events. A request and response exec, which
+answers a command's output when it ends, can't carry the bridge.
 
 On a vendor whose root can make a network namespace, or one inside a user namespace, the three networks are the
 adapter's: init's fence holds `none`, and init's egress proxy holds `open` and a list

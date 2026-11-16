@@ -60,6 +60,7 @@ it by them alone:
 | --- | --- | --- |
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | none yet; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
+| The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
 | SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and a pid wrapper for `kill` |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` only closes stdin and fails the pre-check's kill check: copy its shape, and kill with a pid wrapper |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
@@ -100,6 +101,47 @@ const exec = (id: string, argv: readonly string[], ctx: HostCall) =>
 An event may carry `base64` in place of `text` for output that isn't text. The tests run this host against a
 loopback vendor ([`test/fake-text-host.mjs`](test/fake-text-host.mjs)) through the pre-check and the shared adapter's
 create.
+
+#### Output as server-sent events
+
+`sse` from `src/hosted/rest.ts` reads a `text/event-stream` body as the HTML standard says: comments (a keep-alive)
+are skipped, `data:` lines are joined, and each event carries the last `id:` and `retry:` the stream set, which a host
+that resumes a dropped stream asks from. Hyperbrowser's process API is this shape: `POST /sandbox/processes` answers
+the process's stream, `event: started` with its id, then `event: output` with `data: {"stream":"stdout","encoding":
+"base64","data":"…"}`, where `stream` may also be `system` (the runtime's own lines, not the process's), then
+`event: done` with `data: {"exit_code":0}`. Its stdin and kill calls take that id. `start` reads the stream as far as
+the id and hands the rest to `events`:
+
+```ts
+const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+const stdin = (id: string, json: object) => api.call("POST", api.url(`/sandbox/processes/${id}/stdin`), { json });
+const exec = (argv: readonly string[], ctx: HostCall) =>
+	framedExec<{ id: string; stream: AsyncGenerator<SseEvent> }>(
+		{
+			async start(argv, ctx) {
+				const command = `exec ${argv.map(quote).join(" ")}`; // exec: the vendor's kill reaches argv, not a sh
+				const stream = sse(orThrow(await api.stream("POST", api.url("/sandbox/processes"), { json: { command }, timeoutMs: ctx.timeoutMs })).body);
+				const first = await stream.next();
+				if (first.done || first.value.event !== "started") throw new Error("the process's stream ended before it started");
+				return { id: (JSON.parse(first.value.data) as { id: string }).id, stream };
+			},
+			async *events({ stream }) {
+				for await (const { event, data } of stream) {
+					const value = JSON.parse(data);
+					if (event === "done") yield { exit: value.exit_code };
+					else if (event === "output" && value.stream !== "system") yield { stream: value.stream, base64: value.data };
+				}
+			},
+			write: async ({ id }, text) => void orThrow(await stdin(id, { data: Buffer.from(text).toString("base64"), encoding: "base64" })),
+			end: async ({ id }) => void orThrow(await stdin(id, { eof: true })),
+			kill: async ({ id }) => void orThrow(await api.call("DELETE", api.url(`/sandbox/processes/${id}`))),
+		},
+		argv,
+		ctx,
+	);
+```
+
+The tests run the same host against a Hyperbrowser-shaped loopback vendor, the same fake, through the pre-check.
 
 ### Step one: run the exec pre-check
 
