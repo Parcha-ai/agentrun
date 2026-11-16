@@ -1362,7 +1362,7 @@ The conformance module, `dist/conformance/modal.js` (`--provider modal`), reads 
 (`settingsFromEnv`) and passes each to `create()` as its option: `COMPUTER_MODAL_TOKEN_ID` and
 `COMPUTER_MODAL_TOKEN_SECRET` (never `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under
 those names, and with only them set it refuses, naming the `COMPUTER_MODAL_` pair), `COMPUTER_MODAL_APP`, and, if set,
-`COMPUTER_MODAL_SERVER_URL`. It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
+`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_CONNECT` (`connect`). It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
 anything else. Its `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift`, so Go must
 be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes. Core `provider.stop` expects Modal's refusal (it
 declares no stop), and the Full `provider.janitor` case is skipped (`lifetime:janitor`, `release:stop`).
@@ -1378,6 +1378,18 @@ node packages/computer/dist/conformance/sweep.js --provider modal --after /tmp/m
 Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
 file records where it listed, the app and the server (`sweepScope`), and `--after` refuses, exit 2, before it lists
 anything, a file of another app or server, or one that names none: every computer there would read as new.
+
+### Modal on dial
+
+With `connect: "dial"` (a server's `modalConnect` setting; `exec` by default) a Modal sandbox dials the server instead
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): its command is the box image's `agentrun-dial` and the
+boot env goes in as `env`, which the SDK sends as an ephemeral Secret (`Secret.fromObject`, modal@0.11.1
+`mergeEnvIntoSecrets`). Nothing is uploaded and nothing runs through exec: the host has none. init is `agentrun-dial`'s
+child (`daemon: "child"`), and Modal still ends the sandbox at its timeout. No Archil mount; GPUs stay offered, on
+gVisor. **Unverified**: that a GPU sandbox on gVisor runs `agentrun-dial` as the VM runtime does (no live run yet). The
+conformance module's `dialKit()` refuses, as E2B's does: the Core run happens inside the public server's process. Its
+run image with `COMPUTER_MODAL_CONNECT=dial` is the box image, the one that holds `agentrun-dial` (debian:bookworm-slim
+on exec, as before).
 
 ## Daytona
 
@@ -1961,9 +1973,26 @@ also sweeps its own label through the host at its end (the report's `cleanup.swe
 The conformance module's `settingsFromEnv` reads these names, and the sweep reads them through it (`createHost`),
 each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
 `COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
-`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms) and `COMPUTER_E2B_USER` (`daemonUser`). It
-refuses while `E2B_SANDBOX_URL` is set in the environment it reads, as the provider does in `process.env`.
-`COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
+`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms), `COMPUTER_E2B_USER` (`daemonUser`) and
+`COMPUTER_E2B_CONNECT` (`connect`). It refuses while `E2B_SANDBOX_URL` is set in the environment it reads, as the
+provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
+
+### E2B on dial
+
+With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): kind linux alone (its default on dial; a desktop named
+there is refused), no Archil mount, and the host has no
+exec and no upload. E2B runs a template's start command once, at the template's build, and snapshots it running, so
+it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
+So create starts the box template's `agentrun-dial` itself, once, right after `Sandbox.create`: one envd process as
+root with the boot env as that process's env alone (never the sandbox's `envs`, which envd gives every process), after
+the root-only and session-bus steps the exec path runs before init. It lets go of the process stream once envd has
+started it, and the process runs on ([docs.e2b.dev/commands/background](https://docs.e2b.dev/commands/background):
+with no command timeout, "the process keeps running after the client disconnects"). Its output goes to
+`/run/agentrun-dial.log`, root's alone. The conformance module's `dialKit()` refuses: a dial machine dials the server
+that minted its token, so its Core run happens inside the public server's process
+(`packages/serve/scripts/dial-conformance.mjs`), never from the CLI. With `COMPUTER_E2B_CONNECT=dial` and no
+`COMPUTER_E2B_TEMPLATE`, its run image is the box template, the one that holds `agentrun-dial`.
 
 ### What waits for a live run
 
@@ -2466,6 +2495,10 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 (phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
+- **Apps.** `apks: [{ path, sha256 }]`, else `env.PHONE_HARNESS_APKS` (its descriptor's hostEnv, a comma list of
+  `<absolute path>@sha256:<hex>`), names APK files on this machine that each phone installs (`pm install -r`) before
+  phoned starts, once per phone. A file not there, or whose bytes are not its pin, refuses `create()` before a phone is
+  rented, and `connect()`.
 - **phoned, the phone's driver.** `connect()` asks the phone harness for the session's adb link, connects to it,
   unlocks the phone with the session's code (never in a result or an error) and probes it. Then it starts phoned
   (`daemon-android/`, one dex jar built by `npm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:

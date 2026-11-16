@@ -702,6 +702,13 @@ They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, O
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
 
+**A phone's apps.** A phone has its stock apps. To give every phone more, the operator names APK files on the machine
+that drives the phones (the server's, or its runner's) in that machine's environment, each pinned by its sha256:
+`PHONE_HARNESS_APKS=/srv/apks/wikipedia.apk@sha256:<64 hex digits>`, a comma list. Only the operator sets it: no agent
+setting, API or Settings page names an APK, and the server downloads nothing. Each phone installs them
+(`pm install -r`) before the agent starts on it. A file that is not there, or whose bytes are not its pin, refuses the
+claim in words before a phone is rented; a value that is not such a list refuses every phone, naming the entry.
+
 **GPUs.** A sandbox may ask for GPUs: `computer: {"kind": "sandbox", "provider": "daytona", "gpu": {"type": "H100",
 "count": 1}}`. `GET /v2/computers` shows each sandbox provider's `gpu`: the types it gives, by the vendor's own names, the
 most one computer gets, and where a GPU computer differs from its others. A provider whose GPU computers cannot hold
