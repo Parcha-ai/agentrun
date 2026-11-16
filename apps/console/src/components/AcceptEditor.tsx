@@ -13,10 +13,9 @@ import { ACCEPT_LIMITS, type ConditionDraft, emptyCondition, emptyRule, OP_WORDS
 type Issues = Record<string, string>;
 
 /** What the event is, and where conditions read, for each signature scheme (serve's trigger-signatures.ts). */
-export const EVENT_HINTS: Record<"standard" | "github" | "composio", string> = {
+export const EVENT_HINTS: Record<"standard" | "github", string> = {
   standard: "The event is the JSON body's top-level type (Standard Webhooks), such as issue.opened. Conditions read the body: /title is its title.",
   github: "The event is the X-GitHub-Event header: pull_request, issue_comment, push. Conditions read the body.",
-  composio: "The event is the body's metadata.trigger_slug, such as GITHUB_ISSUE_ADDED_EVENT (else its type, as composio.connected_account.expired). Conditions read the whole body, where the event's own data is under /data/: /data/title.",
 };
 
 /** How an `in` list's lines are read (valueOfLine), said under it. */

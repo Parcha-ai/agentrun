@@ -59,7 +59,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 /** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -347,7 +347,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  of its secret, which the first answer showed once. */
     createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
     /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-    rotateTriggerSecret: (id: string, body: { secret?: string } = {}) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, { body }),
+    /** No body: the route refuses any, `{}` too, and makes the new secret itself. */
+    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`),
     /** A trigger from an app answers `composio` beside it when Composio could not follow a pause or resume. */
     updateTrigger: (id: string, body: TriggerInput) => call<TriggerUpdated>("PATCH", trigger(id), { body }),
     /** None (204), or `composio`'s note when Composio could not follow the delete. */

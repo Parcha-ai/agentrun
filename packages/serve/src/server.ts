@@ -2964,7 +2964,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const runnerShell = shellTools(await shellOf({ kind: "none" }));
       await planNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
-      return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()) } });
+      // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
+      return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -4050,14 +4051,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
-        // A trigger whose sender gives its secret (Composio's) takes it as the body's `secret`; any other is made one.
-        return send(res, 200, await (async () => {
-          const empty = req.headers["transfer-encoding"] === undefined && !Number(req.headers["content-length"]);
-          const body = empty ? {} : await bodyOf(req);
-          const extra = Object.keys(body).filter((key) => key !== "secret");
-          if (extra.length) throw invalid(extra.map((field) => ({ field, reason: "unknown_field" as const, message: `${field} is not a field of this request: only secret` })));
-          return triggerRotated(id, (await triggers.rotate(id, body.secret)).secret, new Date().toISOString());
-        })());
+        // It takes no body: the new secret is made here, never given. Any body is refused before it rotates, `{}` too: a
+        // length other than 0, or one sent chunked, is a body whatever it holds.
+        if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
+          throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
+        }
+        return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger":

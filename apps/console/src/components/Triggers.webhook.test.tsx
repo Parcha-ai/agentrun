@@ -230,73 +230,22 @@ describe("Triggers: schedules and webhooks", () => {
   });
 });
 
-const COMPOSIO: Trigger = { ...HOOK, id: "trg_c", name: "on issue", source: { kind: "webhook", signature: "composio" } };
-
-describe("Triggers: a composio webhook's secret is Composio's, set on the trigger", () => {
-  it("choosing composio on create sends signature composio and no secret", async () => {
-    const s = server({ create: (call) => json(201, { ...COMPOSIO, ...(call.body as object), id: "trg_new" }) });
-    const t = await open(s.v2, { trigger: null, kind: "webhook" });
-    await t.set("name", "on issue");
-    await t.set("agent", "triage");
-    await t.set("content", "Triage it.");
-    await t.set("maxCost", "1");
-    await act(async () => { (t.host.querySelector('input[name="signature"][value="composio"]') as HTMLInputElement).click(); });
-    await t.click(/^Create webhook$/);
-    const made = s.calls.find((c) => c.method === "POST" && c.path === "/v2/triggers")!;
-    expect((made.body as { source: unknown }).source).toEqual({ kind: "webhook", signature: "composio" });
-    expect(made.body).not.toHaveProperty("secret");
+describe("Triggers: a webhook is signed the standard way or GitHub's; Composio's events come through an app trigger", () => {
+  it("the form offers the standard and GitHub signatures alone, and sends a Composio app's events to New app trigger", async () => {
+    const t = await open(server().v2, { trigger: null, kind: "webhook" });
+    expect([...t.host.querySelectorAll('input[name="signature"]')].map((input) => (input as HTMLInputElement).value)).toEqual(["standard", "github"]);
+    expect(t.text()).not.toMatch(/Composio's signature|Set secret/);
+    const pointer = [...t.host.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/new-composio");
+    expect(pointer?.textContent).toBe("New app trigger");
   });
 
-  const typed = async (t: Awaited<ReturnType<typeof open>>, value: string) => { await t.click(/Set secret$/); await t.set("secret", value); };
-  const field = (t: Awaited<ReturnType<typeof open>>) => t.host.querySelector('[name="secret"]') as HTMLInputElement | null;
-
-  it("Set secret sends {secret} to the trigger's secret route, and the field is gone and empty after it", async () => {
-    const s = server({ triggers: [COMPOSIO], secret: () => json(200, { secret: { name: "trigger:trg_c", set: true, source: "console", changed_at: null } }) });
-    const t = await open(s.v2, { trigger: "trg_c" });
-    expect(t.button(/Rotate secret/)).toBeUndefined();
-    await typed(t, "cmp-secret-given-by-composio-1234");
-    await t.click(/^Save$/);
-    const sent = s.calls.find((c) => c.path === "/v2/triggers/trg_c/secret")!;
-    expect([sent.method, sent.body]).toEqual(["POST", { secret: "cmp-secret-given-by-composio-1234" }]);
-    expect(field(t)).toBeNull();
-    await t.click(/Set secret$/);
-    expect(field(t)!.value).toBe("");
-  });
-
-  it("Cancel clears the field", async () => {
-    const t = await open(server({ triggers: [COMPOSIO] }).v2, { trigger: "trg_c" });
-    await typed(t, "cmp-secret-given-by-composio-1234");
-    await t.click(/^Cancel$/);
-    expect(field(t)).toBeNull();
-    await t.click(/Set secret$/);
-    expect(field(t)!.value).toBe("");
-  });
-
-  it("a refused save keeps the form and its value for a retry", async () => {
-    let first = true;
-    const s = server({ triggers: [COMPOSIO], secret: () => (first ? ((first = false), json(422, { error: { code: "input_invalid", message: "secret holds at least 24 bytes", retryable: false } })) : json(200, { secret: { name: "trigger:trg_c", set: true, source: "console", changed_at: null } })) });
-    const t = await open(s.v2, { trigger: "trg_c" });
-    await typed(t, "cmp-secret-given-by-composio-1234");
-    await t.click(/^Save$/);
-    expect(field(t)!.value).toBe("cmp-secret-given-by-composio-1234");
-    expect(t.text()).toContain("secret holds at least 24 bytes");
-    await t.click(/^Save$/);
-    expect(s.calls.filter((c) => c.path === "/v2/triggers/trg_c/secret")).toHaveLength(2);
-    expect(field(t)).toBeNull();
-  });
-
-  it("a second save is blocked while one is out", async () => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => { release = r; });
-    const s = server({ triggers: [COMPOSIO], secret: async () => { await held; return json(200, { secret: { name: "trigger:trg_c", set: true, source: "console", changed_at: null } }); } });
-    const t = await open(s.v2, { trigger: "trg_c" });
-    await typed(t, "cmp-secret-given-by-composio-1234");
-    await t.click(/^Save$/);
-    await t.click(/^Save$/);
-    expect(s.calls.filter((c) => c.path === "/v2/triggers/trg_c/secret")).toHaveLength(1);
-    expect((t.button(/^Save$/) as HTMLButtonElement).disabled).toBe(true);
-    release();
-    await t.settle();
-    expect(field(t)).toBeNull();
+  it("a webhook's page offers Rotate secret and never Set secret, whatever its signature", async () => {
+    for (const signature of [undefined, "github"] as const) {
+      const hook = { ...HOOK, source: { kind: "webhook", ...(signature ? { signature } : {}) } } as Trigger;
+      const t = await open(server({ triggers: [hook] }).v2, { trigger: hook.id });
+      expect(t.button(/^Rotate secret$/)).toBeDefined();
+      expect(t.button(/Set secret$/)).toBeUndefined();
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
   });
 });
