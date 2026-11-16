@@ -2490,7 +2490,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/triggers/{trigger_id}/secret": {
     post: {
       operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
-      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's, and for a body: the new secret is made here, never given.",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's, and for any body, `{}` too, refused before it rotates: the new secret is made here, never given.",
       parameters: [TRIGGER_ID],
       // No body to mark a field in: the operation is marked whole, a secret write all the same.
       "x-agentrun-secret": true,

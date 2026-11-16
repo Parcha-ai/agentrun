@@ -3952,13 +3952,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
-        // It takes no body: the new secret is made here, never given.
-        return send(res, 200, await (async () => {
-          const empty = req.headers["transfer-encoding"] === undefined && !Number(req.headers["content-length"]);
-          const extra = empty ? [] : Object.keys(await bodyOf(req));
-          if (extra.length) throw invalid(extra.map((field) => ({ field, reason: "unknown_field" as const, message: `${field} is not a field of this request: it takes no body, and the new secret is made here` })));
-          return triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString());
-        })());
+        // It takes no body: the new secret is made here, never given. Any body is refused before it rotates, `{}` too: a
+        // length other than 0, or one sent chunked, is a body whatever it holds.
+        if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
+          throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
+        }
+        return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger":
