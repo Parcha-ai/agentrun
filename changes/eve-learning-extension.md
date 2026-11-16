@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-eve, @parcha/agentrun-client, @parcha/agentrun-serve
+packages: @parcha/agentrun-eve, @parcha/agentrun-client, @parcha/agentrun-serve, @parcha/agentrun-dsl
 kind: feature
 ---
 Connect an existing eve 1.0.0 agent through an additive extension, preserving its model, tools,
@@ -16,3 +16,5 @@ The cookbook includes a fresh-session workflow reuse and Learning Off comparison
 
 Show the actual harness mark beside connected agents and observed sessions, including eve,
 Claude Code and Codex. Workflow agents keep a distinct workflow icon.
+
+Keep the workflow schema discoverable by production dependency tracers when embedding the interpreter in an eve application.

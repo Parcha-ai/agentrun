@@ -6,7 +6,7 @@ import { AgentRun } from '@parcha/agentrun-client';
 import { readWorkflowAudit } from './agent/lib/release-tools.ts';
 import { readWorkflowReport, workflowReport } from './workflow-report.mjs';
 
-export const workflowTask = service => `Prepare a release brief for ${service} from its current release data. Return exactly the formatter's brief.`;
+export const workflowTask = service => `Prepare a release brief for ${service} from its current release data. Return the formatter's brief verbatim as plain text: no Markdown, bold, headings, quotes, commentary, or extra lines.`;
 export const teachWorkflow = workflowTask('demo-api') + ' For this and future release briefs, follow this reusable two-step procedure: call release_status for the requested service, then pass its entire returned status object unchanged to format_release_brief. Remember this procedure as a reusable skill so it can become an executable workflow after repeated use. Service names, versions and observations are fresh request data, never constants to remember.';
 const TOOL_NAMES = ['mcp:release/release_status', 'mcp:release/format_release_brief'];
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
