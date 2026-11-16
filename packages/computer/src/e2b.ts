@@ -1,6 +1,6 @@
 // The E2B host: sandboxes from an E2B template, a desktop (kind desktop) or a plain Linux (kind linux), both from our box
 // template by default (prepareImage, box-image.ts boxE2bTemplate), every call through the host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
-// import). E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
+// import). E2B's envd starts every process the adapter runs, so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
@@ -58,8 +58,10 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	apiKey: string;
 	/** The SDK's Sandbox class: the host's `e2b` package's. */
 	Sandbox: E2BSandboxClass;
-	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
+	/** E2B's domain: the sandboxes' own, and the API's at https://api.<domain> unless apiUrl is given. Default e2b.app. */
 	domain?: string;
+	/** The API's https URL, for a vendor that runs E2B's API at its own (Cube's CubeAPI). Default https://api.<domain>. */
+	apiUrl?: string;
 	/** desktop (default): a template with an X server, started through the daemon; linux: no screen. */
 	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
@@ -81,8 +83,8 @@ const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
-export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }): E2BConnectionOptions {
-	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false };
+export function connectionOptions({ apiKey, domain, apiUrl = `https://api.${domain}` }: { apiKey: string; domain: string; apiUrl?: string | undefined }): E2BConnectionOptions {
+	return { apiKey, domain, apiUrl, debug: false };
 }
 
 /**
@@ -189,8 +191,11 @@ function machineOf(info: SandboxInfo): Machine {
 /** One chunk of the SDK's output into a stream, unless the stream has ended. */
 const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnded || stream.write(data));
 
-/** E2B's sandboxes as a MachineHost (../host.ts). */
-class E2BHost implements MachineHost {
+/**
+ * E2B's sandboxes as a MachineHost (../host.ts). Exported for a vendor that runs E2B's envd and API at its own URL: its
+ * host makes one of these from connectionOptions with its apiUrl, and hands it the calls that are E2B's.
+ */
+export class E2BHost implements MachineHost {
 	readonly descriptor = E2B;
 	readonly facts: HostFacts = {
 		daemon: "child",
@@ -435,13 +440,15 @@ export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
-		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, ...rest } = options;
+		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, apiUrl, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, ...rest } = options;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
 		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
+		const api = apiUrl === undefined ? new URL(`https://api.${domain}`) : typeof apiUrl === "string" ? URL.parse(apiUrl) : null;
+		if (api?.protocol !== "https:" || api.search !== "" || api.hash !== "") throw new Error(`the E2B API URL must be an https URL, so the key never crosses in the clear, not ${JSON.stringify(apiUrl)}`);
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain, apiUrl }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }

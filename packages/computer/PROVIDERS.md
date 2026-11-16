@@ -241,7 +241,10 @@ vendor whose size is its image's refuses them in its own `check`.
 - `createdAt` is when your API made it. Of two racing creates' machines, AgentRun keeps the oldest.
 - `why` is your API's words for a machine that failed to start, which is `gone`.
 
-A machine that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure. Don't read
+A machine that no longer exists is `undefined`, or an error that maps to `not_found`; neither is a failure. So is your
+vendor's record of a machine that is deleted and won't come back (Runloop's `shutdown`, Blaxel's `TERMINATED`): `get`
+answers `undefined` for it and `list` leaves it out. `gone` is a machine still being destroyed, and it holds the wait
+after a delete, so a record read `gone` makes every delete wait out its bound. Don't read
 back what create sent: AgentRun checks the machine from inside. `get` never wakes a machine: a read that resumes a
 paused or ended one undoes a deadline or a delete. If your vendor's reads wake machines, read through one that
 doesn't, or make machines in the vendor's mode that doesn't keep them. A deleted machine stays gone after any call: the
@@ -254,6 +257,7 @@ Some vendors have states beyond these four:
 | recovering, restoring, temporarily unavailable | `starting` |
 | needs a person's decision before it goes on | `stopped`: create gives up on it, and the janitor still ends it |
 | ended by the platform (an eviction, a cap) | `gone`, with the platform's words in `why`; one it stopped and still keeps (a disk, a bill) is `stopped`, so the janitor still finds and deletes it |
+| deleted, kept as a record | `undefined` |
 | only a running flag | `running` when it is set. `create` waits until it is, within `ctx.timeoutMs`; after that, unset is `stopped` |
 
 ```ts
@@ -361,10 +365,13 @@ the rest of AgentRun calls.
 export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// … check the options
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain, apiUrl }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
 	}
 }
 ```
+
+A vendor that runs E2B's envd and API builds on `E2BHost` with its `apiUrl`: its host makes an `E2BHost` from
+`connectionOptions({ apiKey, domain, apiUrl })` and hands it the calls that are E2B's, such as `exec` and `upload`.
 
 The same file exports `create(options)` and `conformance`, as `e2b.ts` does. Load your SDK
 lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
