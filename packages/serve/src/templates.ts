@@ -229,11 +229,11 @@ export class PackageError extends Error {
 }
 
 /** The source kinds whose accept rules a parameter may fill: a github trigger's, a webhook trigger's (a provider that
- *  sends every trigger of a project to one URL is filtered to the owner's own repository by them), and a composio
- *  trigger's. */
-const FILTERED_KINDS = ["github", "webhook", "composio"];
+ *  sends every trigger of a project to one URL is filtered to the owner's own repository by them), a composio
+ *  trigger's, and a feed trigger's (the pull requests of one author, say). */
+const FILTERED_KINDS = ["github", "webhook", "composio", "feed"];
 
-/** A github, webhook or composio source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
+/** A github, webhook, composio or feed source split at its where conditions' `in` values, the one place a parameter may fill it: `ins`, each
  *  condition's list, and `rest`, the source without them. */
 function whereIns(source: Json): { ins: unknown[]; rest: Json } {
   const ins: unknown[] = [];
@@ -276,6 +276,18 @@ export const notSetUpYet = (kind: unknown, code: string): boolean => typeof kind
 export function composioTriggerSkipped(packageName: string, trigger: Json, why: string): string {
   const source = isObject(trigger.source) ? trigger.source : {};
   return `The ${packageName} template's trigger ${String(trigger.name)} (Composio ${String(source.event)} on ${String(source.server)}) was not made: ${why}`;
+}
+
+/** Whether a feed trigger, its parameters filled, reads no feed: its urls one whole array parameter the apply was given
+ *  empty. An apply skips it, never itself, as it skips a github trigger with GitHub not connected (a warning under
+ *  triggers.<i>): the agent stands. */
+export const feedLeftEmpty = (trigger: Json): boolean => isObject(trigger.source) && trigger.source.kind === "feed" && Array.isArray(trigger.source.urls) && !trigger.source.urls.length;
+
+/** What an apply says of a feed trigger it skipped (feedLeftEmpty): which, and the parameter to set. `declared` is the
+ *  package's own urls ("${parameters.status_feeds}"). */
+export function feedTriggerEmpty(packageName: string, trigger: Json, declared: unknown): string {
+  const named = (typeof declared === "string" ? [...declared.matchAll(PLACEHOLDER)][0]?.[1] : undefined) ?? "its feeds parameter";
+  return `The ${packageName} template's feed trigger ${String(trigger.name)} was not made: no feeds given in ${named}. Apply again with ${named} set to the feeds it should read.`;
 }
 
 /** Where the owner makes a composio trigger an apply skipped, once what refused it is fixed. */
@@ -329,8 +341,19 @@ const triggerFilled = (trigger: Json, given: Record<string, unknown>): Json => {
   // A composio trigger's config is typed as a pin's values are: a value that is one placeholder alone takes the
   // parameter's type (an integer config field gets an integer).
   if (isObject(trigger.source) && trigger.source.kind === "composio" && isObject(trigger.source.config)) out.source = { ...(out.source as Json), config: inputFilled(trigger.source.config, given) };
+  // A feed trigger's urls as one placeholder alone take the array its parameter names, whole; a list's URLs are text.
+  if (isObject(trigger.source) && trigger.source.kind === "feed" && typeof trigger.source.urls === "string") out.source = { ...(out.source as Json), urls: typedFilled(trigger.source.urls, given) };
   return out;
 };
+
+/** The source of the package's trigger `name`, filled from the apply's `parameters` as an apply fills it (each parameter
+ *  left out given its default): a template eval reads the feed URLs its case's trigger will read before it applies. */
+export function filledSource(p: Package, name: string, parameters: Json): Json | undefined {
+  const trigger = p.triggers.find((one) => one.name === name);
+  if (!trigger) return undefined;
+  const filledOne = triggerFilled(trigger, applyBodyOf(p, { parameters }).parameters);
+  return isObject(filledOne.source) ? filledOne.source : undefined;
+}
 
 /** An mcp entry's `pin` read: by tool, each one of the entry's `tools`, its arguments checked by the one rule every pin
  *  is (tool-plane.ts pinIssues, on the tool's gate name), text in it may hold `${parameters.<name>}` (checked with the
@@ -733,11 +756,12 @@ export function readPackage(from: string | PackageFiles): Package {
     for (const [, used] of value.matchAll(PLACEHOLDER)) if (!Object.hasOwn(fields, used!)) bad(MANIFEST, `\${parameters.${used}} names no parameter`);
   }
   // A placeholder fills text a run reads, a schedule's time (its cron and timezone, read as the schedule at apply), a
-  // github, webhook or composio trigger's where `in` values (the repository it takes, say), and a composio trigger's
-  // config values (what Composio watches for it: the owner's repository, team or label); a trigger's other settings,
-  // a composio trigger's server and event among them, are the package's own, checked here. A parameter that sets a time
-  // has a default, so the schedule the package ships is checked here too; one a where or a composio config takes is
-  // required or has a default, so the trigger never fills empty.
+  // github, webhook, composio or feed trigger's where `in` values (the repository it takes, say), a composio trigger's
+  // config values (what Composio watches for it: the owner's repository, team or label), and a feed trigger's urls (a
+  // placeholder inside a URL, or the whole list as one naming an array parameter); a trigger's other settings, a
+  // composio trigger's server and event and a feed trigger's every_s, items and id among them, are the package's own,
+  // checked here. A parameter that sets a time has a default, so the schedule the package ships is checked here too; one
+  // a where, a composio config or a feed's urls take is required or has a default, so the trigger never fills empty.
   triggers.forEach((trigger, i) => {
     if (!isObject(trigger)) return;
     const timed = isObject(trigger.source) && trigger.source.kind === "schedule";
@@ -746,10 +770,11 @@ export function readPackage(from: string | PackageFiles): Package {
       key === "target" && isObject(value) ? Object.entries(value).filter(([k]) => k !== "input").map(([k, v]) => [`target.${k}`, v] as const)
       : key === "source" && timed && isObject(value) ? Object.entries(value).filter(([k]) => !SCHEDULE_FIELDS.includes(k)).map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) && value.kind === "composio" ? Object.entries(whereIns(value).rest).filter(([k]) => k !== "config").map(([k, v]) => [`source.${k}`, v] as const)
+      : key === "source" && filtered && isObject(value) && value.kind === "feed" ? Object.entries(whereIns(value).rest).filter(([k]) => k !== "urls").map(([k, v]) => [`source.${k}`, v] as const)
       : key === "source" && filtered && isObject(value) ? [[key, whereIns(value).rest] as const]
       : key === "enabled" && typeof value === "string" ? []
       : [[key, value] as const]);
-    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github, webhook or composio trigger's where in values, a composio trigger's config values, or an mcp pin's values`);
+    for (const [at, value] of fixed) for (const [used] of strings(value).flatMap((text) => [...text.matchAll(PLACEHOLDER)])) bad(MANIFEST, `triggers[${i}].${at} holds ${used}: a placeholder goes in display_name, the instructions, a trigger's target.input, a schedule's cron and timezone, a github, webhook, composio or feed trigger's where in values, a composio trigger's config values, a feed trigger's urls, or an mcp pin's values`);
     // enabled is true, false, or one boolean parameter with a default, filled at apply (triggerFilled): the trigger is on
     // or off by the owner's answer, and by the package's default when the apply leaves it out.
     if (typeof trigger.enabled === "string") {
@@ -763,6 +788,21 @@ export function readPackage(from: string | PackageFiles): Package {
     if (filtered) {
       for (const used of new Set(strings(whereIns(trigger.source as Json).ins).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
         if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.accept, so it is required or has a default: a ${(trigger.source as Json).kind as string} trigger filled empty takes no event`);
+      }
+    }
+    // A feed's urls: a list whose URLs may hold placeholders, or one placeholder alone naming an array-of-strings
+    // parameter, filled whole; each parameter they name required or with a default, so the trigger never reads none.
+    if (isObject(trigger.source) && trigger.source.kind === "feed") {
+      const urls = trigger.source.urls;
+      if (typeof urls === "string") {
+        const rule = `triggers[${i}].source.urls is a list of URLs, or one placeholder alone, "\${parameters.<name>}", naming an array parameter of strings`;
+        const whole = WHOLE.exec(urls);
+        const spec = whole && Object.hasOwn(fields, whole[1]!) ? fields[whole[1]!] : undefined;
+        if (!whole) bad(MANIFEST, rule);
+        else if (spec && (spec.type !== "array" || !isObject(spec.items) || spec.items.type !== "string")) bad(MANIFEST, `${rule}: parameters.${whole[1]} is ${spec.type === "array" ? "an array of other than strings" : `a ${String(spec.type)}`}`);
+      }
+      for (const used of new Set(strings(urls).flatMap((text) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!)))) {
+        if (Object.hasOwn(fields, used) && !(parameters.required as string[] | undefined)?.includes(used) && fields[used]!.default === undefined) bad(MANIFEST, `parameters.${used} is used in triggers[${i}].source.urls, so it is required or has a default: a feed trigger filled empty reads no feed`);
       }
     }
     if (isObject(trigger.source) && trigger.source.kind === "composio") {
@@ -826,10 +866,11 @@ export function readPackage(from: string | PackageFiles): Package {
     for (const path of own.filter((p) => !(p === "prompt.md" || p === "case.yaml" || /^graders\/[^/]+\.md$/.test(p) || p.startsWith("fixtures/")))) bad(`${at}/${path}`, "a case holds prompt.md, graders/*.md, case.yaml and fixtures/ only");
     const caseDoc = own.includes("case.yaml") ? parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }) : undefined;
     if (caseDoc?.errors.length) bad(`${at}/case.yaml`, "is not YAML");
-    // An email case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has no body.
-    const emailCase = !!caseDoc && !caseDoc.errors.length && isObject(caseDoc.toJS()) && (caseDoc.toJS() as Json).email !== undefined;
+    // An email or feed case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has no body.
+    const caseJs = !!caseDoc && !caseDoc.errors.length && isObject(caseDoc.toJS()) ? (caseDoc.toJS() as Json) : undefined;
+    const triggeredCase = caseJs !== undefined && (caseJs.email !== undefined || caseJs.feed !== undefined);
     if (!own.includes("prompt.md")) bad(at, "has no prompt.md");
-    else if (!emailCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
+    else if (!triggeredCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
     const graders = own.filter((p) => p.startsWith("graders/"));
     if (!graders.length) bad(at, "has no graders/*.md");
     for (const path of graders) {
@@ -863,6 +904,14 @@ export function readPackage(from: string | PackageFiles): Package {
   // hangs on the value (a pattern, a bound, a choice) is the apply's, on the value given. Its type, and whether the
   // inputs name the field at all, are checked here.
   const sampled = (field: string): boolean => {
+    // A feed's URL filled from a parameter with no default holds a sample, no URL: the apply checks the value given.
+    const url = /^triggers\.(\d+)\.source\.urls(?:\[(\d+)\])?$/.exec(field);
+    if (url) {
+      const urls = (p.triggers[Number(url[1])]?.source as Json | undefined)?.urls;
+      const named = (text: unknown) => strings(text).flatMap((one) => [...one.matchAll(PLACEHOLDER)].map((m) => m[1]!));
+      const used = typeof urls === "string" ? named(urls) : Array.isArray(urls) && url[2] !== undefined ? named(urls[Number(url[2])]) : [];
+      return used.some((name) => Object.hasOwn(fields, name) && fields[name]!.default === undefined);
+    }
     const at = /^triggers\.(\d+)\.target\.input\.([^.]+)/.exec(field);
     const target = at ? (p.triggers[Number(at[1])]?.target as Json | undefined) : undefined;
     const value = at && isObject(target) && isObject(target.input) ? target.input[at[2]!] : undefined;

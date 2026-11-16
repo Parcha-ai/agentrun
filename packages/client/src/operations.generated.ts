@@ -869,7 +869,7 @@ export type TimelineRow = {
   origin?: "server" | "trigger";
   trigger?: {
     id: string;
-    source: "schedule" | "webhook" | "slack" | "github" | "composio" | "email";
+    source: "schedule" | "webhook" | "slack" | "github" | "composio" | "email" | "feed";
     owner: boolean;
     name?: string;
   };
@@ -1137,7 +1137,7 @@ export type Features = {
   };
   triggers?: {
     routes: boolean;
-    sources: Array<"schedule" | "webhook" | "github" | "composio" | "email">;
+    sources: Array<"schedule" | "webhook" | "github" | "composio" | "email" | "feed">;
     targets: Array<"start_run" | "message_run">;
     min_every_s: number;
     history_kept: number;
@@ -2751,7 +2751,7 @@ export type PutWorkspaceArchilResponse = {
 export type ReceiveHookComposioResponse = {
   firings: Array<{
     key: string;
-    by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+    by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -2773,7 +2773,7 @@ export type ReceiveHookComposioResponse = {
 } | {
   firings: Array<{
     key: string;
-    by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+    by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -4384,6 +4384,26 @@ export type CreateTriggerBody = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "feed";
+    urls: Array<string>;
+    every_s?: number;
+    items?: string;
+    id?: string;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -4493,6 +4513,26 @@ export type CreateTriggerResponse = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "feed";
+    urls: Array<string>;
+    every_s: number;
+    items?: string;
+    id?: string;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -4536,7 +4576,7 @@ export type CreateTriggerResponse = {
   updated_at: string;
   last_firing: {
     key: string;
-    by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+    by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -4578,7 +4618,7 @@ export interface FireTriggerParams {
 }
 export type FireTriggerResponse = {
   key: string;
-  by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+  by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
   nominal_at: string;
   status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
   at: string;
@@ -4598,7 +4638,7 @@ export type FireTriggerResponse = {
 export type ListTriggerFiringsResponse = {
   firings: Array<{
     key: string;
-    by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+    by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -4705,6 +4745,26 @@ export type GetTriggerResponse = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "feed";
+    urls: Array<string>;
+    every_s: number;
+    items?: string;
+    id?: string;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -4748,7 +4808,7 @@ export type GetTriggerResponse = {
   updated_at: string;
   last_firing: {
     key: string;
-    by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+    by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
@@ -4864,6 +4924,26 @@ export type ListTriggersResponse = {
           prefix: string;
         }>;
       }>;
+    } | {
+      kind: "feed";
+      urls: Array<string>;
+      every_s: number;
+      items?: string;
+      id?: string;
+      accept?: Array<{
+        event: string;
+        actions?: Array<string>;
+        where?: Array<{
+          pointer: string;
+          in: Array<unknown>;
+        } | {
+          pointer: string;
+          exists: boolean;
+        } | {
+          pointer: string;
+          prefix: string;
+        }>;
+      }>;
     };
     target: {
       kind: "start_run";
@@ -4907,7 +4987,7 @@ export type ListTriggersResponse = {
     updated_at: string;
     last_firing: {
       key: string;
-      by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
       nominal_at: string;
       status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
       at: string;
@@ -5028,6 +5108,26 @@ export type UpdateTriggerBody = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "feed";
+    urls: Array<string>;
+    every_s?: number;
+    items?: string;
+    id?: string;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target?: {
     kind: "start_run";
@@ -5134,6 +5234,26 @@ export type UpdateTriggerResponse = {
         prefix: string;
       }>;
     }>;
+  } | {
+    kind: "feed";
+    urls: Array<string>;
+    every_s: number;
+    items?: string;
+    id?: string;
+    accept?: Array<{
+      event: string;
+      actions?: Array<string>;
+      where?: Array<{
+        pointer: string;
+        in: Array<unknown>;
+      } | {
+        pointer: string;
+        exists: boolean;
+      } | {
+        pointer: string;
+        prefix: string;
+      }>;
+    }>;
   };
   target: {
     kind: "start_run";
@@ -5177,7 +5297,7 @@ export type UpdateTriggerResponse = {
   updated_at: string;
   last_firing: {
     key: string;
-    by: "schedule" | "email" | "manual" | "webhook" | "github" | "composio";
+    by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
     nominal_at: string;
     status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
     at: string;
