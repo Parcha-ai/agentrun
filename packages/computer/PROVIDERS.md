@@ -3,6 +3,8 @@
 AgentRun is an open-source platform for running AI agents. It gives each agent a computer, a sandbox or a desktop, on
 a vendor's machines. This page shows how to add your machines in one pull request.
 
+How 25 sandbox vendors fit this contract today, and what each provider would take: [the provider scorecard](SCORECARD.md).
+
 ## The first 30 minutes
 
 Conformance comes first: each step ends on a command that tells you whether it's done. Run them from the repository root.
