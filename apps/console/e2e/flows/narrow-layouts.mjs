@@ -94,7 +94,9 @@ export const agentLongDescription = {
   name: "agent-long-description",
   signedIn: true,
   async run({ page, base, api }) {
-    const description = "Reads each invoice against its purchase order and says where they differ. ".repeat(120);
+    const description = `${"Reads each invoice against its purchase order and says where they differ. ".repeat(120)}https://example.test/${"segment".repeat(20)}`;
+    const short = await api("POST", "/agents", { definition: { id: "terse", name: "Terse", description: "Reads invoices.", instructions: "Answer in one line.", tools: [] } });
+    check(short.status === 201, `creating the second agent answered ${short.status}`);
     const made = await api("POST", "/agents", { definition: { id: "wordy", name: "Wordy", description, instructions: "Answer in one line.", tools: [] } });
     check(made.status === 201, `creating the agent answered ${made.status}`);
     for (const [width, height] of [[1280, 720], [1280, 420]]) {
@@ -112,6 +114,9 @@ export const agentLongDescription = {
       const text = overview.locator("[data-agent-description]");
       check(await text.evaluate((box) => box.clientHeight >= 20 && box.scrollHeight > box.clientHeight), `${at}: the description does not scroll in a box of its own`);
       const sizes = await details.evaluate((box) => ({ box: box.getBoundingClientRect().height, column: box.parentElement.getBoundingClientRect().height }));
+      // A word wider than the column wraps, and the box that scrolls can be reached and named without a pointer.
+      check(await text.evaluate((box) => box.scrollWidth <= box.clientWidth), `${at}: a long word in the description runs past the box`);
+      check(await text.evaluate((box) => box.tabIndex === 0 && box.getAttribute("aria-label") === "Agent description"), `${at}: the scrolling description cannot take the keyboard's focus`);
       check(sizes.box >= sizes.column * 0.3, `${at}: the details have ${Math.round(sizes.box)} px of a ${Math.round(sizes.column)} px column`);
       const before = await name.evaluate((h) => h.getBoundingClientRect().top);
       const reached = await details.evaluate((box) => {
@@ -124,6 +129,11 @@ export const agentLongDescription = {
       check(reached.ends && reached.inWindow, `${at}: the last of the details cannot be brought into view`);
       check(await name.evaluate((h) => h.getBoundingClientRect().top) === before, `${at}: scrolling the details moved the agent's name`);
     }
+    // A description that fits is no stop for the keyboard.
+    await page.goto(`${base}/#/agents/terse`);
+    await page.reload();
+    await page.getByRole("heading", { level: 1, name: "Terse" }).waitFor({ timeout: 45_000 });
+    check(await page.locator("[data-agent-description]").evaluate((box) => !box.hasAttribute("tabindex") && !box.hasAttribute("role")), "a description that fits takes the keyboard's focus");
   },
 };
 
