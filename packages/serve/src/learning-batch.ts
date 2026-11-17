@@ -31,7 +31,7 @@ export type Stage = "pending" | "started" | "answered" | "reviewed" | "done" | "
 /** The row machine. pending -> started: its run started under the row's key (a start the server stopped before this write
  *  is found again by the key); started -> answered: the run's first end, its answer, right or wrong and the review's words
  *  written once; answered -> reviewed: the review sent (a resume finds it in the run's commands and sends none); reviewed ->
- *  done: the review's turn completed and its learning settled. Every other ending is failed, and a live row (started,
+ *  done: the review's turn completed, its learning settled and its all-in known (its audit's shadow run ended). Every other ending is failed, and a live row (started,
  *  answered, reviewed) moves to failed only once its run has stopped (cancelled, waited for with its grade, then booked). */
 export const ROW_MOVES: Readonly<Record<Stage, readonly Stage[]>> = { pending: ["started", "failed"], started: ["answered", "failed"], answered: ["reviewed", "failed"], reviewed: ["done", "failed"], done: [], failed: [] };
 const LIVE: ReadonlySet<Stage> = new Set<Stage>(["started", "answered", "reviewed"]);
@@ -117,18 +117,20 @@ export type Header = {
 
 /** What the loop reads of a run, from the server's view of it. */
 export type RunSnap = { status: string; ended_at: string | null; answer: string | null; cost_usd: number | null; learning_state: string | null; error: string | null };
-/** What a finished run's learning and cost say (store-reads/learning.ts costRunOf, runLearningEnd): figuresOf. */
-export type Figures = { path: RunPath; cost_usd: number | null; learning_usd: number | null; total_usd: number | null; learned: Lessons; merged: string | null; revisions: Revision[] };
+/** What a finished run's learning and cost say (store-reads/learning.ts costRunOf, runLearningEnd): figuresOf.
+ *  `unsettled`: its all-in is not known yet, its audit's shadow run still queued or running (store-reads/learning.ts
+ *  shadowSpendOf): a row is never closed on it, and its cost never saved, until it is. */
+export type Figures = { path: RunPath; cost_usd: number | null; learning_usd: number | null; total_usd: number | null; learned: Lessons; merged: string | null; revisions: Revision[]; unsettled?: true };
 /** A round's learning end as figuresOf reads it (store-reads/learning.ts RunLearningEnd): null for a round that kept none. */
 type RoundEnd = { merged?: string | null; learned?: readonly { name: string }[]; skills?: readonly { name: string }[]; workflows?: readonly { name: string }[] } | null;
 /** A run's figures from its cost (costRunOf) and the end of each round its learning kept, in order (the job's, then each
  *  follow-up's, a review's): what every round learned, each name once; the last merge's commit; and each round that merged
  *  workflows as a revision of its own, with its own commit (a round dropped is none, and moves no other round's commit). */
-export function figuresOf(cost: Pick<Figures, "path" | "cost_usd" | "learning_usd" | "total_usd">, ends: readonly RoundEnd[]): Figures {
+export function figuresOf(cost: Pick<Figures, "path" | "cost_usd" | "learning_usd" | "total_usd">, ends: readonly RoundEnd[], unsettled = false): Figures {
   const names = (pick: (e: NonNullable<RoundEnd>) => readonly { name: string }[] | undefined) => [...new Set(ends.flatMap((e) => (e ? (pick(e) ?? []).map((x) => x.name) : [])))];
   const revisions = ends.flatMap((e) => (e?.workflows?.length ? [{ commit: e.merged ?? null, workflows: [...new Set(e.workflows.map((w) => w.name))] }] : []));
   const merged = [...ends].reverse().find((e) => e?.merged)?.merged ?? null;
-  return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged, revisions, learned: { notes: names((e) => e.learned), skills: names((e) => e.skills), workflows: names((e) => e.workflows) } };
+  return { path: cost.path, cost_usd: cost.cost_usd, learning_usd: cost.learning_usd, total_usd: cost.total_usd, merged, revisions, learned: { notes: names((e) => e.learned), skills: names((e) => e.skills), workflows: names((e) => e.workflows) }, ...(unsettled ? { unsettled: true as const } : {}) };
 }
 
 /** Everything the loop needs of the server, injected: the run-create path that POST /agents/{id}/runs checks and starts by,
@@ -582,9 +584,26 @@ export class LearningBatches {
     if (back === "timeout") return this.fail(h, row, "the review's turn did not end in time", loop);
     if (back.status === "input_required") return this.fail(h, row, "the run waits on a person after its review: a batch's runs ask no one", loop);
     if (back.status !== "completed") return this.fail(h, row, `the review's turn ${back.status === "cancelled" ? "was cancelled" : "failed"}${back.error ? `: ${back.error}` : ""}`, loop);
-    const f = await this.host.figures(runId);
+    // Closed, and its cost saved, only once its all-in is known (its audit's shadow run ended): the next row's room reads it.
+    const f = await this.allIn(runId, loop, true, this.host.rowTimeoutMs ?? 30 * 60_000);
+    if (f === "stop") return h;
+    if (f === "timeout") return this.fail(h, row, "its audit's shadow run did not end in time", loop);
     await this.move(h.id, row, "done", f ? { cost_usd: f.cost_usd, learning_usd: f.learning_usd, total_usd: f.total_usd, learned: f.learned, merged: f.merged, revisions: f.revisions } : {});
     return this.tally(h);
+  }
+
+  /** The run's figures once its all-in is known (Figures.unsettled: its audit's shadow run still queued or running, whose
+   *  cost is never read as $0), read again until then: "stop" on a halt (and a cancel, when `cancels`), "timeout" past
+   *  `ms`. */
+  private async allIn(runId: string, loop: Loop, cancels: boolean, ms: number): Promise<Figures | undefined | "stop" | "timeout"> {
+    const started = this.clock();
+    for (;;) {
+      if (loop.halted || (cancels && loop.cancelled)) return "stop";
+      const f = await this.host.figures(runId);
+      if (!f?.unsettled) return f;
+      if (this.clock() - started > ms) return "timeout";
+      await sleep(this.pollMs);
+    }
   }
 
   /** A row ends failed: a live row's run is asked to stop (nothing to one that ended; a stop that fails is the loop's
@@ -593,18 +612,22 @@ export class LearningBatches {
   private async fail(h: Header, row: Row, error: string, loop: Loop): Promise<Header> {
     const runId = row.run_id;
     let known = true;
+    const started = this.clock();
+    const settleMs = this.host.settleMs ?? 10 * 60_000;
     if (runId) {
       const now = await this.host.view(runId).catch(() => undefined);
       if (!now || !settled(now)) await this.host.cancel(runId);
-      const started = this.clock();
       for (let s = now; !(s && settled(s)); ) {
         if (loop.halted) return h;
-        if (this.clock() - started > (this.host.settleMs ?? 10 * 60_000)) { known = false; break; }
+        if (this.clock() - started > settleMs) { known = false; break; }
         await sleep(this.pollMs);
         s = await this.host.view(runId).catch(() => undefined);
       }
     }
-    const f = runId && known ? await this.host.figures(runId).catch(() => undefined) : undefined;
+    // And its audit's shadow run, within the same time: an all-in not known by then is booked unknown, never short.
+    const all = runId && known ? await this.allIn(runId, loop, false, Math.max(0, settleMs - (this.clock() - started))).catch(() => undefined) : undefined;
+    if (all === "stop") return h;
+    const f = all === "timeout" ? undefined : all;
     await this.move(h.id, row, "failed", { error: error.slice(0, 400), total_usd: runId ? (f?.total_usd ?? null) : 0, ...(f ? { path: row.path ?? f.path, cost_usd: f.cost_usd, learning_usd: f.learning_usd, learned: f.learned, merged: f.merged, revisions: f.revisions } : {}) });
     return this.tally(h);
   }

@@ -47,7 +47,8 @@ import { said, STOPPED } from "../learning-words.js";
 import { proposeRun } from "../propose.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
+import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
+import { shadowRunId } from "../learn/audit.js";
 import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runReflect, runTimeline, withFeedback, withoutFeedbackRounds } from "../store-reads/journal.js";
@@ -106,8 +107,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // were admitted under, never the launch's alone. A person's stop comes to the hook as its `cut`.
     // Its spend under that cap is what the run's own gates read (capSpendOf: a request with no price of its own at the
     // figure it was held at), never the cost a person is shown, which is unknown once one request's is. What its earlier
-    // rounds' grades took beside it counts toward that cap as its own spend does (Learning.spentBeside, the figure its
-    // gates read). Either unknown: the spend is unknown, said so, never read as the whole cap.
+    // rounds' grades and its audit's shadow took beside it counts toward that cap as its own spend does (besideOf, the
+    // figure its gates read). Either unknown: the spend is unknown, said so, never read as the whole cap.
     facts: async (runId) => {
       const [rows, entries] = await Promise.all([
         runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }),
@@ -204,17 +205,47 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
 }
 
 /** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): its
- *  learning runs' grades (Store.learning.spentBeside, the one figure), for a capped run that learns, the only run whose
- *  ends queue them; none for any other, whose gates read only its own sessions. */
-export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning">, runId: string): (() => Promise<number | null>) | undefined {
+ *  learning runs' grades and its audit's shadow run (besideOf), for a capped run that learns, the only run whose ends
+ *  queue them; none for any other, whose gates read only its own sessions. */
+export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning" | "runs">, runId: string): (() => Promise<number | null>) | undefined {
   const start = learningStartOf(launch);
   if (launch.maxCostUsd === undefined || !start || start.use) return undefined;
-  return () => store.learning.spentBeside(runId);
+  return () => besideOf(store, runId);
+}
+
+/** What was spent beside run `runId` on its behalf, the one figure its cap gates and its grades' caps read: its learning
+ *  runs' grades (Store.learning.spentBeside; `beforeRound`: its earlier rounds' alone) and its audit's shadow run
+ *  (runner/audit.ts, started at its end with what its cap left): the shadow at its cost once it ended, at its own cap while
+ *  it has not (the most it may take) or when it ended at a cost not known, 0 when none was started. Null: unknown. */
+export async function besideOf(store: Pick<Store, "learning" | "runs">, runId: string, options: { beforeRound?: number } = {}): Promise<number | null> {
+  const [grades, shadow] = await Promise.all([store.learning.spentBeside(runId, options), shadowBesideOf(store, runId)]);
+  return grades === null || shadow === null ? null : grades + shadow;
+}
+
+async function shadowBesideOf(store: Pick<Store, "runs">, runId: string): Promise<number | null> {
+  const id = shadowRunId(runId);
+  const shadow = await store.runs.get(id);
+  if (!shadow) return 0;
+  const figure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
+  if (FINAL_STATES.includes(shadow.state) && figure(shadow.costUsd)) return shadow.costUsd;
+  const cap = readLaunchBody((await store.runs.launch(id)).body)?.maxCostUsd;
+  return figure(cap) ? cap : null;
+}
+
+/** What run `runId`'s cap leaves its audit's shadow run at its end (runner/audit.ts startAudit): the cap it is held to now
+ *  (capNowOf: its newest raise's, else `launchCapUsd`), less what it spent under it (capSpendOf over `entries`, its
+ *  journal: its job, its look-back, every grade an earlier round queued) and the cap of the grade this end queues
+ *  (`queued`, the end's rows: it is not in the store until the end commits). Null when that spend is unknown. */
+export async function auditRoomOf(store: Pick<Store, "learning" | "runs">, runId: string, launchCapUsd: number, entries: readonly EntryLike[], queued: readonly AlsoRow[]): Promise<number | null> {
+  const capUsd = capNowOf(launchCapUsd, entries)!;
+  const spent = await capSpendOf(store, runId, entries);
+  const grade = queued.find((row): row is Extract<AlsoRow, { table: "learning_run" }> => row.table === "learning_run")?.row.capUsd ?? 0;
+  return spent === null ? null : capUsd - spent - grade;
 }
 
 /** What capped run `runId` has spent under its cap, as every gate of the run reads it: its sessions' booking as the kernel
  *  cap counts it (metrics.ts bookedCapSpend over `entries`, its journal) and what was spent beside it on its behalf
- *  (Learning.spentBeside; `beforeRound`: its earlier rounds' grades alone). Null when either is unknown.
+ *  (besideOf: its grades, `beforeRound` its earlier rounds' alone, and its audit's shadow). Null when either is unknown.
  *
  *  The rule for a cost no one knows (a request answered with no price of its own, one cut short or lost): under a cap it
  *  counts at the figure the cap held it at when it was admitted (its worst case at the model's price, and a lost one's
@@ -223,10 +254,10 @@ export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning">,
  *  unknown (a held figure is the cap's, never a charge). Only a request held at no figure (none is, under a cap) leaves
  *  the spend itself unknown: then nothing more is sent under the cap, and the words say the spend is unknown, as the
  *  kernel's unknownSpend refusal does, never "no room". */
-export async function capSpendOf(store: Pick<Store, "learning">, runId: string, entries: readonly EntryLike[], beforeRound?: number): Promise<number | null> {
+export async function capSpendOf(store: Pick<Store, "learning" | "runs">, runId: string, entries: readonly EntryLike[], beforeRound?: number): Promise<number | null> {
   const spent = bookedCapSpend(entries);
   if (spent === null) return null;
-  const beside = await store.learning.spentBeside(runId, beforeRound === undefined ? {} : { beforeRound });
+  const beside = await besideOf(store, runId, beforeRound === undefined ? {} : { beforeRound });
   return beside === null ? null : spent + beside;
 }
 

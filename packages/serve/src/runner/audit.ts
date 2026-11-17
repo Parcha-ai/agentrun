@@ -1,9 +1,12 @@
-// The shadow audit of a serving learned workflow, at a run's claim (learn/audit.ts keeps the ledger).
-//   startAudit: a run the promoted workflow serves first is drawn at 1 in k (auditDrawn, from its id), and a drawn one
-//     appends a `started` line to audits.jsonl (with the promotion serving it), then starts its shadow run: the same
-//     agent and revision on the same input with learning off (no seed, no look-back), marked as the audit of the served
-//     run (launch.audit), no row of the run list, billed to the agent as learning cost. Only a run started over the API
-//     (no trigger: its context is never rebuilt for a shadow) of an agent every tool of which only reads
+// The shadow audit of a serving learned workflow, at a run's claim and its end (learn/audit.ts keeps the ledger).
+//   startAudit (withAudit: at the served run's end, before the end commits): a run the promoted workflow served first is
+//     drawn at 1 in k (auditDrawn, from its id), and a drawn one appends a `started` line to audits.jsonl (with the
+//     promotion serving it), then starts its shadow run: the same agent and revision on the same input with learning off
+//     (no seed, no look-back), marked as the audit of the served run (launch.audit), no row of the run list, billed to the
+//     agent as learning cost. Its cap is what the served run's cap left (the two together never pass it; the served run's
+//     later gates count it beside them, learning-end.ts besideOf); none left, no shadow (`skipped: "no allowance"`). A
+//     shadow that stops on that cap fails, never parks (auditPark), and its row is `capped`. Only a run started over the
+//     API (no trigger: its context is never rebuilt for a shadow) of an agent every tool of which only reads
 //     (learn/audit.ts auditWriterOf, the replay's readOnlyHint rule): a shadow never writes again.
 //   settleAudits: each open started line (no result row yet) whose two runs, read by id, ended writes its row (agreed:
 //     the two answers say the same, learn/promote.ts sameAnswer), oldest served run first; then, rows added or not, the
@@ -15,11 +18,14 @@
 //     hold within stop_window served runs of the first stops it: no compile, the stop said on the record.
 //   gradeRow: an owner's grade on a run the workflow answered alone is a row too (source grade, agreed = the grade).
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { Park } from "@parcha/agentrun-kernel/kernel/cap";
 import { auditLoopOf, type AuditLoop } from "../learning-setting.js";
+import { RUN_CAP_MIN_USD } from "../learning-batch.js";
 import { SERVED_PATHS, type RunPath } from "../learning-cost.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
+import { runEntries } from "../store-reads/journal.js";
+import { type AlsoRow, FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
@@ -28,8 +34,10 @@ import { readLearning, writeLearning, type LearningFolder } from "../learn/folde
 import { type AuditDisagreement, CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, sameAnswer, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
+import { auditRoomOf } from "./learning-end.js";
+import type { EndOfRunTurn } from "./loop-contract.js";
 import { answerOf } from "./promotion.js";
-import type { WorkflowFirst } from "./workflow-first.js";
+import { servedOf, type WorkflowFirst } from "./workflow-first.js";
 
 /** What the audit reads and writes at a claim (or the server's grade): the agent, the run claimed (none for a grade),
  *  its revision (whose definition holds the numbers) and launch, the agent's learning folder, the host's secrets as a
@@ -76,12 +84,47 @@ export async function notAuditableOf(store: Pick<Store, "runs">, agentId: string
   return (await servedRuns(store, agentId, loop.stop_window, workflow, digest)).filter((row) => (metricsOf(row) as { not_auditable?: unknown }).not_auditable === true).length;
 }
 
-/** Starts the shadow of run `runId` when the learned workflow `serve` serves it first and its id is drawn: never for a
- *  replay or a shadow, a run that does not learn, one not auditable (auditableLaunch: a trigger started it, or it was
- *  handed files), nor a run of an agent that can call a tool that writes (auditWriterOf). Its started line is appended
- *  first: a shadow is created only once the ledger names it (settlement finds it there, never in a window of runs), and
- *  one whose line could not be written is never created. Idempotent: one line and one shadow per run. */
-export async function startAudit(deps: AuditDeps & { readonly runId: string; readonly launch: RunLaunch }, serve: WorkflowFirst | undefined): Promise<void> {
+/** The words a shadow that stopped on its cap ends failed with (auditPark): its row is `capped`, with no verdict. */
+export const AUDIT_CAPPED = "the audit stopped on its cap: what its served run's cap left";
+
+/** What a refusal at its cap does to a shadow run (the cap's rule, parkOf, then this): one a raise could fix fails it
+ *  in AUDIT_CAPPED's words, never parks it. Nobody raises a shadow's cap, which is what its served run's cap left. */
+export const auditPark = (park: Park): Park => (park.outcome === "parked" ? { outcome: "failed", error: `${AUDIT_CAPPED} (${park.words})` } : park);
+
+/** The served run's end-of-run step `step`, its audit started after it (startAudit) on an end the run reached on its own
+ *  (a cut run starts none): the learned workflow that served it, read from its journal whatever claim it served on
+ *  (servedOf), and, for a capped run, what its cap leaves once this end is counted (auditRoomOf: its job, its look-back,
+ *  the grades beside it and the one this end queues). */
+export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch }): EndOfRunTurn | undefined {
+  if (!step) return undefined;
+  return async (input) => {
+    const rows = await step(input);
+    if (input.cut === undefined) await auditAtEnd(deps, input.runId, rows?.also ?? []);
+    return rows;
+  };
+}
+
+async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch }, runId: string, queued: readonly AlsoRow[]): Promise<void> {
+  try {
+    const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
+    const served = servedOf(entries);
+    if (!served?.digest) return;
+    const capUsd = deps.launch.maxCostUsd;
+    await startAudit({ ...deps, runId, ...(capUsd !== undefined ? { room: () => auditRoomOf(deps.store, runId, capUsd, entries, queued) } : {}) }, { name: served.workflow, digest: served.digest });
+  } catch (error) {
+    deps.log(`workflow-first: the audit of this run did not start (${(error as Error)?.message ?? error})`);
+  }
+}
+
+/** Starts the shadow of run `runId`, at its end, when the learned workflow `serve` served it first and its id is drawn:
+ *  never for a replay or a shadow, a run that does not learn, one not auditable (auditableLaunch: a trigger started it,
+ *  or it was handed files), nor a run of an agent that can call a tool that writes (auditWriterOf). A capped run's shadow
+ *  is capped at what its cap leaves (`room`, read now: the served run spent all it will under it), so the two never
+ *  spend past the served run's cap; with less than a run's smallest cap left (or a spend not known), no shadow is started
+ *  and its row says `skipped: "no allowance"`. Its started line is appended first: a shadow is created only once the
+ *  ledger names it (settlement finds it there, never in a window of runs), and one whose line could not be written is
+ *  never created. Idempotent: one line and one shadow per run. */
+export async function startAudit(deps: AuditDeps & { readonly runId: string; readonly launch: RunLaunch; readonly room?: () => Promise<number | null> }, serve: Pick<WorkflowFirst, "name" | "digest" | "replay"> | undefined): Promise<void> {
   const { store, agentId, runId, launch, log } = deps;
   if (!serve || serve.replay || launch.replay || launch.audit || !launch.learning || !auditableLaunch(launch)) return;
   try {
@@ -98,6 +141,20 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     const k = auditEveryOf(loop, before);
     if (!auditDrawn(runId, k)) return;
     const id = shadowRunId(runId);
+    // Once per run: an end after a follow-up finds its shadow made, or its row written (skipped, or settled). A started
+    // line with no shadow (a crash between the two) is made now.
+    if (await store.runs.get(id)) return;
+    if ((await readLedger(deps)).some((line) => line.run === runId && line.source === "shadow")) return;
+    const promoted = promotionStartOf(await promotionsOf(store.settings, agentId), serve.name, serve.digest);
+    // What the served run's cap leaves its shadow (none for an uncapped run), to a millionth, never above it.
+    const room = deps.room ? await deps.room() : undefined;
+    const allowance = room === undefined || room === null ? room : Math.floor(room * 1e6 + 1e-6) / 1e6;
+    if (allowance === null || (allowance !== undefined && allowance < RUN_CAP_MIN_USD)) {
+      const skipped: AuditRow = { run: runId, shadow_run: null, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, source: "shadow", agreed: null, served_cost: null, shadow_cost: null, skipped: "no allowance", at: iso((deps.now ?? Date.now)()) };
+      await addLines(deps, [skipped]);
+      log(`workflow-first: ${serve.name} at ${serve.digest} served this run, drawn for its audit (1 in ${k}); no shadow: ${allowance === null ? "what it spent under its cap is not known" : `its cap leaves $${allowance}, under a run's smallest cap`} (no allowance)`);
+      return;
+    }
     const shadow: RunLaunch = {
       input: launch.input,
       title: `Audit of ${launch.title}`.slice(0, 200),
@@ -106,7 +163,7 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       ...(launch.harness !== undefined ? { harness: launch.harness } : {}),
       ...(launch.model ? { model: launch.model } : {}),
       ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
-      ...(launch.maxCostUsd !== undefined ? { maxCostUsd: launch.maxCostUsd } : {}),
+      ...(allowance !== undefined ? { maxCostUsd: allowance } : {}),
       ...(launch.plane ? { plane: launch.plane } : {}),
       ...(launch.approvers !== undefined ? { approvers: launch.approvers } : {}),
       ...(launch.documents !== undefined ? { documents: launch.documents } : {}),
@@ -115,7 +172,6 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
       audit: { of: runId, workflow: serve.name, digest: serve.digest },
     };
-    const promoted = promotionStartOf(await promotionsOf(store.settings, agentId), serve.name, serve.digest);
     const started: AuditStarted = { source: "started", run: runId, shadow_run: id, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, at: iso((deps.now ?? Date.now)()) };
     await addLines(deps, [started]);
     const sealed = await handedTo(deps, runId, id);
@@ -155,7 +211,9 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
       const [servedRow, shadow] = [await store.runs.get(open.run), await store.runs.get(open.shadow_run)];
       // Its shadow is created after its line, at the served run's claim: one missing once the served run ended never ran.
       if ((servedRow && !ended(servedRow)) || (shadow && !ended(shadow))) continue;
-      rows.push({ at: servedRow?.startedAt ?? 0, row: { run: open.run, shadow_run: open.shadow_run, workflow: open.workflow, digest: open.digest, promoted_at: open.promoted_at, source: "shadow", agreed: null, served_cost: servedRow?.costUsd ?? null, shadow_cost: shadow?.costUsd ?? null, at: iso(now) } });
+      // One that stopped on its cap (auditPark's words) has no answer: `capped`, with no verdict.
+      const capped = shadow?.state === "failed" && (shadow.summary ?? "").startsWith(AUDIT_CAPPED);
+      rows.push({ at: servedRow?.startedAt ?? 0, row: { run: open.run, shadow_run: open.shadow_run, workflow: open.workflow, digest: open.digest, promoted_at: open.promoted_at, source: "shadow", agreed: null, served_cost: servedRow?.costUsd ?? null, shadow_cost: shadow?.costUsd ?? null, ...(capped ? { capped: true as const } : {}), at: iso(now) } });
     }
     rows.sort((a, b) => a.at - b.at || (a.row.run < b.row.run ? -1 : a.row.run > b.row.run ? 1 : 0));
     const { all, added } = rows.length ? await addLines(deps, rows.map(({ row }) => row), async (row) => {

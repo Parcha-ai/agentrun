@@ -374,11 +374,20 @@ type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
 export async function allInOf(store: RunRecords, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
   // Every round's (learningSpendOf over the rounds: what its row spent after its job answered is learning, roundsLooked).
   const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
-  // An audit's shadow run of it (runner/audit.ts) is its learning too: its cost once it ended, stopped or failed (null
-  // when unknown), 0 while it runs or when it was not drawn.
-  const shadow = await store.runs.get(shadowRunId(run.id));
-  const audited = shadow && FINAL_STATES.includes(shadow.state) ? (shadow.costUsd ?? null) : 0;
+  // An audit's shadow run of it (runner/audit.ts) is its learning too (shadowSpendOf): unknown while it is queued or
+  // running, never $0.
+  const audited = (await shadowSpendOf(store, run.id)).usd;
   return runCostOf(run.costUsd, looked, grade === null || audited === null ? null : grade + audited);
+}
+
+/** What run `runId`'s audit shadow run (runner/audit.ts) adds to its all-in cost: `open` while it is queued or running
+ *  (its cost not known yet: `usd` null, never $0), else its cost once it ended, stopped or failed (null: unknown); 0 when
+ *  none was started, and for a shadow itself. */
+export async function shadowSpendOf(store: { readonly runs: Pick<RunRecords["runs"], "get"> }, runId: string): Promise<{ open: boolean; usd: number | null }> {
+  if (isShadowRun(runId)) return { open: false, usd: 0 };
+  const shadow = await store.runs.get(shadowRunId(runId));
+  if (!shadow) return { open: false, usd: 0 };
+  return FINAL_STATES.includes(shadow.state) ? { open: false, usd: shadow.costUsd ?? null } : { open: true, usd: null };
 }
 
 /** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,

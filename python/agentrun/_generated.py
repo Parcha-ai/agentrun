@@ -2235,7 +2235,7 @@ class ListLearningAuditsResponse(TypedDict):
     audits: list[ListLearningAuditsResponseAuditsItem]
 
 
-class ListLearningAuditsResponseAuditsItem(TypedDict):
+class _ListLearningAuditsResponseAuditsItemRequired(TypedDict):
     run: str
     shadow_run: str | None
     workflow: str
@@ -2246,6 +2246,11 @@ class ListLearningAuditsResponseAuditsItem(TypedDict):
     served_cost: float | None
     shadow_cost: float | None
     at: str
+
+
+class ListLearningAuditsResponseAuditsItem(_ListLearningAuditsResponseAuditsItemRequired, total=False):
+    skipped: Literal["no allowance"]
+    capped: Literal[True]
 
 
 class ListLearningPromotionsResponse(TypedDict):

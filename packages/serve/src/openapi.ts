@@ -1280,7 +1280,7 @@ const COST_RUN = closed({
   learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
   cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
   cost_upper_bound: { type: "boolean", description: "The run's stored cost is only a bound (its row's `costAtMostUsd`: a model request cut at its cap hold): `cost_usd` and `total_usd` are null, never a known cost. `summary` counts such a run as `at_most`, not `unknown`." },
-  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet."),
+  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet. An audit's shadow run of it is its learning too: null while that shadow is queued or running, never $0."),
   total_usd: COST_USD("The run's all-in cost, `cost_usd` and `learning_usd` together; null when either is."),
 });
 const LEARNING_COST = closed({
@@ -1416,17 +1416,20 @@ const SERVING = closed({
   audits_off: { ...NULL_STRING, description: "Why none of the agent's runs is audited, e.g. `audits off: send_email can write`: its definition can call a tool that is not read-only (an MCP tool its server lists without `readOnlyHint`, or a built-in other than web_fetch, web_search, pdf_pages and llm, its computer's tools among them), which a shadow run would call a second time. Null when every tool it can call only reads: its served runs are audited." },
   not_auditable: { ...COUNT, description: "Of the serving revision's newest `learning.stop_window` served runs, those a trigger started: never audited (a shadow run gets none of a trigger's context, and could answer where it answers). 0 when none serves." },
 });
-const AUDIT_ROW = closed({
+const AUDIT_ROW = closedWith({
   run: { type: "string", description: "The served run." },
-  shadow_run: { ...NULL_STRING, description: "Its shadow run (the same agent on the same input with learning off, GET /runs/{id}'s `audit_of` names the served run); null for a grade's row." },
+  shadow_run: { ...NULL_STRING, description: "Its shadow run (the same agent on the same input with learning off, GET /runs/{id}'s `audit_of` names the served run); null for a grade's row, or when none was started (`skipped`)." },
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision that served it." },
   promoted_at: { type: ["string", "null"], format: "date-time", description: "The promotion of that revision the row counts for: its promote record's `at` (GET .../learning/promotions), the one serving when the shadow started or the grade was given. The hold rule counts only the rows of the revision's promotion now, so a revision its owner's replay promotes again after a hold starts on none. Null: none." },
   source: { enum: ["shadow", "grade"], description: "`shadow`: the shadow run's answer compared with the served one. `grade`: an owner's grade of a run the workflow answered alone (PUT /runs/{id}/grade)." },
-  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed): no evidence, not counted." },
+  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed or stopped on its cap, or none was started): no evidence, not counted." },
   served_cost: { type: ["number", "null"], minimum: 0, description: "What the served run cost; null when unknown." },
   shadow_cost: { type: ["number", "null"], minimum: 0, description: "What the shadow run cost (the agent's learning cost); null for a grade's row, or when unknown." },
   at: DATE_TIME,
+}, {
+  skipped: { const: "no allowance", description: "No shadow was started: the served run's cap left less than a run's smallest cap ($0.01), or what it spent under it is not known. `agreed` is null: not counted." },
+  capped: { const: true, description: "The shadow stopped on its cap (what the served run's cap left, never raised), so it has no answer. `agreed` is null: not counted." },
 });
 const BATCH_LESSONS = closed({ notes: { type: "array", items: { type: "string" } }, skills: { type: "array", items: { type: "string" } }, workflows: { type: "array", items: { type: "string" } } });
 const BATCH_ROW = closedWith(
@@ -1527,7 +1530,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/audits": {
     get: {
       operationId: "listLearningAudits", tags: ["agents"], summary: "The audit ledger of the agent's serving learned workflows",
-      description: "One row per finished audit, oldest first, as the agent's learning folder keeps them (audits.jsonl): a run a promoted learned workflow served first (answered alone or handed back) is audited at 1 in `learning.audit_every` (drawn from its id): its shadow run, the same agent on the same input with learning off, answers it again, and the row says whether the two answers say the same and what each run cost (the shadow's is the agent's learning cost; the shadow is no row of the run list, and GET /runs/{id} reads it with `audit_of`). An owner's grade of a run the workflow answered alone is a row too. The hold rule reads them (`learning.hold_window`, `learning.hold_disagree`).",
+      description: "One row per finished audit, oldest first, as the agent's learning folder keeps them (audits.jsonl): a run a promoted learned workflow served first (answered alone or handed back) is audited at 1 in `learning.audit_every` (drawn from its id): its shadow run, the same agent on the same input with learning off, answers it again, and the row says whether the two answers say the same and what each run cost (the shadow's is the agent's learning cost; the shadow is no row of the run list, and GET /runs/{id} reads it with `audit_of`). A capped run's shadow starts at its end, capped at what its cap left, so the two never spend past it: with less than a run's smallest cap left, none starts (`skipped`), and one that stops on its cap has no answer (`capped`); neither is counted. An owner's grade of a run the workflow answered alone is a row too. The hold rule reads them (`learning.hold_window`, `learning.hold_disagree`).",
       parameters: [AGENT_ID],
       responses: { "200": json(closed({ agent: { type: "string" }, audits: { type: "array", items: AUDIT_ROW } }), "The agent's audit rows."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
@@ -3090,7 +3093,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "imported/1",
     },
     trigger: RUN_TRIGGER,
-    audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow served first may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, is no row of the run list, and its cost is in the served run's `cost.usd` and the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
+    audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow served first may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, started at the served run's end and capped at what the served run's cap left, is no row of the run list, and its cost is in the served run's `cost.usd` (null while the shadow is queued or running: never $0) and the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },

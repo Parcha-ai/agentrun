@@ -164,13 +164,22 @@ Only a run started over the API is drawn: one a trigger started (its checkout, t
 audited, counted `not_auditable` on the promotions read. And only an agent every tool of which only reads, by the rule a
 check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `readOnlyHint`, a built-in by READ_TOOLS, the
 computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
-(`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run first
-appends a started line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, at}`),
-then starts its shadow run at its claim (`runner/audit.ts` startAudit): the same agent and revision on the same input
-with learning off (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit` naming the
-run it audits; a shadow whose line could not be written is never created. The shadow is no row of the run list, GET
-/runs/{id} reads it with `audit_of`, and its cost is the served run's learning (its `cost.usd` and its learning cost in
-the cost series). Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
+(`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run, at its
+end (`runner/audit.ts` withAudit, before the end commits, the workflow read from its journal), first appends a started
+line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, at}`), then starts its
+shadow run (startAudit). A capped run's shadow is capped at what the served run's cap left: its cap now, less what it
+spent under it and the grade its end queues (`runner/learning-end.ts` auditRoomOf), so the two never spend past the
+served run's cap; the served run's later gates count the shadow beside it (besideOf: its cost once it ended, its cap
+until then). With less than a run's smallest cap left (`RUN_CAP_MIN_USD`, $0.01) or a spend not known, no shadow is
+started: the row `{..., shadow_run: null, agreed: null, skipped: "no allowance"}` is written instead. A shadow that stops
+on its cap fails, never parks (auditPark: nobody raises a shadow's cap), and its row is `capped: true` with `agreed`
+null: neither agreed nor disagreed, never counted toward the hold. The shadow is the same agent and revision on the
+same input with learning off (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit`
+naming the run it audits; a shadow whose line could not be written is never created. The shadow is no row of the run
+list, GET /runs/{id} reads it with `audit_of`, and its cost is the served run's learning (its `cost.usd` and its learning
+cost in the cost series). While the shadow is queued or running the served run's all-in is unknown, never $0
+(`store-reads/learning.ts` shadowSpendOf): its `cost.usd`, `cost.all_in_usd` and learning cost read null, and a
+learning batch closes no row on it, nor saves its cost, until the shadow ends (`learning-batch.ts` Figures.unsettled). Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
 digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, at}`, `agreed` by `sameAnswer` (null when
 either answer is missing or a run is gone, never counted). An owner's grade of a run the workflow answered alone is a

@@ -3833,6 +3833,8 @@ export interface operations {
         served_cost: number | null;
         shadow_cost: number | null;
         at: string;
+        skipped?: "no allowance";
+        capped?: true;
       }[];
     };
   };

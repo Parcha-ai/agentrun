@@ -69,7 +69,7 @@ import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid, toolFlowsFor } from "./promotion.js";
 import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
-import { settleAudits, startAudit } from "./audit.js";
+import { auditPark, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -529,7 +529,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const tierRoute = tierRoutes.get(by as Tier);
       return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
-    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    // What its learning runs' grades and its audit's shadow took beside it, read by every gate with its own sessions
+    // (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
@@ -539,7 +540,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     : {
         capUsd,
         // A park names the cap the loop holds the run to then (a raise's, else this one).
-        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => parkOf(refusal as CapRefused, capNow),
+        // An audit's shadow run is never parked at its cap: it fails, capped (runner/audit.ts auditPark).
+        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => {
+          const park = parkOf(refusal as CapRefused, capNow);
+          return launch.audit ? auditPark(park) : park;
+        },
         checkRaise,
         followUpOf: (raised: number) => followUpOf(raised),
       };
@@ -591,8 +596,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), promotionGate(promotion), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
   await replayClaimed(deps.store, runRow.agentId, claim.runId, launch, firstChoice);
-  // A run the promoted workflow serves first, drawn at 1 in k, starts its shadow audit (runner/audit.ts startAudit).
-  await startAudit({ ...audits, runId: claim.runId, launch }, firstChoice.serve);
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsFor, learn/replay-calls.ts).
   const replay = await replayCallsFor(deps.store, claim.runId, launch, context);
@@ -665,7 +668,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
   // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
   // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
-  const endOfRun = launch.replay || launch.audit ? undefined : learningEndOfRun(launch, {
+  // A run the promoted workflow served first starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
+  // withAudit): at its end, so the shadow's cap is what the run's own left.
+  const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -681,7 +686,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  });
+  }), { ...audits, launch });
 
   return {
     adapter,

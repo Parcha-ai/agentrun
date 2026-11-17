@@ -115,7 +115,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd, shadowSpendOf } from "./store-reads/learning.js";
 import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
@@ -1567,8 +1567,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
       const newest = await store.learning.proposal(runId);
       const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
-      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then.
-      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends);
+      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then. Its all-in
+      // is not known while its audit's shadow run is queued or running (shadowSpendOf): the batch closes no row on it.
+      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends, (await shadowSpendOf(store, runId)).open);
     },
     // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
     shown: (agentId) => learningShown(agentId),

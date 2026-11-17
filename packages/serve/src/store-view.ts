@@ -51,7 +51,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
+import { laidOf, notesReadOf, runLearningEnd, type RunLearning, shadowSpendOf, usedOnly, withNotes } from "./store-reads/learning.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -62,7 +62,6 @@ import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
 import { FINAL_STATES, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
-import { isShadowRun, shadowRunId } from "./learn/audit.js";
 import type { RecordingView } from "./run-recordings.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
@@ -448,15 +447,8 @@ function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0, laid.skills.length, laid.workflows.length), at };
 }
 
-/** What run `runId`'s audit shadow run cost (runner/audit.ts: the agent's learning for it, all in on the served run): its
- *  cost once it ended, stopped or failed (null when unknown), 0 while it runs, when it was not drawn, or for a shadow. */
-async function shadowCostOf(store: Store, runId: string): Promise<number | null> {
-  if (isShadowRun(runId)) return 0;
-  const shadow = await store.runs.get(shadowRunId(runId));
-  return shadow && FINAL_STATES.includes(shadow.state) ? (shadow.costUsd ?? null) : 0;
-}
-
-/** A view's cost with its shadow's added to `usd` (unknown once either is). */
+/** A view's cost with its audit shadow run's (store-reads/learning.ts shadowSpendOf: unknown while it is queued or
+ *  running, 0 when none was started) added to `usd` (unknown once either is). */
 function withShadowCost(cost: Record<string, unknown>, shadow: number | null): Record<string, unknown> {
   if (shadow === 0) return cost;
   const usd = typeof cost.usd === "number" && shadow !== null ? Math.round((cost.usd + shadow) * 1e6) / 1e6 : null;
@@ -597,7 +589,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     error,
     review,
     pending,
-    cost: withShadowCost(costOfView(run), await shadowCostOf(store, runId)),
+    cost: withShadowCost(costOfView(run), (await shadowSpendOf(store, runId)).usd),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
