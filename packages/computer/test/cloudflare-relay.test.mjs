@@ -308,6 +308,25 @@ test("a create whose idle timeout fails answers 500 in its words and ends what i
 	assert.deepEqual([container.starts.length, container.running, container.idle], [2, true, [6 * HOUR]]);
 });
 
+test("a create whose idle timeout fails after a delete and a create again leaves the new computer alone", async () => {
+	const cf = fakeCloudflare();
+	const { container } = cf.computer();
+	let fail;
+	container.setInactivityTimeout = (ms) => {
+		container.idle.push(ms);
+		return container.idle.length === 1 ? new Promise((_, reject) => (fail = reject)) : Promise.resolve();
+	};
+	const first = cf.call("POST", "/v1/computers", create());
+	while (fail === undefined) await settle();
+	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 204);
+	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
+	fail(new Error("the container is not ready"));
+	assert.deepEqual(await first, { status: 500, json: { error: "Cloudflare did not keep the container: the container is not ready" } });
+	assert.deepEqual([container.starts.length, container.running], [2, true]);
+	assert.equal((await cf.call("GET", `/v1/computers/${NAME}`)).json.state, "running");
+	assert.deepEqual((await cf.call("GET", "/v1/computers")).json.computers.map(({ name }) => name), [NAME]);
+});
+
 test("the alarm sets the idle timeout again each hour, and at backstopAt destroys the container and drops its row", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: T0 });
 	const cf = fakeCloudflare();

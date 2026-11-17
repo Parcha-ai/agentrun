@@ -133,6 +133,8 @@ export class Computer {
 	readonly #env: Env;
 	/** Set once this object ends its container (until a new start), so the monitor's settling never writes the row back. */
 	#ended = false;
+	/** The row this object's last start made, until its end: a create's cleanup ends that computer and no later one. */
+	#made: Row | undefined;
 
 	constructor(state: State, env: Env) {
 		this.#state = state;
@@ -168,7 +170,8 @@ export class Computer {
 			await this.#state.container.setInactivityTimeout(IDLE_MS);
 		} catch (error) {
 			// The container would stop soon after the object goes quiet (A): end it, so the provider's create again starts one.
-			await this.#end(name);
+			// Only if it is still this create's: a delete, and a create again, may have come while it waited.
+			if (this.#made === started) await this.#end(name);
 			return refuse(500, `Cloudflare did not keep the container: ${words(error)}`);
 		}
 		return answer(201, this.#view(started));
@@ -192,6 +195,7 @@ export class Computer {
 			return refuse(500, `Cloudflare did not start the container: ${words(error)}`);
 		}
 		this.#ended = false;
+		this.#made = made;
 		await this.#state.storage.put("row", made);
 		// The alarm with the row, so a create that fails from here on still has its backstop.
 		await this.#nextAlarm(made);
@@ -254,6 +258,7 @@ export class Computer {
 	 */
 	async #end(name: string): Promise<void> {
 		this.#ended = true;
+		this.#made = undefined;
 		if (this.#state.container.running) await this.#state.container.destroy("deleted");
 		await this.#state.storage.deleteAlarm();
 		await this.#state.storage.deleteAll();
