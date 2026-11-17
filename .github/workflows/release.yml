@@ -518,3 +518,78 @@ jobs:
           SLACK_CHANNEL: ${{ vars.SLACK_RELEASES_CHANNEL }}
           RELEASE_URL: ${{ needs.github-release.outputs.url }}
         run: node scripts/release-slack.mjs --tag "$RELEASE_TAG" --url "$RELEASE_URL" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md"
+
+  # The website's import pull request, once the packages are published and the GitHub prerelease is out: the website's own
+  # scripts/import-content.py, run in its checkout of main against this tag, then scripts/release-website.mjs commits the
+  # change as the website App's bot on release/<tag>-content and opens "content: import AgentRun <tag>". Nothing changed, or a
+  # branch or open pull request for it already there, is a notice, so a re-run is harmless. The App (the repository variable
+  # WEBSITE_APP_ID and the secret WEBSITE_APP_PRIVATE_KEY) holds the only write, on the website alone; without it the job
+  # says so and stops. It continues on error, so the website never fails or blocks a release.
+  website:
+    needs: [publish, github-release]
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Is the website App configured?
+        id: app
+        env:
+          APP_ID: ${{ vars.WEBSITE_APP_ID }}
+          APP_KEY: ${{ secrets.WEBSITE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::website import skipped: WEBSITE_APP_ID / WEBSITE_APP_PRIVATE_KEY unset"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.app.outputs.ready == 'true'
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.WEBSITE_APP_ID }}
+          private-key: ${{ secrets.WEBSITE_APP_PRIVATE_KEY }}
+          owner: Parcha-ai
+          repositories: agentrun-website
+      - if: steps.app.outputs.ready == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          path: agentrun
+          persist-credentials: false
+      - if: steps.app.outputs.ready == 'true'
+        name: Match the checkout to the provenance commit
+        working-directory: agentrun
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      # The App token stays in this checkout's git config, scoped to the website, for the push.
+      - if: steps.app.outputs.ready == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Parcha-ai/agentrun-website
+          ref: main
+          path: website
+          token: ${{ steps.token.outputs.token }}
+      - if: steps.app.outputs.ready == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - if: steps.app.outputs.ready == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+      - if: steps.app.outputs.ready == 'true'
+        name: Import the release into the website
+        working-directory: website
+        run: python3 scripts/import-content.py "$RELEASE_TAG" --release-tag "$RELEASE_TAG" --repo "$GITHUB_WORKSPACE/agentrun"
+      - if: steps.app.outputs.ready == 'true'
+        name: Open the website's import pull request
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+        run: node agentrun/scripts/release-website.mjs --tag "$RELEASE_TAG" --website website

@@ -2,9 +2,16 @@
 // approval holds, and how AgentRun Server's image is built and released. The publish step itself is run in
 // release-publish-step.test.mjs; the pypi and box jobs' own steps in python-release.test.mjs and box-recipe.test.mjs.
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { parse } from 'yaml';
+
+const exec = promisify(execFile);
 
 const workflow = parse(readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'));
 const { jobs } = workflow;
@@ -146,6 +153,53 @@ test('the release is posted to Slack with the stars notification\'s token and a 
   assert.equal(post.env.RELEASE_URL, '${{ needs.github-release.outputs.url }}');
   assert.equal(post.run, 'node scripts/release-slack.mjs --tag "$RELEASE_TAG" --url "$RELEASE_URL" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md"');
   assert.equal(slack.steps[stepAt('slack', /^actions\/download-artifact@/)].with.name, 'release-changelog');
+});
+
+test('the website import pull request is opened after the GitHub release with the website App\'s token, and never fails or blocks the release', async () => {
+  const site = jobs.website;
+  assert.deepEqual(needs('website').sort(), ['github-release', 'publish'], 'after the packages are published and the GitHub prerelease is out');
+  assert.equal(site.if, jobs.publish.if);
+  assert.equal(site['continue-on-error'], true, 'its failure leaves the run green');
+  assert.equal(site.environment, undefined);
+  assert.deepEqual(site.permissions, { contents: 'read' }, 'the App token writes the website; this run\'s token only reads');
+  pinned(site.steps);
+  // The App is configured: both, or the job says so and stops, green.
+  const check = site.steps[0];
+  assert.equal(check.id, 'app');
+  assert.equal(check.env.APP_ID, '${{ vars.WEBSITE_APP_ID }}');
+  assert.equal(check.env.APP_KEY, '${{ secrets.WEBSITE_APP_PRIVATE_KEY }}');
+  for (const [env, ready, notice] of [[{}, 'false', true], [{ APP_ID: '1' }, 'false', true], [{ APP_KEY: 'k' }, 'false', true], [{ APP_ID: '1', APP_KEY: 'k' }, 'true', false]]) {
+    const dir = await mkdtemp(join(tmpdir(), 'agentrun-website-check-'));
+    try {
+      const out = join(dir, 'output');
+      await writeFile(out, '');
+      const { stdout } = await exec('bash', ['-e', '-c', check.run], { env: { PATH: process.env.PATH, GITHUB_OUTPUT: out, ...env } });
+      assert.equal((await readFile(out, 'utf8')).trim(), `ready=${ready}`, JSON.stringify(env));
+      if (notice) assert.equal(stdout.trim(), '::notice::website import skipped: WEBSITE_APP_ID / WEBSITE_APP_PRIVATE_KEY unset');
+      else assert.equal(stdout.trim(), '');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
+  for (const step of site.steps.slice(1)) assert.equal(step.if, "steps.app.outputs.ready == 'true'", `${step.name ?? step.uses} runs only with the App configured`);
+  const token = site.steps.find(step => /^actions\/create-github-app-token@[0-9a-f]{40}$/.test(step.uses ?? ''));
+  assert.ok(token, 'the App token, pinned by commit');
+  assert.deepEqual(token.with, { 'app-id': '${{ vars.WEBSITE_APP_ID }}', 'private-key': '${{ secrets.WEBSITE_APP_PRIVATE_KEY }}', owner: 'Parcha-ai', repositories: 'agentrun-website' });
+  const checkouts = site.steps.filter(step => /^actions\/checkout@/.test(step.uses ?? ''));
+  const agentrun = checkouts.find(step => step.with.path === 'agentrun');
+  assert.equal(agentrun.with.ref, '${{ inputs.tag }}');
+  assert.equal(agentrun.with['fetch-depth'], 0, 'every tag and commit, which the import reads');
+  assert.equal(agentrun.with['persist-credentials'], false);
+  assert.ok(site.steps.some(step => step['working-directory'] === 'agentrun' && step.run === 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"'), 'the checkout is the provenance commit');
+  const web = checkouts.find(step => step.with.path === 'website');
+  assert.deepEqual(web.with, { repository: 'Parcha-ai/agentrun-website', ref: 'main', path: 'website', token: `\${{ steps.${token.id}.outputs.token }}` });
+  const imported = site.steps.find(step => /import-content\.py/.test(step.run ?? ''));
+  assert.equal(imported['working-directory'], 'website');
+  assert.equal(imported.run, 'python3 scripts/import-content.py "$RELEASE_TAG" --release-tag "$RELEASE_TAG" --repo "$GITHUB_WORKSPACE/agentrun"');
+  const opened = site.steps.find(step => /release-website\.mjs/.test(step.run ?? ''));
+  assert.equal(opened.run, 'node agentrun/scripts/release-website.mjs --tag "$RELEASE_TAG" --website website');
+  assert.equal(opened.env.GH_TOKEN, `\${{ steps.${token.id}.outputs.token }}`);
+  assert.equal(opened.env.APP_SLUG, `\${{ steps.${token.id}.outputs.app-slug }}`);
+  const at = pattern => site.steps.findIndex(step => pattern.test(step.run ?? step.uses ?? ''));
+  assert.ok(at(/^actions\/create-github-app-token@/) < at(/import-content\.py/) && at(/import-content\.py/) < at(/release-website\.mjs/));
 });
 
 test('anyone who can dispatch the workflow can release: no actor check; the npm-release environment\'s reviewers approve', () => {
