@@ -167,7 +167,13 @@ export interface components {
       allow: string[];
     };
     harnesses?: {
-      id: "pi" | "claude-agent" | "codex" | "opencode";
+      id: string;
+      label: string;
+      promises: {
+        resume: "exact" | "load" | "restart";
+        tool_gate: "every_call" | "permission" | "config";
+        billing: "proxy" | "plan";
+      };
       available: boolean;
       free_models: {
         id: string;
@@ -194,7 +200,7 @@ export interface components {
       available: boolean;
       reason?: string;
       missing?: string[];
-      harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+      harnesses: string[];
       providers?: string[];
       provider?: string;
       default_provider?: string;
@@ -318,7 +324,7 @@ export interface components {
       strong?: string;
     };
     thinking?: "low" | "medium" | "high" | "xhigh" | "max";
-    harness?: "pi" | "claude-agent" | "codex" | "opencode";
+    harness?: string;
     place?: {
       mode: "runner";
     } | {
@@ -474,7 +480,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict" | "model_key_required";
   ExternalRef: {
     source: string;
     kind: string;
@@ -687,6 +693,7 @@ export interface components {
   };
   MessageCreate: {
     content: string;
+    model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
@@ -951,6 +958,7 @@ export interface components {
     effort?: components["Effort"];
     max_cost_usd?: number;
     quote_id?: string;
+    model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
@@ -974,6 +982,7 @@ export interface components {
     effort?: components["Effort"];
     max_cost_usd?: number;
     quote_id?: string;
+    model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
@@ -2418,9 +2427,9 @@ export interface operations {
   getHealth: {
     body: never;
     answer: {
-      status: "ok" | "failing";
+      status: "ok" | "failing" | "warming";
       checks: {
-        store: "ok" | "does_not_open";
+        store: "ok" | "does_not_open" | "opening";
         disk: "ok" | "below_floor" | "cannot_check";
       };
     };

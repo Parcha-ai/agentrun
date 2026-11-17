@@ -162,7 +162,7 @@ export type DefinitionInput = {
     strong?: string;
   };
   thinking?: "low" | "medium" | "high" | "xhigh" | "max";
-  harness?: "pi" | "claude-agent" | "codex" | "opencode";
+  harness?: string;
   place?: {
     mode: "runner";
   } | {
@@ -580,6 +580,7 @@ export type RunCreateInline = {
   effort?: Effort;
   max_cost_usd?: number;
   quote_id?: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -813,6 +814,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -833,6 +835,7 @@ export type RunCreate = {
   effort?: Effort;
   max_cost_usd?: number;
   quote_id?: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -999,7 +1002,13 @@ export type Capabilities = {
     allow: Array<string>;
   };
   harnesses?: Array<{
-    id: "pi" | "claude-agent" | "codex" | "opencode";
+    id: string;
+    label: string;
+    promises: {
+      resume: "exact" | "load" | "restart";
+      tool_gate: "every_call" | "permission" | "config";
+      billing: "proxy" | "plan";
+    };
     available: boolean;
     free_models: Array<{
       id: string;
@@ -1026,7 +1035,7 @@ export type Capabilities = {
     available: boolean;
     reason?: string;
     missing?: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     providers?: Array<string>;
     provider?: string;
     default_provider?: string;
@@ -3900,9 +3909,9 @@ export type GetCapabilitiesResponse = Capabilities;
 
 /** Whether this server can serve (GET /health). */
 export type GetHealthResponse = {
-  status: "ok" | "failing";
+  status: "ok" | "failing" | "warming";
   checks: {
-    store: "ok" | "does_not_open";
+    store: "ok" | "does_not_open" | "opening";
     disk: "ok" | "below_floor" | "cannot_check";
   };
 };

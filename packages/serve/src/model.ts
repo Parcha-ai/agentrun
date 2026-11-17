@@ -11,7 +11,7 @@ import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai
 import type { Wire } from "@parcha/agentrun-kernel";
 import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
-import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
 import { gatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
@@ -24,11 +24,13 @@ import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signed
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
 /** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_WEB, ...), but the harness table's
- *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name. */
+ *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name, as it drops the resolved harness modules list
+ *  (HARNESS_MODULES_ENV). */
 export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
-/** `env` without a test hook's name: serve sets those from startServe's options alone, so a name the server's own
- *  environment holds (an operator's export, a leftover) never gives its runs fake answers or loads a module. */
-export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV));
+/** `env` without a test hook's name or the resolved harness modules list: serve sets those from startServe's options
+ *  alone, so a name the server's own environment holds (an operator's export, a leftover) never gives its runs fake
+ *  answers or loads a module. */
+export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV && name !== HARNESS_MODULES_ENV));
 /** Under `--faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through (the
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */
@@ -469,7 +471,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // the provider's client per wire, which pi-ai picks by the model's `api`.
   const gatewayModels = ids.map((id) => {
     const cost = priceOf(id);
-    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none.
+    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none,
+    // and so does a model the catalog does not list.
     const thinking = catalogThinking(catalog, id, namedOf.get(id));
     const shared = { id, name: id, provider: MODEL_PROVIDER, reasoning: true, input: ["text", "image"] as ("text" | "image")[], cost, contextWindow: 128_000, maxTokens: 32_000, ...(thinking ? { thinkingLevelMap: thinking } : {}) };
     return wireOf(id) === "anthropic-messages" ? { ...shared, api: "anthropic-messages", baseUrl: base } : { ...shared, api: "openai-responses", baseUrl, compat: { supportsDeveloperRole: false } };
@@ -729,12 +732,16 @@ export async function catalogPrices(): Promise<Map<string, Listed[]>> {
  *  version form: the vendor's entry (the id's segment before it, else `named`); else each level every entry that says
  *  agrees on (gpt-6.1-sol's entries differ on `minimal` alone: openai-codex's asks low), a level they differ on left to
  *  pi-ai's default. None: undefined, pi-ai's defaults. So pi through a gateway at thinking off asks gpt-6.1-sol for no
- *  effort, as its catalog entries say (off: null), not the "none" it refuses. */
+ *  effort, as its catalog entries say (off: null), not the "none" it refuses. A model the catalog does not list (a local
+ *  model, a gateway's own alias) is never asked to stop reasoning either (off: null): pi then thinks at its lowest level,
+ *  so a model that reasons anyway has its reasoning split out of the answer, never written into it. */
 export function catalogThinking(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ThinkingLevelMap | undefined {
   const segments = id.split("/");
   const own = segments.at(-1)!;
   const vendor = segments.length > 1 ? segments.at(-2) : named;
-  const saying = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []).flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
+  const listed = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []);
+  if (!listed.length) return { off: null } as ThinkingLevelMap;
+  const saying = listed.flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
   const vendors = saying.find((entry) => entry.provider === vendor);
   if (vendors) return vendors.map as ThinkingLevelMap;
   const agreed: Record<string, string | null> = {};

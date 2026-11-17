@@ -16,7 +16,7 @@ import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
-  type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
+  type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
@@ -33,7 +33,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { readLaunch, readLearningStarts, writeLaunch } from "./run-launch.js";
+import { readLaunch, readLearningStarts, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -690,12 +690,17 @@ class SqliteStore implements Store {
         });
         return triggerOf(row!);
       },
-      update: async (id, patch, scopes) => {
+      update: async (id, patch, scopes, options) => {
         const { set, params } = triggerSet(patch, now());
+        // A compare-and-set (options.ifUpdatedAt): no row is changed once the trigger was updated or deleted since that read.
+        // Its source too (options.ifSource, compared as the JSON text the store wrote): one millisecond's writes share an
+        // updated_at, never a source.
+        const unchanged = `${options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?"}${options?.ifSource === undefined ? "" : " AND source = ?"}`;
+        const since = [...(options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt]), ...(options?.ifSource === undefined ? [] : [json(options.ifSource)])];
         const row = await db.transaction(async (tx) => {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
-          const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
+          const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ?${unchanged} RETURNING ${TRIGGER_COLUMNS}`, ...params, id, ...since);
           // Never left on for an archived agent (turned on, or moved there on): the whole update is undone.
           if (changed?.enabled === 1) await refuseArchived(tx, changed.agent_id);
           // Scope rows only while it is on: turned off, it holds none; given scopes, they are its rows now.
@@ -1008,7 +1013,7 @@ class SqliteStore implements Store {
           const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
           if (reopened === 0) throw new RunFinal(runId);
           // The message's launch secrets, with it: the claim that runs its turn reads them.
-          if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
+          if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
           await lockCommandsOf(tx, runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
@@ -1782,7 +1787,7 @@ class SqliteStore implements Store {
     };
   }
 
-  async secureRewrite(work: () => Promise<number>): Promise<SecureRewrite> {
+  async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {
     const marker = this.#scrubMarker;
     if (this.#db.dialect.name !== "sqlite" || marker === undefined) return { rewritten: await work() };
     // Written before any byte changes: a server that dies after the rewrite committed, and before the scrub below is done,
@@ -1800,6 +1805,8 @@ class SqliteStore implements Store {
       rmSync(marker, { force: true });
       return { rewritten };
     }
+    // Asked with no VACUUM (a server already serving): the marker stays, and the next start's scrub runs it before it serves.
+    if (options.vacuum === false) return { rewritten, left: "deferred" };
     // secure_delete zeroes only the bytes `work` freed: a copy an earlier, ordinary update of the row left (a pause, a
     // rename, a firing) is in a free block or page still. VACUUM rebuilds the file with neither, through the log; the
     // checkpoint copies it into the file and truncates the log. Run outside any transaction.
@@ -1996,7 +2003,7 @@ class SqliteStore implements Store {
         expect: { kind: "final", runId },
       });
       // The message's launch secrets, in the command's own write: written only when the command is (a final run refuses both).
-      if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
+      if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
       return inserted;
     });
     wakeCommands(this.where, { runId, what: "written" });

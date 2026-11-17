@@ -311,10 +311,10 @@ after(async () => {
 });
 /** A store for a server a test starts with startServe (`{ ...options, store: await triggerStore() }`), as serve() gives its
  *  own: the triggers' rows, a trigger's agent put there first. `of`: the same store again for a restart on the same data. */
-export async function triggerStore(of) {
+export async function triggerStore(of, { now } = {}) {
   if (of) return of;
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server", ...(now ? { now } : {}) });
   loose.push({ store, dir });
   return withAgents(store);
 }
@@ -410,7 +410,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
-      memory: runnerMemory(store),
+      memory: runnerMemory(store, undefined, env),
       onBeat: () => void beats++,
       // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
       ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),

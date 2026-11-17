@@ -10,23 +10,25 @@ import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
-import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
-import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
-import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
+import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
+import { harnessModulesOf } from "./harness-table.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
+import { startTelemetry } from "./telemetry.js";
+// The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
+// on a slow disk that load is most of a start. Nothing above loads more than a few files.
+import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.js";
 
 // A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
 // command, the server and the runner alike.
 surviveClosedPipes();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -65,6 +67,11 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     notes changed last, whole, while they fit
   --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
                     strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
+  --harness-module MODULE
+                    a harness module to add harnesses from (repeatable; default AGENTRUN_SERVE_HARNESS_MODULES, comma-
+                    separated): a path, or a package installed with npm install --prefix DIR/harnesses PACKAGE, whose
+                    entries(builtins) export adds harnesses of its own to this server and its runner. It never replaces
+                    a built-in harness (pi, claude-agent, codex, opencode); one that does, or is missing, refuses the start
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -85,6 +92,10 @@ published port, or a proxy's URL), and the link printed uses it; with none, Rend
 AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
 or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
+
+AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (docs/telemetry.md): a random id, the
+version, the platform and how many runs as a range, never prompts, files or keys. Off in CI and under --faux too;
+AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
 timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
@@ -286,6 +297,7 @@ try {
       "grade-model": { type: "string" },
       "learning-budget": { type: "string" },
       "no-runner": { type: "boolean", default: false },
+      "harness-module": { type: "string", multiple: true, default: [] },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -360,6 +372,18 @@ try {
   process.exit(2);
 }
 const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
+// The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
+// the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
+// which waits for a server it replaces, as it always has: no early line then. The banner's "Open " line still means ready.
+let early: Awaited<ReturnType<typeof listenFirst>>;
+try {
+  early = await listenFirst({ host: values.listen ?? DEFAULT_HOST, port, data, env: process.env });
+} catch (error) {
+  console.error(`agentrun-serve: ${(error as Error).message}`);
+  process.exit(1);
+}
+if (early) console.log(`Starting ${publicUrl ?? urlOf(early, values.listen ?? DEFAULT_HOST)}/ (warming: health says so and the API answers 503 until the server is ready)`);
+const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
@@ -373,8 +397,10 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
+    // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
+    ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
@@ -394,6 +420,9 @@ try {
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+// Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
+// under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
+const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
 const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {
@@ -408,7 +437,7 @@ if (!values["no-runner"] && askedAt === undefined) {
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own });
+    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();
@@ -421,6 +450,8 @@ for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token:
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);
+// The notice of the anonymous counts, once, on stderr: the npx command passes stderr through and keeps stdout to itself.
+if (telemetry.notice) console.error(telemetry.notice);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
 // and the browser's history.
 // API-only: there is no console, so nothing to open.
@@ -436,7 +467,8 @@ const stop = stopOnSignals({
     // A drain that has runs to wait on says so, as a run's own process did on the server's stop.
     const busy = runnerProc?.runner.held().length ?? 0;
     if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
-    return Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined);
+    // The counts' last write (telemetry.ts) is waited for once the runner has said its last run's end.
+    return Promise.all([(runnerProc?.close() ?? Promise.resolve()).then(() => telemetry.close()), serve.close()]).then(() => undefined);
   },
   // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
   // and release are never cut short (besideStopping).

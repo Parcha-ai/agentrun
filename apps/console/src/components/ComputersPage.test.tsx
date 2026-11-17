@@ -313,13 +313,61 @@ describe("Settings → Computers", () => {
   });
 
   it("tests a provider: the server's passed with its detail, or failed with its why, wherever the provider shows", async () => {
-    const { v2, calls } = server([view()], (c) => json(200, c.path.endsWith("/orgo/test") ? { ok: true, detail: "Orgo answered: 3 computers on this account" } : { ok: false, why: E2B_WHY }));
+    const REFUSED = "E2B refused the key: check E2B_API_KEY";
+    const { v2, calls } = server([view(true)], (c) => json(200, c.path.endsWith("/orgo/test") ? { ok: true, detail: "Orgo answered: 3 computers on this account" } : { ok: false, why: REFUSED }));
     const { row, click } = await open(v2);
     await click(row("Desktop", "Orgo"), /^Test connection$/);
     expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/orgo/test" });
     expect(row("Desktop", "Orgo").querySelector("[data-test]")?.textContent).toMatch(/^Passed · .+ · Orgo answered: 3 computers on this account$/);
     await click(row("Sandbox", "E2B"), /^Test connection$/);
-    for (const k of ["Sandbox", "Desktop"]) expect(row(k, "E2B").querySelector("[data-test]")?.textContent, k).toMatch(new RegExp(`^Failed · .+ · ${E2B_WHY.replace(/[()]/g, "\\$&")}$`));
+    for (const k of ["Sandbox", "Desktop"]) expect(row(k, "E2B").querySelector("[data-test]")?.textContent, k).toMatch(new RegExp(`^Failed · .+ · ${REFUSED}$`));
+  });
+
+  it("offers Test connection only to a provider whose keys are saved: none to one with no key, or with a required key missing", async () => {
+    const optional: ComputerProvider = { id: "opt", name: "Opt", metered: false, secrets: [secret("opt", "OPT_TOKEN", false)], required: [], ready: true, ...NO_SHELL };
+    const { v2, calls } = server([{ paired: [], kinds: [kind("sandbox", [docker, e2b(false), daytona, optional]), kind("browser", [kernel])] }]);
+    const { row, button } = await open(v2);
+    // Docker has no key: its Ready says whether this machine's daemon answers.
+    expect(button(row("Sandbox", "Docker"), /^Test connection$/)).toBeUndefined();
+    // E2B's and Kernel's required key is missing: their Not ready names it.
+    expect(button(row("Sandbox", "E2B"), /^Test connection$/)).toBeUndefined();
+    expect(button(row("Browser", "Kernel"), /^Test connection$/)).toBeUndefined();
+    // Only optional keys, none saved: there is no account to test.
+    expect(button(row("Sandbox", "Opt"), /^Test connection$/)).toBeUndefined();
+    // A key from the environment counts as saved.
+    expect(button(row("Sandbox", "Daytona"), /^Test connection$/)).toBeTruthy();
+    expect(calls.some((c) => c.path.endsWith("/test"))).toBe(false);
+  });
+
+  it("drops a test's answer that lands after a key was saved: it answered for the key before", async () => {
+    let answer!: (r: Response) => void;
+    const { v2 } = server([view(true)], (c) => (c.path.endsWith("/test") ? new Promise<Response>((r) => { answer = r; }) : json(200, e2b(true))));
+    const p = await open(v2);
+    await p.click(p.row("Sandbox", "E2B"), /^Test connection$/);
+    expect(p.button(p.row("Sandbox", "E2B"), /^Testing…$/)).toBeTruthy();
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Replace$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    await act(async () => answer(json(200, { ok: true, detail: "E2B answered for the old key" })));
+    await p.settle();
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")).toBeNull();
+    expect(p.button(p.row("Sandbox", "E2B"), /^Test connection$/)).toBeTruthy();
+  });
+
+  it("offers Test connection once a provider's key is saved, and drops a result its keys have since changed", async () => {
+    const { v2, calls } = server([view(), view(true), view(true)], (c) => (c.path.endsWith("/test") ? json(200, { ok: true, detail: "E2B answered" }) : json(200, e2b(true))));
+    const p = await open(v2);
+    expect(p.button(p.row("Sandbox", "E2B"), /^Test connection$/)).toBeUndefined();
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Paste$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    await p.click(p.row("Sandbox", "E2B"), /^Test connection$/);
+    expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/e2b/test" });
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")?.textContent).toMatch(/^Passed · .+ · E2B answered$/);
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Replace$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")).toBeNull();
   });
 
   it("off the owner's password session, says once how to change keys and offers no key input, Paste or Remove", async () => {

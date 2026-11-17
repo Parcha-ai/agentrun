@@ -34,7 +34,7 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  holds each paired computer's socket in this process, so a run here takes one. `dial`: the server's (Serve.dial), which
  *  a remote provider's create takes, so a machine that dials the server lands in this process's hub. Returns the runner
  *  and a close() that stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -108,11 +108,13 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
     if (trouble) return void (onLine ?? (event.type === "error" ? console.error : console.log))(trouble);
     const line = runLine(event);
     if (line) (onLine ?? console.log)(line);
+    // The server's anonymous counts (telemetry.ts) hear a run's end: its state alone, never which run or agent.
+    if (event.type === "ended") onRunEnded?.(event.status);
   };
   // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
   const { runEndComputers } = await import("../workspace/run-end-computers.js");
   const runEnded = runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`) });
-  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store, undefined, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");

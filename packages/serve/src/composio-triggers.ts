@@ -44,7 +44,7 @@ export type ComposioCredential = { key: string; user: string; toolkit: string };
 /** What an instance comes to once a trigger no longer holds it (leftWith). */
 type Left = "delete" | "off" | "keep";
 /** A trigger of kind composio, as the engine keeps it. */
-type Holder = { id: string; name: string; enabled: boolean; source: Source };
+type Holder = { id: string; name: string; enabled: boolean; source: Source; updatedAt?: number };
 type Sealed = { get(scope: string, field: string): string | undefined; set(scope: string, field: string, value: string, as?: "utf8"): Promise<void>; remove(scope: string): Promise<void> };
 type Subscription = { id: string; webhook_url: string; secret: string; enabled_events: string[] };
 
@@ -355,6 +355,74 @@ export class ComposioTriggers implements TriggerUpstream {
       }
     }
     return done;
+  }
+
+  /** After the server's start, never holding it up: each composio trigger an earlier server kept with a value in the clear
+   *  in a field only its event's schema marks (format: password, writeOnly: sealedSchemaFields; the name rule is
+   *  sealKept's) sealed, as sealKept seals one. Each event's schema is read once from Composio with its server's key, its
+   *  words withheld when the server's triggers hold sealed values. When a read fails (Composio down), that is said once,
+   *  by a code, and those triggers are left for the next start. The rewrites run inside `around` (the store's
+   *  secureRewrite), once, and only when there is one to make. */
+  async sealMarked(rewrite: (id: string, source: Source, updatedAt: number | undefined, read: Source) => Promise<boolean>, around: (work: () => Promise<number>) => Promise<unknown>): Promise<void> {
+    const eventOf = (holder: Holder) => `${String(holder.source.server)}\n${String(holder.source.event)}`;
+    // A top-level value in the clear its sealed_config doesn't name: one the schema may mark.
+    const plain = (source: Source): string[] => {
+      const sealed = new Set(sealedOf(source));
+      return isObject(source.config) ? Object.entries(source.config).filter(([name, value]) => !sealed.has(name) && value !== SEALED_MASK && sealableValue(value)).map(([name]) => name) : [];
+    };
+    const holders = (await this.deps.holders()).filter((holder) => plain(holder.source).length);
+    const marked = new Map<string, string[]>();
+    let unread = 0;
+    let failed: unknown;
+    for (const event of new Set(holders.map(eventOf))) {
+      if (this.deps.signal?.aborted) return;
+      const [server, slug] = event.split("\n") as [string, string];
+      try {
+        const credential = await this.deps.credential(server, "field");
+        const type = await this.ask(credential, "nothing was changed", this.sealedValues(holders.filter((holder) => eventOf(holder) === event)))(`reading ${slug}'s config on Composio`, "GET", `/api/v3/triggers_types/${enc(slug)}`);
+        marked.set(event, sealedSchemaFields(type.config));
+      } catch (error) {
+        unread++;
+        failed ??= error;
+      }
+    }
+    if (unread && !this.deps.signal?.aborted) this.deps.say({ condition: "composio_config_schemas_unread", events: String(unread), error: failed instanceof ApiError ? failed.code : "error" });
+    const due = (holder: Holder) => plain(holder.source).filter((name) => marked.get(eventOf(holder))?.includes(name));
+    if (this.deps.signal?.aborted || !holders.some((holder) => due(holder).length)) return;
+    await around(async () => {
+      let done = 0;
+      // Read again: a request since may have changed or deleted one.
+      for (const holder of await this.deps.holders()) {
+        const fields = due(holder);
+        if (!fields.length) continue;
+        const config = holder.source.config as Json;
+        const values = fields.map((name) => String(config[name]));
+        const unseal = async () => {
+          for (const name of fields) await this.deps.sealed.remove(configScope(holder.id, name)).catch(() => undefined);
+        };
+        let written: boolean;
+        try {
+          for (const [i, name] of fields.entries()) await this.deps.sealed.set(configScope(holder.id, name), configFieldFor(values[i]!), values[i]!);
+          // These fields alone masked: any other value is as the row keeps it (sealKept's). Written only while the row is
+          // the one read here (its updatedAt and its source: one millisecond's writes share an updatedAt): a PATCH since (an
+          // accept) is not undone, a delete since leaves no sealed row.
+          written = await rewrite(holder.id, { ...holder.source, config: { ...config, ...Object.fromEntries(fields.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealedOf(holder.source), ...fields])] }, holder.updatedAt, holder.source);
+        } catch (error) {
+          await unseal();
+          this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: fields.join(","), error: told(error, values) });
+          continue;
+        }
+        if (!written) {
+          await unseal();
+          this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: fields.join(","), error: "changed_meanwhile" });
+          continue;
+        }
+        // Written: the row is masked, so its sealed values are now the one copy and nothing after this undoes them.
+        this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: fields.join(",") });
+        done++;
+      }
+      return done;
+    });
   }
 
   // ---- its steps ---------------------------------------------------------------------------------------------------------

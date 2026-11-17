@@ -77,6 +77,9 @@ export const REPLAY_LAUNCH_GRACE_MS = 5 * 60 * 1000;
 
 export interface PromotionDeps {
   readonly store: Store;
+  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a replay check starts runs with
+   *  no caller's key. Absent: it runs. */
+  readonly spendOff?: (what: string) => string | undefined;
   readonly agentId: string;
   /** The run being claimed: never one of its own check's inputs. Absent: no run is claimed (a person's replay, and its
    *  read): no run served first to keep, none whose per_run MCP credentials a replay is handed. */
@@ -392,6 +395,10 @@ async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runI
  *  it fits), it is decided at once: never promoted, it stops with nothing checked (stopUnchecked). */
 async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string): Promise<void> {
   const { store, agentId, log } = deps;
+  // Its replay runs are runs the runner starts, on no caller's key: skipped where the claimed run brought its own key or
+  // the server holds none (claimSpendOff).
+  const off = deps.spendOff?.("A learned workflow's replay check");
+  if (off) return void log(`workflow-first: ${off} ${workflow.name} at ${digest} is not checked and does not serve this run`);
   // Only the learning folder's newest revision is checked: a run pinned to an older commit lays an older text.
   const newest = deps.newest ? await deps.newest(workflow.name) : undefined;
   if (newest !== undefined && newest !== digest) {
@@ -689,6 +696,7 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  this claim created. */
 async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<number> {
   const { store } = deps;
+  if (deps.spendOff?.("A replay")) return 0;
   const since = (deps.now ?? Date.now)() - Date.parse(record.at);
   const launch = record.launch;
   if (!launch || since <= REPLAY_LAUNCH_GRACE_MS || since > REPLAY_DEADLINE_MS) return 0;

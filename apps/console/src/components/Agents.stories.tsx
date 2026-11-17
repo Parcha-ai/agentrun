@@ -40,7 +40,7 @@ const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "
 };
 
 export const List: Story = { render: () => page(<AgentsList agents={agentsList()} actions={{ onOpen: noop, onEdit: noop, onNew: noop, onRuns: noop, onArchive: noop }}
-  handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="lg" iconOnPhone className="max-sm:w-11" serverUrl="http://127.0.0.1:7340/v2" />} />) };
+  handoff={<CodingAgentHandoff context={{ kind: "create" }} label="Build with your coding agent" size="sm" iconOnPhone className="max-sm:w-11" serverUrl="http://127.0.0.1:7340/v2" />} />) };
 export const ListArchived: Story = { render: () => page(<AgentsList agents={archivedAgents()} archived actions={{ onOpen: noop, onEdit: noop, onArchive: noop }} />) };
 export const ListEmpty: Story = { render: () => page(<AgentsList agents={[]} actions={{ onNew: noop }} />) };
 export const ListLoading: Story = { render: () => page(<AgentsList agents={null} />) };

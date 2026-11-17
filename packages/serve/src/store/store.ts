@@ -233,9 +233,13 @@ export interface RunLaunchRow {
 }
 
 /** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
- *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither.
+ *  Given as a function, it is called inside that transaction with the sealed bytes the launch holds then (null when none:
+ *  a run whose end erased them), and its answer is written (null erases): a message that hands one secret keeps the
+ *  others the run holds, with no read outside the write that could bring back what an end erased. */
+export type LaunchSealed = Uint8Array | ((current: Uint8Array | null) => Uint8Array | null);
 export interface LaunchSealedWrite {
-  readonly launchSealed?: Uint8Array;
+  readonly launchSealed?: LaunchSealed;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -558,6 +562,11 @@ export interface NewTrigger {
 }
 /** A trigger's fields changed; the ones absent stay. */
 /** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
+/** A trigger update's options: a compare-and-set, written only while the row is still the read the patch was made from,
+ *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
+ *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
+ *  write that must never land over another source write (a seal, an edit) gives both. */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {
@@ -654,7 +663,7 @@ export interface Triggers {
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
    *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
    *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
-  update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
+  update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[], options?: TriggerUpdateOptions): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;
   /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
@@ -1311,11 +1320,16 @@ export type StoreRole = "server" | "runner";
 /** What Store.secureRewrite did: how many rows `work` rewrote and, when old bytes may still be in the store's files (the
  *  marker kept for the next start), why: "busy", a reader in another connection held the log back from the checkpoint, or
  *  a write of another connection held the VACUUM off through its busy wait and its one retry; "failed", the VACUUM or
- *  the checkpoint failed otherwise. */
+ *  the checkpoint failed otherwise; "deferred", the rewrite was asked with no VACUUM (a server already serving), so the
+ *  next start's scrub finishes it. */
 export interface SecureRewrite {
   readonly rewritten: number;
-  readonly left?: "busy" | "failed";
+  readonly left?: "busy" | "failed" | "deferred";
 }
+/** secureRewrite's options: `vacuum: false` rewrites with secure_delete on and leaves the marker, with no VACUUM or
+ *  checkpoint: for a server already serving, where a VACUUM would hold every store call (and another process's writes)
+ *  while it rebuilds the whole file, and needs about its size again on disk. The next start's scrub runs it. */
+export type SecureRewriteOptions = { readonly vacuum?: boolean };
 
 export interface Store {
   /** Where this store's data is, as an identity two instances over the same data share and two over different data never
@@ -1361,7 +1375,7 @@ export interface Store {
    *  left) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
-  secureRewrite?(work: () => Promise<number>): Promise<SecureRewrite>;
+  secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

@@ -15,7 +15,10 @@ import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
 import { FIRST_RUN_ID, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
-import { client, printed } from "./support.mjs";
+import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { agent, client, printed } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const BREAKER = new URL("./fixtures/faux-channel.mjs", import.meta.url).pathname;
@@ -153,15 +156,19 @@ test("a call past the channel's cap fails alone, and the channel goes on", async
 // ---------------------------------------------------------------------------------------------------------------------
 // The whole server: a run whose process breaks its channel fails, and the store's files are the server's alone.
 
-async function launched(t) {
+/** The launcher's server on a data directory of its own, its runs each a process of their own (no helper: process
+ *  isolation). `faux`: its --faux module (false: none, the model the environment names). `keys`: false hands it no provider key,
+ *  only its token and seal key. `extra`: more of its environment. */
+async function launched(t, { faux = BREAKER, keys = true, extra = {} } = {}) {
   const dir = scratchDir(t, "run-isolation-");
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
-  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" ? undefined : `${canary}-${i}`]));
-  const env = { ...process.env, ...secrets, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
+  const own = (name) => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_SEAL_KEY";
+  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
+  const env = { ...process.env, ...secrets, ...extra, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   delete env.AGENTRUN_RUN_USER;
   const data = join(dir, "data");
-  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--faux", BREAKER], { detached: true, stdio: ["ignore", "pipe", "pipe"], env });
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", ...(faux ? ["--faux", faux] : [])], { detached: true, stdio: ["ignore", "pipe", "pipe"], env });
   let alive = true;
   const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));
   let said = "";
@@ -207,4 +214,75 @@ test("a run whose process writes a frame its channel never sends fails, in words
   const files = readdirSync(data).filter((name) => /^store\.sqlite/.test(name) || /^runner-.*\.alive$/.test(name));
   assert.ok(files.includes("store.sqlite"), `no store in ${readdirSync(data).join(" ")}`);
   for (const name of files) assert.equal((statSync(join(data, name)).mode & 0o777).toString(8), "600", `${name} is ${(statSync(join(data, name)).mode & 0o777).toString(8)}: ${said().slice(-400)}`);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A run's own model key (model_key), from a run's own process: the runner opens it from the claim's launch (Held
+// runModelKey), at the claim and again for a message's key mid-turn (ClaimModelKey.fresh), and the process sends it.
+
+const KEY_ONE = `not-a-secret-${"isolated-key-one"}-5b2e71`;
+const KEY_TWO = `not-a-secret-${"isolated-key-two"}-d84c09`;
+
+/** A front for gateway `gw` on loopback that records the bearer of each POST and holds the first until `release()`. Its
+ *  connections are closed before it is (a box's port watcher holds one open). */
+async function heldFront(t, gw) {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let first = true;
+  const seen = [];
+  const front = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    if (req.method === "POST") seen.push(req.headers.authorization);
+    if (req.method === "POST" && first) {
+      first = false;
+      await held;
+    }
+    try {
+      const answer = await fetch(`${gw.url}${req.url}`, { method: req.method, headers: { "content-type": "application/json", authorization: req.headers.authorization ?? "" }, body: req.method === "POST" ? Buffer.concat(chunks) : undefined });
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await answer.arrayBuffer()));
+    } catch {
+      res.destroy();
+    }
+  });
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (release(), front.closeAllConnections(), front.close(resolve))));
+  return { url: `http://127.0.0.1:${front.address().port}`, seen, release: () => release() };
+}
+
+test("a run's own model key reaches its gateway from the run's own process: the key its start handed, then, mid-turn, a message's, on the very next request; the server holds no model key", { timeout: 180_000 }, async (t) => {
+  const gw = await startFauxGateway({ text: "Answered." });
+  t.after(() => gw.close());
+  const front = await heldFront(t, gw);
+  const { api, data, said } = await launched(t, { faux: false, keys: false, extra: { AGENT_MODEL_BASE_URL: front.url, AGENT_MODEL: "claude-sonnet-5-5" } });
+  assert.equal((await api("GET", "/capabilities")).body.run_isolation, "process");
+  assert.equal((await api("POST", "/agents", agent("keyed"))).status, 201);
+  const started = await api("POST", "/agents/keyed/runs", { input: { content: "Answer." }, model_key: KEY_ONE });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const until = async (check, what, ms = 60_000) => {
+    for (const end = Date.now() + ms; !(await check()); await sleep(100)) assert.ok(Date.now() < end, `${what}, not within ${ms} ms\nthe server said: ${said().split("\n").filter((line) => !line.includes("event=request")).join("\n").slice(-3000)}`);
+  };
+  await until(() => front.seen.length >= 1, "the turn's first request reached the gateway's front");
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "And then?", model_key: KEY_TWO });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  // The message's row is taken once the run's process took it, its key read again first (the store, read-only here).
+  const taken = () => {
+    const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+    try {
+      return db.prepare("SELECT taken_at FROM commands WHERE run_id = ? AND kind = 'steer'").all(runId).some((row) => row.taken_at !== null);
+    } finally {
+      db.close();
+    }
+  };
+  await until(taken, "the run took the message");
+  front.release();
+  let view;
+  await until(async () => ["completed", "failed", "cancelled"].includes((view = (await api("GET", `/runs/${runId}`)).body).status), "the run ended", 90_000);
+  assert.equal(view.status, "completed", JSON.stringify(view));
+  assert.equal(front.seen[0], `Bearer ${KEY_ONE}`, "the turn began on the key its start handed");
+  assert.ok(front.seen.length >= 2, `a request after the message: ${front.seen.length}`);
+  assert.deepEqual([...new Set(front.seen.slice(1))], [`Bearer ${KEY_TWO}`], "every request after the message carried its key");
+  for (const key of [KEY_ONE, KEY_TWO]) assert.equal(said().includes(key), false, "no key in the server's or the runner's lines");
 });

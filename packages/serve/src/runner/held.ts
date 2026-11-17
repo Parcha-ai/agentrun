@@ -16,6 +16,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import type { GithubAppAccessAt } from "./github-app.js";
 import type { HarnessInstallEntry, HarnessPins } from "../harness-install.js";
 import type { AlsoRow } from "../store/store.js";
+import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
@@ -73,6 +74,12 @@ export interface Held {
   savedModelKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them. */
   tierModelKeys(tiers: readonly Tier[]): Promise<{ readonly keys: Record<string, string>; readonly plan?: PlanReader }>;
+  /** The run's own model key, opened from the claim's run's launch (claim-secrets.ts claimModelKey): none where it holds
+   *  none; throws, in words, where the launch does not open under the runner's seal key. Asked again for each message's
+   *  key (ClaimModelKey.fresh). */
+  runModelKey(): Promise<RunModelKey | undefined>;
+  /** Whether the server has a gateway and holds no key for it (claim-secrets.ts serverKeyless): a boolean, never a key. */
+  serverKeyless(): Promise<boolean>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys). */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;
   /** A browser session's viewer handed over, and taken back (browser-live.ts). */

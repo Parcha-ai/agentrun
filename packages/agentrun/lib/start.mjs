@@ -35,8 +35,9 @@ export const API_ONLY_LINE = /^API only \(AGENTRUN_API_ONLY=1\)/;
 /** How many of the server's last lines, on stdout and on stderr each, a start that fails shows. */
 export const TAIL_LINES = 20;
 
-/** How long a start waits for the server's "Open " line before it stops the server and says so. AGENTRUN_START_TIMEOUT_MS
- *  (milliseconds) sets another bound; the launcher's tests use it. */
+/** How long a start waits for the server's "Starting " line (its port bound) or its "Open " line, whichever comes first,
+ *  before it stops the server and says so. AGENTRUN_START_TIMEOUT_MS (milliseconds) sets another bound; the launcher's
+ *  tests use it. After a "Starting " line it waits for "Open " with no bound: the server is up, still loading. */
 export const START_TIMEOUT_MS = 60_000;
 /** How long a server that did not start has to end after its SIGTERM before it is sent a SIGKILL. */
 export const STOP_GRACE_MS = 10_000;
@@ -70,7 +71,7 @@ export function failureText({ command, step, error, code = null, signal = null, 
     exit = "it never ran";
   } else if (stopped !== undefined) {
     const was = stopped === "closed" ? "its output closed while it ran" : `still running after ${seconds(waitedMs)}`;
-    why = stopped === "closed" ? `${subject} closed its output without printing the address to open, so it was stopped` : `${subject} was still running after ${seconds(waitedMs)} without printing the address to open, so it was stopped`;
+    why = stopped === "closed" ? `${subject} closed its output without printing the address to open, so it was stopped` : `${subject} was still running after ${seconds(waitedMs)} without printing the address to open, so it was stopped. AGENTRUN_START_TIMEOUT_MS sets a longer wait, in milliseconds`;
     exit = `${was}; stopped with ${sent.length > 1 ? `${sent[0]}, then ${sent.slice(1).join(", then ")} ${seconds(STOP_GRACE_MS)} later` : sent[0]}; then ${ended}`;
   } else if (signal !== null) {
     why = `${subject} was ended by ${signal}${before}`;
@@ -157,8 +158,10 @@ export const SAID = /^(Boxes: |Set up this server: )/;
  *  hosts as an "Open " line's. Resolves undefined when the output ends
  *  without one. Until then, the last TAIL_LINES lines before it are kept in `seen`: what a start that fails shows, and each
  *  goes to `onBefore`. Every whole line after it goes to `onLine`; the rest of the output is read and dropped, so the
- *  server never blocks on a full pipe. */
-export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefore = () => {}) {
+ *  server never blocks on a full pipe. A "Starting " line before it, whose URL is one an "Open " line may name, goes to
+ *  `onStarting` with that URL, once: the server has bound its port and is still loading. */
+export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefore = () => {}, onStarting = () => {}) {
+  let starting;
   const keep = (line) => {
     onBefore(line);
     seen.push(line);
@@ -181,6 +184,8 @@ export function openUrl(stdout, publicUrl, seen = [], onLine = () => {}, onBefor
         else {
           const named = /^AGENTRUN_BASE_URL=(\S+)$/.exec(line)?.[1];
           if (named !== undefined && openLineUrl(`Open ${named}`, publicUrl) !== undefined) base = named;
+          const bound = starting === undefined && line.startsWith("Starting ") ? openLineUrl(`Open ${line.slice("Starting ".length)}`, publicUrl) : undefined;
+          if (bound !== undefined) onStarting((starting = bound));
           keep(line);
         }
       }
@@ -438,7 +443,16 @@ export async function main(argv, env = process.env) {
   const seen = [];
   const bound = startTimeoutMs(env);
   const TIMED_OUT = Symbol("timed out");
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell), new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), bound); })]);
+  // A server that says Starting has bound its port and answers there, warming, while it loads: the bound is for a server
+  // that never gets that far, so it ends here, and the person is told the address at once (stderr; stdout waits for the
+  // "Open " line, which says it is ready).
+  let listening;
+  const onStarting = (address) => {
+    listening = address;
+    clearTimeout(timer);
+    console.error(`AgentRun is starting at ${address}: it listens there now, and opens once its store is ready.`);
+  };
+  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell, onStarting), new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), bound); })]);
   clearTimeout(timer);
   if (url === undefined || url === TIMED_OUT) {
     // Its stdout ended (it exited, was never started, or closed it), or the bound passed with it still running. A server
@@ -457,7 +471,7 @@ export async function main(argv, env = process.env) {
     if (spawnError === undefined) await within(closed, 2_000);
     errLines.end();
     const failure = failureText({
-      step: spawnError !== undefined ? `start the server (${launcher})` : `wait for the server to print the address to open (at most ${seconds(bound)})`,
+      step: spawnError !== undefined ? `start the server (${launcher})` : listening !== undefined ? `wait for the server, listening at ${listening}, to be ready` : `wait for the server to print the address to open (at most ${seconds(bound)})`,
       error: spawnError,
       code: ended?.code ?? null,
       signal: ended?.signal ?? null,

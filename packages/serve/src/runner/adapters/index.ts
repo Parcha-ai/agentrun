@@ -8,7 +8,8 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
 import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
-import { piAdapter } from "./pi.js";
+import { harnessOf } from "../../harness-table.js";
+import { piAdapter, type PiAdapterOptions } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
 export interface HarnessLaunch {
@@ -45,13 +46,16 @@ const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 /** Every harness the runner runs, by name. */
 export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
   pi: {
-    adapter: async (launch) =>
+    // `extra`: pi's own options (PiAdapterOptions), as the run's spec gives them (adapter-run-spec.ts): its extensions,
+    // tools, redactor, tiers, and the route's whole provider over the launch's.
+    adapter: async (launch, extra = {}) =>
       piAdapter({
         run: launch.run,
         model: launch.model,
         provider: { api: launch.provider.api ?? "anthropic-messages", origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        ...(extra as Partial<PiAdapterOptions>),
       }),
   },
   [claudeFacts.id]: {
@@ -107,7 +111,11 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
   },
 };
 
-/** The harness the launch names, or undefined when the runner runs none by that name. */
-export function resolveHarness(harness: string): RunnerHarness | undefined {
-  return Object.prototype.hasOwnProperty.call(RUNNER_HARNESSES, harness) ? RUNNER_HARNESSES[harness] : undefined;
+/** The harness the launch names, as `env`'s harness table has it (harness-table.ts harnessOf): a built-in one's runner is
+ *  the runner's own (RUNNER_HARNESSES), one a harness module adds brings its own (HarnessEntry.runner). Undefined when
+ *  the table has none by that name. `env`: the run's environment (this process's when not given). */
+export function resolveHarness(harness: string, env: NodeJS.ProcessEnv = process.env): RunnerHarness | undefined {
+  const entry = harnessOf(env, harness);
+  if (!entry) return undefined;
+  return entry.runner ?? (Object.prototype.hasOwnProperty.call(RUNNER_HARNESSES, harness) ? RUNNER_HARNESSES[harness] : undefined);
 }

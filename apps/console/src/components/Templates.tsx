@@ -9,10 +9,12 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
+import { cn } from "@/lib/utils";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
@@ -35,16 +37,26 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
     v2.listTemplates().then((r) => { if (live) setTemplates(r.templates); }, (e) => { if (live) setError(problem(e, "the templates")); });
     return () => { live = false; };
   }, [v2, tries, install]);
-  if (install !== undefined) return <div className="p-5 md:p-8"><InstallTemplate v2={v2} source={install} go={go} /></div>;
   const shown = name === undefined ? undefined : templates?.find((t) => t.id === name);
+  const body = install !== undefined ? <InstallTemplate v2={v2} source={install} go={go} />
+    : error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
+    : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
+    : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={() => setTries((n) => n + 1)} />
+    : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
+    : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>;
+  // In the API playground the page sits under the playground's own bar, with its own way back.
+  if (playground) return <div className="p-5 md:p-8">{body}</div>;
+  // Its own page has the sections' top bar: the list names the section; a template, or a package being read, leads back to it.
+  const listing = install === undefined && name === undefined;
   return (
-    <div className="p-5 md:p-8">
-      {error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
-        : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-        : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={() => setTries((n) => n + 1)} />
-        : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
-        : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>}
-    </div>
+    <section className="flex min-h-full flex-col">
+      <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
+        {listing
+          ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
+          : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
+      </header>
+      <div className="p-5 md:p-6">{body}</div>
+    </section>
   );
 }
 
@@ -67,7 +79,7 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
   };
   return (
     <>
-      <Heading className="mb-5 text-2xl font-semibold">Templates</Heading>
+      {playground && <Heading className="mb-5 text-2xl font-semibold">Templates</Heading>}
       <form aria-label="Add from URL" className="mb-5 flex flex-wrap items-end gap-2 border bg-card px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (source.trim()) go(installHash(source.trim())); }}>
         <label className="min-w-0 flex-1">
           <span className="caps text-small font-semibold">Add from URL</span>
@@ -136,15 +148,13 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
       go(templateHash(done.template.id));
     } catch (e) { setSaid(refusalText(e)); } finally { setInstalling(false); }
   };
-  const back = <a href="#/templates" className="caps mb-4 inline-flex items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>;
-  if (error) return <div className="max-w-3xl">{back}<p className="border px-4 py-6 font-mono text-body text-destructive-text" role="alert">{error}</p></div>;
+  if (error) return <div className="max-w-3xl"><p className="border px-4 py-6 font-mono text-body text-destructive-text" role="alert">{error}</p></div>;
   if (!read) return <ListSkeleton label="Reading the package from GitHub" rows={3} />;
   const t = read.template;
   const owner = t.publisher ?? "";
   const files = Object.entries(read.skill_files);
   return (
     <section aria-label="Install from GitHub" className="max-w-3xl">
-      {back}
       <h1 className="font-mono text-2xl font-semibold">{titleOf(t)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></h1>
       <dl className="mt-3 space-y-1 border bg-card px-4 py-3 font-mono text-small">
         <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">Publisher</dt><dd data-publisher>{owner}{read.publisher_trusted ? " (trusted here)" : " (new here)"}</dd></div>
@@ -414,7 +424,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   }
   return (
     <div>
-      <a href={catalogHash(playground)} className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>
+      {playground && <a href={catalogHash(playground)} className="caps mb-4 inline-flex min-h-6 items-center gap-1.5 text-small text-muted-foreground hover:text-foreground"><ArrowLeft className="size-3.5" aria-hidden /> Templates</a>}
       <Heading className="text-2xl font-semibold">{titleOf(t, values)} <span className="text-lead font-normal text-muted-foreground">{t.version}</span></Heading>
       <TemplateProvenance t={t} />
       <p className="mt-2 max-w-prose text-lead leading-[1.6]">{t.description}</p>

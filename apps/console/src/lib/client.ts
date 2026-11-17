@@ -62,9 +62,13 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 };
 
 /** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
+/** One harness as capabilities list it: its id (a built-in one, or one the server's harness modules add), its label and what
+ *  it promises (absent from a server older than the harness table's), whether it runs here and why not. */
+export type HarnessOfferView = { id: string; label?: string; promises?: { resume: "exact" | "load" | "restart"; tool_gate: "every_call" | "permission" | "config"; billing: "proxy" | "plan" }; available: boolean; reason?: string; steer?: boolean };
+
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type Capabilities = { harnesses: HarnessOfferView[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */

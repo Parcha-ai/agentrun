@@ -8,15 +8,18 @@ import { nativeOf } from "../native/binding.js";
 //   - a workflow revision runs on the workflow loop (createWorkflowLoop), whatever its harness name (a workflow's default
 //     harness is pi), so the revision is read here to tell it from an agentic pi run;
 //   - a built-in learning run (its launch names harness "learning") runs on the learning loop;
-//   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch);
+//   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch), and so does a harness a
+//     module adds with no adapter facts of its own, on its runner's adapter;
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
+import { harnessOf } from "../harness-table.js";
 import { hostMemory, neverFits } from "../host.js";
 import type { RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { gradeModelFor, type GradeRouteAsk, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
@@ -48,7 +51,14 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     if (harness !== "learning" && launch.sdk) return createSdkLoop(launch, deps, async () => {
       const base = deps.env ?? process.env;
+      // An SDK run's look-back runs after its backend reported it complete, on no run's key: on a server that holds no
+      // gateway key it is skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
       const env = withModelKeys(base, await savedModelKeys({store:deps.store,sealKey:deps.sealKey,env:base}));
+      const off = noServerKeyFor(env, "An SDK run's look-back");
+      if (off) {
+        deps.log?.(off);
+        throw new Error(off);
+      }
       return gradeRouteFor({model:launch.learning!.gradeModel,agentId:run!.agentId},env,deps.routeOf);
     });
     if (harness !== "learning" && launch.native) return createNativeLoop(launch, deps);
@@ -71,32 +81,44 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         // at each grade, so a key saved with no restart grades the next learning run.
         routeOf: async (grade) => {
           const base = deps.env ?? process.env;
+          // A learning run grades after its source run's turn ended, on no run's key (a run that brought its own queues no
+          // grade: learning-end.ts spendOff): on a server that holds no gateway key it is skipped in words
+          // (run-model-key.ts noServerKeyFor). Nothing is sent; the learning run ends dropped.
           const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+          const off = noServerKeyFor(env, "A learning run's grade");
+          if (off) {
+            deps.log?.(off);
+            throw new Error(off);
+          }
           return gradeRouteFor(grade, env, deps.routeOf);
         },
         ...(deps.log ? { log: deps.log } : {}),
         ...(deps.gradeBound ? { gradeBound: deps.gradeBound } : {}),
       });
     }
-    // The harness's own entry decides which spec builds the run, by the entry's facts and never the harness's name: an entry
-    // whose visible record the loop keeps (record: "loop") runs the CLI spec (cli-run-spec.ts), one that keeps its own (pi)
-    // runs the pi spec (adapterRunSpecFromLaunch). A harness with no entry is unknown here: the dispatch fails it in words.
-    const runner = resolveHarness(harness);
+    // The harness's own entry decides which spec builds the run, by what the entry gives and never the harness's name: an
+    // entry with an adapter's facts and serve's own adapter for it (the CLI harnesses) runs the CLI spec (cli-run-spec.ts);
+    // any other (pi, or a harness module's entry that gives only the required members) runs the run spec
+    // (adapterRunSpecFromLaunch), whose adapter is its runner's (resolveHarness), with the record mode that runner names.
+    // A harness with no entry is unknown here: the dispatch fails it in words.
+    const env = deps.env ?? process.env;
+    const runner = resolveHarness(harness, env);
     if (runner) {
       // A run this host's memory never holds (host.ts neverFits: one run of its harness is more than the host has for runs)
       // fails at its claim, in the words a start of it is refused in here (harness.ts harnessOffers): a run another host
       // started, or one left before this host's memory shrank. Claimed alone (runner.ts claimByMemory), it would run past
       // the host's memory and its OOM kill would take every run on it.
-      const tooBig = neverFits(harness, hostMemory());
+      const tooBig = neverFits(harness, hostMemory(), env);
       if (tooBig) throw new NeverFits(tooBig);
+      const entry = harnessOf(env, harness);
       // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
       // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
       // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
       // run that does not learn supplies none. The same for the pi and the CLI spec.
       return createAdapterLoop((claim, adapterRun) =>
-        runner.record === "loop"
+        entry?.facts && entry.adapter
           ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
-          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim), deps.modelRetry ?? {});
+          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), deps.modelRetry ?? {});
     }
     return undefined;
   };

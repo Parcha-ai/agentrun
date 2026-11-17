@@ -41,7 +41,7 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { claimSecrets, hostDecisionKeys, savedModelKeys, tierModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { githubAppAccess } from "./github-app.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
@@ -470,6 +470,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       releases.push(() => made.release());
       return made;
     })());
+  /** Whether the claim's run holds a model key of its own now (its launch, as this runner opens it): its process is then
+   *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
+  const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   const learningFolder = async () => {
     const made = await archilOf();
     return made === undefined ? learningFolderOf(deps.data, run.agentId) : learningWorkspace({ mode: "archil", agentId: run.agentId, archil: made });
@@ -501,16 +504,22 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     },
     savedModelKeys: async () => {
       // Only a run whose routes have no revision to scope their keys by: a subagent's tiers, a learning run's grade, an SDK
-      // run's grade.
+      // run's grade. And never for a run that holds a key of its own (its launch's, read now): the server's keys are not
+      // its to spend, whatever its process asks.
       const reads = granted.includes(SUBAGENT_TOOL) || launch.harness === "learning" || launch.sdk !== undefined;
-      return reads ? stringsOf(await savedModelKeys(keys)) : {};
+      const keyed = await runKeyed();
+      return reads ? stringsOf(keyed ? {} : await savedModelKeys(keys)) : {};
     },
     tierModelKeys: async (tiers) => {
-      const got = await tierModelKeys(keys, (tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
+      const keyed = await runKeyed();
+      const got = keyed ? {} : await tierModelKeys(keys, (tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
       const plan = planOf(got);
       return { keys: stringsOf(got), ...(plan ? { plan: { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) } } : {}) };
     },
     decisionKeys: (providers) => hostDecisionKeys(keys, (providers as readonly unknown[]).filter((one): one is string => typeof one === "string")),
+    // The claim's own run's key alone (its launch, as the runner reads it), whatever run the process would name.
+    runModelKey: () => openRunModelKey(keys, claim.runId),
+    serverKeyless: () => serverKeyless(keys),
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     handOn: async (from, id) => {
@@ -568,9 +577,12 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.
       const made = await archilOf();
+      // The grade's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
+      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const step = learningEndOfRun(launch, {
         store,
         data: deps.data,
+        spendOff,
         ...(deps.env ? { env: deps.env } : {}),
         signIns: signInReads(store, sealKey),
         handed: runnerSecrets(claimed),
@@ -750,7 +762,12 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
         // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
         const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
-        const handed = (name: string): string | undefined => [claimed[name], ofRevision[name]].find((value): value is string => typeof value === "string" && value !== "");
+        // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
+        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
+        // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
+        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
+        const toProcess = keyed ? [withoutModelKeys({ ...claimed }), withoutModelKeys({ ...ofRevision })] : [claimed, ofRevision];
+        const handed = (name: string): string | undefined => toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== "");
         const keys = encode(SECRET_NAMES.flatMap((name) => {
           const value = handed(name);
           return value === undefined ? [] : [[name, value] as const];
@@ -790,7 +807,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
           channel.expose("held", (method, args) => {
-            const fn = (heldSide.held as unknown as Record<string, (...a: unknown[]) => unknown>)[method];
+            // Its own members alone: a name of Object's prototype (constructor, toString) is no call of Held.
+            const fn = Object.hasOwn(heldSide.held, method) ? (heldSide.held as unknown as Record<string, (...a: unknown[]) => unknown>)[method] : undefined;
             if (typeof fn !== "function") throw new ClaimRefused(`the runner holds no ${method} for a run`);
             return fn(...args);
           });
