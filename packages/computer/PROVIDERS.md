@@ -441,13 +441,20 @@ a machine dials the server that minted its token: the Core run happens inside th
 it. `list` filters by `metadata.<key>=<value>`, `delete` passes `force=true`, and `extend` writes the deadline label
 alone, for the janitor. Each Fly fact has its doc link in the file, and the ones the docs leave open say **unverified**.
 
+The machines live in one Fly app of yours, the `FLY_APP` setting (`COMPUTER_FLY_APP` for Core). Fly app names are
+global across all of Fly, not per org, so give it a name with your org in it, `agentrun-computers-<org slug>`:
+`POST /v1/apps {"app_name": "agentrun-computers-<org slug>", "org_slug": "<org slug>"}`, or
+`fly apps create agentrun-computers-<org slug> --org <org slug>`. A bare `agentrun-computers` is likely held already.
+For an app that exists in an org your token can't see, Fly answers `403 unauthorized`, not `404`. Our own runs use
+`agentrun-computers-parcha`.
+
 Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
 in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
 with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
 (`--exit` exits 0 on a pass, else 1):
 
 ```sh
-COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
+COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
 
