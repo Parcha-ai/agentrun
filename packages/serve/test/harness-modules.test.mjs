@@ -139,6 +139,16 @@ test("a module that names an id the runner or serve keeps for its own runs (lear
   }
 });
 
+test("a module may not take a name every plain object already has (constructor): serve looks harnesses up by id in plain objects, so the start is refused, naming the module and the id", async (t) => {
+  const [{ HARNESS_MODULES_ENV, harnessTable }, { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness.js")]);
+  const inherited = Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name));
+  assert.ok(inherited.includes("constructor"), inherited.join(", "));
+  for (const id of inherited) assert.ok(RESERVED_HARNESS_IDS.includes(id), id);
+  const dir = await scratch(t);
+  const path = ownModule(dir, "constructor");
+  assert.throws(() => harnessTable({ [HARNESS_MODULES_ENV]: JSON.stringify([path]) }), (error) => error.message.includes(path) && error.message.includes(" constructor,"), "constructor");
+});
+
 test("capabilities offer a module's harness every tool pi runs, the meta tools and MCP grants, so its tool choices stay; a built-in's offers do not change", async (t) => {
   const dir = await scratch(t);
   const { api } = await serve(t, { harnessModules: [ownModule(dir, "own")] });
