@@ -1,7 +1,7 @@
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { useScrollQuiet } from "@/lib/useScrollQuiet";
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Search, Workflow } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, ExternalLink, RefreshCw, Search, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentVersions } from "@/components/AgentVersions";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
@@ -17,7 +17,7 @@ import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Banner, Chip, Input, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
@@ -260,20 +260,21 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
 
 const isLiveRun = (run: Run) => !run.imported_from && ["queued", "working", "paused", "input_required"].includes(run.status);
 type RunHistory = {
-  runs: Run[] | null; cursor: string | null; reading: boolean; more: boolean; error: Problem | null;
+  runs: Run[] | null; cursor: string | null; reading: boolean; more: boolean; error: Problem | null; metadataFresh: boolean;
   refresh: () => void; loadMore: () => void; reloadLatest: (() => void) | null;
 };
 
 /** Refresh through the oldest loaded run or past its start time if it was archived. Both current and legacy servers
  * order by start time descending, but use different tie-breakers; don't infer equal-time order from run ids. Bound
  * ambiguous refreshes to the loaded pages plus one shift page, preserving the snapshot until explicit recovery. */
-function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<unknown>, poll: () => Promise<unknown>): RunHistory {
+function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<boolean>, poll: () => Promise<boolean>): RunHistory {
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const [more, setMore] = useState(false);
   const [error, setError] = useState<Problem | null>(null);
   const [limited, setLimited] = useState(false);
+  const [metadataFresh, setMetadataFresh] = useState(true);
   const asked = useRef(0);
   const shown = useRef<Run[]>([]);
   const pages = useRef(0);
@@ -283,7 +284,7 @@ function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<unknown>,
     busy.current = true;
     const n = ++asked.current;
     setReading(true); setMore(!!after);
-    const metadataRead = metadata ? (background ? poll() : reread()) : Promise.resolve();
+    const metadataRead = metadata ? (background ? poll() : reread()) : Promise.resolve(true);
     try {
       let next = after;
       let loaded: Run[] = [];
@@ -312,12 +313,16 @@ function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<unknown>,
       }
     } catch (e) { if (n === asked.current) setError(problem(e, after ? "more runs" : "the runs")); }
     finally {
-      await metadataRead;
-      if (n === asked.current) { busy.current = false; setReading(false); setMore(false); }
+      const confirmed = await metadataRead;
+      if (n === asked.current) {
+        // A failed metadata refresh leaves cached live-job counts; don't use them to offer onboarding.
+        if (metadata) setMetadataFresh(confirmed);
+        busy.current = false; setReading(false); setMore(false);
+      }
     }
   };
   useEffect(() => {
-    busy.current = false; shown.current = []; pages.current = 0; setRuns(null); setCursor(null); setError(null); setLimited(false);
+    busy.current = false; shown.current = []; pages.current = 0; setRuns(null); setCursor(null); setError(null); setLimited(false); setMetadataFresh(true);
     void read(null);
     const refreshVisible = () => { if (!document.hidden) void read(null, true, false, true); };
     window.addEventListener("focus", refreshVisible);
@@ -325,17 +330,53 @@ function useRunHistory(agent: Agent, v2: Client, reread: () => Promise<unknown>,
     const timer = window.setInterval(refreshVisible, 10_000);
     return () => { asked.current++; busy.current = false; window.clearInterval(timer); window.removeEventListener("focus", refreshVisible); document.removeEventListener("visibilitychange", refreshVisible); };
   }, [v2, agent.agent_id, agent.archived_at]); // eslint-disable-line react-hooks/exhaustive-deps
-  return { runs, cursor, reading, more, error, refresh: () => { void read(null, true); }, loadMore: () => { if (cursor) void read(cursor); }, reloadLatest: limited ? () => { void read(null, true, true); } : null };
+  return { runs, cursor, reading, more, error, metadataFresh, refresh: () => { void read(null, true); }, loadMore: () => { if (cursor) void read(cursor); }, reloadLatest: limited ? () => { void read(null, true, true); } : null };
+}
+
+/** A run-list summary omits the result: confirm the full local record before treating a completed run as a success.
+ *  This optional row stays absent while that read is pending or fails; a late answer cannot follow the user elsewhere. */
+function ProductionOnboarding({ agentId, runId, snapshot, v2 }: { agentId: string; runId: string; snapshot: Run[]; v2: Client }) {
+  const [read, setRead] = useState<{ client: Client; snapshot: Run[]; run: Run } | null>(null);
+  useEffect(() => {
+    let live = true;
+    setRead(null);
+    v2.getRun(runId).then((run) => { if (live) setRead({ client: v2, snapshot, run }); }, () => {});
+    return () => { live = false; };
+  }, [agentId, runId, snapshot, v2]);
+  // Bind the confirmation to this list snapshot even when an immediate refresh batches its loading state.
+  const run = read?.client === v2 && read.snapshot === snapshot ? read.run : null;
+  if (!run || run.agent_id !== agentId || run.run_id !== runId || run.archived_at || run.status !== "completed" || run.review || run.error || run.result === undefined || run.result?.output_error) return null;
+  return (
+    <section aria-label="Production onboarding" className="mt-6 flex flex-wrap items-center justify-between gap-4 border p-4">
+      <div className="max-w-prose">
+        <h2 className="text-body font-semibold">Taking this to production?</h2>
+        <p className="mt-1 text-body text-muted-foreground">Create an account or sign in to AgentRun Cloud. Talk to us for help getting set up. Cloud setup is separate from this server.</p>
+      </div>
+      {/* Plain external links: no agent, run, prompt, configuration or referring URL is sent to either destination. */}
+      <div className="flex flex-wrap items-center gap-4">
+        <a href="https://calendly.com/d/dtwn-dsp-nx5/agentrun" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className={buttonVariants({ size: "sm" })}>
+          Talk to us <ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
+        </a>
+        <a href="https://console.agentrun.ai/" target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="inline-flex h-control-sm items-center text-small text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          Open Cloud<span className="sr-only"> (opens in a new tab)</span>
+        </a>
+      </div>
+    </section>
+  );
 }
 
 /** The same run links and statuses as the all-runs view, scoped to this agent. Full timelines live on each run page. */
-function RunsTab({ agent, history }: TabProps) {
+function RunsTab({ agent, history, v2 }: TabProps) {
   const [query, setQuery] = useState("");
-  const { runs, cursor, reading, more, error, refresh, loadMore, reloadLatest } = history!;
+  const { runs, cursor, reading, more, error, metadataFresh, refresh, loadMore, reloadLatest } = history!;
   if (error && !runs) return <ProblemCard problem={error} onRetry={refresh} className="" />;
   if (!runs) return <ListSkeleton label="Loading the runs" rows={5} />;
   const filtered = runs.filter((r) => `${runTitle(r)} ${r.run_id} ${r.status}`.toLowerCase().includes(query.toLowerCase()));
-  return <section className="min-h-[380px] overflow-hidden border" aria-label="Agent run history">
+  // A newer success is not a quiet moment while any known run still needs attention, even outside the loaded pages.
+  const quiet = !agent.runs?.live && runs.every((r) => r.archived_at || (runEnded(r.status) && !r.review && (r.status !== "completed" || (!r.error && !r.result?.output_error))));
+  const latest = runs[0];
+  const offerProduction = metadataFresh && !reading && !error && !agent.archived_at && latest?.agent_id === agent.agent_id && !latest.archived_at && latest.status === "completed" && quiet;
+  return <><section className="min-h-[380px] overflow-hidden border" aria-label="Agent run history">
     <div className="flex flex-wrap items-center gap-3 border-b p-3">
       <label className="flex min-w-0 items-center gap-2"><Search className="size-3.5 text-muted-foreground" aria-hidden /><Input aria-label="Search this agent's runs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search runs…" className="w-40 min-w-0" /></label>
       <span className="text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</span>
@@ -354,7 +395,9 @@ function RunsTab({ agent, history }: TabProps) {
       : <div className="px-4 py-12 text-center text-body text-muted-foreground"><p>No runs of this agent yet.</p>{!agent.archived_at && <p className="mt-2">Choose Run agent to continue with your coding agent or the API playground.</p>}</div>}
     {error && <div className="m-4 space-y-3"><ProblemCard problem={error} onRetry={refresh} className="" />{reloadLatest && <Button size="sm" onClick={reloadLatest} disabled={reading}>Reload latest runs</Button>}</div>}
     {cursor && <div className="flex justify-center p-4"><Button size="sm" onClick={loadMore} disabled={reading}>{more ? "Loading" : "Load more"}</Button></div>}
-  </section>;
+  </section>
+    {offerProduction && <ProductionOnboarding key={`${agent.agent_id}/${latest.run_id}`} agentId={agent.agent_id} runId={latest.run_id} snapshot={runs} v2={v2} />}
+  </>;
 }
 
 /** The current revision's workflow as its graph, read-only; editing it is the editor's Workflow step. */
