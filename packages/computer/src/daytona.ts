@@ -1,11 +1,14 @@
 // The Daytona host: Daytona sandboxes over Daytona's v0 REST API with fetch (no SDK). Daytona's toolbox daemon is the
 // sandbox's first process, so computerd is a child: its upload goes through the toolbox's file API, and every command
 // (install, init's start, the stdio bridge, an Archil computer's root steps) is a session command, its output read from
-// the command's log stream and its stdin sent as the command's input. The rest of the computer is the shared
-// machine-host adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the README's Daytona section.
+// the command's log stream and its stdin sent as the command's input. With connect "dial", the sandbox is made with the
+// boot env as its env, and the snapshot's entrypoint (box/build-daytona.py names the box image's CMD) runs agentrun-dial
+// in the toolbox's entrypoint session: the machine dials the server, with no upload and no session command. The rest of
+// the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the
+// README's Daytona section.
 import { randomBytes } from "node:crypto";
 import { mountsOf } from "./descriptor.js";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL } from "./drift.js";
 import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
@@ -13,7 +16,7 @@ import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } f
 import { boundOf, orThrow, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
-import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
+import { connectOf, dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, ok, type Result, vendorFail } from "./result.js";
@@ -66,6 +69,12 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "de
 	 * (-1 is sent) and the TTL ends it.
 	 */
 	autoDeleteMinutes?: number;
+	/**
+	 * exec (default): the daemon goes in through the toolbox's file API and each connection is a session command. dial:
+	 * the sandbox gets the boot env as its env, and its snapshot's entrypoint, the box image's CMD, runs agentrun-dial; the
+	 * machine dials the server (options.dial), which every connection goes over. No Archil mount and no GPU on dial.
+	 */
+	connect?: "exec" | "dial";
 	/** For tests: every request goes through it. Default the global fetch. */
 	fetch?: typeof fetch;
 	/** For tests: every log stream opens through it. Default Node's global WebSocket. */
@@ -127,6 +136,16 @@ const ECHO = /^\{"jsonrpc":"2\.0",("id":\d+,)?"method":/;
 const decoder = new TextDecoder();
 
 /**
+ * Why a dial computer takes no GPU: check() refuses one in these words, and capabilities() declares none on dial.
+ * daytona-gpu is Daytona's own image, with no agentrun-dial; our GPU snapshot holds it, but Daytona runs a GPU sandbox
+ * unprivileged (apps/runner/pkg/docker/container_configs.go:205), and no dial has run there.
+ */
+const DIAL_NO_GPU = `a Daytona computer that dials this server takes no GPU: ${DAYTONA_GPU_SNAPSHOT} holds no agentrun-dial, and a box/Dockerfile GPU snapshot's dial on Daytona's GPU host, which runs it unprivileged, is not proven; a server whose Daytona connect is exec makes GPU computers`;
+
+/** Why a dial computer is never made from Daytona's default snapshot: it holds no agentrun-dial, so it would never dial. */
+const DIAL_NO_DEFAULT = `a Daytona computer that dials this server starts from a snapshot of box/Dockerfile, which holds agentrun-dial (box/build-daytona.py prints its name, agentrun-archil-<recipe hash>); Daytona's default snapshot has none, so it would never dial`;
+
+/**
  * A sandbox's state as the adapter reads a machine's: failed, destroying and asked to destroy are gone (none of them
  * starts again); stopping and pausing are stopped. A destroyed one get and list leave out, and the wait after a delete
  * waits for that.
@@ -174,6 +193,9 @@ class DaytonaHost implements MachineHost {
 	 */
 	readonly descriptor: HostDescriptor = DAYTONA;
 	readonly facts: HostFacts;
+	/** connect exec alone: a dial host has neither (HostFacts.connect). */
+	readonly exec?: MachineHost["exec"];
+	readonly upload?: MachineHost["upload"];
 	/** Daytona's REST API: the control plane, and the toolbox of each sandbox. */
 	readonly #rest: Rest;
 	readonly #headers: Record<string, string>;
@@ -187,7 +209,7 @@ class DaytonaHost implements MachineHost {
 	/** Each sandbox's toolbox URL, by id, once read: let go of at its delete. */
 	readonly #toolboxes = new Map<string, string>();
 
-	constructor(options: { descriptor: HostDescriptor; rest: Rest; headers: Record<string, string>; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number }) {
+	constructor(options: { descriptor: HostDescriptor; rest: Rest; headers: Record<string, string>; webSocket: WebSocketFactory; arch: "amd64" | "arm64"; sandboxClass: "container" | "linux-vm"; target?: string; gpu: DaytonaGpuSnapshot; autoStop: number; autoDelete: number; pollMs: number; connect: "exec" | "dial" }) {
 		this.descriptor = options.descriptor;
 		this.#rest = options.rest;
 		this.#headers = options.headers;
@@ -201,7 +223,8 @@ class DaytonaHost implements MachineHost {
 		// maxLifetimeMs is the 30 days check() has always given; Daytona's TTL is in whole minutes and documents no cap of
 		// its own. The toolbox listens on 2280 on every interface and runs commands for whoever reaches it, so init starts
 		// with --own-network, and network none is all a computer takes. Its D-Bus session bus in /tmp (/tmp/dbus-*), which
-		// no network namespace cuts, is closed to the tool user before init starts, as on every child host.
+		// no network namespace cuts, is closed to the tool user before init starts, as on every child host. On dial init is
+		// agentrun-dial's child, and agentrun-dial the entrypoint the toolbox runs in a session of its own: still a child.
 		this.facts = {
 			daemon: "child",
 			isolation: options.sandboxClass === "linux-vm" ? "vm" : "container",
@@ -209,7 +232,12 @@ class DaytonaHost implements MachineHost {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			arch: options.arch,
 			vendorAgentPorts: [TOOLBOX_PORT],
+			...(options.connect === "dial" ? { connect: options.connect } : {}),
 		};
+		if (options.connect === "exec") {
+			this.exec = (id, argv, ctx) => this.#exec(id, argv, ctx);
+			this.upload = (id, path, bytes, ctx) => this.#upload(id, path, bytes, ctx);
+		}
 	}
 
 	/**
@@ -221,6 +249,8 @@ class DaytonaHost implements MachineHost {
 		const refusals = sizeRefusals(given, "a Daytona computer", "snapshot");
 		if (typeof image === "string" && image !== "" && image.trim() === "") refusals.push({ field: "image", message: `an image is the id or name of a Daytona snapshot, or "${DAYTONA_DEFAULT_SNAPSHOT}" for Daytona's default snapshot` });
 		else if (typeof image === "string" && /[\x01-\x1f]/.test(image)) refusals.push({ field: "image", message: "a snapshot name has no control characters" });
+		if (given.gpu !== undefined && this.facts.connect === "dial") return [...refusals, { field: "gpu", message: DIAL_NO_GPU }];
+		if (image === DAYTONA_DEFAULT_SNAPSHOT && this.facts.connect === "dial") refusals.push({ field: "image", message: DIAL_NO_DEFAULT });
 		const gpuSnapshot = this.#gpu.snapshot;
 		const offered = { gpu: { ...DAYTONA_GPU, types: [this.#gpu.type], max: this.#gpu.count } };
 		if (given.gpu !== undefined && checkGpu(given.gpu, offered, given.mount).length === 0 && typeof image === "string" && image !== DAYTONA_DEFAULT_SNAPSHOT && image !== gpuSnapshot) {
@@ -253,7 +283,8 @@ class DaytonaHost implements MachineHost {
 	 * computer's root, which reaches Archil through the operator's relay). A GPU computer is made from the GPU snapshot in region earth, ephemeral (its stop deletes it). Never cancelled: the adapter
 	 * races it, and deletes by name one whose answer never comes. A name Daytona already holds (409) made nothing: exists,
 	 * and the adapter adopts the sandbox the name lists, as a retry does. req.backstopAt is left: the TTL is Daytona's own
-	 * timer at the deadline (lifetime "vendor"), and autoDeleteInterval counts from a stop, not from create.
+	 * timer at the deadline (lifetime "vendor"), and autoDeleteInterval counts from a stop, not from create. A dial
+	 * machine's boot env is the sandbox's env, which the toolbox's entrypoint session inherits (README, Daytona on dial).
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const gpu = req.gpu !== undefined;
@@ -262,7 +293,7 @@ class DaytonaHost implements MachineHost {
 			// "default" sends no snapshot, and Daytona makes the sandbox from its default snapshot.
 			...(gpu ? { snapshot: this.#gpu.snapshot } : req.image === DAYTONA_DEFAULT_SNAPSHOT ? {} : { snapshot: req.image }),
 			labels: { ...req.labels },
-			env: {},
+			env: { ...req.boot?.env },
 			public: false,
 			// A GPU sandbox runs in region earth alone, whatever the provider's target.
 			...(gpu ? { target: DAYTONA_GPU_REGION } : this.#target === undefined ? {} : { target: this.#target }),
@@ -365,9 +396,9 @@ class DaytonaHost implements MachineHost {
 	 * A file's bytes to `path` in the sandbox: files/upload-v2, else files/upload. An older toolbox, as a self-hosted
 	 * Daytona's runners may run (the open daemon's routes, daytonaio/daytona@b5a5d9e7 apps/daemon/pkg/toolbox/server.go),
 	 * has no files/upload-v2 and answers it 404; its files/upload takes the same form (a path query, the bytes as
-	 * "file"). A 404 alone moves to the older route, so a refusal of any other kind is never sent twice.
+	 * "file"). A 404 alone moves to the older route, so a refusal of any other kind is never sent twice. Connect exec alone.
 	 */
-	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
+	async #upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
 		const toolbox = await this.#toolbox(id, ctx.signal);
 		const query = new URLSearchParams({ path });
 		const send = (route: string, answerStatus?: number) => {
@@ -384,9 +415,9 @@ class DaytonaHost implements MachineHost {
 
 	/**
 	 * A session command of its own (#commands), on framedExec: argv as one shell line, run async with no input echo, as
-	 * the toolbox's user (root, or one with passwordless sudo, which the adapter's scripts use).
+	 * the toolbox's user (root, or one with passwordless sudo, which the adapter's scripts use). Connect exec alone.
 	 */
-	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+	async #exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		return framedExec(this.#commands(await this.#toolbox(id, ctx.signal)), argv, ctx);
 	}
 
@@ -579,12 +610,14 @@ export class DaytonaProvider extends HostedProvider {
 			gpuSnapshot,
 			autoStopMinutes = 0,
 			autoDeleteMinutes,
+			connect,
 			fetch: fetcher,
 			webSocket,
 			pause,
 			timeouts = {},
 			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
+		const via = connectOf(connect, "Daytona");
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
@@ -606,7 +639,8 @@ export class DaytonaProvider extends HostedProvider {
 			return typeof value === "string" && value !== "";
 		};
 		const host = new DaytonaHost({
-			descriptor: { ...DAYTONA, ...mountsOf(DAYTONA, set) },
+			// On dial its capabilities declare no GPU (DIAL_NO_GPU).
+			descriptor: { ...DAYTONA, ...mountsOf(DAYTONA, set), ...(via === "dial" ? { capabilities: DAYTONA.capabilities.map(({ gpu: _gpu, ...rest }) => rest) } : {}) },
 			rest: rest({ base: apiUrl, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
 			headers,
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
@@ -617,6 +651,7 @@ export class DaytonaProvider extends HostedProvider {
 			autoStop: autoStopMinutes,
 			autoDelete: autoDeleteMinutes ?? NO_AUTO_DELETE,
 			pollMs,
+			connect: via,
 		});
 		super(host, { ...hosted, kind: "linux", timeouts: hostedTimeouts });
 	}

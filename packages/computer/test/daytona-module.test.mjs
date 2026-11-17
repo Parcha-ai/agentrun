@@ -58,6 +58,7 @@ test("createProvider() names the variable it needs, and makes no request without
 		snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 		archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
+		connect: "COMPUTER_DAYTONA_CONNECT",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });
@@ -118,6 +119,32 @@ test('the run\'s image is COMPUTER_DAYTONA_SNAPSHOT, or "default" (Daytona\'s de
 	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.snapshot]: "" } }), "default");
 	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.snapshot]: "my-snapshot" } }), "my-snapshot");
 	assert.equal(daytonaModule.conformanceImage({ env: { DAYTONA_SNAPSHOT: "theirs" } }), "default", "never a bare DAYTONA_ name");
+});
+
+test("COMPUTER_DAYTONA_CONNECT is the provider's connect, and createProvider() passes the public server's dial on; dialKit() refuses in words: this process is no public server", async () => {
+	const { AttachHub, MemoryMachineTokens } = await import("../dist/index.js");
+	assert.deepEqual(daytonaModule.settingsFromEnv({ [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.connect]: "dial" }), { apiKey: KEY, connect: "dial" });
+	assert.deepEqual(daytonaModule.settingsFromEnv({ [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.connect]: "" }), { apiKey: KEY }, "empty is unset: exec");
+	const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) };
+	const fake = recorder();
+	const provider = createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, [DAYTONA_ENV.connect]: "dial" }, fetch: fake.fetch, dial });
+	assert.equal(provider.host.facts.connect, "dial");
+	const made = await provider.create({ image: "agentrun-archil-0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId: "r-module-dial" });
+	assert.equal(made.error?.code, "invalid", "the test's Daytona refuses the create: what was asked is in its body");
+	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
+	assert.equal(post.body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the dial given reached the provider");
+	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.connect]: "ssh" } }), /connect is how Daytona reaches its machines/);
+	assert.throws(
+		() => daytonaModule.dialKit(),
+		/Daytona's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider daytona with COMPUTER_DAYTONA_CONNECT=dial/,
+	);
+});
+
+test("the run's image on dial is the box image's snapshot, agentrun-archil-<recipe hash>, the one that holds agentrun-dial; a snapshot named still wins", async () => {
+	const { boxRecipeHash } = await import("../dist/box-image.js");
+	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "dial" } }), `agentrun-archil-${boxRecipeHash()}`);
+	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "dial", [DAYTONA_ENV.snapshot]: "mine" } }), "mine");
+	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "exec" } }), "default");
 });
 
 test("createProvider() bounds every sandbox's life besides the TTL: autoStopMinutes 30 and autoDeleteMinutes 0, whatever the environment", async () => {

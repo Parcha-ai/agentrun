@@ -1546,13 +1546,13 @@ the TTL.
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
-| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above) |
+| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above); on dial init is `agentrun-dial`'s child, and `agentrun-dial` the toolbox's entrypoint command ([Daytona on dial](#daytona-on-dial)) |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `groups` | `exec`, `files`, `processes` | the daemon's own, checked against its hello's `groups`, as is its `kind` |
 | `maxLifetimeMs` | 30 days | the cap `check` gives, through the shared `checkLifetime`; Daytona's TTL is whole minutes and documents no cap of its own |
 | `user` | none | the daemon runs as the provider's `daemonUser`; a spec cannot name a user |
 | `release` | `delete` | `DELETE /sandbox/{id}`; a stop is refused as `unsupported` |
-| `gpu` | `H100`; at most 1 | daytona-gpu's own GPU (`DAYTONA_GPU_SNAPSHOT_GPU`, from GET /snapshots/daytona-gpu). A GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`: its default sandbox image, user `daytona` with passwordless sudo, plus the CUDA toolkit), sent as `snapshot`: its spec's image is `"daytona-gpu"` or `"default"`, and `check` refuses any other (a snapshot of box/Dockerfile among them) in words. A Daytona snapshot carries its own resources, so the create sends none (no `cpu`, `gpu`, `gpuType`, `memory` or `disk`: Daytona refuses them beside a snapshot, 400 "Cannot specify Sandbox resources when using a snapshot"). Another type or count needs a snapshot of its own, so `check` refuses it. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says. That is Daytona's ephemeral: its SDK's `ephemeral` sets it, and `CreateSandbox` has no `ephemeral` field, so none is sent. A GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 100 GiB memory and 400 GiB disk, the snapshot's; `mounts: []`, so a GPU computer with any mount is refused in words: Daytona's GPU host gives no `/dev/fuse`, even to root (live 11-11), and the archil client mounts through FUSE. In serve's Mode 2 the run's folder is an Archil mount, so a Daytona GPU sandbox is refused there, and Settings' `gpu.why` says so. The org needs GPU credits, or the create is refused in Daytona's words. Create notes who installed the daemon: daytona-gpu's `daytona` user through passwordless sudo, or root on a snapshot of box/Dockerfile. The `gpuSnapshot` option names our own GPU snapshot instead: box/Dockerfile as it is, built with one GPU by `box/build-daytona.py --gpu H100` (resources gpu 1 and gpuType H100, named `agentrun-archil-gpu-h100-<recipe hash>`, in region earth). Its user is root, its GPU is the one its name says, and its GPU computers take no mount either. It carries no CUDA toolkit: pip install torch brings its own CUDA runtime; the host gives the driver. A GPU spec's image is then `"default"` or that name. An Archil computer's preflight reads `/dev/fuse`, and one without it is refused in those words ("this computer has no /dev/fuse, so the Archil folder can't be mounted") before anything else |
+| `gpu` | `H100`; at most 1; none on dial | daytona-gpu's own GPU (`DAYTONA_GPU_SNAPSHOT_GPU`, from GET /snapshots/daytona-gpu). A GPU computer is made from Daytona's GPU snapshot `daytona-gpu` (`DAYTONA_GPU_SNAPSHOT`: its default sandbox image, user `daytona` with passwordless sudo, plus the CUDA toolkit), sent as `snapshot`: its spec's image is `"daytona-gpu"` or `"default"`, and `check` refuses any other (a snapshot of box/Dockerfile among them) in words. A Daytona snapshot carries its own resources, so the create sends none (no `cpu`, `gpu`, `gpuType`, `memory` or `disk`: Daytona refuses them beside a snapshot, 400 "Cannot specify Sandbox resources when using a snapshot"). Another type or count needs a snapshot of its own, so `check` refuses it. A GPU computer's limits, declared on `capabilities().gpu`: `preemptible: true` (daytona.io/pricing lists its GPUs as "Preemptible GPU prices": a run on one can be cut short); `stopDeletes: true` (it is made with `autoDeleteInterval: 0`, whatever `autoDeleteMinutes` says. That is Daytona's ephemeral: its SDK's `ephemeral` sets it, and `CreateSandbox` has no `ephemeral` field, so none is sent. A GPU sandbox has no pause and no snapshot, so stopping it deletes it and nothing on it persists); `region: "earth"` (Daytona's one GPU region, sent as `target` in place of the provider's); `perGpu` 16 vCPU, 100 GiB memory and 400 GiB disk, the snapshot's; `mounts: []`, so a GPU computer with any mount is refused in words: Daytona's GPU host gives no `/dev/fuse`, even to root (live 11-11), and the archil client mounts through FUSE. In serve's Mode 2 the run's folder is an Archil mount, so a Daytona GPU sandbox is refused there, and Settings' `gpu.why` says so. The org needs GPU credits, or the create is refused in Daytona's words. Create notes who installed the daemon: daytona-gpu's `daytona` user through passwordless sudo, or root on a snapshot of box/Dockerfile. The `gpuSnapshot` option names our own GPU snapshot instead: box/Dockerfile as it is, built with one GPU by `box/build-daytona.py --gpu H100` (resources gpu 1 and gpuType H100, named `agentrun-archil-gpu-h100-<recipe hash>`, in region earth). Its user is root, its GPU is the one its name says, and its GPU computers take no mount either. It carries no CUDA toolkit: pip install torch brings its own CUDA runtime; the host gives the driver. A GPU spec's image is then `"default"` or that name. An Archil computer's preflight reads `/dev/fuse`, and one without it is refused in those words ("this computer has no /dev/fuse, so the Archil folder can't be mounted") before anything else |
 
 ### What the provider does
 
@@ -1622,9 +1622,10 @@ The conformance module, `dist/conformance/daytona.js` (`--provider daytona`), re
 when it runs (`settingsFromEnv`) and passes each to `create()` as the option in brackets: `COMPUTER_DAYTONA_API_KEY`
 (`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
 `COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`),
-`COMPUTER_DAYTONA_USER` (`daemonUser`) and `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+`COMPUTER_DAYTONA_USER` (`daemonUser`), `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`) and `COMPUTER_DAYTONA_CONNECT`
+(`connect`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
-Daytona's default snapshot). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
+Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-archil-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
 which serve passes in itself.
 
@@ -1651,6 +1652,60 @@ node packages/computer/dist/conformance/sweep.js --provider daytona --after /tmp
 
 It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
 Daytona also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
+
+### Daytona on dial
+
+With `connect: "dial"` (a server's `daytonaConnect` setting, `COMPUTER_DAYTONA_CONNECT` for conformance; `exec` by
+default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)). The host has
+no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
+`networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
+entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. What each part rests on:
+
+- **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
+  whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
+  The one that holds `agentrun-dial` is the box image's, `agentrun-archil-<recipe hash>`: `box/build-daytona.py`
+  builds it from `box/Dockerfile`, or `POST /snapshots` makes it from the published
+  `ghcr.io/parcha-ai/agentrun-box:<recipe hash>` with the same `entrypoint`. The conformance module's run image on
+  dial is that name. A snapshot carries its own resources: a create that names one sends none (400 "Cannot specify
+  Sandbox resources when using a snapshot", live 11-11).
+- **The boot env reaches `agentrun-dial`.** The runner puts `env` in the container's env
+  ([runner container_configs.go:87](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L87)),
+  and the toolbox's session shell takes the toolbox's env (`cmd.Env = os.Environ()`,
+  [daemon session/create.go:23-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/create.go#L23-L24)).
+- **The image's CMD never runs; the snapshot's entrypoint does.** The container's entrypoint is the toolbox daemon, and
+  its arguments are the snapshot's entrypoint, else the image's ENTRYPOINT, never its CMD
+  ([runner container_configs.go:143-173](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L143-L173));
+  the daemon runs them as a command of its entrypoint session, and the sandbox stays up when it exits
+  ([daemon main.go:129-164](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/cmd/daemon/main.go#L129-L164)).
+  A snapshot built from a Dockerfile with no ENTRYPOINT gets `sleep infinity`
+  ([api snapshot.service.ts:883-901](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/services/snapshot.service.ts#L883-L901)),
+  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. A box snapshot built before it
+  did has no entrypoint, and its sandboxes never dial: build a new one. (The Dockerfile's comment that Daytona runs its
+  CMD is wrong; it stays until the recipe next changes, since editing it changes the hash.)
+- **Outbound https, by tier.** Tier 1 and 2 organizations reach "essential services" alone, and those leave out shared
+  hosting domains; Tier 3 and 4 have full access
+  ([docs: tier-based network restrictions](https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions)).
+  A server on such a domain (`*.onrender.com`) is out of a Tier 1 or 2 sandbox's reach unless Daytona adds that exact
+  host to the list ([docs: essential services](https://www.daytona.io/docs/en/network-limits.md#essential-services)).
+  **Unverified**: our organization's tier, and a dial from it.
+- **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
+  unprivileged (`Privileged: gpuIndex == nil`,
+  [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),
+  where no dial has run. A server whose Daytona connect is exec makes GPU computers. A GPU host still gives no
+  `/dev/fuse` (live 11-11), and the REST API has no `ephemeral` field: a GPU sandbox is made with
+  `autoDeleteInterval: 0` ([Capabilities](#capabilities)).
+- **The idle timer.** Processes inside a sandbox never reset it, toolbox calls do
+  ([docs: auto-stop interval](https://www.daytona.io/docs/en/sandboxes.md#auto-stop-interval)). On dial no connection is
+  a toolbox call, so with `autoStopMinutes` set a sandbox stops that long after it starts, whatever runs on it; unset
+  (0) it never stops on its own. The conformance module sets 30, so a dial run's computers each live under 30 minutes.
+- **The token is readable from the API.** `GET /sandbox/{id}` returns `env`
+  ([api sandbox.dto.ts:84](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/dto/sandbox.dto.ts#L84)),
+  so whoever holds the API key reads the machine's token; that key already runs root in the sandbox through the
+  toolbox. The token is the machine's alone, and revoked at its delete.
+- **Unverified**: whether a box-image sandbox has a D-Bus session bus in `/tmp` (on exec, create closes `/tmp/dbus-*`
+  to the computer's user through the toolbox; on dial there is no exec, so nothing does), and the `linux-vm` class on
+  dial.
 
 ### Not yet known
 

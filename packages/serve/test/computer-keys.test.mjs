@@ -45,7 +45,8 @@ test("computer keys: the saved keys become each provider's create() options; a n
     assert.deepEqual(providerOptions(id, { ...keys, OPENAI_API_KEY: KEY, E2B_API_KEY_X: "x" }), { ok: true, options }, id);
   }
   assert.deepEqual(providerOptions("modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { modalApp: "acme-boxes" }), { ok: true, options: { tokenId: KEY, tokenSecret: SECRET, app: "acme-boxes" } });
-  // A server's connect setting reaches E2B's and Modal's create() as connect; unset, the provider's exec holds.
+  // A server's connect setting reaches E2B's, Modal's and Daytona's create() as connect; unset, the provider's exec holds.
+  assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY }, { daytonaConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   assert.deepEqual(providerOptions("e2b", { E2B_API_KEY: KEY }, { e2bConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   assert.deepEqual(providerOptions("modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { modalConnect: "dial" }), { ok: true, options: { tokenId: KEY, tokenSecret: SECRET, app: "agentrun", connect: "dial" } });
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");

@@ -11,8 +11,14 @@
 # GPU region. Its name is agentrun-archil-gpu-h100-<the recipe's hash>: the provider's gpuSnapshot option takes it, and
 # reads the GPU from it. Another type is another snapshot.
 #
+# The snapshot's entrypoint is the Dockerfile's CMD, named: Daytona's toolbox runs a snapshot's entrypoint as its first
+# command, and a snapshot built from a Dockerfile with no ENTRYPOINT gets `sleep infinity` instead, never the CMD
+# (daytonaio/daytona@b5a5d9e7 apps/api/src/sandbox/services/snapshot.service.ts:883-901). That CMD starts agentrun-dial
+# when the create set AGENTRUN_ATTACH_URL (a Daytona computer on connect "dial"), and sleeps otherwise.
+#
 #   python3 packages/computer/box/build-daytona.py [--gpu H100]
 import hashlib
+import json
 import os
 import sys
 
@@ -31,11 +37,13 @@ here = os.path.dirname(os.path.abspath(__file__))
 recipe = b"".join(open(os.path.join(here, name), "rb").read() for name in ("Dockerfile", "install.sh", "agentrun-archil"))
 digest = hashlib.sha256(recipe).hexdigest()[:12]
 name = f"agentrun-archil-gpu-{gpu.lower()}-{digest}" if gpu else f"agentrun-archil-{digest}"
+cmd = [json.loads(line[4:]) for line in open(os.path.join(here, "Dockerfile")).read().splitlines() if line.startswith("CMD ")][-1]
 print(f"build-daytona: snapshot {name}", file=sys.stderr)
 Daytona().snapshot.create(
     CreateSnapshotParams(
         name=name,
         image=Image.from_dockerfile(os.path.join(here, "Dockerfile")),
+        entrypoint=cmd,
         resources=Resources(cpu=16, memory=100, disk=400, gpu=1, gpu_type=GPUS[gpu]) if gpu else Resources(cpu=2, memory=4, disk=10),
         **({"region_id": "earth"} if gpu else {}),
     ),
