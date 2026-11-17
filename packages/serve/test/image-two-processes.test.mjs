@@ -43,7 +43,15 @@ const upper = role.toUpperCase();
 let server;
 if (role === "server" && process.env.STUB_HEALTH !== "never") {
   const port = Number(args[args.indexOf("--port") + 1]);
-  server = createServer((req, res) => res.writeHead(req.url === "/v2/health" ? 200 : 404).end()).listen(port, "127.0.0.1");
+  // Warming for STUB_WARMING_MS (a 503, as listen-first.ts answers while the store opens), then ready (a 200).
+  const ready = Date.now() + Number(process.env.STUB_WARMING_MS ?? 0);
+  let answered;
+  server = createServer((req, res) => {
+    if (req.url !== "/v2/health") return res.writeHead(404).end();
+    const now = Date.now() < ready ? "warming" : "ready";
+    if (answered !== now) (answered = now, log(now));
+    res.writeHead(now === "ready" ? 200 : 503).end();
+  }).listen(port, "127.0.0.1");
 }
 const keep = setInterval(() => {}, 1000);
 process.on("SIGTERM", () => {
@@ -69,17 +77,27 @@ async function freePort() {
 /** The script beside the stand-in, in a scratch directory, and its log. */
 async function scratch(t) {
   const dir = await mkdtemp(join(tmpdir(), "image-two-processes-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  const scripts = [];
+  // A test that fails mid-way leaves no script behind: a second SIGTERM ends its processes at once (stop() in start.sh).
+  t.after(async () => {
+    for (const { child, exited } of scripts) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      child.kill("SIGTERM");
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
   await mkdir(join(dir, "docker"));
   await mkdir(join(dir, "dist"));
   await writeFile(join(dir, "docker", "start.sh"), await readFile(START));
   await writeFile(join(dir, "dist", "cli.js"), STUB);
   await writeFile(join(dir, "package.json"), '{ "type": "module" }\n');
-  return { script: join(dir, "docker", "start.sh"), log: join(dir, "stub.log") };
+  return { script: join(dir, "docker", "start.sh"), log: join(dir, "stub.log"), scripts };
 }
 
 /** Starts the script with `args`, `secrets` on fd 3 as the launcher hands them, and `env`. */
-function start({ script, log }, args, { secrets, env = {} } = {}) {
+function start({ script, log, scripts }, args, { secrets, env = {} } = {}) {
   const childEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: tmpdir(), STUB_LOG: log, ...env };
   if (secrets !== undefined) Object.assign(childEnv, { AGENTRUN_SECRETS_FD: "3", AGENTRUN_SECRETS_LEN: String(secrets.length) });
   const child = spawn("sh", [script, ...args], { env: childEnv, stdio: ["ignore", "pipe", "pipe", "pipe"] });
@@ -88,6 +106,7 @@ function start({ script, log }, args, { secrets, env = {} } = {}) {
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  scripts.push({ child, exited });
   return { child, seen, exited };
 }
 
@@ -141,6 +160,18 @@ test("server-and-runner starts the server with --no-runner, then a runner on its
   assert.ok(saw(at.log, "server", "term") && saw(at.log, "runner", "term"), "SIGTERM reached both");
   assert.ok(saw(at.log, "server", "drained") && saw(at.log, "runner", "drained"), "the script waited for both to end");
   assert.ok(!alive(server.pid) && !alive(runner.pid), "neither is left");
+});
+
+test("a server that answers it is warming (503) gets no runner until it answers ready: a runner never opens a store its server has not opened", async (t) => {
+  const at = await scratch(t);
+  const port = await freePort();
+  const run = start(at, ["server-and-runner", "--data", "/data", "--port", String(port)], { env: { STUB_WARMING_MS: "2500" } });
+  await until("the runner starts", () => up(at.log, "runner"));
+  const order = lines(at.log).map((line) => `${line.role} ${line.event}`).filter((line) => ["server warming", "server ready", "runner up"].includes(line));
+  assert.deepEqual(order, ["server warming", "server ready", "runner up"], "asked while warming, the runner waited for ready");
+  run.child.kill("SIGTERM");
+  const { code } = await run.exited;
+  assert.equal(code, 0, run.seen.err);
 });
 
 test("the runner ending on its own stops the server and the script exits 1, even when the runner's own exit was 0", async (t) => {
