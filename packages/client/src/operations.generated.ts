@@ -2297,7 +2297,7 @@ export type GetLearningCostResponse = {
       n: number | null;
       at: string;
       workflow: string;
-      by: "audit" | "check";
+      by: "audit" | "check" | "dsl";
       reason: string;
     }>;
   };

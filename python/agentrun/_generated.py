@@ -3572,7 +3572,7 @@ class GetLearningCostResponseBillHoldsItem(TypedDict):
     n: int | None
     at: str
     workflow: str
-    by: Literal["audit", "check"]
+    by: Literal["audit", "check", "dsl"]
     reason: str
 
 
