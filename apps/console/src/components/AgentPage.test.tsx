@@ -630,9 +630,13 @@ describe("AgentPage current server settings", () => {
   });
 
   it("resolves the server default computer and runner-only tools without overriding an explicit place", async () => {
-    const base = agentFixture("invoice-checker");
+    const fixture = agentFixture("invoice-checker");
+    const base = { ...fixture, definition: { ...fixture.definition, tools: ["read", "bash"] } };
     const places: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace: { mode: "sandbox", box: "docker" } };
     expect((await open(base, { places })).fact("Runs")?.textContent).toBe("In a docker box (server default)");
+    // Tools that need no shell run on the runner, where the server puts them.
+    const plain = { ...fixture, definition: { ...fixture.definition, tools: ["read"] } };
+    expect((await open(plain, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
     const browser = { ...base, definition: { ...base.definition, tools: ["browser"] } };
     expect((await open(browser, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
     const explicit = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
