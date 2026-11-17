@@ -87,16 +87,23 @@ test('a real local MCP workflow calls the original callback functions and emits 
   } finally { await client.close(); await bound.close(); await bridge.close(); }
 });
 
-async function proofFixture(t, { pending = false, fallback = false, uncertain = false, interrupt = false } = {}) {
+async function proofFixture(t, { pending = false, fallback = false, uncertain = false, interrupt = false, preexisting = false } = {}) {
   const auditPath = await journal(t), agentId = 'eve-workflow-fixture', results = new Map(), runs = new Map(), prompts = [], reads = [], settings = [];
-  let learning = false, version = 1, enabledRuns = 0, taughtRun, workflowRun, checkpoint;
+  let learning = false, version = 1, registered = preexisting, taughtRun, workflowRun, checkpoint;
   const accepted = () => Boolean(workflowRun);
   const view = () => ({ main: accepted() ? 'revision-workflow' : taughtRun ? 'revision-skill' : 'revision-empty',
     notes: { items: [] }, skills: taughtRun ? [{ status: 'active', run: taughtRun, name: 'release-brief', file: 'skills/release-brief/SKILL.md' }] : [],
     workflows: accepted() ? [{ status: pending ? 'pending' : 'active', run: workflowRun, name: 'release-brief', file: 'workflows/release-brief/workflow.json' }] : [],
     log: { items: [{ commit: 'revision-workflow' }] } });
   const client = { agents: {
-    async get() { return { etag: `"${version}"`, body: { definition: { version, sdk: { runtime: 'eve' }, learning } } }; },
+    async get() {
+      if (!registered) throw Object.assign(new Error('No agent registered.'), { code: 'not_found' });
+      return { etag: `"${version}"`, body: { definition: { version, sdk: { runtime: 'eve' }, learning } } };
+    },
+    async create({ definition }) {
+      assert.equal(registered, false); assert.equal(definition.id, agentId); assert.equal(definition.learning, false);
+      registered = true; return this.get();
+    },
     async update(id, { definition }, headers) {
       assert.equal(id, agentId); assert.equal(headers['If-Match'], `"${version}"`); assert.equal(definition.version, undefined);
       learning = definition.learning; settings.push(learning); version++;
@@ -111,7 +118,7 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
     const sessionId = `session-${prompts.length}`, runId = `run-${prompts.length}`;
     await onStarted({ sessionId, deliveryId: `delivery-${prompts.length}` });
     const service = input.includes('demo-worker') ? 'demo-worker' : 'demo-api';
-    const workflow = accepted() && learning === true && !fallback;
+    const workflow = accepted() && learning !== false && learning !== 'notes' && !fallback;
     const revision = learning === false ? null : view().main;
     const ctx = { auditPath, ...(workflow ? { runId, workflow: 'release-brief' } : { sessionId }) };
     const status = await readReleaseStatus({ service }, ctx), brief = await formatReleaseBrief({ status }, ctx);
@@ -126,7 +133,8 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
       ...(learning === false ? {} : { learning: { state: 'merged' } }) };
     results.set(sessionId, { input, result }); runs.set(runId, run);
     if (learning === 'notes') taughtRun = runId;
-    if (learning !== false && ++enabledRuns === 5) workflowRun = runId;
+    // Current compile_after counts the agent's own completed runs, including its Off baseline.
+    if (typeof learning === 'object' && runs.size >= learning.compile_after) workflowRun ??= runId;
     if (interrupt) { interrupt = false; throw new Error('A native delivery completed after the connection closed.'); }
     return result;
   };
@@ -134,35 +142,47 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
     checkpoint: async value => { checkpoint = structuredClone(value); },
     async readNative(id, { expectedTask }) { reads.push(id); const saved = results.get(id); assert.ok(saved); assert.equal(saved.input, expectedTask); return structuredClone(saved.result); },
   };
-  return { options, prompts, settings, runs, reads, results, proof: () => checkpoint };
+  return { options, prompts, settings, runs, reads, results, proof: () => checkpoint, changeOwnerLearning(value) { learning = value; version++; } };
 }
 
 test('live-proof orchestration teaches in notes mode, then compiles normally, proves fresh callback reuse, and switches the same agent Off', async t => {
   const f = await proofFixture(t), proof = await demonstrateWorkflows(f.options);
-  assert.equal(proof.stage, 'passed'); assert.equal(f.prompts.length, 8);
-  assert.deepEqual(f.settings, ['notes', true, false]);
+  assert.equal(proof.stage, 'passed'); assert.equal(f.prompts.length, 7);
+  assert.deepEqual(f.settings, ['notes', { compile_after: 5 }, false]);
   assert.equal(f.prompts.at(-2), workflowTask('demo-worker')); assert.equal(f.prompts.at(-1), workflowTask('demo-worker'));
-  assert.equal(proof.accepted.workflows[0].run, proof.sessions.practice_4.run.runId);
+  assert.equal(proof.accepted.workflows[0].run, proof.sessions.practice_3.run.runId);
   assert.equal(proof.sessions.reused.callbacks.read.source, 'workflow');
   assert.equal(proof.sessions.control_off.callbacks.read.source, 'native');
-  assert.equal(new Set(Object.values(proof.sessions).map(row => row.callbacks.read.result.observation)).size, 8);
+  assert.equal(new Set(Object.values(proof.sessions).map(row => row.callbacks.read.result.observation)).size, 7);
   const settings = [...f.settings];
   const resumed = await demonstrateWorkflows({ ...f.options, resume: proof });
-  assert.equal(resumed.stage, 'passed'); assert.equal(f.prompts.length, 8); assert.equal(f.reads.length, 8);
+  assert.equal(resumed.stage, 'passed'); assert.equal(f.prompts.length, 7); assert.equal(f.reads.length, 7);
   assert.deepEqual(f.settings, settings, 'A finished proof must not toggle settings or submit more paid work when resumed.');
+});
+
+test('workflow proof never changes a pre-existing agent or replaces owner settings changed during a paused proof', async t => {
+  const existing = await proofFixture(t, { preexisting: true });
+  existing.changeOwnerLearning({ compile_after: 40, agree_min: 0.95 });
+  await assert.rejects(demonstrateWorkflows(existing.options), /new dedicated agent id/);
+  assert.equal(existing.prompts.length, 0); assert.deepEqual(existing.settings, []);
+  const paused = await proofFixture(t, { interrupt: true });
+  await assert.rejects(demonstrateWorkflows(paused.options), /connection closed/);
+  paused.changeOwnerLearning({ compile_after: 30 });
+  await assert.rejects(demonstrateWorkflows({ ...paused.options, resume: paused.proof() }), /owner changed learning/);
+  assert.equal(paused.prompts.length, 1); assert.deepEqual(paused.settings, []);
 });
 
 test('workflow proof stops at independent review without auto-approving or invoking reuse', async t => {
   const f = await proofFixture(t, { pending: true });
   await assert.rejects(demonstrateWorkflows(f.options), /needs owner review/);
-  assert.equal(f.prompts.length, 6); assert.equal(f.proof().sessions.reused, undefined);
+  assert.equal(f.prompts.length, 5); assert.equal(f.proof().sessions.reused, undefined);
 });
 
 test('good direct-tool output is never counted as executable workflow reuse', async t => {
   const f = await proofFixture(t, { fallback: true });
   await assert.rejects(demonstrateWorkflows(f.options), /original formatter callback did not execute/);
-  assert.equal(f.prompts.length, 7); assert.equal(f.proof().sessions.control_off, undefined);
-  const result = f.results.get('session-7').result, run = f.runs.get('run-7');
+  assert.equal(f.prompts.length, 6); assert.equal(f.proof().sessions.control_off, undefined);
+  const result = f.results.get('session-6').result, run = f.runs.get('run-6');
   const chain = assertOriginalChain(result, await readWorkflowAudit(f.options.auditPath), run, 'demo-worker');
   assert.throws(() => assertExecutableReuse(result, run, f.proof().accepted, chain), /No accepted workflow completed/);
 });
@@ -175,7 +195,7 @@ test('uncertain submissions cannot be retried by resume, but confirmed native se
   const confirmed = await proofFixture(t, { interrupt: true });
   await assert.rejects(demonstrateWorkflows(confirmed.options), /connection closed/);
   const proof = await demonstrateWorkflows({ ...confirmed.options, resume: confirmed.proof() });
-  assert.equal(proof.stage, 'passed'); assert.equal(confirmed.prompts.length, 8);
+  assert.equal(proof.stage, 'passed'); assert.equal(confirmed.prompts.length, 7);
   assert.deepEqual(confirmed.reads, ['session-1']);
 });
 

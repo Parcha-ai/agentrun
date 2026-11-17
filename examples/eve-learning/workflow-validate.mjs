@@ -1,8 +1,11 @@
 // Real native tasks and ordinary independent promotion. No seeded workflow or forced approval.
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { AgentRun } from '@parcha/agentrun-client';
+import { POLICY } from './agent/lib/policy.ts';
 import { readWorkflowAudit } from './agent/lib/release-tools.ts';
 import { readWorkflowReport, workflowReport } from './workflow-report.mjs';
 
@@ -10,6 +13,7 @@ export const workflowTask = service => `Prepare a release brief for ${service} f
 export const teachWorkflow = workflowTask('demo-api') + ' For this and future release briefs, follow this reusable two-step procedure: call release_status for the requested service, then pass its entire returned status object unchanged to format_release_brief. Remember this procedure as a reusable skill so it can become an executable workflow after repeated use. Service names, versions and observations are fresh request data, never constants to remember.';
 const TOOL_NAMES = ['mcp:release/release_status', 'mcp:release/format_release_brief'];
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const DEMO_LEARNING = { compile_after: 5 };
 const summarize = run => ({ runId: run.run_id, runtime: run.sdk?.runtime, sessionId: run.sdk?.session_id,
   status: run.status, revision: run.sdk?.learning_revision ?? null, learningState: run.learning?.state ?? null });
 
@@ -73,13 +77,16 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
     throw new Error(`Timed out waiting for ${what}. Inspect the saved proof before any more paid tasks.`);
   };
   const setLearning = async learning => {
+    assert.equal(proof.createdAgent, true, 'Only the dedicated agent created by this proof may change learning settings.');
     const current = await client.agents.get(agentId);
     assert.equal(current.body.definition.sdk?.runtime, 'eve');
-    if (current.body.definition.learning === learning) return;
+    assert.deepEqual(current.body.definition.learning, proof.settings.at(-1)?.learning ?? false,
+      'The owner changed learning outside this proof. Inspect the settings; this demo will not overwrite them.');
+    if (isDeepStrictEqual(current.body.definition.learning, learning)) return;
     assert.ok(current.etag, 'No version guard for learning setting.');
     const { version, ...definition } = current.body.definition;
     const updated = await client.agents.update(agentId, { definition: { ...definition, learning } }, { 'If-Match': current.etag });
-    assert.equal(updated.body.definition.learning, learning);
+    assert.deepEqual(updated.body.definition.learning, learning);
     proof.settings.push({ learning, version: updated.body.definition.version }); await save();
   };
   const readLearning = async () => {
@@ -128,18 +135,19 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
     try { existing = await client.agents.get(agentId); } catch (error) { if (error.code !== 'not_found') throw error; }
     if (existing) {
       assert.equal(existing.body.definition.sdk?.runtime, 'eve');
-      if (!resume) {
-        assert.equal(existing.body.definition.learning, false, 'Start with a fresh dedicated workflow demonstration agent, learning Off.');
-        const before = await readLearning();
-        assert.equal(before.notes.items.filter(item => item.status === 'active').length + before.skills.filter(item => item.status === 'active').length
-          + before.workflows.filter(item => item.status === 'active').length, 0, 'The proof must not reuse or delete existing accepted learning.');
-      }
-    } else assert.ok(!resume, 'The saved proof agent no longer exists.');
+      assert.ok(resume && proof.createdAgent === true,
+        'Use a new dedicated agent id. This proof does not change a pre-existing agent or its learning settings.');
+    } else {
+      assert.ok(!resume, 'The saved proof agent no longer exists.');
+      await client.agents.create({ definition: { id: agentId, name: 'Eve workflow learning demonstration',
+        instructions: POLICY, sdk: { runtime: 'eve' }, learning: false } }, { 'Idempotency-Key': randomUUID() });
+      proof.createdAgent = true; await save();
+    }
     const baseline = await invoke('connected_off', teachWorkflow, 'demo-api', 'native');
     assert.equal(baseline.run.sdk.learning_revision, null); assert.equal(baseline.run.learning ?? null, null);
     assert.equal(baseline.result.toolCalls.filter(call => call.workflow).length, 0);
     // Notes mode runs the SDK look-back even without owner feedback. Full mode then
-    // compiles that checked skill on the ordinary completed-run cadence.
+    // compiles that checked skill with this new demo agent's explicit five-run cadence (20 is the server default).
     if (!proof.sessions.taught?.sessionId) await setLearning('notes');
     const taught = await invoke('taught', teachWorkflow, 'demo-api', 'native');
     await settle(taught.run.run_id);
@@ -148,7 +156,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
     for (let index = 1; index <= 4; index++) {
       const stage = `practice_${index}`;
       if (learned.workflows.some(item => item.status === 'active' && item.run) && !proof.sessions[stage]) break;
-      if (!proof.sessions[stage]?.sessionId) await setLearning(true);
+      if (!proof.sessions[stage]?.sessionId) await setLearning(DEMO_LEARNING);
       const practice = await invoke(stage, workflowTask('demo-api'), 'demo-api');
       await settle(practice.run.run_id); learned = await readLearning();
     }
@@ -165,7 +173,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
       proof.accepted = { revision: learned.main, workflows }; await save();
     }
     assert.ok(proof.accepted.revision && (proof.accepted.revision === learned.main || learned.log.items.some(row => row.commit === proof.accepted.revision)), 'The saved accepted revision is absent from real learning history.');
-    if (!proof.sessions.reused?.sessionId) await setLearning(true);
+    if (!proof.sessions.reused?.sessionId) await setLearning(DEMO_LEARNING);
     const reused = await invoke('reused', workflowTask('demo-worker'), 'demo-worker', 'workflow');
     assertExecutableReuse(reused.result, reused.run, proof.accepted, reused.chain);
     if (!proof.sessions.control_off?.sessionId) await setLearning(false);

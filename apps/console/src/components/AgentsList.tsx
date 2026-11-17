@@ -1,7 +1,7 @@
 import { HarnessIcon } from "@/components/HarnessIcon";
 import { ObservedSessions } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
-import { Archive, ArchiveRestore, Bot, History, Pencil, Play, Search } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";

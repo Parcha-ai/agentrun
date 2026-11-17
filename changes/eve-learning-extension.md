@@ -26,3 +26,7 @@ the additional explicit read-only bindings required for executable workflows.
 Enabling learning on an Off eve agent in the console now selects notes and skills, so ordinary
 connected tasks can learn without requiring a workflow catalog. Preserve an already-enabled
 learning mode when another client saves it before the switch's update.
+
+Support configurable full-learning settings for Eve registration and workflow execution, and preserve
+an already-enabled loop configuration when the console refreshes before saving. The fresh-agent
+cookbook opts into a five-run compilation interval without changing acceptance thresholds.

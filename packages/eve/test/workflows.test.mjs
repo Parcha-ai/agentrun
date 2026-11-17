@@ -63,6 +63,22 @@ test('notes-only config has no executable workflow binding or supplemental instr
   assert.equal(workflowScope(f.record), undefined);
 });
 
+test('configured learning loops dispatch original callbacks, but switching Off revokes an admitted turn', async () => {
+  for (const learning of [{}, { compile_after: 5, agree_min: 0.9, alone_min: 0.7 }, { audit_every: 5, hold_window: 10, hold_disagree: 3 }]) {
+    const f = fixture({ learning });
+    const completed = await executeLearnedWorkflow(f.config, f.record, input, native());
+    assert.equal(completed.isError, false);
+    assert.equal(completed.agentrun.complete, true);
+    assert.equal(f.invocations.length, 1);
+    f.config.fetch = async () => new Response(JSON.stringify({ definition: { sdk: { runtime: 'eve' }, learning: false } }),
+      { headers: { 'content-type': 'application/json' } });
+    const stopped = await executeLearnedWorkflow(f.config, f.record, input, native());
+    assert.equal(stopped.isError, true);
+    assert.equal(stopped.agentrun.complete, false);
+    assert.equal(f.invocations.length, 1, 'Off must prevent another callback despite the previously admitted workflow.');
+  }
+});
+
 test('an explicit custom mount name and native aliases are pinned without exporting callbacks', () => {
   const f = fixture(); f.options.toolName = 'my_learning__learned_workflow';
   f.record.workflowBinding = workflowBinding(f.options);
@@ -95,7 +111,7 @@ test('first ordered request owns the turn even when sibling tool steps share the
 });
 
 test('Off, notes-only, denied and ask policies refuse execution and cannot produce complete training evidence', async () => {
-  for (const options of [{ learning: false }, { learning: 'notes' }, { policy: () => 'deny' }, { policy: () => 'ask' }, { permission: 'ask' }]) {
+  for (const options of [{ learning: false }, { learning: 'notes' }, { learning: null }, { learning: [] }, { policy: () => 'deny' }, { policy: () => 'ask' }, { permission: 'ask' }]) {
     const f = fixture(options), result = await executeLearnedWorkflow(f.config, f.record, input, native());
     assert.equal(result.isError, true);
     assert.equal(result.agentrun.complete, false);

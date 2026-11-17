@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { AgentRun, AgentRunRefused, AgentRunUsage, type ClientOptions } from '@parcha/agentrun-client';
-import { renderLearningContext, type SdkLearningEvent } from '@parcha/agentrun-client/learning';
+import { renderLearningContext, type BackendLearningLoop, type SdkLearningEvent } from '@parcha/agentrun-client/learning';
 import type { SessionReader } from 'eve/sessions';
 import { collectTurn } from './evidence.js';
 import { workflowBinding, workflowInstructions, workflowScope, type EveWorkflowOptions, type WorkflowBinding } from './workflows.js';
@@ -9,7 +9,7 @@ export interface LearningConfig extends ClientOptions {
   agentId: string;
   name?: string;
   instructions: string;
-  learning?: boolean;
+  learning?: boolean | BackendLearningLoop;
   workflows?: EveWorkflowOptions;
 }
 export interface TurnSource {
@@ -50,10 +50,12 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
   try { agent = (await owner.agents.get(config.agentId)).body; }
   catch (error) {
     if (!(error instanceof AgentRunRefused) || error.status !== 404) throw error;
+    const learning = config.learning;
+    const on = learning === true || (learning !== null && typeof learning === 'object' && !Array.isArray(learning));
     try {
       await owner.agents.create({ definition: {
         id: config.agentId, name: config.name ?? config.agentId, instructions: config.instructions,
-        sdk: { runtime: 'eve' }, learning: config.learning === true ? workflows ? true : 'notes' : false,
+        sdk: { runtime: 'eve' }, learning: on ? (workflows ? learning === true ? true : { ...learning } : 'notes') : false,
       } }, { 'Idempotency-Key': `eve:register:${hash(config.agentId)}` });
     } catch (conflict) {
       if (!(conflict instanceof AgentRunRefused) || conflict.status !== 409) throw conflict;

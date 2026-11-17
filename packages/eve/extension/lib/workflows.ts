@@ -108,7 +108,9 @@ export async function executeLearnedWorkflow(config: LearningConfig, record: Tur
     native.signal.throwIfAborted();
     // Turning learning Off forbids new workflow invocations even if a turn already has an old snapshot.
     const current = (await owner.agents.get(record.agentId, { signal: native.signal })).body;
-    if (current.definition.sdk?.runtime !== 'eve' || current.definition.learning !== true) throw new Error('workflow_learning_disabled');
+    // The server validates the loop's numbers; a returned object is full learning, as in learnsWorkflowsOf.
+    const learning = current.definition.learning;
+    if (current.definition.sdk?.runtime !== 'eve' || !(learning === true || object(learning))) throw new Error('workflow_learning_disabled');
     const [{ createWorkflowMcpBridge }, { Client }, { StreamableHTTPClientTransport }] = await Promise.all([
       import('@parcha/agentrun-client/workflows'), import('@modelcontextprotocol/sdk/client/index.js'), import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
     ]);

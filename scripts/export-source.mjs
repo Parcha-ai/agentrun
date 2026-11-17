@@ -145,6 +145,9 @@ function excluded(path, file) {
   // directory named review, and a directory named like a review file, are source.
   // What `pip install ./python` leaves beside the Python client's source (its build tree, its metadata) is not source.
   if (/^(?:python|connector)\/build(?:\/|$)/.test(path) || /(?:^|\/)[^/]+\.egg-info(?:\/|$)/.test(path)) return true;
+  // The eve cookbook's local session store and compiled deployment may contain customer context or credentials.
+  // Its generated mount is runtime configuration; the reviewed source template lives under connection/.
+  if (/^examples\/eve-learning\/(?:\.eve|\.output|\.vercel)(?:\/|$)/.test(path) || path === 'examples/eve-learning/agent/extensions/agentrun.ts') return true;
   return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
     (file && /^.+\.review\.[^/]+$/.test(parts.at(-1))) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);

@@ -2,17 +2,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { beginTurn, learningInstructions, submitTurn } from '../dist/extension/lib/lifecycle.mjs';
 
-function service() {
+function service({ definition } = {}) {
   const requests = [], runs = new Map();
-  let registered = false, failAfterCommit = false, revision = 'accepted-one', enabled = true;
+  let registered = Boolean(definition), failAfterCommit = false, revision = 'accepted-one', enabled = true;
   const fetch = async (url, options) => {
     const path = new URL(url).pathname, body = options.body ? JSON.parse(options.body) : undefined;
     requests.push({ path, method: options.method, headers: options.headers, body });
     const answer = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
     if (path === '/v2/agents/eve-support' && options.method === 'GET') return registered
-      ? answer({ definition: { id: 'eve-support', sdk: { runtime: 'eve' } } })
+      ? answer({ definition })
       : answer({ error: { code: 'not_found', message: 'missing' } }, 404);
-    if (path === '/v2/agents' && options.method === 'POST') { registered = true; return answer({}); }
+    if (path === '/v2/agents' && options.method === 'POST') { registered = true; definition = body.definition; return answer({}); }
     if (path === '/v2/agents/eve-support/sdk-runs') {
       const key = options.headers['Idempotency-Key'];
       if (!runs.has(key)) runs.set(key, { run_id: `run-${runs.size + 1}`, agent_id: 'eve-support', token: 'scoped-private-token',
@@ -53,6 +53,26 @@ test('different sessions do not share receipts, and an existing agent setting is
   assert.equal(registration.learning, 'notes');
   assert.deepEqual(registration.sdk, { runtime: 'eve' });
   assert.equal(registration.instructions, 'Keep existing tool permissions.');
+});
+
+test('new workflow agents keep configured loop numbers; notes-only mounts and existing settings remain unchanged', async () => {
+  const workflows = { engine: { inspectWorkflow() {}, runWorkflow() {}, resolveSchemaForWorkflow() {} }, policy: () => 'allow',
+    tools: [{ name: 'mcp:release/status', nativeName: 'release_status', description: 'Read release status.',
+      input_schema: { type: 'object' }, permission: 'allow', readOnly: true, async execute() {} }] };
+  const learning = { compile_after: 5, agree_min: 0.9, alone_min: 0.7 };
+  for (const [bindings, expected] of [[workflows, learning], [undefined, 'notes']]) {
+    const server = service();
+    await beginTurn({ ...config(server.fetch), learning, workflows: bindings }, source);
+    const registration = server.requests.find(row => row.path === '/v2/agents').body.definition;
+    assert.deepEqual(registration.learning, expected);
+  }
+  for (const existing of [false, 'notes', { compile_after: 40, agree_min: 0.95 }]) {
+    const server = service({ definition: { id: 'eve-support', sdk: { runtime: 'eve' }, learning: existing } });
+    await beginTurn({ ...config(server.fetch), learning, workflows }, source);
+    assert.equal(server.requests.some(row => row.path === '/v2/agents' || row.method === 'PUT' || row.method === 'PATCH'), false,
+      'A mount must never replace the owner setting with its initial-registration defaults.');
+    assert.deepEqual(server.requests.find(row => row.path.endsWith('/sdk-runs')).body.workflow_tools.map(tool => tool.name), ['mcp:release/status']);
+  }
 });
 
 test('Learning Off never renders a supplied skill or context', () => {

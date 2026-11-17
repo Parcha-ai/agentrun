@@ -19,6 +19,32 @@ These are built packages, not workspace links; no AgentRun checkout is needed in
 After a reviewed release publishes them, the registry install will be `npm install @parcha/agentrun-eve`.
 Do not use that registry command for this unpublished candidate.
 
+## Check the installation without credentials
+
+After installing the archives, save this as `check-agentrun.mjs` and run `node check-agentrun.mjs`.
+It checks the installed extension and workflow entry points, validates a mount, and confirms that
+learning defaults to Off. It does not connect an agent, contact a server, or call a model; real
+learning still needs the authenticated setup below.
+
+```js
+import assert from 'node:assert/strict';
+import agentrun from '@parcha/agentrun-eve';
+import { learned_workflow } from '@parcha/agentrun-eve/tools';
+
+const mount = agentrun({
+  baseUrl: 'https://agentrun.example/v2',
+  apiKey: 'fake-test-key',
+  agentId: 'installation-check',
+  instructions: 'Keep the original tools and permissions.',
+});
+assert.ok(mount);
+assert.ok(learned_workflow);
+assert.equal(agentrun.config.learning, false);
+console.log('AgentRun extension loaded; learning defaults to Off. No agent was connected.');
+```
+
+## Connect your existing agent
+
 Add one file, `agent/extensions/agentrun.ts`:
 
 ```ts
@@ -43,7 +69,10 @@ Restart or redeploy eve normally and run one ordinary task. It registers the con
 learning off. Open that agent's **Learning** tab and enable **Self-improving** for notes and skills.
 The next fresh turn pins its accepted learning revision. Alternatively, `learning: true` in this
 mount opts in on first registration only; without workflow bindings it selects notes/skills mode.
-An existing agent's console setting always wins. The extension declares its own build dependencies;
+With explicit workflow bindings, `learning: { compile_after: 5 }` opts a new agent into full
+workflow learning with a five-completed-run compilation interval (the server default is 20).
+`agree_min` and `alone_min` may also configure the independent check. These settings do not
+force a workflow to pass its check. An existing agent's console setting always wins. The extension declares its own build dependencies;
 the application's model, tools and `agent.ts` build configuration need no changes.
 
 Removing the extension restores the original eve integration; it does not delete AgentRun history.

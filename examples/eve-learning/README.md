@@ -121,11 +121,13 @@ In another terminal with the same connection variables and audit path:
 npm run validate:workflows -- --live --output /tmp/eve-workflow-proof.json
 ```
 
+Use a new agent id that does not already exist. The validator creates that dedicated agent with learning Off and refuses to overwrite an existing agent or settings changed outside the proof.
+
 This performs at most eight native model tasks, plus the server's independent learning calls:
 
 1. Run the original two-tool procedure with learning Off.
 2. Enable **notes and skills**, teach that reusable procedure, and wait for an independently accepted skill. SDK turns without owner feedback use this mode for look-back learning.
-3. Enable **full workflow learning** and run up to four ordinary practice tasks. The server's normal compilation cadence must produce an independently accepted executable workflow.
+3. Enable **full workflow learning** with `learning: { compile_after: 5 }` for this new demonstration agent and run up to four ordinary practice tasks. The server must produce an independently accepted executable workflow at that configured cadence (the default is 20 completed runs). The checker and its acceptance thresholds are unchanged.
 4. Ask about `demo-worker` in a fresh session, without repeating the taught procedure. Require the accepted revision, a completed `agentrun__learned_workflow` invocation, both original callback bindings as its children, a fresh observation UUID and the changed version `3.1.2`.
 5. Turn the **same agent** Off and submit the same `demo-worker` task in another fresh session. Require direct native tools, no workflow invocation and no learning revision.
 
