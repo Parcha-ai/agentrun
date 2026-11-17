@@ -7,7 +7,8 @@
 //     nothing reaches main, and the compile's failure is on its promotion record;
 //   - the owner's feedback (a message after the answer) appends one line to corrections.md on main, with no model turn;
 //     a line holding a value the host keeps secret is refused, and one that would take the file past its cap is refused
-//     with the cap's words.
+//     with the cap's words; a file another write filled during the compile turn refuses the line alone, and the passing
+//     draft is committed.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
-import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { git, repoOf } from "./learn-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -24,6 +25,7 @@ const { promotionsOf } = await import("../dist/learn/promote.js");
 const { learningFolderOf, seedOf } = await import("../dist/learning.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
+const { said } = await import("../dist/learning-words.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -65,13 +67,16 @@ async function world(t, body) {
   const logs = [];
   const requests = [];
   /** Starts the runner on run-1, its model following `script`; `feedback`, a person's message taken after the job's
-   *  first. Any other run it claims is held, never run here. */
-  const start = async ({ script, feedback } = {}) => {
+   *  first; `beforeAnswer`, called with each request's body before the model answers it. Any other run it claims is
+   *  held, never run here. */
+  const start = async ({ script, feedback, beforeAnswer } = {}) => {
     await create();
     if (feedback !== undefined) await sendCommand(server, "run-1", { kind: "steer", body: { text: feedback } });
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
-    const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { requests });
+    const origin = scriptedOrigin(script, requests);
+    const fetch = beforeAnswer ? async (url, init = {}) => (await beforeAnswer(JSON.parse(String(init.body ?? "{}"))), origin(url, init)) : origin;
+    const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
     const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, handed: [HANDED], log: (line) => logs.push(line), learningFolder: (agentId) => learningFolderOf(dir, agentId) });
     const createLoop = (deps) => {
       const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
@@ -158,21 +163,52 @@ test("feedback holding a value the host keeps secret is refused: corrections.md 
   assert.ok(!w.logs.join("\n").includes(HANDED));
 });
 
-test("feedback that would take corrections.md past its cap is refused with the cap's words; the file stays as it was", async (t) => {
-  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
-  await seedOf(w.dir, "agent-1");
-  const full = `${Array.from({ length: 44 }, (_, i) => `- Rule ${String(i).padStart(2, "0")}: keep every answer short and plain.`).join("\n")}\n`;
-  const folder = learningFolderOf(w.dir, "agent-1");
+/** corrections.md a few bytes under its 2048-byte cap: 44 rules. */
+const FULL = `${Array.from({ length: 44 }, (_, i) => `- Rule ${String(i).padStart(2, "0")}: keep every answer short and plain.`).join("\n")}\n`;
+
+/** corrections.md on agent-1's main replaced with FULL by another run (run-0), as an owner's edit or another run's
+ *  correction would fill it. */
+async function fillCorrections(dir) {
+  assert.ok(Buffer.byteLength(FULL) < 2048 && Buffer.byteLength(FULL) > 2000, `setup: ${Buffer.byteLength(FULL)} bytes`);
+  const folder = learningFolderOf(dir, "agent-1");
   try {
-    const done = await learningCommit(folder.workspace, { kind: "merge", runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: full }] });
+    const done = await learningCommit(folder.workspace, { runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: FULL }] });
     assert.equal(done.ok, true, JSON.stringify(done));
   } finally {
     await folder.end();
   }
-  assert.ok(Buffer.byteLength(full) < 2048 && Buffer.byteLength(full) > 2000, `setup: ${Buffer.byteLength(full)} bytes`);
+}
+
+test("feedback that would take corrections.md past its cap is refused with the cap's words; the file stays as it was", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
+  await seedOf(w.dir, "agent-1");
+  await fillCorrections(w.dir);
   await w.start({ feedback: "One more rule that does not fit.", script: [{ say: "The job's answer." }, { say: "Noted." }] });
-  assert.equal(w.onMain("corrections.md"), full.trimEnd(), "unchanged (git() trims its output)");
+  assert.equal(w.onMain("corrections.md"), FULL.trimEnd(), "unchanged (git() trims its output)");
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "dropped", JSON.stringify(kept?.proposal));
   assert.match(kept.proposal.detail, /corrections\.md .*2048 bytes/, kept.proposal.detail);
+});
+
+test("corrections.md filled during the compile turn: the correction is refused alone, in the cap's words, as the check before the compile refuses one, and the passing draft is committed", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } });
+  await seedOf(w.dir, "agent-1");
+  // The correction fits when it is checked, before the compile turn; another write fills the file while the turn runs.
+  let filled = false;
+  const beforeAnswer = async (body) => {
+    if (filled || !JSON.stringify(body.messages?.at(-1) ?? "").includes("One more turn: write this agent")) return;
+    filled = true;
+    await fillCorrections(w.dir);
+  };
+  await w.start({ feedback: "One more rule that does not fit.", script: [{ say: "The job's answer." }, { say: "Noted." }, { say: compiledBlock() }], beforeAnswer });
+  assert.ok(filled, "the compile turn was asked");
+  assert.ok(w.onMain("workflows/answer/workflow.json"), "the passing draft is on main");
+  assert.equal(w.onMain("corrections.md"), FULL.trimEnd(), "corrections.md as the other write left it");
+  assert.match(git(w.repo(), ["log", "-1", "--format=%B", "main"]), /Run-Id: run-1/, "committed by the run");
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.equal(kept.proposal.corrections, undefined, "no correction kept");
+  assert.deepEqual(kept.proposal.problems?.map(({ rule, path }) => [rule, path]), [["too_large", "corrections.md"]], JSON.stringify(kept.proposal));
+  assert.match(kept.proposal.problems[0].detail, /corrections\.md would hold \d+ bytes; the cap is 2048 bytes/);
+  assert.equal(kept.proposal.detail, said.merged([{ name: "answer" }], 0, kept.proposal.problems));
 });

@@ -159,6 +159,20 @@ test("a draft that passes its checks is committed directly with the run's correc
   assert.equal(end.detail, said.merged([{ name: "answer" }], 1));
 });
 
+test("a correction the merge refuses beside a passing draft (corrections.md filled during the compile) is reported as the check before the compile reports one; the draft merges", async () => {
+  const full = [{ rule: "too_large", path: "corrections.md", detail: "corrections.md would hold 2090 bytes; the cap is 2048 bytes" }];
+  const { hook, input, calls } = hookWith({ compile: NEW, words: ["Keep it short."], commit: () => ({ ok: true, commit: "c1", refusedCorrection: full }) });
+  const end = kept(await hook(input()));
+  assert.equal(calls.committed[0].correction, "Keep it short.", "the correction went to the merge");
+  assert.deepEqual([end.state, end.merged, end.corrections, end.problems], ["merged", "c1", undefined, full]);
+  assert.deepEqual(end.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
+  assert.equal(end.detail, said.merged([{ name: "answer" }], 0, full));
+  // As the check before the compile reports a correction it refuses.
+  const before = hookWith({ compile: NEW, words: ["Keep it short."], refused: full });
+  const earlier = kept(await before.hook(before.input()));
+  assert.deepEqual([earlier.state, earlier.corrections, earlier.problems, earlier.detail], [end.state, end.corrections, end.problems, end.detail]);
+});
+
 test("a draft held for its owner's OK (its README held) is merged as pending", async () => {
   const held = { ...DRAFT, held: ["workflows/answer/README.md"] };
   const { hook, input } = hookWith({ compile: NEW, checks: [{ errors: [], kept: held, digest: "d1" }] });

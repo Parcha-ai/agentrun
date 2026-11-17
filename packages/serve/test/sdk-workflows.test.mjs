@@ -217,6 +217,34 @@ async function waitLearning(sdk, path) {
   throw new Error("Learning did not settle.");
 }
 
+test("the SDK compiler's request carries the owner's standing corrections, a rule none of the run's evidence shows among them", { timeout: 90_000 }, async (t) => {
+  const { client, follow } = await import("./support.mjs");
+  const server = await serve(t, { faux: new URL("./fixtures/sdk-workflow-model.mjs", import.meta.url).pathname });
+  const { api } = server;
+  const id = "workflow-corrections";
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: "claude-agent-sdk" }, learning: { compile_after: 1 }, tools: [] } })).status, 201);
+  // An exception the backend's evidence never shows: the compiled workflow keeps it only if the compiler is told it.
+  const rule = "Agency customers: report a release not ready until its agency sign-off is in, whatever the status says.";
+  const read = await api("GET", `/agents/${id}/learning/corrections`);
+  const put = await api("PUT", `/agents/${id}/learning/corrections`, { text: `- ${rule}\n` }, { "If-Match": read.body.etag });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  const prompts = (globalThis.sdkCompilePrompts = []);
+  t.after(() => delete globalThis.sdkCompilePrompts);
+  const result = await api("POST", `/agents/${id}/sdk-runs`, { ...body, input: "Check release status." }, { "Idempotency-Key": "corrections-0" });
+  assert.equal(result.status, 201, JSON.stringify(result.body));
+  const sdk = client(server.baseUrl, result.body.token), path = `/sdk-runs/${result.body.run_id}`;
+  assert.equal((await sdk("POST", `${path}/events`, { sequence: 1, events: [
+    { type: "tool", id: "status", name: tool.name, status: "started", input: { release: "current" } },
+    { type: "tool", id: "status", name: tool.name, status: "completed", output: { ready: true } },
+  ] })).status, 200);
+  assert.equal((await sdk("POST", `${path}/complete`, { status: "completed", answer: '{"ready":true}' })).status, 200);
+  await follow(api, result.body.run_id, ["completed"]);
+  const learned = await waitLearning(sdk, path);
+  assert.equal(learned.learning.state, "merged", JSON.stringify(learned));
+  assert.equal(prompts.length, 1, "one compile request");
+  assert.ok(prompts[0].includes(rule), "the compiler is told the owner's correction");
+});
+
 for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true], ["claude-agent-sdk", false]]) test(`${runtime}${priced ? "" : " with an unpriced tool"} learns a workflow through the ordinary cadence and pins it for the next backend run`, { timeout: 90_000 }, async (t) => {
   const { client, follow } = await import("./support.mjs");
   const { SdkRuns } = await import("../dist/sdk/runs.js");
