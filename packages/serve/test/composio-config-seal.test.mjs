@@ -494,6 +494,43 @@ test("a trigger an earlier server kept with a credential below the config's top 
   assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 0, "the delete removes both");
 });
 
+test("a PATCH to a trigger an earlier server kept with a credential below the config's top level: leaving it out keeps it, and so does its mask; a changed field or another value is still refused", async (t) => {
+  const s = await setup(t);
+  const key = fakeKey();
+  const inner = fakeKey();
+  const escaped = fakeKey();
+  const other = fakeKey();
+  const made = await s.api("POST", "/triggers", dealTrigger(key));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  const { sealed_config: _, ...source } = made.body.source;
+  // One nested key under a plain object, one under keys a JSON Pointer escapes ("~" as ~0, "/" as ~1).
+  await s.server.store.triggers.update(made.body.id, { source: { ...source, config: { app_id: "4242", developer_api_key: key, auth: { api_key: inner, region: "eu" }, "x~y": { "api/token": escaped } } } });
+  await s.server.stop();
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl } });
+  assert.deepEqual([...(await again.api("GET", `/triggers/${made.body.id}`)).body.source.sealed_config].sort(), ["/auth/api_key", "/x~0y/api~1token", "developer_api_key"]);
+  const patch = (config) => again.api("PATCH", `/triggers/${made.body.id}`, { source: { kind: "composio", server: "hs", event: DEAL_STAGE.slug, config } });
+  // (a) Each sealed key left out, its parent object sent.
+  const left = await patch({ app_id: "4242", auth: { region: "eu" }, "x~y": {} });
+  assert.equal(left.status, 200, `a PATCH that leaves a nested sealed key out keeps it: ${JSON.stringify(left.body)}`);
+  const read = await again.api("GET", `/triggers/${made.body.id}`);
+  assert.equal(read.body.source.config.auth.api_key, MASK, "the nested key is still answered [sealed] at its place");
+  assert.equal(read.body.source.config["x~y"]["api/token"], MASK);
+  assert.equal(read.body.source.config.auth.region, "eu");
+  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 3, "every sealed value is kept");
+  // (b) Each sent back as its mask.
+  const masked = await patch({ app_id: "4242", developer_api_key: MASK, auth: { api_key: MASK, region: "eu" }, "x~y": { "api/token": MASK } });
+  assert.equal(masked.status, 200, `the nested mask sent back keeps it: ${JSON.stringify(masked.body)}`);
+  // (c) A changed field beside it, or another value in its place, is a change to the config.
+  for (const config of [{ app_id: "4242", auth: { region: "us" }, "x~y": {} }, { app_id: "4242", auth: { api_key: other, region: "eu" }, "x~y": {} }]) {
+    const res = await patch(config);
+    assert.equal(res.status, 422, JSON.stringify(res.body));
+    assert.equal(res.body.error.fields[0].field, "source.config");
+    assert.equal(res.body.error.fields[0].reason, "not_allowed");
+    assert.ok(![key, inner, escaped, other].some((one) => JSON.stringify(res.body).includes(one)), "the refusal holds no key");
+  }
+  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 3, "a refused PATCH changes nothing");
+});
+
 test("a refusal of Composio's that quotes the config as JSON, a sealed value holding a quote and a backslash: the answer and the log hold neither its raw nor its escaped form, and say Composio's words were withheld", async (t) => {
   const core = `fake-hubspot-dev-${randomBytes(10).toString("hex")}`;
   const key = `${core}"q\\b`;
