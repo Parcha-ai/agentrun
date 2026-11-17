@@ -19,7 +19,8 @@ import { isMain } from "../../scripts/is-main.mjs";
 import { differences, loadTemplate, onlyService, renderVariables } from "./template.mjs";
 
 export const API = "https://backboard.railway.com/graphql/v2";
-export const SOURCE_PROJECT = "agentrun-template-source";
+// The template takes its name, and its published code, from this project.
+export const SOURCE_PROJECT = "AgentRun";
 export const WALK_PROJECT = "agentrun-template-walk";
 const README = new URL("../README.md", import.meta.url);
 const OVERVIEW = new URL("./overview.md", import.meta.url);
@@ -39,7 +40,6 @@ export const FIRST_RUN = {
 
 // Railway's list prices (railway.com/pricing), per minute: what the walk's usage is costed at.
 export const PRICE_PER_MINUTE = { CPU_USAGE: 0.00000772 * 60, MEMORY_USAGE_GB: 0.00000386 * 60, DISK_USAGE_GB: 0.00000006 * 60 };
-const METRIC_SAMPLE_S = 10;
 
 // Every operation this script sends, each checked against Railway's live schema by --check-api.
 export const OPS = {
@@ -51,7 +51,7 @@ export const OPS = {
   ServiceDomainCreate: `mutation ServiceDomainCreate($input: ServiceDomainCreateInput!) { serviceDomainCreate(input: $input) { id domain targetPort } }`,
   EnvironmentConfig: `query EnvironmentConfig($id: String!) { environment(id: $id) { id config } }`,
   EnvironmentPatchCommit: `mutation EnvironmentPatchCommit($environmentId: String!, $patch: EnvironmentConfig!, $commitMessage: String) { environmentPatchCommit(environmentId: $environmentId, patch: $patch, commitMessage: $commitMessage, skipDeploys: true) }`,
-  WorkspaceTemplates: `query WorkspaceTemplates($workspaceId: String!) { workspaceTemplates(workspaceId: $workspaceId, first: 100) { edges { node { id code status createdAt serializedConfig } } } }`,
+  WorkspaceTemplates: `query WorkspaceTemplates($workspaceId: String!) { workspaceTemplates(workspaceId: $workspaceId, first: 100) { edges { node { id name code status createdAt serializedConfig } } } }`,
   TemplateGenerate: `mutation TemplateGenerate($projectId: String!, $environmentId: String) { templateGenerate(input: { projectId: $projectId, environmentId: $environmentId }) { id code status serializedConfig } }`,
   Template: `query Template($code: String!) { template(code: $code) { id code status serializedConfig } }`,
   TemplateDeploy: `mutation TemplateDeploy($input: TemplateDeployV2Input!) { templateDeployV2(input: $input) { projectId workflowId } }`,
@@ -63,7 +63,7 @@ export const OPS = {
   Variables: `query Variables($projectId: String!, $environmentId: String!, $serviceId: String!) { variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) }`,
   DeploymentLogs: `query DeploymentLogs($id: String!, $filter: String) { deploymentLogs(deploymentId: $id, filter: $filter, limit: 200) { message timestamp } }`,
   BuildLogs: `query BuildLogs($id: String!) { buildLogs(deploymentId: $id, limit: 200) { message timestamp } }`,
-  Metrics: `query Metrics($projectId: String!, $environmentId: String!, $serviceId: String!, $startDate: DateTime!) { metrics(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, startDate: $startDate, sampleRateSeconds: ${METRIC_SAMPLE_S}, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB]) { measurement values { ts value } } }`,
+  Metrics: `query Metrics($projectId: String!, $environmentId: String!, $serviceId: String!, $startDate: DateTime!) { metrics(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, startDate: $startDate, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB]) { measurement values { ts value } } }`,
   Usage: `query Usage($projectId: String!, $startDate: DateTime) { usage(projectId: $projectId, startDate: $startDate, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_GB]) { measurement value } }`,
   TemplatePublish: `mutation TemplatePublish($id: String!, $input: TemplatePublishInput!) { templatePublish(id: $id, input: $input) { id code status } }`,
   ProjectDelete: `mutation ProjectDelete($id: String!) { projectDelete(id: $id) }`,
@@ -273,7 +273,7 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
   // A workspace token may not read a project's template (templateSourceForProject), so the workspace's templates are
   // read instead: one that already deploys template.json is used again, a published one first.
   const ours = edges((await client.call("WorkspaceTemplates", { workspaceId })).workspaceTemplates).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const same = ours.filter((t) => differences(config, t.serializedConfig).length === 0);
+  const same = ours.filter((t) => t.name === SOURCE_PROJECT && differences(config, t.serializedConfig).length === 0);
   const had = same.find((t) => t.status === "PUBLISHED") ?? same[0];
   if (had) {
     step.pass("template", `${had.code} (${had.id}, ${had.status}) already deploys what template.json says`);
@@ -311,7 +311,7 @@ export async function usageOf(client, { projectId, environmentId, serviceId, sin
     const seconds = (ts) => (typeof ts === "number" ? ts : Date.parse(ts) / 1000);
     for (const { measurement, values } of series) {
       const points = [...values].sort((a, b) => seconds(a.ts) - seconds(b.ts));
-      out.by[measurement] = points.reduce((sum, p, i) => sum + p.value * ((i + 1 < points.length ? seconds(points[i + 1].ts) : seconds(p.ts) + METRIC_SAMPLE_S) - seconds(p.ts)), 0) / 60;
+      out.by[measurement] = points.reduce((sum, p, i) => sum + p.value * (i + 1 < points.length ? seconds(points[i + 1].ts) - seconds(p.ts) : i > 0 ? seconds(p.ts) - seconds(points[i - 1].ts) : 0), 0) / 60;
     }
     out.usd = Object.entries(PRICE_PER_MINUTE).reduce((sum, [m, p]) => sum + (out.by[m] ?? 0) * p, 0);
   } catch (error) {
@@ -530,7 +530,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     EnvironmentConfig: () => ({ environment: { id: "<source environment>", config: { services: {} } } }),
     EnvironmentPatchCommit: () => ({ environmentPatchCommit: "<patch>" }),
     WorkspaceTemplates: () => ({ workspaceTemplates: { edges: [] } }),
-    TemplateGenerate: () => ({ templateGenerate: { id: "<template>", code: "<code>", status: "UNPUBLISHED", serializedConfig: generated } }),
+    TemplateGenerate: () => ({ templateGenerate: { id: "<template>", name: SOURCE_PROJECT, code: "<code>", status: "UNPUBLISHED", serializedConfig: generated } }),
     Template: (v) => ({ template: { id: "<template>", code: v.code, status: "PUBLISHED", serializedConfig: generated } }),
     TemplateDeploy: () => ({ templateDeployV2: { projectId: "<walk project>", workflowId: "<workflow>" } }),
     ProjectRename: (v) => ({ projectUpdate: { id: v.id, name: v.name } }),

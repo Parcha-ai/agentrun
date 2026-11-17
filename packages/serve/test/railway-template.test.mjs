@@ -181,9 +181,9 @@ test("a workspace template that already deploys template.json is used again, a p
   const other = structuredClone(generated);
   Object.values(other.services)[0].deploy.healthcheckPath = "/";
   const ours = [
-    { id: "t-new", code: "new", status: "UNPUBLISHED", createdAt: "2026-11-17T12:00:00Z", serializedConfig: generated },
-    { id: "t-pub", code: "pub", status: "PUBLISHED", createdAt: "2026-11-16T12:00:00Z", serializedConfig: generated },
-    { id: "t-off", code: "off", status: "PUBLISHED", createdAt: "2026-11-18T12:00:00Z", serializedConfig: other },
+    { id: "t-new", name: "AgentRun", code: "new", status: "UNPUBLISHED", createdAt: "2026-11-17T12:00:00Z", serializedConfig: generated },
+    { id: "t-pub", name: "AgentRun", code: "pub", status: "PUBLISHED", createdAt: "2026-11-16T12:00:00Z", serializedConfig: generated },
+    { id: "t-off", name: "AgentRun", code: "off", status: "PUBLISHED", createdAt: "2026-11-18T12:00:00Z", serializedConfig: other },
   ];
   client.call = async (op, v) => (op === "WorkspaceTemplates" ? (await call(op, v), { workspaceTemplates: { edges: ours.map((node) => ({ node })) } }) : call(op, v));
   const rows = await run(client, { workspaceId: "ws", log: quiet });
@@ -220,12 +220,12 @@ test("a failed deploy is reported with its last log lines, the setup code's line
   assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
 });
 
-test("the walk's Railway cost: each metric sample held until the next (the last for one sample period), at the list prices", async () => {
+test("the walk's Railway cost: each metric sample held until the next (the last for the gap before it), at the list prices", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws" });
   const got = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0 });
-  // CPU 0.1 vCPU for 60 s then 0.05 for 10 s; memory 0.2 GB for 60 s then 0.3 for 10 s.
-  assert.ok(Math.abs(got.by.CPU_USAGE - 6.5 / 60) < 1e-9 && Math.abs(got.by.MEMORY_USAGE_GB - 15 / 60) < 1e-9, JSON.stringify(got.by));
-  assert.ok(Math.abs(got.usd - ((6.5 / 60) * PRICE_PER_MINUTE.CPU_USAGE + (15 / 60) * PRICE_PER_MINUTE.MEMORY_USAGE_GB)) < 1e-12);
+  // CPU 0.1 vCPU for 60 s then 0.05 for 60 s; memory 0.2 GB for 60 s then 0.3 for 60 s.
+  assert.ok(Math.abs(got.by.CPU_USAGE - 9 / 60) < 1e-9 && Math.abs(got.by.MEMORY_USAGE_GB - 30 / 60) < 1e-9, JSON.stringify(got.by));
+  assert.ok(Math.abs(got.usd - ((9 / 60) * PRICE_PER_MINUTE.CPU_USAGE + (30 / 60) * PRICE_PER_MINUTE.MEMORY_USAGE_GB)) < 1e-12);
   assert.equal(got.usage.CPU_USAGE, 0.5);
 });
 

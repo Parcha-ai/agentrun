@@ -5,7 +5,7 @@
 #
 #   deploy/railway/publish-and-walk.sh WORKSPACE_ID --expect-workspace NAME
 #       Stops before making anything unless the workspace is named NAME. Then it makes or updates the template from
-#       template.json, through the source project agentrun-template-source, which never deploys. It deploys the template
+#       template.json, through the source project AgentRun, which never deploys. It deploys the template
 #       once into a throwaway project, waits for /v2/health, and checks that the first visit asks for the setup code and
 #       that AGENTRUN_TOKEN works as that code. It reads the project's Railway usage, deletes the project, and publishes
 #       the template. It prints the README's button line when that line changes. Each run costs a few cents of usage.
