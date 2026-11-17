@@ -2323,7 +2323,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     if (sdkOf(body)) return { warnings: [], stamp: {} };
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
-    const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
+    const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
+    const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
     if (install) {
       void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }

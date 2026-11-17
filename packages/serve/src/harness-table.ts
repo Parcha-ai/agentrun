@@ -226,7 +226,8 @@ const harnessId = new RegExp(HARNESS_ID_PATTERN);
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the
  *  harnesses each of the owner's harness modules adds (HARNESS_MODULES_ENV), under a test runner or not. A module adds
  *  whole entries of new ids: one whose id is not one the API carries (HARNESS_ID_PATTERN), naming a name serve's own runs
- *  carry (RESERVED_HARNESS_IDS: a learning run's `learning` would reach the learning loop), naming a built-in harness, an
+ *  carry or every object has (RESERVED_HARNESS_IDS: a learning run's `learning` would reach the learning loop, and
+ *  `constructor` would read Object's own member where serve looks a harness up in a plain object), naming a built-in harness, an
  *  id another module adds, or an entry missing a member is refused by name, so no module changes what a built-in harness
  *  is (grep pins claude-agent). Loaded once per setting. */
 export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> {
@@ -241,7 +242,7 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
     for (const module of modules) {
       for (const [id, entry] of Object.entries(entriesOf(module, HARNESS_MODULES_ENV))) {
         if (!harnessId.test(id)) throw new Error(`harness module ${module} names ${id}, which is not a harness id: an id matches ${HARNESS_ID_PATTERN}`);
-        if (RESERVED_HARNESS_IDS.includes(id)) throw new Error(`harness module ${module} names ${id}, a name serve's own runs carry: a module's harness takes none of ${RESERVED_HARNESS_IDS.join(", ")}`);
+        if (RESERVED_HARNESS_IDS.includes(id)) throw new Error(`harness module ${module} names ${id}, a name serve's own runs carry or every object already has: a module's harness takes none of ${RESERVED_HARNESS_IDS.join(", ")}`);
         if (Object.hasOwn(BUILTIN, id)) throw new Error(`harness module ${module} names ${id}, a built-in harness: a module adds a harness and never replaces one`);
         if (Object.hasOwn(built, id)) throw new Error(`harness module ${module} names ${id}, which another module already adds`);
         const missing = WHOLE.filter((member) => entry[member] === undefined);
