@@ -3,7 +3,8 @@
 // import). A Modal sandbox's command is its main process, so computerd is pid1: the sandbox's command is the
 // shared entrypoint, which waits for the daemon and becomes init, and Modal finishes the sandbox when init exits. Modal
 // has no file API, so the daemon goes in through exec's stdin; it has no kill for an exec (one is killed by its pid), and
-// reads no network back, so the probe from inside stands for network none. The rest of the computer is the shared
+// reads no network back, so the probe from inside stands for network none. With connect "dial", the sandbox's command is
+// the box image's agentrun-dial instead, with the boot env, and the machine dials the server: no exec at all. The rest of the computer is the shared
 // machine-host adapter's (./hosted/provider.ts). Every SDK fact below is cited in the README's Modal section, from
 // modal-client@64880502 (js/src) and Modal's docs.
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
@@ -12,8 +13,8 @@ import { MODAL } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
-import { PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
-import { isWhole } from "./hosted/values.js";
+import { AGENTRUN_DIAL, PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
+import { connectOf, isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
@@ -33,6 +34,12 @@ export interface ModalProviderOptions extends Omit<HostedOptions, "kind" | "desk
 	/** The longest lifetime check takes, in ms: at most 24 hours, Modal's longest timeout, which is the default. */
 	maxLifetimeMs?: number;
 	timeouts?: Partial<HostedTimeouts>;
+	/**
+	 * exec (default): the daemon goes in through exec's stdin and each connection is a bridge through Modal's exec. dial:
+	 * the sandbox's command is the box image's agentrun-dial, and the machine dials the server (options.dial), which
+	 * every connection goes over.
+	 */
+	connect?: "exec" | "dial";
 }
 
 
@@ -166,19 +173,23 @@ function codeOf(error: unknown): ComputerErrorCode {
 class ModalHost implements MachineHost {
 	readonly descriptor = MODAL;
 	readonly facts: HostFacts;
+	/** connect exec alone: a dial host has none (HostFacts.connect). */
+	readonly exec?: MachineHost["exec"];
 	readonly #sdk: SdkClient;
 	readonly #appName: string;
 	/** Each sandbox create or a read gave, by id: let go of at its delete. */
 	readonly #sandboxes = new Map<string, Sandbox>();
 	#app: App | undefined;
 
-	constructor(sdk: SdkClient, app: string) {
+	constructor(sdk: SdkClient, app: string, connect: "exec" | "dial") {
 		this.#sdk = sdk;
 		this.#appName = app;
 		this.facts = {
 			// The sandbox's command is the entrypoint, which becomes init: Modal finishes the sandbox when that main process
-			// exits (sandbox.ts:384-388), so init's exit ends the computer.
-			daemon: "pid1",
+			// exits (sandbox.ts:384-388), so init's exit ends the computer. On dial the command is agentrun-dial, which
+			// starts init as its child and becomes `computerd attach`.
+			daemon: connect === "dial" ? "child" : "pid1",
+			...(connect === "dial" ? { connect } : {}),
 			// A GPU computer runs on gVisor, Modal's one GPU runtime (its descriptor's gpu.isolation): vm is every other computer's.
 			isolation: "vm",
 			lifetime: "vendor",
@@ -191,6 +202,7 @@ class ModalHost implements MachineHost {
 			user: ["uid"],
 			labels: { count: MAX_TAGS, bytes: MAX_TAG_BYTES },
 		};
+		if (connect === "exec") this.exec = (id, argv, ctx) => this.#exec(id, argv, ctx);
 	}
 
 	errorCode(error: unknown): ComputerErrorCode {
@@ -241,7 +253,10 @@ class ModalHost implements MachineHost {
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		void ctx;
-		if (req.command === undefined) throw new HostError("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
+		// A dial machine's command is the box image's agentrun-dial, and its boot env goes in as env, which the SDK sends as
+		// an ephemeral Secret (Secret.fromObject, modal@0.11.1 dist/index.js mergeEnvIntoSecrets).
+		const command = req.boot === undefined ? req.command : [AGENTRUN_DIAL];
+		if (command === undefined) throw new HostError("invalid", "a Modal sandbox's command is the entrypoint the adapter gives a pid1 host, and the request has none");
 		let base: Image;
 		if (MODAL_IMAGE_ID.test(req.image)) {
 			const fromId = this.#sdk.images.fromId;
@@ -253,7 +268,8 @@ class ModalHost implements MachineHost {
 		const cpuLimit = cpus / CPUS_PER_CORE;
 		const params: SandboxCreateParams = {
 			...(req.gpu === undefined ? { runtime: "vm" } : { runtime: "gvisor", gpu: modalGpu(req.gpu) }),
-			command: [...req.command],
+			command: [...command],
+			...(req.boot === undefined ? {} : { env: { ...req.boot.env } }),
 			timeoutMs: Math.ceil(req.lifetimeMs / 1000) * 1000,
 			workdir: WORK,
 			cpu: Math.min(CPU_REQUEST, cpuLimit),
@@ -340,7 +356,7 @@ class ModalHost implements MachineHost {
 	 * (./hosted/scripts.ts): Modal has no kill for an exec, so kill runs pidKill in an exec of its own, which ends the
 	 * process and every process under it, then closes its stdin. Not once wait() read its exit: its pid may be another's.
 	 */
-	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+	async #exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const sandbox = await this.#sandbox(id);
 		const program = await sandbox.exec([...PID_WRAPPER, ...argv], { mode: "binary" });
 		const { stderr, pid } = pidStderr(program.stderr);
@@ -384,7 +400,7 @@ export class ModalProvider extends HostedProvider {
 	}
 
 	constructor(options: ModalProviderOptions) {
-		const { app, timeouts = {}, ...rest } = options ?? ({} as ModalProviderOptions);
+		const { app, timeouts = {}, connect, ...rest } = options ?? ({} as ModalProviderOptions);
 		const sdk = options?.sdk as SdkClient | undefined;
 		const lacks = [
 			["apps.fromName", sdk?.apps?.fromName],
@@ -395,6 +411,6 @@ export class ModalProvider extends HostedProvider {
 		].filter(([, fn]) => typeof fn !== "function");
 		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
 		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
-		super(new ModalHost(sdk as SdkClient, app), { ...rest, kind: "linux", timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		super(new ModalHost(sdk as SdkClient, app, connectOf(connect, "Modal")), { ...rest, kind: "linux", timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }

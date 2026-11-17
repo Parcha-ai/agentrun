@@ -1208,6 +1208,7 @@ class DefinitionComputer(_DefinitionComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionComputerGpu(TypedDict):
@@ -1684,6 +1685,7 @@ class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionInputComputerGpu(TypedDict):
@@ -2121,6 +2123,7 @@ class GetAgentArchilResponseArchilDisk(TypedDict):
 
 class GetLearningLoopResponse(TypedDict):
     agent: str
+    completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
     guards: list[GetLearningLoopResponseGuardsItem]
 
@@ -7368,6 +7371,8 @@ class CreateTriggerBodySource8(_CreateTriggerBodySource8Required, total=False):
     every_s: int
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[CreateTriggerBodySource8AcceptItem]
 
 
@@ -7593,6 +7598,8 @@ class _CreateTriggerResponseSource8Required(TypedDict):
 class CreateTriggerResponseSource8(_CreateTriggerResponseSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[CreateTriggerResponseSource8AcceptItem]
 
 
@@ -7934,6 +7941,8 @@ class _GetTriggerResponseSource8Required(TypedDict):
 class GetTriggerResponseSource8(_GetTriggerResponseSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[GetTriggerResponseSource8AcceptItem]
 
 
@@ -8219,6 +8228,8 @@ class _ListTriggersResponseTriggersItemSource8Required(TypedDict):
 class ListTriggersResponseTriggersItemSource8(_ListTriggersResponseTriggersItemSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[ListTriggersResponseTriggersItemSource8AcceptItem]
 
 
@@ -8499,6 +8510,8 @@ class UpdateTriggerBodySource8(_UpdateTriggerBodySource8Required, total=False):
     every_s: int
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[UpdateTriggerBodySource8AcceptItem]
 
 
@@ -8723,6 +8736,8 @@ class _UpdateTriggerResponseSource8Required(TypedDict):
 class UpdateTriggerResponseSource8(_UpdateTriggerResponseSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[UpdateTriggerResponseSource8AcceptItem]
 
 

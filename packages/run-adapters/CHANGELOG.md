@@ -10,6 +10,10 @@
   - A runner lost after it placed the message, before the model took it, neither loses it nor sends it twice. The next runner places nothing again, its resumed turn carries the message if the CLI never had it, and the message is on the Timeline once.
   - A trigger's message that answers nothing (`answers: false`), and the answer to a question the run's last turn ended on, still run as turns of their own, as before.
   - Adapters: `AdapterEvent` gains `message_taken` (`ids`): the submissions the model was given, for a host that keeps the run's record itself. `@parcha/agentrun-harness-claude`'s session implements `steer()`, places nothing again for an id it already holds, and says `message_taken`.
+- Model requests AgentRun sends to OpenRouter carry OpenRouter's app attribution headers: `HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun` and `X-OpenRouter-Categories: cloud-agent,personal-agent`. Usage then counts toward AgentRun's page on OpenRouter (openrouter.ai/apps?url=https://github.com/Parcha-ai/agentrun), including a self-hosted server's usage on its owner's own key. Set `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts to send none.
+  - The headers go only where a request goes to openrouter.ai itself, which covers every harness: the model proxy (claude-agent, codex, opencode, and pi on OpenRouter's Anthropic and OpenAI models), pi's translation route (every other OpenRouter model, the free ones included), and the server's Decisions providers on OpenRouter (OpenRouter's models, and Parallel's through OpenRouter). Anthropic, OpenAI, a ChatGPT plan and a gateway at another URL never get them.
+  - The kernel's host entry (`OPENROUTER_APP`, `openRouterApp`, `openRouterAttribution`) is the one place that names the app; the server hands it to the Decisions provider.
+  - The Decisions provider's `app` option takes `categories` and sends `title` as `X-OpenRouter-Title` (OpenRouter's current name for `X-Title`).
 
 ## 0.1.0-beta.39 (2026-11-16)
 

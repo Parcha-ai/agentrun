@@ -12,12 +12,14 @@
 // The notes a kept draft does the work of get `compiled_into: <workflow>` in their front matter when it merges
 // (learn/commit.ts), and stay served: a run the workflow hands back is done by hand with them.
 import { createHash } from "node:crypto";
+import type { RunRow, Store } from "../store/store.js";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
 import { answersAlone, type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf, replayingOf } from "./promote.js";
 import { redactSecrets } from "./secrets.js";
+import { isShadowRun } from "./audit.js";
 
 /** How many of the agent's last runs (before the ending one, which is in the session already) the compile turn reads. */
 export const COMPILE_TRACES = 5;
@@ -137,6 +139,35 @@ export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
     const newest = records.findLast((one) => one.workflow === name && one.digest !== champion);
     return newest?.decided === "hold" && !newest.check?.stopped && !newest.audit?.stopped && !replayingOf(records, name, null, "queued").length;
   }));
+}
+
+/** Whether a store run ended completed (its state `ended`, a plain completion), and is no audit's shadow run (an
+ *  agent's answer kept for an audit, never a run of the agent's own to learn from). */
+export const completedRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed") && !isShadowRun(run.id);
+/** Whether a store run is a completed run of the agent's own (completedRun), not one its learned workflow answered alone
+ *  nor a check's replay run (nor an audit's shadow, completedRun): what compile_after counts. */
+export const agentRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null; readonly metrics?: unknown }) => {
+  const path = (run.metrics as { path?: unknown } | null | undefined)?.path;
+  return completedRun(run) && path !== "workflow" && path !== "replay";
+};
+
+/** The first page of the agent's ended runs lastOwnRuns reads; each page after it is OWN_PAGE_GROWTH times the one before,
+ *  until it holds `n` of the agent's own runs or the agent has no more. */
+const OWN_PAGE_MIN = 200;
+const OWN_PAGE_GROWTH = 4;
+
+/** The agent's last `n` completed runs of its own (agentRun: not one its learned workflow answered alone, not a replay
+ *  nor a shadow audit;
+ *  never `exceptRunId`, an archived run or an imported one), newest first, picked before anything else limits them: runs
+ *  its workflow served since, however many, never push them out of the read (it reads more of the agent's ended runs
+ *  until it has `n`, or there are no more). The one read of what compile_after counts and of a check's inputs. */
+export async function lastOwnRuns(store: Pick<Store, "runs">, agentId: string, n: number, exceptRunId?: string): Promise<RunRow[]> {
+  const own = (row: RunRow) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom;
+  for (let limit = Math.max(OWN_PAGE_MIN, 3 * n); ; limit *= OWN_PAGE_GROWTH) {
+    const listed = await store.runs.list({ agentId, state: "ended", archived: false, limit });
+    const found = listed.filter(own).slice(0, n);
+    if (found.length >= n || listed.length < limit) return found;
+  }
 }
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or

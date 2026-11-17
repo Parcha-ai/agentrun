@@ -54,8 +54,8 @@ function decode(bytes: Buffer): void {
   }
 }
 
-/** Exactly `length` bytes of `fd`: the writer keeps its end open (the launcher's FIFO is open read-write), so there is
- *  no end of file to wait for. */
+/** Exactly `length` bytes of `fd`, read as the launcher's writer writes them: the end of file before then is a writer
+ *  gone short, and refused. */
 function readExactly(fd: number, length: number): Buffer {
   const bytes = Buffer.alloc(length);
   for (let read = 0; read < length; ) {

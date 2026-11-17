@@ -4096,7 +4096,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
         }));
         const guards = read.guards.map((one) => ({ ...one, workflow: shown.name(one.workflow), node: shown.text(one.node) }));
-        return send(res, 200, { agent: id, compiles, guards });
+        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles, guards });
       }
       case "listLearningNotes":
       case "listLearningLog":

@@ -335,6 +335,7 @@ export interface components {
       persistent?: boolean;
       surface?: "code" | "tools";
       exec?: boolean;
+      record?: boolean;
     };
     tool_settings?: {
       read?: {
@@ -1745,6 +1746,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -1871,6 +1874,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -2568,6 +2573,7 @@ export interface operations {
     body: never;
     answer: {
       agent: string;
+      completed_runs: number;
       compiles: {
         run_id: string;
         round: number;
@@ -3248,6 +3254,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -4405,6 +4413,8 @@ export interface operations {
           every_s: number;
           items?: string;
           id?: string;
+          updated?: string;
+          fields?: string[];
           accept?: {
             event: string;
             actions?: string[];
@@ -5633,6 +5643,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -5759,6 +5771,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];

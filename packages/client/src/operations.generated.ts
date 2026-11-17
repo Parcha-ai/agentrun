@@ -180,6 +180,7 @@ export type DefinitionInput = {
     persistent?: boolean;
     surface?: "code" | "tools";
     exec?: boolean;
+    record?: boolean;
   };
   tool_settings?: {
     read?: {
@@ -1407,6 +1408,7 @@ export type GetAgentArchilResponse = {
 /** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
 export type GetLearningLoopResponse = {
   agent: string;
+  completed_runs: number;
   compiles: Array<{
     run_id: string;
     round: number;
@@ -4525,6 +4527,8 @@ export type CreateTriggerBody = {
     every_s?: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -4654,6 +4658,8 @@ export type CreateTriggerResponse = {
     every_s: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -4886,6 +4892,8 @@ export type GetTriggerResponse = {
     every_s: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -5065,6 +5073,8 @@ export type ListTriggersResponse = {
       every_s: number;
       items?: string;
       id?: string;
+      updated?: string;
+      fields?: Array<string>;
       accept?: Array<{
         event: string;
         actions?: Array<string>;
@@ -5249,6 +5259,8 @@ export type UpdateTriggerBody = {
     every_s?: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -5375,6 +5387,8 @@ export type UpdateTriggerResponse = {
     every_s: number;
     items?: string;
     id?: string;
+    updated?: string;
+    fields?: Array<string>;
     accept?: Array<{
       event: string;
       actions?: Array<string>;

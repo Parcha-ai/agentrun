@@ -76,7 +76,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningCost: async () => (fake.cost ?? (async () => ({ agent: a.agent_id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] })))(),
     // The loop's reads: none yet unless a test gives them; a failed one leaves its part out.
     learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [], serving: [] })))(),
-    learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, compiles: [], guards: [] })))(),
+    learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, completed_runs: 0, compiles: [], guards: [] })))(),
     learningEvals: async () => ({ agent: a.agent_id, latest: null, evals: [] }),
     promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },
   };
@@ -1777,23 +1777,23 @@ describe("the loop on the Learning tab", () => {
   it("early: says how far it is from a compile, at the definition's compile_after completed runs (20 by default)", async () => {
     const runs = [runOf("run-ok", "kith.com", null)];
     const notes = async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } });
-    const t = await open(agent(true, { learning: { compile_after: 5 } }), { learning: notes, runs });
+    const loop = async () => ({ agent: "refunds", completed_runs: 1, compiles: [], guards: [] }) as LearningLoop;
+    const t = await open(agent(true, { learning: { compile_after: 5 } }), { learning: notes, runs, loop });
     const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
     expect(stage.getAttribute("data-state")).toBe("now");
     expect(stage.textContent).toContain("1 of 5 completed runs: a workflow compiles at 5");
-    const byDefault = await open(agent(true), { learning: notes, runs });
+    const byDefault = await open(agent(true), { learning: notes, runs, loop });
     expect(byDefault.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("1 of 20 completed runs: a workflow compiles at 20");
   });
   it("learning set as an object is on: the switch shows it on", async () => {
     const t = await open(agent(undefined, { learning: { agree_min: 0.9 } }));
     expect((t.host.querySelector('[role="switch"]') as HTMLButtonElement).getAttribute("aria-checked")).toBe("true");
   });
-  it("counts only completed runs toward a compile, as the server does: failed and cancelled runs are in the cost series, not the count", async () => {
-    const runs = [runOf("run-ok", "kith.com", null), ...["run-f1", "run-f2", "run-f3"].map((id) => ({ ...runOf(id, id, null), status: "failed" as const })), { ...runOf("run-s", "run-s", null), status: "cancelled" as const }];
-    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 5, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] });
-    const t = await open(agent(true), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, cost });
-    const stage = t.host.querySelector('[data-testid="stage-compiled"]')!;
-    expect(stage.textContent).toContain("1 of 20 completed runs");
+  it("the compile count is the server's, never the runs on the tab's one page: 150 of 200 with 50 runs read", async () => {
+    const runs = Array.from({ length: 50 }, (_, i) => runOf(`run-${i}`, `in-${i}`, null));
+    const loop = async () => ({ agent: "refunds", completed_runs: 150, compiles: [], guards: [] }) as LearningLoop;
+    const t = await open(agent(true, { learning: { compile_after: 200 } }), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, loop });
+    expect(t.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("150 of 200 completed runs");
   });
   it("the cheaper stage: 'about N times cheaper at the same accuracy' over the replay's line when the serving replay cleared the bar; the reason in its place when a run's cost isn't all known", async () => {
     const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
@@ -1809,7 +1809,7 @@ describe("the loop on the Learning tab", () => {
     expect(withheld.textContent).not.toMatch(/\dx cheaper/);
   });
   it("a draft the checks refused shows in the feed in their words; a failed loop read leaves the feed out, not the tab", async () => {
-    const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: null, from_notes: ["keep-it-to-three-lines"], attempts: [{ ok: false, errors: ["root: no node"] }], digest: null, promoted: null, draft_errors: ["the draft did not parse"], withheld: false }] } as LearningLoop;
+    const loop = { agent: "refunds", completed_runs: 0, guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: null, from_notes: ["keep-it-to-three-lines"], attempts: [{ ok: false, errors: ["root: no node"] }], digest: null, promoted: null, draft_errors: ["the draft did not parse"], withheld: false }] } as LearningLoop;
     const t = await open(agent(true), { loop: async () => loop });
     const feed = t.host.querySelector('[data-testid="loop-feed"]')!;
     expect(feed.textContent).toContain("Draft failed");
@@ -1823,7 +1823,7 @@ describe("the loop on the Learning tab", () => {
   it("a compile's chip in the feed says Serving only for the champion: an older promoted revision Served, one a refit replaced Refit", async () => {
     const [one, two, three] = ["a".repeat(16), "b".repeat(16), "c".repeat(16)];
     const compile = (run: string, digest: string, round = 1) => ({ run_id: run, round, at: `2026-11-05T10:0${digest === one ? 0 : digest === two ? 1 : 2}:00Z`, workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest, promoted: true, draft_errors: [], withheld: false });
-    const loop = { agent: "refunds", guards: [], compiles: [compile("run-c", three), compile("run-b", two), compile("run-a", one, 2)] } as LearningLoop;
+    const loop = { agent: "refunds", completed_runs: 0, guards: [], compiles: [compile("run-c", three), compile("run-b", two), compile("run-a", one, 2)] } as LearningLoop;
     const base = { workflow: "sort-invoice", source: "replay" as const, reason: "as good" };
     const promotions = [
       { ...base, digest: one, at: "2026-11-05T10:03:00Z", decided: "promote" as const },
@@ -1836,7 +1836,7 @@ describe("the loop on the Learning tab", () => {
   });
   it("a revision queued behind a replay, then skipped for a newer one, reads Skipped in the feed, its compile too, never Held or Replaying", async () => {
     const [running, mid, newer] = ["a".repeat(16), "b".repeat(16), "c".repeat(16)];
-    const loop = { agent: "refunds", guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: mid, promoted: null, draft_errors: [], withheld: false }] } as LearningLoop;
+    const loop = { agent: "refunds", completed_runs: 0, guards: [], compiles: [{ run_id: "run-x", round: 1, at: "2026-11-05T10:00:00Z", workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: mid, promoted: null, draft_errors: [], withheld: false }] } as LearningLoop;
     const base = { workflow: "sort-invoice", source: "replay" as const };
     const queued = `queued behind ${running}'s replay on 6 graded inputs: a running replay finishes; the newest revision queued meanwhile replays next`;
     const promotions = [
@@ -1932,7 +1932,7 @@ describe("learning-loop refresh integration", () => {
     let release!: () => void;
     let reads = 0;
     const marker = "late-workflow-after-edit";
-    const emptyLoop: LearningLoop = { agent: "refunds", compiles: [], guards: [] };
+    const emptyLoop: LearningLoop = { agent: "refunds", completed_runs: 0, compiles: [], guards: [] };
     const emptyPromotions: Promotions = { agent: "refunds", promotions: [], serving: [] };
     const lateLoop: LearningLoop = { ...emptyLoop, compiles: [{ run_id: "late-run", round: 1, at: "2026-11-05T10:00:00Z", workflow: marker, from_notes: [], attempts: [{ ok: false, errors: ["late draft"] }], digest: null, promoted: null, draft_errors: ["late draft"], withheld: false }] };
     const latePromotions: Promotions = { ...emptyPromotions, promotions: [{ workflow: marker, digest: "a".repeat(16), at: "2026-11-05T10:00:00Z", source: "replay", decided: "hold", reason: "late decision" }] };

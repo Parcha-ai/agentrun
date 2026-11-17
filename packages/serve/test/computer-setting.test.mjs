@@ -2,6 +2,9 @@
 // `place` its view one to one where it can say it ({mode: runner} = {kind: none}; {mode: sandbox, box: X} = {kind: sandbox,
 // provider: X}). Writing either sets both; both given must agree; an edit that names neither keeps the agent's.
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { computerIssues, computerOfPlace, placeOfComputer, settingConflict } from "../dist/computer-setting.js";
 import { agent, serve } from "./support.mjs";
@@ -65,6 +68,64 @@ test("a desktop's or a phone's computer may say its surface (code or tools) and 
   }
   assert.equal(computerIssues({ kind: "sandbox", provider: "x", exec: false }, "definition.computer")[0].message, "only a desktop or phone computer takes a exec, not a sandbox one");
   assert.deepEqual(issues({ kind: "none", surface: "tools" }), [["definition.computer", "not_allowed"]]);
+});
+
+/** This process's PATH set to `path` while `run` runs: the server reads its PATH for ffmpeg as it checks a save. */
+async function withPath(path, run) {
+  const was = process.env.PATH;
+  process.env.PATH = path;
+  try {
+    return await run();
+  } finally {
+    process.env.PATH = was;
+  }
+}
+/** A folder on PATH whose ffmpeg is a stand-in: the save asks only that the command is there. */
+function ffmpegBin() {
+  const bin = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-ffmpeg-bin-"));
+  writeFileSync(join(bin, "ffmpeg"), "#!/bin/sh\n");
+  chmodSync(join(bin, "ffmpeg"), 0o755);
+  return bin;
+}
+
+test("a desktop's or a phone's record is a boolean, true only where the server has ffmpeg (refused in words without it); no other kind takes it", async () => {
+  const issues = (value) => computerIssues(value, "definition.computer").map((issue) => [issue.field, issue.reason]);
+  const bin = ffmpegBin();
+  try {
+    await withPath(bin, () => {
+      for (const kind of ["desktop", "phone"]) {
+        assert.deepEqual(issues({ kind, provider: "x", record: true }), [], kind);
+        assert.deepEqual(issues({ kind, provider: "x", record: false }), [], kind);
+      }
+      for (const record of ["yes", 1, null]) assert.deepEqual(issues({ kind: "desktop", provider: "x", record }), [["definition.computer.record", "wrong_type"]], JSON.stringify(record));
+      for (const kind of ["sandbox", "browser"]) assert.deepEqual(issues({ kind, provider: "x", record: true }), [["definition.computer", "not_allowed"]], kind);
+    });
+    await withPath("", () => {
+      const [refusal, ...rest] = computerIssues({ kind: "phone", provider: "x", record: true }, "definition.computer");
+      assert.deepEqual(rest, []);
+      assert.deepEqual([refusal.field, refusal.reason], ["definition.computer.record", "not_allowed"]);
+      assert.equal(refusal.message, "definition.computer.record needs ffmpeg, which records the video: ffmpeg isn't installed on this server (no ffmpeg command on PATH)");
+      assert.equal(refusal.fix, "Install ffmpeg on this server's PATH (Debian: apt install ffmpeg), or remove definition.computer.record.");
+      assert.deepEqual(issues({ kind: "phone", provider: "x", record: false }), [], "record: false asks nothing of the server");
+    });
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("through the API: a desktop's record is saved and shown with its computer where the server has ffmpeg; without ffmpeg it is 422, in words", async (t) => {
+  const { api } = await serve(t);
+  const bin = ffmpegBin();
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const missing = await withPath("", () => api("POST", "/agents", agent("rec", { computer: { kind: "desktop", provider: "e2b", record: true } })));
+  assert.equal(missing.status, 422, JSON.stringify(missing.body));
+  assert.deepEqual(missing.body.error.fields.map((f) => [f.field, f.reason, f.message]), [["definition.computer.record", "not_allowed", "definition.computer.record needs ffmpeg, which records the video: ffmpeg isn't installed on this server (no ffmpeg command on PATH)"]]);
+  const made = await withPath(`${bin}:${process.env.PATH}`, () => api("POST", "/agents", agent("rec", { computer: { kind: "desktop", provider: "e2b", record: true } })));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.definition.computer, { kind: "desktop", provider: "e2b", record: true });
+  assert.deepEqual((await api("GET", "/agents/rec")).body.definition.computer, { kind: "desktop", provider: "e2b", record: true });
+  const off = await withPath("", () => api("POST", "/agents", agent("off", { computer: { kind: "phone", provider: "phone-harness", record: false } })));
+  assert.equal(off.status, 201, `record: false needs no ffmpeg: ${JSON.stringify(off.body)}`);
 });
 
 test("through the API: a desktop's surface and exec are saved and shown with its computer; on a sandbox they are 422", async (t) => {

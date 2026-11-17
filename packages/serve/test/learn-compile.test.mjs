@@ -994,7 +994,7 @@ test("compileAskOf: a compile in an earlier run's first round holds the cooldown
   const deps = (byRun) => ({
     store: {
       runs: {
-        list: async () => [{ id: "run-2", agentId: "agent-1", state: "ended", outcome: "completed" }, { id: "run-1", agentId: "agent-1", state: "ended", outcome: "completed" }],
+        list: async () => [{ id: "run-2", agentId: "agent-1", state: "ended", outcome: "completed", archivedAt: null }, { id: "run-1", agentId: "agent-1", state: "ended", outcome: "completed", archivedAt: null }],
         get: async (id) => ({ id, agentId: "agent-1", revisionId: "rev-1" }),
       },
       // Its definition compiles at 2 completed runs: run-2 ending is its second.

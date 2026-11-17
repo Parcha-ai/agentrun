@@ -31,8 +31,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { isShadowRun } from "../learn/audit.js";
-import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { completedRun, type CompileAsk, lastOwnRuns,type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
 import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
@@ -380,16 +379,6 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
 /** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
 const HELD_ASKED_READ = 200;
 
-/** Whether a store run ended completed (its state `ended`, a plain completion), and is no audit's shadow run (an
- *  agent's answer kept for an audit, never a run of the agent's own to learn from). */
-const completedRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed") && !isShadowRun(run.id);
-/** Whether a store run is a completed run of the agent's own (completedRun), not one its learned workflow answered alone
- *  nor a check's replay run: what compile_after counts. */
-const agentRun = (run: { readonly id: string; readonly state: string; readonly outcome: string | null; readonly metrics?: unknown }) => {
-  const path = (run.metrics as { path?: unknown } | null | undefined)?.path;
-  return completedRun(run) && path !== "workflow" && path !== "replay";
-};
-
 /** The loop's numbers (learning-setting.ts loopOf) of the revision run `runId` runs: its definition's `learning`. */
 async function loopOfRun(store: Store, runId: string) {
   try {
@@ -457,7 +446,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const at = listed.findIndex((run) => run.id === input.runId);
   const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
   const done = earlier.filter(completedRun);
-  const byHand = earlier.filter(agentRun).length;
+  const byHand = (await lastOwnRuns(deps.store, input.agentId, compileAfter, input.runId)).length;
   let compiledLately = false;
   const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
@@ -499,7 +488,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
       if (heldNames.size) {
         // The one active workflow that fits the run's input (the one workflow-first would serve), held at main's digest.
         const active: { name: string; workflow: string }[] = [];
-        for (const one of workflows) if (one.status === "active") { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
+        for (const one of workflows) if (one.status === "active" && heldNames.has(one.name)) { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
         const fitting = active.filter((one) => fits(one as never, input.input, dsl.resolveSchemaForWorkflow as never));
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
         if (record?.decided === "hold" && !record.check?.stopped && !record.audit?.stopped) [held, current] = [record, fitting[0]!.workflow];

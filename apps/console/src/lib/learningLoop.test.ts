@@ -109,7 +109,7 @@ describe("guards and p", () => {
     ] } });
     const guards = guardsOfText(nested);
     expect(guards.map((g) => [g.label, g.node, g.path])).toEqual([["check", "vendor/check", "/root/steps/0/workflow/root/steps/0"], ["check", "check", "/root/steps/1"]]);
-    const loop = { agent: "a", compiles: [], guards: [
+    const loop = { agent: "a", completed_runs: 0, compiles: [], guards: [
       { workflow: "sort-invoice", digest: "a".repeat(16), node: "vendor/check", signal: "self", threshold: 0.6, runs: 4, escalated: 1, right: 2, wrong: 0, grades_past: 0, replays: 0, points: [] },
     ] } as unknown as LearningLoop;
     expect(guardFor(loop, "sort-invoice", "a".repeat(16), guards[0]!.node)?.runs).toBe(4);
@@ -181,7 +181,7 @@ describe("notes and the story", () => {
   });
   it("once it took over and got cheaper, tells it whole, with where it is unsure", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
-    const loop = { agent: "a", compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
+    const loop = { agent: "a", completed_runs: 0, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
       guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, right: 0, wrong: 0, grades_past: 0, replays: 0, points: [] }] } as LearningLoop;
     const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({ replay: REPLAY })],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });

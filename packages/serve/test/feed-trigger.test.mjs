@@ -402,3 +402,57 @@ test("a feed on a private address is refused, and so is a loopback one where the
   assert.match(local.last_check.message, /private address; refused/);
   assert.equal(blog.requests().length, 0, "nothing was sent to it");
 });
+
+test("a JSON list's `fields` keep only those fields of each item in its payload, before the cap: a 30 KB pull request fires whole-shaped, never item_truncated; without it the item is cut as before", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api, data } = await serve(t, { triggerClock: clock });
+  await made(api, "reader");
+  const pulls = await feed(t, { format: "json-list", items: [pull(2, "Two"), pull(1, "One")] });
+  const kept = ["/number", "/title", "/html_url", "/user/login"];
+  const narrow = await created(api, feedTrigger("reader", { urls: [pulls.url], fields: kept }));
+  const wide = await created(api, feedTrigger("reader", { urls: [pulls.url] }));
+  assert.deepEqual(narrow.source.fields, kept);
+  await firings(api, narrow.id, 1);
+  await firings(api, wide.id, 1);
+  const big = { ...pull(3, "Add a feed trigger"), body: "x".repeat(30_000), labels: [{ name: "a".repeat(2000) }], head: { repo: { description: "y".repeat(5000) } } };
+  pulls.add(big);
+  clock.to(tick(1));
+  const payload = firedFeed(data, (await firings(api, narrow.id, 2)).find((f) => f.run_id).run_id).payload;
+  assert.deepEqual(payload.item, { number: 3, title: "Add a feed trigger", html_url: big.html_url, user: { login: "dev" } });
+  assert.equal(payload.item_truncated, undefined);
+  assert.equal(payload.update, false);
+  const control = firedFeed(data, (await firings(api, wide.id, 2)).find((f) => f.run_id).run_id).payload;
+  assert.equal(control.item_truncated, true, "without fields the item is cut to fit, as before");
+  const refused = await api("POST", "/triggers", feedTrigger("reader", { urls: [pulls.url], fields: ["number"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((f) => f.field), ["source.fields"]);
+  for (const fields of [[], Array.from({ length: 51 }, (_, i) => `/f${i}`), [""], "/number", [7]]) {
+    const no = await api("POST", "/triggers", feedTrigger("reader", { urls: [pulls.url], fields }));
+    assert.equal(no.status, 422, JSON.stringify(fields).slice(0, 80));
+  }
+});
+
+test("a JSON list's `updated` pointer lets an item fire again with update: true when its value moves on; without it a JSON list's item fires once", { timeout: 150_000 }, async (t) => {
+  const clock = fakeClock(T0);
+  const { api, data } = await serve(t, { triggerClock: clock });
+  await made(api, "reader");
+  const at = (n, when) => ({ ...pull(n, `Pull ${n}`), updated_at: when });
+  const pulls = await feed(t, { format: "json-list", items: [at(2, "2026-05-21T10:00:00Z"), at(1, "2026-05-20T10:00:00Z")] });
+  const watching = await created(api, feedTrigger("reader", { urls: [pulls.url], updated: "/updated_at" }));
+  const once = await created(api, feedTrigger("reader", { urls: [pulls.url] }));
+  assert.equal(watching.source.updated, "/updated_at");
+  await firings(api, watching.id, 1);
+  await firings(api, once.id, 1);
+  pulls.update(at(2, "2026-06-01T00:10:00Z"));
+  clock.to(tick(1));
+  const shown = await firings(api, watching.id, 2);
+  const [started] = shown.filter((f) => f.run_id);
+  assert.equal(started.key, feedKey(watching.id, pulls.url, String(pull(2, "x").id), "2026-06-01T00:10:00Z"));
+  assert.equal(firedFeed(data, started.run_id).payload.update, true);
+  await follow(api, started.run_id, ["completed"]);
+  await checked(api, once.id, tick(1));
+  assert.equal((await firings(api, once.id, 1)).length, 1, "without updated a JSON list's item fires only once");
+  const no = await api("POST", "/triggers", feedTrigger("reader", { urls: [pulls.url], updated: "updated_at" }));
+  assert.equal(no.status, 422, JSON.stringify(no.body));
+  assert.deepEqual(no.body.error.fields.map((f) => f.field), ["source.updated"]);
+});
