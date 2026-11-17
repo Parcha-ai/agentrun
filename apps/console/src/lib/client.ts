@@ -37,10 +37,15 @@ export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}:
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
+/** A project the server found on its machine, for the owner to choose at setup: the id setup sends back, its folder, how
+ *  many sessions an import would take from it, from which tools, and when the latest of them ended. */
+export type ImportCandidate = { id: string; name: string; path: string; sessions: number; sources: string[]; last_active: string | null };
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
- *  (null for each when the count failed). After: the import's state. `{ offer: false }`: none, either way. */
-export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
-export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+ *  (null for each when the count failed) and the projects to choose from (`candidates`, the latest active first; the
+ *  server names at most 500). After: the import's state (`failed`: given up before it finished).
+ *  `{ offer: false }`: none, either way. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null; candidates?: ImportCandidate[] };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | { state: "failed" };
 export type SetupImport = ImportOffer | ImportState;
 type NoOffer = { offer: false };
 
@@ -116,12 +121,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
     session: () => callTagged<SessionSecrets>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown })),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
-     *  sessions once the password is set; never sent otherwise. */
-    setup: (password: string, code?: string, importSessions = false) =>
-      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
-    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
-     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+    /** Sets the owner's password. `importProjects`: the projects the owner ticked in setup's list (their candidates'
+     *  ids), which the server imports once the password is set; with none ticked nothing is sent, and nothing imported. */
+    setup: (password: string, code?: string, importProjects: readonly string[] = []) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importProjects.length ? { import: [...importProjects] } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, the
+     *  projects setup's list offers and how many sessions they hold; after, to the signed-in owner, how the import asked for at setup stands. Null
      *  where the server offers none (`{ offer: false }`, or a 404: a server without accounts has no such route, and once
      *  the owner is set it is none to a caller not signed in) or refuses the read. */
     setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {

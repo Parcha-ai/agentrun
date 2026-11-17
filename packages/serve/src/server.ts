@@ -38,14 +38,14 @@ import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView 
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
-import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
+import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
-import { IMPORT_ASKED } from "./import.js";
+import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, learningFolderOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
@@ -198,6 +198,12 @@ const IDEMPOTENCY_FILE = ".idempotency.json";
  *  computer kind; `browser`, the browser's own), then its page, files or WebSocket. Both are served by the same code. */
 const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/(computer|browser)\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
+/** The starts that may begin setup's import without ending it (a worker that failed, a process that ended) before the
+ *  owner's yes is dropped: an import that fails the same way each time is not taken up at every start for good. */
+const IMPORT_STARTS = 3;
+/** The heap of the worker that counts or imports this machine's sessions. A run is read whole, at most MAX_RUN_BYTES of
+ *  files (import.ts), which this holds several times over. */
+const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
@@ -1876,19 +1882,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let closing = false;
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
-  const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
+  const onWorker = (task: ImportTask["task"], projects?: readonly string[]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
         // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        workerData: { task, data, ...(projects ? { projects } : {}), home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (node --input-type=module -e, as a test or a `--` command may), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
         // runner's child holds many).
         ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
+        // Its own heap, at most IMPORT_HEAP_MB whatever the machine's memory: an import that needs more ends as a failed
+        // worker (said, and counted: IMPORT_STARTS), never as a process the system ends for the memory it took.
+        resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
@@ -1909,12 +1918,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
-  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number } | { state: "failed" } | undefined;
+  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number; candidates: ImportCandidate[] } | { state: "failed" } | undefined;
   const countSessions = () => {
     if (count) return;
     count = { state: "counting" };
     onWorker("plan").then(
-      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions } : undefined),
+      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions, candidates: answer.candidates } : undefined),
       (error: unknown) => {
         count = { state: "failed" };
         process.stderr.write(`agentrun-serve: the count of this machine's sessions failed: ${(error as Error).message}\n`);
@@ -1923,25 +1932,60 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const stopCount = () => { for (const [worker, { task }] of workers) if (task === "plan") worker.postMessage("stop"); };
   // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
+  // With it: the projects chosen (none named: every project), what earlier starts took, and how many starts began the
+  // import and neither ended it nor were stopped (`starts`).
   const importAsked = join(data, IMPORT_ASKED);
+  type Asked = { projects?: string[]; agents: string[]; runs: number; starts: number };
+  /** The yes as kept, or undefined when it cannot be read as one (a file that will not open, text that is no JSON
+   *  object, `projects` that is no list of ids): never taken for "every project", which only an empty file or one that
+   *  names no projects means. */
+  const askedOf = async (): Promise<Asked | undefined> => {
+    const text = await readFile(importAsked, "utf8").catch(() => undefined);
+    if (text === undefined) return undefined;
+    // The yes as an earlier version's setup wrote it is empty: every project, and no earlier start took anything.
+    if (!text.trim()) return { agents: [], runs: 0, starts: 0 };
+    let kept: { projects?: unknown; agents?: unknown; runs?: unknown; starts?: unknown };
+    try { kept = JSON.parse(text); } catch { return undefined; }
+    if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return undefined;
+    const ids = (value: unknown) => (Array.isArray(value) && value.every((id) => typeof id === "string") ? (value as string[]) : undefined);
+    const projects = ids(kept.projects);
+    if (kept.projects !== undefined && !projects) return undefined;
+    return { ...(projects ? { projects } : {}), agents: ids(kept.agents) ?? [], runs: typeof kept.runs === "number" ? kept.runs : 0, starts: typeof kept.starts === "number" ? kept.starts : 0 };
+  };
   let importing: Promise<void> | undefined;
-  /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
-   *  goes on with it). */
-  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | undefined;
+  /** The import at setup as the owner's console reads it: running, done with what it took, stopped (the next start
+   *  goes on with it), or failed (IMPORT_STARTS starts did not end it: given up, never tried again on its own). */
+  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | { state: "failed" } | undefined;
   /** Never rejects: whatever stops it (the store held past its wait, a file) is said on stderr, and the server goes on. */
   const importAtSetup = () =>
     (importing ??= (async () => {
       importState = { state: "running" };
+      // An import that fails, or ends the process, the same way at every start would be taken up at every start for good:
+      // after IMPORT_STARTS such starts the yes is dropped, and said.
+      const giveUp = async (why: string) => {
+        await rm(importAsked, { force: true }).catch(() => undefined);
+        importState = { state: "failed" };
+        process.stderr.write(`agentrun-serve: the import at setup was given up (${why}): run the import command where the sessions are to try again\n`);
+      };
+      let asked: Asked | undefined;
       try {
-        const answer = await onWorker("import");
-        if (!("took" in answer)) return void (importState = { state: "stopped" });
+        asked = await askedOf();
+        // A choice that cannot be read is never widened to every project: nothing is imported.
+        if (!asked) return await giveUp("the record of which projects to import could not be read");
+        if (asked.starts >= IMPORT_STARTS) return await giveUp(`${IMPORT_STARTS} starts did not end it: the server ended during each`);
+        // This start counted before its worker runs, so one the process does not outlive is counted too.
+        await writeDurable(importAsked, JSON.stringify({ ...asked, starts: asked.starts + 1 }));
+        const answer = await onWorker("import", asked.projects);
+        // Stopped by the server's close, before it took anything or between two sessions: not a start that failed.
+        if (!("took" in answer)) {
+          await writeDurable(importAsked, JSON.stringify(asked));
+          return void (importState = { state: "stopped" });
+        }
         // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
-        // The yes as setup wrote it is empty: no earlier start took anything.
-        const before = (await readJson(importAsked)) as { agents?: unknown; runs?: unknown } | null;
-        const agents = [...new Set([...(Array.isArray(before?.agents) ? before.agents.filter((id): id is string => typeof id === "string") : []), ...answer.took.agents])];
-        const runs = (typeof before?.runs === "number" ? before.runs : 0) + answer.took.runs;
+        const agents = [...new Set([...asked.agents, ...answer.took.agents])];
+        const runs = asked.runs + answer.took.runs;
         if (answer.stopped) {
-          await writeDurable(importAsked, JSON.stringify({ agents, runs }));
+          await writeDurable(importAsked, JSON.stringify({ ...asked, agents, runs }));
           return void (importState = { state: "stopped" });
         }
         await rm(importAsked, { force: true });
@@ -1949,8 +1993,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         importState = { state: "done", ...took };
         process.stdout.write(`${logLine("import", took)}\n`);
       } catch (error) {
-        importState = { state: "stopped" };
-        if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
+        // A worker the close ended is no failed start; another failure is, and the last one allowed gives the import up.
+        if (closing) {
+          importState = { state: "stopped" };
+          if (asked) await writeDurable(importAsked, JSON.stringify(asked)).catch(() => undefined);
+        } else if (asked && asked.starts + 1 >= IMPORT_STARTS) await giveUp(`${IMPORT_STARTS} starts did not end it: ${(error as Error).message}`);
+        else {
+          importState = { state: "stopped" };
+          process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
+        }
       }
     })());
 
@@ -2984,11 +3035,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (byToken && !bearer(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
         const { password, body } = await passwordIn(req, ["password", "code", "import"]);
-        if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
-        if (body.import === true && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run the import command where they are." }]);
+        // The owner's choice: the projects to import, by the ids the offer named them with (GET /v2/setup/import's
+        // candidates); `true` is every project, as before; `false`, none named or the field left out is no import.
+        const named = Array.isArray(body.import) ? (body.import as unknown[]) : undefined;
+        if (body.import !== undefined && typeof body.import !== "boolean" && !(named && named.length <= MAX_CANDIDATES && named.every((id) => typeof id === "string" && /^imp-[0-9a-f]{32}$/.test(id))))
+          throw invalid([{ field: "import", reason: "wrong_type", message: `import is true, false, or at most ${MAX_CANDIDATES} of the project ids GET /v2/setup/import names` }]);
+        const chosen = named ? [...new Set(named as string[])] : undefined;
+        const takes = body.import === true || (chosen !== undefined && chosen.length > 0);
+        if (takes && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run the import command where they are." }]);
         // The owner's yes, on the box ticked, is kept with the owner: written durably before the password, so a setup that
         // cannot keep it sets no owner and can be tried again, and taken back if the password is not written.
-        const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
+        const along = takes ? { keep: () => writeDurable(importAsked, chosen ? JSON.stringify({ projects: chosen }) : ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
         // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
         const tokenAsCode = typeof body.code === "string" && body.code !== "" && bearer(`Bearer ${body.code}`, req);
@@ -3001,20 +3058,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         viewers.recheck();
         // The count is for the offer, now answered: it stops.
         stopCount();
-        // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
-        if (body.import === true) void importAtSetup();
-        return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+        // Only on a choice made: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
+        if (takes) void importAtSetup();
+        return send(res, 201, { signed_in: true, ...(takes ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       case "/setup/import": {
         // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
         // logs every 404 as an error.
         // Before the owner is set, to the setup page: none on a server that cannot import, else that it can (202 while it
-        // counts), and then how many projects and sessions it would, or null for each when the count failed.
+        // counts), and then how many projects and sessions it would and the projects to choose from (`candidates`, the
+        // latest active first, at most MAX_CANDIDATES), or null for each count when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
           if (!offersImport) return send(res, 200, { offer: false });
           countSessions();
-          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
+          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions, candidates: count.candidates });
           if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
           return send(res, 202, { counting: true });
         }
