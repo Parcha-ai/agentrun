@@ -87,9 +87,9 @@ test("demo: create an agent, start a capped run and wait, list runs, answer a qu
   const empty = await client.learning.corrections("learner");
   assert.equal(empty.body.text, "");
   assert.match(empty.body.etag, /^"[0-9a-f]+"$/);
-  const text = "- Look in policies/ first.\n";
-  const written = await client.learning.writeCorrections("learner", { text }, { "If-Match": empty.body.etag });
-  assert.equal(written.body.text, text);
+  const corrections = "- Look in policies/ first.\n";
+  const written = await client.learning.writeCorrections("learner", { text: corrections }, { "If-Match": empty.body.etag });
+  assert.equal(written.body.text, corrections);
   assert.notEqual(written.body.etag, empty.body.etag, "the write answers the file's new version");
-  assert.equal((await client.learning.corrections("learner")).body.text, text);
+  assert.equal((await client.learning.corrections("learner")).body.text, corrections);
 });
