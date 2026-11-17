@@ -183,7 +183,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
         {editing && source && !etag && <Button size="sm" onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}
       </div>
       <footer className="flex flex-wrap items-center justify-end gap-2 border-t p-4">
-        <CodingAgentAction label="Use your agent" prompt={prompt} disabled={!sourceOwned && !!invalid} />
+        <CodingAgentAction size="md" label="Use your agent" prompt={prompt} disabled={!sourceOwned && !!invalid} />
         <Button variant="primary" onClick={() => void send()} disabled={!ready}><Play aria-hidden />{sending ? "Sending" : "Send request"}</Button>
       </footer>
     </section>
