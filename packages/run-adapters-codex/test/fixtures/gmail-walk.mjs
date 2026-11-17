@@ -7,8 +7,9 @@
 //   - each step is a reasoning item (its encrypted content `ENCRYPTED_BYTES` of base64), a mail read and its result, a
 //     thread as compact JSON of about `READ_TOKENS` tokens;
 //   - each request's billed input is what its model reads: the tokens of its text, the reasoning tokens of each reasoning
-//     item it carries back, and a few tokens an item for its framing. That is the claim the reasoning rule rests on, and
-//     no recording in this repository has shown it yet; the codex re-walk will.
+//     item it carries back, and a few tokens an item for its framing. That is this reconstruction's own model of the
+//     bill, which no recording here shows; the bound it is checked against rests on none of it (each item it appends
+//     counts at its bytes, its encrypted reasoning among them).
 // The two free figures, READ_TOKENS and ENCRYPTED_BYTES, are set so the reconstruction reproduces the walk's two
 // figures under the rule the walk ran (main at bf3bc99844): $0.167 spent over the five requests (the walk's $0.169), and
 // a sixth request whose least was $0.3587 (the walk's $0.351 to $0.36). Nothing of the count was tuned to them.
