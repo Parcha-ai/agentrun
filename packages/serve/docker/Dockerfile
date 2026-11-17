@@ -95,9 +95,9 @@ RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --shell /bin/bash 
 # folder, which needs 2.32 or newer; this image holds itself to 2.40 by its own choice: trixie's is 2.47. docker-cli (26.1) is the Docker client alone, no daemon:
 # with the host's Docker socket mounted (compose.yaml at the repository's root), a run's Docker box is a container beside this one.
 # ca-certificates: git's HTTPS (a run's pull request checkout, runner/pr-checkout.ts) trusts nothing without them, and the
-# slim base purges them.
+# slim base purges them. ffmpeg records an agent's screen where its computer says record: true (src/computer-record.ts).
 RUN apt-get update -qq \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tini git ca-certificates docker-cli >/dev/null \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tini git ca-certificates docker-cli ffmpeg >/dev/null \
  && rm -rf /var/lib/apt/lists/* \
  && install -d -o node -g node -m 0700 /data
 RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40 \
