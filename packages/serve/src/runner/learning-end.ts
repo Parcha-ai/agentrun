@@ -106,7 +106,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const gradeModel = start.gradeModel;
   // The learning run's grade runs after the run's turn ended: never on a run's own key (erased with that end), and never
   // on none.
-  const gradeOff = deps.spendOff?.("The learning run's grade");
+  const gradeOff = deps.spendOff ? () => deps.spendOff?.("The learning run's grade") : undefined;
   const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => createReflectHook({
     round,
     ...(gradeOff ? { gradeOff } : {}),

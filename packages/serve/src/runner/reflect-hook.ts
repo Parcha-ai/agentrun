@@ -34,9 +34,10 @@ export type Checked =
 
 /** What the hook reads of the run and the host. */
 export interface ReflectDeps {
-  /** Why no grade is queued for what the run proposes (a grade runs after the run's turn, with no key to spend: learning-end
-   *  spendOff): its proposal is dropped `grade_failed` in these words, nothing spent. Absent: a grade is queued. */
-  readonly gradeOff?: string;
+  /** Why no grade is queued for what the run proposes, asked when it would be (a grade runs after the run's turn, with no
+   *  key to spend: learning-end spendOff): its proposal is dropped `grade_failed` in these words, nothing spent. Absent, or
+   *  undefined: a grade is queued. */
+  readonly gradeOff?: () => string | undefined;
   /** Whether the run's job gave nothing new to look back on: its only tool work was its learned workflows, each of them
    *  answering, with no error, no refused call, no approval and nothing said after its first message. Such a run is not
    *  asked its end-of-run turn (no model request, nothing spent looking back), and its learning is dropped `empty` in
@@ -317,7 +318,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // The learning run's cap: what the run's cap leaves now its look-back is spent, read after the checks. A spend under
     // the cap that is unknown (or a read that fails, never no cap) queues no grade: none could be kept within the cap, and
     // the words say the spend is unknown, never that the cap has no room (learning-end.ts capSpendOf's rule).
-    if (deps.gradeOff) return close([droppedRow(turn, "grade_failed", deps.gradeOff, compiledFields)]);
+    // Asked here, at the end: a key a message handed during the run counts as one the run brought.
+    const gradeOff = deps.gradeOff?.();
+    if (gradeOff) return close([droppedRow(turn, "grade_failed", gradeOff, compiledFields)]);
     const capUsd = deps.gradeCap ? await deps.gradeCap(input.runId).catch(() => null) : undefined;
     if (capUsd === null) return close([droppedRow(turn, "unknown_cost", said.gradeUnknownSpend)]);
     return close([

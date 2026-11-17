@@ -65,6 +65,59 @@ async function assertNowhere(server, runId, keys, logs) {
   }
 }
 
+/** A front for gateway `gw` on loopback: it records the bearer each request carried (`seen`, in order) and holds the
+ *  first POST until `release()`, so a test acts while a run's turn is in flight. */
+async function heldFront(t, gw) {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let first = true;
+  const seen = [];
+  const front = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    if (req.method === "POST") seen.push(req.headers.authorization);
+    if (req.method === "POST" && first) {
+      first = false;
+      await held;
+    }
+    try {
+      const answer = await fetch(`${gw.url}${req.url}`, { method: req.method, headers: { "content-type": "application/json", authorization: req.headers.authorization ?? "" }, body: req.method === "POST" ? Buffer.concat(chunks) : undefined });
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await answer.arrayBuffer()));
+    } catch {
+      res.destroy();
+    }
+  });
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (front.closeAllConnections(), front.close(resolve))));
+  return { url: `http://127.0.0.1:${front.address().port}`, seen, release: () => release() };
+}
+
+/** A message with `model_key` sent while the run's first request is held, then let go once the runner took the message:
+ *  the bearer of every request, in order. `start`: the start body's extra fields. */
+async function keyMidTurn(t, { serverKey, start = {}, key }) {
+  const gw = await startFauxGateway({ text: "Answered." });
+  t.after(() => gw.close());
+  const front = await heldFront(t, gw);
+  withEnv(t, { ...keylessEnv(front.url), ...(serverKey ? { AGENT_MODEL_API_KEY: serverKey } : {}) }, NAMES);
+  const logs = [];
+  const server = await serve(t, { faux: undefined, log: (line) => logs.push(line) });
+  const { api, store } = server;
+  assert.equal((await api("POST", "/agents", agent("mid-turn"))).status, 201);
+  const started = await api("POST", "/agents/mid-turn/runs", { input: { content: "Answer." }, ...start });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await until(() => front.seen.length >= 1, "the turn's first request reached the gateway's front");
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "And then?", model_key: key });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  await until(async () => (await store.commands(runId, 0)).some((command) => command.kind === "steer" && command.takenAt !== null), "the runner took the message");
+  front.release();
+  const { last, rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.ok(front.seen.length >= 2, `a request after the message: ${front.seen.length}`);
+  return { seen: front.seen, server, runId, logs };
+}
+
 test("a server with no model key: a run and a message without model_key are 422 model_key_required; the run's key goes to the gateway on its turn and its look-back, sealed for the run and erased at its turn's end; a message's key replaces it; it is nowhere else", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ text: "Answered." });
   t.after(() => gw.close());
@@ -147,29 +200,7 @@ test("a runner that dies mid-turn: the next runner opens the run's sealed key fr
   const gw = await startFauxGateway({ text: "Answered after the crash." });
   t.after(() => gw.close());
   // A front for the gateway that holds the first request until the test lets it go, so the runner dies mid-turn.
-  let hold;
-  const held = new Promise((resolve) => (hold = resolve));
-  let first = true;
-  const seen = [];
-  const front = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    seen.push(req.headers.authorization);
-    if (req.method === "POST" && first) {
-      first = false;
-      await held;
-    }
-    try {
-      const answer = await fetch(`${gw.url}${req.url}`, { method: req.method, headers: { "content-type": "application/json", authorization: req.headers.authorization ?? "" }, body: req.method === "POST" ? Buffer.concat(chunks) : undefined });
-      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" });
-      res.end(Buffer.from(await answer.arrayBuffer()));
-    } catch {
-      res.destroy();
-    }
-  });
-  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => (front.closeAllConnections(), front.close(resolve))));
-  const url = `http://127.0.0.1:${front.address().port}`;
+  const { url, seen, release: hold } = await heldFront(t, gw);
   withEnv(t, keylessEnv(url), NAMES);
   const logs = [];
   const server = await serve(t, { faux: undefined, runnerTiming: CRASHABLE, log: (line) => logs.push(line) });
@@ -186,4 +217,19 @@ test("a runner that dies mid-turn: the next runner opens the run's sealed key fr
   assert.ok(seen.length >= 2, `the next runner asked the gateway again: ${seen.length}`);
   assert.deepEqual([...new Set(seen)], [`Bearer ${KEY_ONE}`], "before and after the crash, the run's sealed key alone");
   await assertNowhere(server, runId, [KEY_ONE], logs);
+});
+
+test("a run started on the server's key, then a message with model_key while its turn is live: the very next request carries the message's key, never the server's again (red before: the claim held no key holder, and the message's key was ignored)", { timeout: 120_000 }, async (t) => {
+  const SERVER_KEY = `not-a-secret-${"server-gateway-key"}-5b6c`;
+  const { seen, server, runId, logs } = await keyMidTurn(t, { serverKey: SERVER_KEY, key: KEY_TWO });
+  assert.equal(seen[0], `Bearer ${SERVER_KEY}`, "the turn began on the server's key");
+  assert.deepEqual([...new Set(seen.slice(1))], [`Bearer ${KEY_TWO}`], "every request after the message, the first included, carried the message's key");
+  await assertNowhere(server, runId, [KEY_TWO], logs);
+});
+
+test("a replacement key: a message's model_key is used on the very next request (red before: the proxy read the credential before beforeRequest refreshed it, so that request carried the old key)", { timeout: 120_000 }, async (t) => {
+  const { seen, server, runId, logs } = await keyMidTurn(t, { start: { model_key: KEY_ONE }, key: KEY_TWO });
+  assert.equal(seen[0], `Bearer ${KEY_ONE}`, "the turn began on the run's first key");
+  assert.deepEqual([...new Set(seen.slice(1))], [`Bearer ${KEY_TWO}`], "every request after the message, the first included, carried the replacement");
+  await assertNowhere(server, runId, [KEY_ONE, KEY_TWO], logs);
 });

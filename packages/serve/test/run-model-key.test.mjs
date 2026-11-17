@@ -65,8 +65,19 @@ test("a claim opens the run's key from its sealed launch, bound to the gateway's
   sealed = sealRunLaunch(sealKey, "run-1", { model: { key: RUN_KEY, origin: GW } });
   await assert.rejects(claimModelKey({ store, sealKey, env: { AGENT_MODEL_BASE_URL: "https://moved.example" } }, "run-1"), /handed for the gateway at https:\/\/gateway\.example.*never sent anywhere else/);
   await assert.rejects(claimModelKey({ store, sealKey: randomBytes(32), env: gateway }, "run-1"), /do not open/);
+  // A run that starts with MCP credentials alone, on a gateway server: a holder with no key yet, whose first key a
+  // message brings (its routes read the server's until then: withRunModelKeyLater).
   sealed = sealRunMcpAuth(sealKey, "run-1", { gw: { headers: { authorization: "Bearer x-mcp-123" }, origin: "https://mcp.example" } });
-  assert.equal(await claimModelKey({ store, sealKey, env: gateway }, "run-1"), undefined, "MCP credentials alone: no model key");
+  const later = await claimModelKey({ store, sealKey, env: gateway }, "run-1");
+  assert.deepEqual([later.key(), later.everHeld()], [undefined, false], "no key yet");
+  const env = claimModelEnv(gateway, { AGENT_MODEL_API_KEY: SERVER_KEY }, later);
+  assert.equal(env.AGENT_MODEL_API_KEY, SERVER_KEY, "the server's key until the run has one");
+  sealed = sealRunLaunch(sealKey, "run-1", { model: { key: RUN_KEY, origin: GW } });
+  await later.fresh();
+  assert.deepEqual([env.AGENT_MODEL_API_KEY, later.everHeld(), JSON.stringify({ ...env }).includes(RUN_KEY)], [RUN_KEY, true, false], "a message's first key, at the next request, never enumerable");
+  assert.equal(await claimModelKey({ store, sealKey, env: {} }, "run-1").catch((error) => error.message).then((value) => typeof value === "string" && /never sent anywhere else/.test(value)), true, "no gateway now: the key handed for one is never sent");
+  sealed = null;
+  assert.equal(await claimModelKey({ store, sealKey, env: {} }, "run-1"), undefined, "no gateway and no key: the server's path alone");
 });
 
 test("a run's launch seal holds its MCP credentials and its model key apart: either opens alone, the MCP-only seal a replay copies carries no model key, and a seal of nothing is none", () => {
@@ -93,9 +104,11 @@ test("claude-agent on Anthropic's wire with ANTHROPIC_BASE_URL on the gateway's 
 test("spend beside a claimed run (a shadow audit, a replay check, its learning grade) is skipped for a run that brought its own key, and on a server with no gateway key; it runs on a server's key for a run that brought none", async () => {
   const sealedKeys = { get: async () => undefined, put: async () => {}, replaceIf: async () => true, removeIf: async () => true, clock: async () => Date.now() };
   const deps = (env) => ({ store: { sealedKeys }, sealKey: randomBytes(32), env });
-  const keyed = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), { origin: GW, key: () => RUN_KEY });
+  const keyed = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), { origin: GW, key: () => RUN_KEY, everHeld: () => true });
   assert.match(keyed("A shadow audit"), /^A shadow audit is skipped: this run spent on its own model key/);
   const keyless = await claimSpendOff(deps(gateway), undefined);
+  const later = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), { origin: GW, key: () => undefined, everHeld: () => true });
+  assert.match(later("A shadow audit"), /spent on its own model key/, "a key a message handed mid-run counts: the server's key never pays after it");
   assert.match(keyless("A shadow audit"), /holds none of its own/);
   const served = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), undefined);
   assert.equal(served("A shadow audit"), undefined);

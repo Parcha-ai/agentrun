@@ -57,7 +57,7 @@ import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { mcpForClaim } from "./mcp-run.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { decisionProvidersIn } from "../decisions.js";
@@ -459,8 +459,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   // The run's own model key, when its caller handed one (model_key): opened at every claim, held by the redactors, read by
   // its model route alone; the CLI's process and its tools never carry it, nor any other model key then.
+  // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.
   const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, claim.runId);
-  if (runKey) withoutModelKeys(claimed);
+  const keyed = keyedAtClaim(runKey);
+  if (keyed) withoutModelKeys(claimed);
   for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) {
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
@@ -637,7 +639,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // Their models' keys (tierModelKeys: a saved one too, which claimSecrets opened only for the run's own model), held by
       // the redactors, on the tiers' route env alone (withModelKeys, never enumerable), never on the tools' (toolEnv).
       // A run with its own model key: these tiers carry that key too, and no saved key is read.
-      const tierKeys = runKey ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+      const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
       for (const redact of new Set([held, cut])) holdClaimed(redact, tierKeys);
       const modelEnv = claimModelEnv(deps.env, { ...claimed, ...tierKeys }, runKey);
       const tiers = new Map<string, LearnedTier>();

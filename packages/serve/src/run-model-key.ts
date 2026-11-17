@@ -114,7 +114,7 @@ export function modelKeyMisfit(env: NodeJS.ProcessEnv, run: ModelKeyTarget): str
 }
 
 /** A run's model key as a claim holds it: the gateway origin it was handed for, and the key now (a message's replaces it
- *  at the next command; none once its launch no longer holds one). */
+ *  at the next command; none before the run's first key, and none once its launch no longer holds one). */
 export interface HeldModelKey {
   readonly origin: string;
   key(): string | undefined;
@@ -133,6 +133,25 @@ export function withRunModelKey(env: NodeJS.ProcessEnv, held: HeldModelKey): Nod
     if (!MODEL_KEY_NAMES.has(name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
   }
   for (const name of runKeyNames(env, held.origin)) Object.defineProperty(out, name, { get: () => held.key(), enumerable: false, configurable: false });
+  return out;
+}
+
+/**
+ * `env` (a claim's model env on the server's keys, withModelKeys) for a run that holds no key of its own yet: each
+ * variable a run's key fills (runKeyNames) reads the run's key once a message hands one, and the server's value until
+ * then, at each request; every other variable as it is. So a run that started on the server's key spends a message's
+ * key from the request after that message on. Getters, never enumerable, as withRunModelKey's.
+ */
+export function withRunModelKeyLater(env: NodeJS.ProcessEnv, held: HeldModelKey): NodeJS.ProcessEnv {
+  const names = new Set(runKeyNames(env, held.origin));
+  const out: NodeJS.ProcessEnv = {};
+  for (const name of Object.getOwnPropertyNames(env)) {
+    if (!names.has(name)) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
+  }
+  for (const name of names) {
+    const server = env[name];
+    Object.defineProperty(out, name, { get: () => held.key() ?? server, enumerable: false, configurable: false });
+  }
   return out;
 }
 

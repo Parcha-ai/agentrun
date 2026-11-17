@@ -27,7 +27,7 @@ const ALLOWED = {
   "runner/adapter-run-spec.ts": "the subagent tiers' and learned tiers' keys, read only for a run with no key of its own",
   "runner/cli-run-spec.ts": "the learned tiers' keys, read only for a run with no key of its own",
 };
-/** The modules whose every read must sit behind the run's own key: `runKey ? {} : <read>`. */
+/** The modules whose every read must sit behind the run's own key: `keyed ? {} : <read>` (claim-secrets.ts keyedAtClaim). */
 const GUARDED = new Set(["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts"]);
 
 const READ = /\.(AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)\b|\[\s*["'](AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)["']\s*\]|\[\s*(GATEWAY_KEY_ENV|JEV_GATEWAY_KEY_ENV|ANTHROPIC_GATEWAY_KEY)\s*\]|\b(savedModelKeys|tierModelKeys)\s*\(/;
@@ -56,7 +56,7 @@ test("only the static, server-key path reads AGENT_MODEL_API_KEY, ANTHROPIC_API_
   for (const name of GUARDED) {
     for (const { at, line } of readers.get(name) ?? []) {
       if (/\b(savedModelKeys|tierModelKeys)\s*\(/.test(line) && /^export|function /.test(line)) continue;
-      assert.match(line, /runKey \? \{\} : await (savedModelKeys|tierModelKeys)\(/, `${name}:${at} reads the server's saved model keys without checking the run's own key first: ${line}`);
+      assert.match(line, /keyed \? \{\} : await (savedModelKeys|tierModelKeys)\(/, `${name}:${at} reads the server's saved model keys without checking whether the run brought its own key first: ${line}`);
     }
   }
   // The allowlist is not wider than what reads today: a module that stopped reading leaves it.

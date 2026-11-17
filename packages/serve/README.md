@@ -1104,8 +1104,10 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   claim, a reclaim after a runner's crash included. A gateway moved since never receives it.
 - Each model route reads it per request through the kernel model proxy. The harness, its tools and its sandbox never
   see it, and the run's redactor cuts it from anything the run writes.
-- A message's `model_key` replaces the run's key from the turn the message starts. A message without one keeps the key
-  the run holds.
+- A message's `model_key` replaces the run's key from the next model request on: the runner reads it again when it
+  takes the message, before the message reaches the session. That holds while the turn is still going, and for a run
+  that started on the server's key and gets its first key from a message. A message without one keeps the key the run
+  holds.
 
 **The revoke-at-turn-end contract.** The write that ends a run's turn erases its key, and the run reports the turn
 ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request

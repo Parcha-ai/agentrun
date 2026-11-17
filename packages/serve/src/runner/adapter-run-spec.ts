@@ -54,7 +54,7 @@ import { placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { catalogSessionNames, type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
@@ -549,11 +549,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
   // The run's own model key, when its caller handed one (model_key, sealed in its launch): opened at every claim, a reclaim
   // after a crash among them, and held by the run's one redactor. Its model routes read it alone; its tools never do.
+  // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.
   const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, claim.runId);
-  if (runKey) {
-    withoutModelKeys(toolEnv);
-    holdRunKey(cut, runKey);
-  }
+  const keyed = keyedAtClaim(runKey);
+  if (keyed) withoutModelKeys(toolEnv);
+  if (runKey) holdRunKey(cut, runKey);
   // The keys it opened join the run's one redactor before any tool or model request can echo one.
   holdClaimed(cut, toolEnv);
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
@@ -588,7 +588,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
-    const savedKeys = runKey ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
+    const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
     holdClaimed(cut, savedKeys);
     const tierEnv = claimModelEnv(deps.env, { ...savedKeys, ...toolEnv }, runKey);
     for (const tier of SUBAGENT_TIERS) {
@@ -706,7 +706,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // run's own model), held by the run's one redactor, on the tiers' route env alone (withModelKeys, never enumerable),
     // never on the tools' (toolEnv).
     // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
-    const tierKeys = runKey ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+    const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
     const tierEnv = claimModelEnv(deps.env, { ...toolEnv, ...tierKeys }, runKey);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
