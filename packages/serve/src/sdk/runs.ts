@@ -18,7 +18,8 @@ import { decodedStrings, draftProblems, servedSkill } from "../learn/skills.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 
-export type SdkRuntime = "claude-agent-sdk" | "codex-sdk";
+import { isSdkRuntime, type SdkRuntime } from "./runtimes.js";
+export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export type SdkUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
@@ -96,7 +97,7 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   return result;
 };
 export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
-  isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk")
+  isObject(body) && isObject(body.sdk) && isSdkRuntime(body.sdk.runtime)
     ? { runtime: body.sdk.runtime }
     : undefined;
 export async function sdkInbox(store: Pick<Store, "settings">, runId: string): Promise<SdkInbox> {
