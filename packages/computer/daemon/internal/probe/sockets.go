@@ -71,6 +71,7 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 		seen[real] = true
 		base := strings.Count(real, string(filepath.Separator))
 		entries, tooDeep, stopped := 0, false, false
+		under := map[string]int{} // entries walked below each folder or file at the root's top level
 		_ = filepath.WalkDir(real, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return nil // unreadable: skipped, as a program could not reach in either
@@ -79,6 +80,9 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 			if entries > bounds.Entries {
 				stopped = true
 				return filepath.SkipAll
+			}
+			if rel, err := filepath.Rel(real, path); err == nil && rel != "." {
+				under[filepath.Join(real, strings.SplitN(rel, string(filepath.Separator), 2)[0])]++
 			}
 			if entry.IsDir() && path != real && strings.Count(path, string(filepath.Separator))-base >= bounds.Depth {
 				tooDeep = true
@@ -91,7 +95,7 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 		})
 		switch {
 		case stopped:
-			incomplete = append(incomplete, fmt.Sprintf("%s: the walk stopped after %d entries, its budget", real, bounds.Entries))
+			incomplete = append(incomplete, fmt.Sprintf("%s: the walk stopped after %d entries, its budget (most under %s)", real, bounds.Entries, heaviest(under, 3)))
 		case tooDeep:
 			incomplete = append(incomplete, fmt.Sprintf("%s: folders deeper than %d levels were not searched", real, bounds.Depth))
 		}
@@ -131,6 +135,29 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 	wg.Wait()
 	sort.Slice(sockets, func(i, j int) bool { return sockets[i].Path < sockets[j].Path })
 	return SocketSearch{Sockets: sockets, Incomplete: incomplete}
+}
+
+// heaviest names the n paths with the most entries walked below them, most first, each with its count, so a walk that
+// stopped at its budget says what filled it.
+func heaviest(under map[string]int, n int) string {
+	paths := make([]string, 0, len(under))
+	for path := range under {
+		paths = append(paths, path)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		if under[paths[i]] != under[paths[j]] {
+			return under[paths[i]] > under[paths[j]]
+		}
+		return paths[i] < paths[j]
+	})
+	if len(paths) > n {
+		paths = paths[:n]
+	}
+	named := make([]string, len(paths))
+	for i, path := range paths {
+		named[i] = fmt.Sprintf("%s %d", path, under[path])
+	}
+	return strings.Join(named, ", ")
 }
 
 // unixSocketName is the name a line of /proc/net/unix gives its socket, or "" for one with none (and for the header).
