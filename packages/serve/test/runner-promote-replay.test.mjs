@@ -334,7 +334,8 @@ test("a check none of whose runs was ever created, decided past its deadline: v2
   await restart();
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", `${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  // The held check's record: the recompile its hold asks then writes main's failed-draft hold after it (S3b).
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, unstarted: decided.check.unstarted, outcomes: decided.check.outcomes }, { decided: "hold", n: 6, unstarted: 6, outcomes: { answered: 0, handed_back: 0, failed: 6, skipped_write: 0 } }, JSON.stringify(decided));
   const view = await replayView({ store: server, agentId: "agent-1" }, "answer", DIGEST, "none-created");
   assert.deepEqual({ status: view.status, decided: view.decided, inputs: view.inputs, failed: view.outcomes.failed }, { status: "failed", decided: "hold", inputs: 6, failed: 6 }, JSON.stringify(view));
