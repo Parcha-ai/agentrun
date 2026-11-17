@@ -640,8 +640,10 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
-- **ffmpeg.** The image has Debian's `ffmpeg`, which records an agent's screen where its computer says `record: true`
-  ([A video of each run](#computers)).
+- **ffmpeg.** The image has an `ffmpeg` built for the screen recorder alone, which records an agent's screen where its
+  computer says `record: true` ([A video of each run](#computers)): one static binary of about 6 MB that reads PNG and
+  JPEG frames and writes H.264 in MP4, and nothing else. FFmpeg 9.0.2 with x264, so it is GPL, as Debian's ffmpeg is;
+  the licence files are in `/usr/local/share/doc/ffmpeg`.
 
 <a id="boxes"></a>
 
@@ -690,8 +692,8 @@ the provider with them and starts nothing. A key set in the server's environment
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
-`BOXD_REGION` optional), and `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`); Docker takes none.
+`BOXD_REGION` optional), `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
+`packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
 The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.

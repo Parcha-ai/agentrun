@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.contacts.edit-phone",
-  "version": 2,
+  "version": 3,
   "title": "Change a contact's phone number in Contacts",
   "split": "heldout",
   "tags": ["contacts", "edit"],
@@ -84,6 +84,7 @@
     }
   ],
   "oracle": [
+    { "method": "ui.act", "why": "Wait for Contacts' window: am start -W can return before it reaches the accessibility tree.", "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "Wait for the list to load the contact: a find sees only what is on screen now.", "params": { "steps": [], "expect": { "text": "{{who.first}} {{who.last}} {{nonce}}", "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "Open the contact from the list (a tap on its name: the row's own role varies).", "params": { "foreground": true, "steps": [{ "press": { "find": { "name": { "equals": "{{who.first}} {{who.last}} {{nonce}}" } } } }], "expect": { "text": "Edit", "timeoutMs": 8000 } } },
     { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Edit" } } } }], "expect": { "text": "Edit contact", "timeoutMs": 8000 } } },

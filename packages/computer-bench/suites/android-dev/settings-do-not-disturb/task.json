@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.do-not-disturb",
-  "version": 2,
+  "version": 3,
   "title": "Turn Do Not Disturb on or off in Settings",
   "split": "heldout",
   "tags": ["settings", "toggle"],
@@ -52,6 +52,7 @@
   ],
   "oracle": [
     { "method": "apps.launch", "why": "Settings at its home page, scrolled to the top.", "params": { "id": "com.android.settings" } },
+    { "method": "ui.act", "why": "apps.launch can answer on the splash screen, and a find reads the screen once.", "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "text": "Network & internet", "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "Scroll the home list until Sound & vibration shows.", "params": { "foreground": true, "steps": [{ "scroll": { "find": { "role": "scrollarea" } }, "dy": 400 }], "expect": { "text": "Sound & vibration", "timeoutMs": 5000 } } },
     { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Sound & vibration" } } } }], "expect": { "text": "Media volume", "timeoutMs": 8000 } } },
     { "method": "input.actions", "why": "Swipe the Sound page up 300 points (600 screen pixels), slowly (no fling), past the volume sliders.", "params": { "actions": [{ "type": "swipe", "path": [[360, 1000], [360, 700], [360, 400]], "ms": 900 }] } },
