@@ -2204,8 +2204,12 @@ account, or builds it once: a base snapshot of `morphvm-minimal` at 2 vCPUs, 4 G
 /instance/{id}/snapshot` with the digest, and the instance deleted. The box snapshot and its base have no TTL, so
 neither expires. A build that fails before it asks for the box snapshot deletes its base as well, so it leaves nothing.
 A cancel does the same: the base's and the instance's creates take no cancel signal, only their own time bound, so
-their ids are always read and then deleted. Only a create that outlives that bound (60 s) can leave its result unseen.
-A failed box snapshot, with none other, is refused in words until it is deleted in the account.
+their ids are always read and then deleted. `POST /snapshot` answers only once the base is made (78 s at 1 vCPU, 2 GiB
+and 8 GiB of disk), so its bound is the build's remaining time. The base carries the label `agentrun-box-build=<name>`,
+and a build looks for one by it before it makes one: a ready one is used, a pending one waited for, a failed one
+deleted. A base create whose answer is lost (a timeout, a dropped connection, a 5xx) looks again the same way, so the
+base Morph made all the same is used, never left. A failed box snapshot, with none other, is refused in words until it
+is deleted in the account.
 
 **Unverified** (the lane's live kit settles them): that the gateway takes the instance's key for the user `<instance
 id>`; that SSH lands as root; that `morphvm-minimal` has apt and dpkg;

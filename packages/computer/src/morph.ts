@@ -45,6 +45,7 @@ interface MorphSnapshot {
 	status: string;
 	created?: number;
 	digest?: string | null;
+	metadata?: Record<string, string> | null;
 }
 
 /** The Morph provider's options: the key and ssh2, then the shared adapter's (HostedOptions). */
@@ -90,7 +91,10 @@ const BUILD_LABEL = "agentrun-box-build";
 /** A build (boot, install.sh, snapshot), all of it; and the TTL of its instance, so a build left by a crash ends. */
 const BUILD_MS = 45 * 60_000;
 const BUILD_TTL_S = 2 * 60 * 60;
-/** One REST call of the build, and the pause between two reads of something Morph is making. */
+/**
+ * One REST call of the build that answers at once, and the pause between two reads of something Morph is making. A
+ * create that answers only once its snapshot is made has the build's remaining time instead (see boxSnapshot).
+ */
 const BUILD_CALL_MS = 60_000;
 const POLL_MS = 1_000;
 /** How far /ttl's read-back end may sit from the call's now plus its seconds, Morph's rounding and the call's transit aside. */
@@ -348,6 +352,40 @@ class MorphHost implements MachineHost {
 	}
 
 	/**
+	 * A base snapshot of this name already in the account, by its label (metadata agentrun-box-build=<name>): the oldest
+	 * ready one, else the oldest pending one (the caller waits for it); every failed one is deleted first. undefined when
+	 * there is none. The list's metadata[...] filter was proven on GET /instance (d7/morph-branch-3, step 6, hyphenated
+	 * and dotted keys); on GET /snapshot it is unverified, so the answer is matched by the label again here.
+	 */
+	async #baseOf(name: string, call: HostCall): Promise<string | undefined> {
+		const listed = await this.#rest<{ data?: unknown }>("GET", `/snapshot?${encodeURIComponent(`metadata[${BUILD_LABEL}]`)}=${encodeURIComponent(name)}`, undefined, call);
+		const bases = (Array.isArray(listed?.data) ? (listed.data as MorphSnapshot[]) : []).filter((one) => one?.metadata?.[BUILD_LABEL] === name && SNAPSHOT_ID.test(one.id)).sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
+		for (const failed of bases.filter((one) => one.status === "failed")) await this.#rest("DELETE", `/snapshot/${failed.id}`, undefined, call);
+		return (bases.find((one) => one.status === "ready") ?? bases.find((one) => one.status === "pending"))?.id;
+	}
+
+	/**
+	 * A new base snapshot (POST /snapshot from morphvm-minimal at BOX_SIZE, labelled), its id. Morph answers only once the
+	 * snapshot is made: 78 s from the POST to ready at 1 vCPU / 2 GiB / 8 GiB of disk (d7/morph-branch-3), past the 60 s
+	 * of one call (d7/morph-live-1 timed out there while Morph went on and made it), and no size is known to be faster. So
+	 * the call has the build's remaining time. An answer that is lost all the same (a timeout, a dropped connection, a 5xx
+	 * after the send) may still have made it: the account is looked at again by the label, and one found is the base. With
+	 * none found the create's failure is thrown, and the next build finds the base by its label once Morph lists it.
+	 */
+	async #newBase(name: string, end: number, call: HostCall): Promise<string> {
+		let made: MorphSnapshot;
+		try {
+			made = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: { [BUILD_LABEL]: name } }, { timeoutMs: Math.max(1, end - Date.now()) });
+		} catch (error) {
+			const found = await this.#baseOf(name, call);
+			if (found === undefined) throw error;
+			return found;
+		}
+		if (typeof made?.id !== "string" || !SNAPSHOT_ID.test(made.id)) throw new HostError("vendor", `POST /snapshot answered no snapshot id: ${show(made?.id)}`);
+		return made.id;
+	}
+
+	/**
 	 * The box image as a Morph snapshot in the key's account, its digest the name (agentrun-box-<recipe hash>): found, or
 	 * built once (`building` told first), as PROVIDERS.md's account-built image says. A build makes a base snapshot of
 	 * morphvm-minimal at BOX_SIZE (POST /snapshot), starts an instance from it (POST /instance), runs box/install.sh as
@@ -356,6 +394,13 @@ class MorphHost implements MachineHost {
 	 * own besides. The base snapshot is kept once the box snapshot is asked for, with no TTL: whether a snapshot still needs
 	 * the one its instance started from is unverified. A build that fails before then deletes its base, so repeated
 	 * failures leave nothing. install.sh needs apt (morphvm-minimal's distro is unverified) and root.
+	 *
+	 * The base is labelled (BUILD_LABEL), and a build looks for one by the label before it makes one (#baseOf): a base an
+	 * earlier build left (a create whose answer was lost) is used, or waited for, and a failed one is deleted. Two servers
+	 * building the same recipe at once: when both look before either base is listed, each makes one and builds on it, both
+	 * bases are kept once their box snapshots are asked for, and every caller answers the oldest box snapshot (#boxOf).
+	 * When the second looks after the first's base is listed, both build on that one base; a build that fails deletes it,
+	 * so the other's fails too and is called again.
 	 */
 	async boxSnapshot(name: string, building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		const end = Date.now() + BUILD_MS;
@@ -363,29 +408,26 @@ class MorphHost implements MachineHost {
 		const found = await this.#boxOf(name, end, signal);
 		if (found !== undefined) return found;
 		building();
-		const marked = { [BUILD_LABEL]: name };
 		// The two creates are never signalled, only bounded: a cancel mid-call would lose the id of what Morph made, and the
 		// base snapshot has no TTL. A cancel is answered once the id is held, so the finally below deletes what was made.
-		const create = { timeoutMs: BUILD_CALL_MS };
 		const notCancelled = (what: string) => {
 			if (signal?.aborted) throw new HostError("aborted", `the box build was aborted after ${what}`);
 		};
-		const base = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: marked }, create);
-		if (typeof base?.id !== "string" || !SNAPSHOT_ID.test(base.id)) throw new HostError("vendor", `POST /snapshot answered no snapshot id: ${show(base?.id)}`);
+		const base = (await this.#baseOf(name, call)) ?? (await this.#newBase(name, end, call));
 		// Set once the box snapshot is asked for: from then on it may need the base, which is kept.
 		let snapshotted = false;
 		let vm: string | undefined;
 		try {
-			notCancelled(`its base snapshot ${base.id} was made`);
-			await this.#snapshotReady(base.id, end, signal);
-			vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base.id, metadata: marked, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, create)).id);
+			notCancelled(`its base snapshot ${base} was made`);
+			await this.#snapshotReady(base, end, signal);
+			vm = instanceId((await this.#rest<MorphInstance>("POST", "/instance", { snapshot_id: base, metadata: { [BUILD_LABEL]: name }, ttl_seconds: BUILD_TTL_S, ttl_action: "stop" }, { timeoutMs: BUILD_CALL_MS })).id);
 			notCancelled(`its instance ${vm} was made`);
 			await this.#build(vm, name, end, signal, call, () => (snapshotted = true));
 		} finally {
 			// Their own bound, not the caller's signal: a cancelled build still deletes its instance (its TTL backs this),
 			// and a build that never asked for the box snapshot deletes its base too, so a failing build leaves nothing.
 			if (vm !== undefined) await this.delete(vm, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
-			if (!snapshotted) await this.#rest("DELETE", `/snapshot/${base.id}`, undefined, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
+			if (!snapshotted) await this.#rest("DELETE", `/snapshot/${base}`, undefined, { timeoutMs: BUILD_CALL_MS }).catch(() => {});
 		}
 		// Another server's build of the same recipe may have finished first: every caller answers the oldest.
 		const box = await this.#boxOf(name, end, signal);
