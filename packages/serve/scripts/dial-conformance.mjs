@@ -26,7 +26,7 @@
 // and the versions the twin's refused hellos reported (driftedDaemon), which must be the copy's.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -34,6 +34,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ATTACH_HELLO_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, DAEMON_PATH, descriptorOf, hostedDaemonPath, isProviderId, providerModule } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
+import { isMain } from "../../../scripts/is-main.mjs";
 import { plantSecrets } from "../../computer/dist/conformance/cli.js";
 import { casesFor, runConformance } from "../../computer/dist/conformance/index.js";
 import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
@@ -361,9 +362,8 @@ async function main({ provider: name, only, exit }, env, state) {
 	}
 }
 
-/** Imported (by its test, for patchVersion) rather than run: nothing starts. */
-const RUN = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
-if (RUN) {
+// Imported (by its test, for patchVersion) rather than run: nothing starts.
+if (isMain(import.meta)) {
 	const state = { listening: false };
 	let args;
 	const code = await (async () => {
