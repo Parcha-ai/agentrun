@@ -1106,8 +1106,9 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   see it, and the run's redactor cuts it from anything the run writes.
 - A message's `model_key` replaces the run's key from the next model request on: the runner reads it again when it
   takes the message, before the message reaches the session. That holds while the turn is still going, and for a run
-  that started on the server's key and gets its first key from a message. A message without one keeps the key the run
-  holds.
+  that started on the server's key and gets its first key from a message. If that read fails, it is tried again; if it
+  keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
+  server's. A message without one keeps the key the run holds.
 
 **The revoke-at-turn-end contract.** The write that ends a run's turn erases its key, and the run reports the turn
 ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request

@@ -189,6 +189,10 @@ export interface ClaimModelKey extends HeldModelKey {
   watch(listener: (key: string) => void): void;
 }
 
+/** How many times fresh() reads a run's launch before it gives up, and the first wait between reads (doubled each time). */
+const FRESH_TRIES = 3;
+const FRESH_WAIT_MS = 50;
+
 /**
  * The run's own model key for claim `runId`, opened from its launch's sealed column under the runner's seal key (the
  * server sealed it there with mcp_auth, store/seal.ts). Undefined only where the server has no gateway and the run holds
@@ -220,10 +224,21 @@ export async function claimModelKey(deps: { readonly store: { readonly runs: { l
     key: () => held?.key,
     everHeld: () => ever,
     // A message that hands no key keeps the run's (the server's write keeps it), so none here is a run whose launch holds
-    // none (yet, or no longer). A key for another origin is never taken. A launch that cannot be read now keeps the key
-    // the claim holds: the next command reads it again.
+    // none (yet, or no longer). A key for another origin is never taken. Fail-closed: a launch that cannot be read is read
+    // again, FRESH_TRIES in all with a growing wait, and then fresh() throws, so the command that asked is not handed to
+    // the session (the runner leaves its row untaken and delivers it again at its next poll). A message's key is never
+    // replaced by the key the claim held before it, nor by the server's.
     fresh: async () => {
-      const now = await open().catch(() => held);
+      let now: RunModelKey | undefined;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          now = await open();
+          break;
+        } catch (error) {
+          if (attempt >= FRESH_TRIES) throw new Error(`the run's model key could not be read from its launch (${FRESH_TRIES} tries): the message is held until it can be, never sent on another key: ${(error as Error)?.message ?? error}`);
+          await new Promise((resolve) => setTimeout(resolve, FRESH_WAIT_MS * 2 ** (attempt - 1)));
+        }
+      }
       held = now && now.origin === origin ? now : undefined;
       if (held) {
         ever = true;

@@ -4051,7 +4051,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         mcpStale = true;
         // The run's own model key, read again from its launch before the command reaches the session: the message's key
         // was written with its command row, so the next request's credential (which the model proxy reads before its
-        // beforeRequest hook) is the message's, a first key or a replacement. Never throws (fresh keeps the key held).
+        // beforeRequest hook) is the message's, a first key or a replacement. Fail-closed: a read that keeps failing
+        // throws here, before the command is taken, so the runner delivers it again at its next poll and the session
+        // never runs the message on the key held before it.
         await specNow?.modelKey?.fresh();
       }
       if (command.kind === "steer") return steer(command);
