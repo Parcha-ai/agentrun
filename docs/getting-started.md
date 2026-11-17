@@ -32,9 +32,11 @@ The [three-step local quickstart](../README.md#run-locally-in-three-steps) walks
 through a due diligence agent and its results. The [inbox quickstart](inbox-quickstart.md) sets up an assistant that
 files your new mail and drafts your replies, on your ChatGPT plan, in three minutes.
 
-To have your coding agent handle local setup, tell it:
+To have your coding agent set it up, tell it:
 
-> Read https://agentrun.ai/SKILL.md and set up AgentRun locally for me.
+> Read https://agentrun.ai/SKILL.md and set up AgentRun for me.
+
+It asks where AgentRun should run before it installs anything.
 
 ## Self-host
 

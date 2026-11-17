@@ -560,29 +560,53 @@ function setupRecipe(source = false) {
   const file = source ? "../../serve/skills/agentrun-serve/SKILL.md" : "../../../docs/SKILL.md";
   const skill = readFileSync(new URL(file, import.meta.url), "utf8");
   const step = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1])
-    .find((block) => source ? block.includes("node packages/serve/dist/cli.js") : block.includes("npx @parcha/agentrun --no-open"));
+    .find((block) => source ? block.includes("node packages/serve/dist/cli.js") : block.includes("npx --yes @parcha/agentrun@0.4 --no-open"));
   assert.ok(step, "the skill has its server-start recipe");
   return step;
 }
-// Setup once deployed to a hosting provider the person never chose. The skill asks where before anything is installed
-// or deployed, with the machines they already run agents on as a choice of their own, and looks for those agents first.
-test("the setup skill asks where AgentRun should run before installing or deploying, and names no host unasked", () => {
-  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
-  const section = (title) => skill.split(/^## /m).find((part) => part.startsWith(`${title}\n`)) ?? "";
-  const where = section("Choose where to run it");
-  const [, ask, ...rest] = where.split("\n\n");
-  assert.match(ask, /^Ask before installing or deploying anything\./, "the question comes first");
-  assert.match(ask, /wait for the\s+person's answer/, "it waits for the answer");
-  assert.deepEqual([...rest[0].matchAll(/^- \*\*(.+?):\*\*/gm)].map((m) => m[1]),
-    ["This computer", "A machine they already run agents on", "A hosting provider", "AgentRun Cloud"], "the four places, in order");
-  assert.match(where, /Never create a service on Render or any other provider unless the person named that provider/);
-  assert.doesNotMatch(where, /offer AgentRun Cloud first|Honor a deployment choice/, "no place is preferred or inferred");
-  const found = section("Find the agents they already run");
-  assert.ok(skill.indexOf("## Find the agents they already run") < skill.indexOf("## Choose where to run it"), "existing agents are found before a place is chosen");
+const setupSkill = () => readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
+const skillSection = (skill, title) => skill.split(/^## /m).find((part) => part.startsWith(`${title}\n`)) ?? "";
+const shellBlocks = (text) => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
+// A person pasted the setup prompt into a hosted cloud session: it installed there, the console sat on a loopback their
+// browser could not reach, and a signed-in provider was taken as a choice. The prompt now reads the session first, asks
+// where before any install or deploy, gives each place its cost, and leaves finding existing agents until after the
+// first run.
+test("the setup skill asks where AgentRun should run before any install, with a cost for each of five places", () => {
+  const skill = setupSkill();
+  const where = skillSection(skill, "2. Ask where AgentRun should run");
+  assert.match(where, /^Ask this before any install or deploy command, then wait for the answer\./m, "it asks and waits");
+  const places = [...where.matchAll(/^- \*\*(.+?):\*\* (.+)$/gm)];
+  assert.deepEqual(places.map((m) => m[1]), ["This computer", "My always-on machine, private", "Railway", "Render", "AgentRun Cloud"], "the five places, in order");
+  for (const [, place, line] of places) assert.match(line, /^(free\.|usage-priced|about \$\d|nothing to install)/, `${place} leads with its cost`);
+  assert.match(where, /Cost: pricing on the site\./, "Cloud names where its price is");
+  assert.match(where, /A provider CLI that\s+is signed in, a deploy button, `render\.yaml` or a README section is never a choice/);
+  assert.match(where, /Never create a service on a\s+provider the person did not name in this conversation/);
+  const installs = /npx |curl -fsSL|tailscale serve|docker (run|compose)|render\.com\/deploy|agents create|runs start/;
+  const before = skill.slice(0, skill.indexOf("## 2. Ask where AgentRun should run"));
+  assert.ok(skill.indexOf("## 2. Ask where AgentRun should run") > 0);
+  for (const block of shellBlocks(before)) assert.doesNotMatch(block, installs, "nothing before the question installs or deploys");
+  assert.doesNotMatch(before, installs, "nothing before the question names an install");
+  assert.doesNotMatch(skill, /on this machine\b/i, "no place is assumed");
+  assert.ok(skill.indexOf("## 5. Create the first agent and run it") < skill.indexOf("## 7. Bring agents they already run"), "existing agents come after the first run");
+  const found = skillSection(skill, "7. Bring agents they already run");
   for (const look of ["crontab -l", "list-timers", "LaunchAgents", ".github/workflows", "claude -p", "codex exec"]) assert.ok(found.includes(look), look);
-  assert.match(found, /With their permission, look on this machine without changing it/);
+  assert.match(found, /With their permission, look on this computer without changing it/);
   assert.match(found, /ask the person which of their jobs start\s+agents/, "a job the filter cannot see is asked about, not assumed absent");
-  assert.ok(skill.indexOf("## Choose where to run it") < skill.indexOf("npx @parcha/agentrun --no-open"), "the question precedes the install recipe");
+});
+test("the setup skill names a hosted cloud session before the question, and its check prints names, never values", (t) => {
+  const skill = setupSkill();
+  const look = skillSection(skill, "1. Look at this session");
+  assert.match(look, /`CLAUDE_CODE_REMOTE`[^\n]*\n?[^\n]*a \*\*hosted cloud session\*\*/, "the cloud signal is read as a hosted session");
+  assert.match(look, /Recommend\s+AgentRun Cloud or a one-click deploy/);
+  assert.match(look, /Install here only if they still ask/);
+  const [check] = shellBlocks(look);
+  assert.ok(check, "the session check is a shell block");
+  const f = setupFixture(t, {});
+  const quiet = Object.fromEntries(["CLAUDE_CODE_REMOTE", "CODESPACES", "GITPOD_WORKSPACE_ID", "SSH_CONNECTION", "DISPLAY", "WAYLAND_DISPLAY"].map((name) => [name, ""]));
+  const run = f.run(check, { ...quiet, CLAUDE_CODE_REMOTE: "private-fixture-true", SSH_CONNECTION: "private-fixture 22" });
+  const lines = run.stdout.split("\n").filter((line) => line.startsWith("set: "));
+  assert.deepEqual(lines, ["set: CLAUDE_CODE_REMOTE", "set: SSH_CONNECTION"], "each signal set, by name");
+  assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no value is printed");
 });
 function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
