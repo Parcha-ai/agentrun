@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { agentFixture, editorCaps } from "@/fixtures";
+import { DECISION, WORKFLOW } from "@/lib/agentForm";
 
 // Each of the editor's own inputs is named by its label: a screen reader reads "Name" on the name input, a click on the
 // label puts the cursor in it, and a test finds it by its label, as a person does.
@@ -102,12 +103,12 @@ describe("the agent editor's composite field groups", () => {
     expect([...group.querySelectorAll("label")].filter((label) => label.htmlFor && !document.getElementById(label.htmlFor))).toEqual([]);
   });
 
-  it.each(["workflow", "decision"])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
+  it.each([WORKFLOW, DECISION])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
     const { host } = await open({ step: "settings", caps: { ...editorCaps, decisionProvider: "jev" } });
     await act(async () => { host.querySelector<HTMLInputElement>(`input[type="radio"][value="${harness}"]`)!.click(); });
     await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Context"))!.click(); });
     const group = namedGroup(host, "Workflow");
-    expect(group.textContent).toContain(harness === "decision" ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
+    expect(group.textContent).toContain(harness === DECISION ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
     expect(group.querySelector("label")).toBeNull();
   });
 

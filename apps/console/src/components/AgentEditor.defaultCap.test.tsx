@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
+import { DECISION } from "@/lib/agentForm";
 
 // The agent's default spend cap per run (`definition.max_cost_usd`): a run started without a cap of its own, and a
 // trigger with none, is capped at it. Empty means none, and clearing one sends an explicit 0 (the server's "no default"):
@@ -54,7 +55,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');
     const { host } = mount({ agent: null, caps: { ...caps, decisionProvider: "jev" } });
     expect(host.textContent).toContain(LABEL);
-    act(() => { host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]')!.click(); });
+    act(() => { host.querySelector<HTMLInputElement>(`input[type=radio][value="${DECISION}"]`)!.click(); });
     expect(host.textContent).not.toContain(LABEL);
   });
 

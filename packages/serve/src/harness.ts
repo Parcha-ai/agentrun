@@ -2,11 +2,27 @@
 // one of the run adapters. A revision keeps the harness it names; the default is never stored, so a revision written
 // before this field existed and one that names pi are the same revision. Which harnesses this server runs is said in
 // capabilities, and a revision naming one it does not run saves with a warning and is refused at run time.
+import type { HarnessPromises } from "./harness-table.js";
 
 
+/** The built-in harnesses' ids, in the table's order (harness-table.ts BUILTIN; harness-one-table.test.mjs holds them
+ *  equal): the ids a definition may name on any server, and the type of a built-in one. What a server runs is its table's
+ *  (harnessIds), which an owner's harness module may add to. */
 export const HARNESSES = ["pi", "claude-agent", "codex", "opencode"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
+/** What a harness id is, as the API says it (openapi.ts): a harness module's id that is not one refuses the start. */
+export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
+/** The names serve's own runs carry where a harness id goes, so a harness module may not take one (its start is refused):
+ *  `learning`, a learning run's launch harness, which the runner's loop choice keys on (harness-loops.ts,
+ *  learning-factory.ts LEARNING_HARNESS) and the stores' learning queries match; `sdk`, an SDK run's launch harness
+ *  (sdk/runs.ts); and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
+ *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
+ *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
+export const RESERVED_HARNESS_IDS: readonly string[] = Object.freeze([
+  "learning", "sdk", "workflow", "claude-agent-sdk", "codex-sdk",
+  ...Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name)),
+]);
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
  *  API as the plan takes them. The others need a model key. */
 export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] satisfies HarnessId[]);
@@ -20,7 +36,9 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
  *  server's own: capabilities never serve it. */
 /** `installs`: `on_first_use` on claude-agent or codex while its CLI is not installed in this server's data: its first run
  *  (or the first agent made on it) installs it (harness-install.ts). */
-export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
+/** `id`: one of the table's (harness-table.ts harnessIds): a built-in one (HARNESSES) or one an owner's harness module adds.
+ *  `label`: its name in a sentence. `promises`: what it promises (HarnessPromises), as capabilities show it. */
+export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
 export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[] };
@@ -53,24 +71,25 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       const { hostMemory, neverFits } = await import("./host.js");
       const memory = hostMemory();
       const { harnessInstalled } = await import("./adapters.js");
-      const { harnessOf } = await import("./harness-table.js");
-      const probed = await Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
+      const { harnessIds, harnessOf, NATIVE_PROMISES } = await import("./harness-table.js");
+      const probed = await Promise.all(harnessIds(env).map(async (id): Promise<HarnessOffer> => {
         const entry = harnessOf(env, id)!;
+        const named = { label: entry.label, promises: entry.promises ?? NATIVE_PROMISES };
         // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
         // Claude Code not installed yet says so (its install probes the offers again).
         const firstUse = entry.installs && !(await harnessInstalled(entry, env)) ? { installs: "on_first_use" as const } : {};
         const refused = await entry.refusal(env, undefined, { atStart: true });
-        if (refused !== undefined) return { id, available: false, steer: entry.steer, ...refused, ...firstUse };
+        if (refused !== undefined) return { id, ...named, available: false, steer: entry.steer, ...refused, ...firstUse };
         // Available: which model keys run it here is what it would ask for with none of them (a key's row names it only
         // when that key is one), so a row reads the same before and after another provider's key is saved.
         const keyless = await entry.refusal(await withoutModelKeys(env), undefined, { atStart: true });
-        return { id, available: true, steer: entry.steer, ...(keyless?.keys?.length ? { keys: keyless.keys } : {}), ...firstUse };
+        return { id, ...named, available: true, steer: entry.steer, ...(keyless?.keys?.length ? { keys: keyless.keys } : {}), ...firstUse };
       }));
       // A harness that runs here but whose one run is more than this host's memory for runs never starts: said here, so
       // a save warns and a run is refused at once with why (runnable.ts), never a 429 to try again. One that lacks only a
       // key keeps its reason, but no key would run it: it has no `keys`.
       const base = probed.map((offer): HarnessOffer => {
-        const tooBig = offer.available || offer.keys ? neverFits(offer.id, memory) : undefined;
+        const tooBig = offer.available || offer.keys ? neverFits(offer.id, memory, env) : undefined;
         if (!tooBig) return offer;
         const { keys: _keys, ...rest } = offer;
         return offer.available ? { ...rest, available: false, reason: tooBig } : rest;

@@ -1023,6 +1023,31 @@ test("a cached create answer that cannot be saved masked (the file's write fails
   assert.ok(!record.includes(value), "and saved without the value");
 });
 
+test("a cached create answer whose masked save failed before a restart: the next start masks it from its trigger's sealed fields before it serves, and its replay holds no value", async (t) => {
+  const { s, value, id } = await keptUnmarked(t);
+  const body = { name: "form", source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu", hub_value: value } } };
+  const answer = { status: 201, body: { id, ...body }, headers: { location: `/v2/triggers/${id}` } };
+  const { stable } = await import("../dist/validate.js");
+  const file = join(s.server.data, ".idempotency.json");
+  writeFileSync(file, JSON.stringify({ version: 1, entries: [[`/triggers\nform-key`, { fingerprint: stable(body), at: Date.now(), answer }]] }), { mode: 0o600 });
+  const partial = join(s.server.data, ".idempotency.json.partial");
+  mkdirSync(partial);
+  const lines = [];
+  const first = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  assert.ok(await lineOf(lines, (l) => l.includes("composio_config_sealed") && l.includes(id)), `sealed: ${JSON.stringify(lines.filter((l) => l.includes("composio")))}`);
+  assert.ok(await lineOf(lines, (l) => l.includes("idempotency_not_saved")), "its save failed");
+  await first.stop();
+  rmSync(partial, { recursive: true });
+  assert.ok(readFileSync(file, "utf8").includes(value), "the failed save left the record as it was");
+  // The trigger is sealed already, so no seal runs at this start: the record is checked against the trigger's own fields.
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl } });
+  assert.ok(!readFileSync(join(again.data, ".idempotency.json"), "utf8").includes(value), "the start wrote the record masked before any request");
+  const replay = await again.api("POST", "/triggers", body, { "idempotency-key": "form-key" });
+  assert.equal(replay.headers.get("idempotent-replayed"), "true", "the record still replays");
+  assert.equal(replay.body.source.config.hub_value, MASK, "its replay is masked");
+  assert.ok(!JSON.stringify(replay.body).includes(value), "and holds no value");
+});
+
 test("with Composio down, the start still serves, says once by a code that the schemas were not read, and leaves the trigger for the next start", async (t) => {
   const { s, value, id } = await keptUnmarked(t);
   await s.composio.close();
