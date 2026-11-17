@@ -209,7 +209,8 @@ public final class Outline {
 			String value = valueOf(node);
 			String desc = null;
 			boolean acts = actionable(node);
-			if (acts && name == null && (node.clickable() || node.longClickable() || node.checkable()) && !node.editable()) {
+			// A scrollable node is a list, never a row: one that is clickable too (Clock's cities) keeps its rows listed.
+			if (acts && name == null && (node.clickable() || node.longClickable() || node.checkable()) && !node.editable() && !node.scrollable()) {
 				List<String> texts = new ArrayList<>();
 				childTexts(node, texts, 0);
 				if (!texts.isEmpty()) {
