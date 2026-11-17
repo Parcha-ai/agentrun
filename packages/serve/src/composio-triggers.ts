@@ -26,7 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
-import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedKept, sealedSchemaFields, shownSource } from "./trigger-composio.js";
+import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealableValue, sealedConfigFields, sealedKept, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -115,22 +115,33 @@ export class ComposioTriggers implements TriggerUpstream {
     // trigger configs are flat), so none is kept here in the clear.
     const deeper = configSecrets(config).filter((secret) => secret.path.length > 1);
     if (deeper.length) throw invalid(deeper.map((secret) => ({ field: `source.config.${secret.path.join(".")}`, reason: "not_allowed", message: `${secret.name} is a credential below the config's top level: this server seals a credential only as a top-level field of the config, so it can't keep this one. Give it as a top-level field, or leave it out.` })));
-    const sealing = sealedConfigFields(config);
-    const masked = sealing.filter((name) => config[name] === SEALED_MASK);
-    if (masked.length) throw invalid(masked.map((name) => ({ field: `source.config.${name}`, reason: "invalid", message: `${name} is a credential: give its value. "${SEALED_MASK}" is what an answer shows in its place.` })));
-    const values = sealing.map((name) => config[name] as string);
+    const named = sealedConfigFields(config);
+    const refuseMasked = (sealing: readonly string[]) => {
+      const masked = sealing.filter((name) => config[name] === SEALED_MASK);
+      if (masked.length) throw invalid(masked.map((name) => ({ field: `source.config.${name}`, reason: "invalid", message: `${name} is a credential: give its value. "${SEALED_MASK}" is what an answer shows in its place.` })));
+    };
+    refuseMasked(named);
     const server = String(source.server);
     const credential = await this.deps.credential(server, "field");
+    const event = String(source.event);
+    const missing = `Composio has no event ${event} for ${credential.toolkit}: pick one from the server's events.`;
     // Made, saved here, and undone when not saved, alone among the project's steps.
     return this.serial(credential.key, async () => {
+      // The event's schema first, a read: a field it marks as a credential (format: password, writeOnly) is sealed too,
+      // whatever its name (sealedSchemaFields).
+      const type = await this.ask(credential, "nothing was saved", named.map((name) => String(config[name])))(`reading ${event}'s config on Composio`, "GET", `/api/v3/triggers_types/${enc(event)}`, undefined, missing).catch((error: unknown) => {
+        throw onField(error, "source.event");
+      });
+      const sealing = [...new Set([...named, ...sealedSchemaFields(type.config).filter((name) => sealableValue(config[name]))])];
+      refuseMasked(sealing);
+      const values = sealing.map((name) => String(config[name]));
       const ask = this.ask(credential, "nothing was saved", values);
       const undo: (() => Promise<void>)[] = [];
       try {
         // The account first: a read, so a server not connected yet leaves nothing made on Composio.
         const account = await this.accountOf(ask, credential, server);
         const hook = await this.subscribe(ask, source[MOVE_FIELD] === true, undo);
-        const event = String(source.event);
-        const made = await ask(`turning on ${event} on Composio`, "POST", `/api/v3/trigger_instances/${enc(event)}/upsert`, { connected_account_id: account, user_id: credential.user, trigger_config: source.config }, `Composio has no event ${event} for ${credential.toolkit}: pick one from the server's events.`).catch((error: unknown) => {
+        const made = await ask(`turning on ${event} on Composio`, "POST", `/api/v3/trigger_instances/${enc(event)}/upsert`, { connected_account_id: account, user_id: credential.user, trigger_config: source.config }, missing).catch((error: unknown) => {
           throw onField(onField(error, "source.config"), "source.event");
         });
         const instance = text(made.trigger_id);
@@ -148,7 +159,8 @@ export class ComposioTriggers implements TriggerUpstream {
         undo.push(async () => {
           for (const name of sealing) await this.deps.sealed.remove(configScope(id, name));
         });
-        for (const name of sealing) await this.deps.sealed.set(configScope(id, name), configFieldFor(config[name] as string), config[name] as string);
+        // A number is sealed as its decimal text; Composio got it, as a number, in the upsert above.
+        for (const name of sealing) await this.deps.sealed.set(configScope(id, name), configFieldFor(String(config[name])), String(config[name]));
         const { [MOVE_FIELD]: _moved, ...kept } = source;
         const shown = sealing.length ? { config: { ...config, ...Object.fromEntries(sealing.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: sealing } : {};
         return await keep({ ...kept, ...shown, instance_id: instance, hook });
@@ -334,12 +346,12 @@ export class ComposioTriggers implements TriggerUpstream {
       if (!clear.length) continue;
       const names = clear.map((secret) => secret.name).join(",");
       try {
-        for (const secret of clear) await this.deps.sealed.set(configScope(holder.id, secret.name), configFieldFor(secret.value), secret.value);
+        for (const secret of clear) await this.deps.sealed.set(configScope(holder.id, secret.name), configFieldFor(String(secret.value)), String(secret.value));
         await rewrite(holder.id, shownSource(holder.source));
         this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: names });
         done++;
       } catch (error) {
-        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: names, error: told(error, clear.map((secret) => secret.value)) });
+        this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: names, error: told(error, clear.map((secret) => String(secret.value))) });
       }
     }
     return done;
