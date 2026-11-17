@@ -306,7 +306,7 @@ export function App() {
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403) await readSession().catch(() => {});
-          return e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e);
+          throw new Error(e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e));
         }
       }} />
     );

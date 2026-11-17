@@ -93,8 +93,7 @@ describe("setupCodeRenewed", () => {
   it("a code still good is kept: the newest line, good until when", () => {
     expect(setupCodeRenewed("agents.example.test", { printed: false, expires_at: at })).toBe(`The current code is still good until ${clock(at)}, so no new one was printed: it is the newest “Set up this server:” line in the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab).`);
   });
-  it("a refused ask says why in words: asked too often, an owner already set, or anything else as the server said it", () => {
-    expect(newCodeProblem(Object.assign(new ClientError(429, "rate_limited", "too many tries from this address; try again in 8 s"), { retryAfterMs: 7_200 }))).toBe("Too many tries. Try again in 8 seconds.");
+  it("a refused ask says why in words: an owner already set, or anything else as the server said it", () => {
     expect(newCodeProblem(new ClientError(403, "forbidden", "this server has its owner: sign in"))).toBe("This server has its owner already: sign in.");
     expect(newCodeProblem(new ClientError(500, "internal", "the store is closed"))).toBe("the store is closed");
   });

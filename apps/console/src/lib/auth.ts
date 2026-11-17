@@ -23,13 +23,16 @@ export function authMode(r: { status: number; body: unknown }, probe?: number): 
  *  before a password is set): a server at a public address, or listening on any address but loopback. */
 export const setupTakesCode = (r: { status: number; body: unknown }): boolean => r.status === 200 && (r.body as { setup_code?: unknown } | null)?.setup_code === true;
 
+/** A server at Render's own address (`*.onrender.com`), whose log and token are in the Render dashboard. */
+const onRender = (host: string): boolean => /\.onrender\.com$/i.test(host);
+
 /** Where the setup code is, for whoever is asked for it (often not the one who started the server): the field's hint,
  *  line by line. `host` is the address the page was opened at: Render's own (`*.onrender.com`) gets Render's two places
  *  alone; any other gets the log line, where a log is on each kind of server, and the token that stands in for the
  *  code. Both say how to get a new code. The page never holds the code: these are only the places to look. */
 export function setupCodePlaces(host: string): string[] {
   const line = "find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.";
-  if (/\.onrender\.com$/i.test(host)) return [
+  if (onRender(host)) return [
     "This server is on Render. In the Render dashboard, open this service's Environment tab and paste the value of AGENTRUN_TOKEN here.",
     `Or open the service's Logs tab and ${line}`,
     "A code works once and lasts 30 minutes. When it has run out, Get a new code below prints a fresh one in the Logs tab. AGENTRUN_TOKEN does not expire.",
@@ -45,7 +48,7 @@ export function setupCodePlaces(host: string): string[] {
  *  good runs out; never the code): where its line is on this kind of server, and until what time it works. A code still
  *  good is kept, so the page says that one is the newest line. */
 export function setupCodeRenewed(host: string, r: { printed: boolean; expires_at: string }): string {
-  const log = /\.onrender\.com$/i.test(host) ? "the service's Logs tab in the Render dashboard" : "the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab)";
+  const log = onRender(host) ? "the service's Logs tab in the Render dashboard" : "the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab)";
   const line = `it is the newest “Set up this server:” line in ${log}.`;
   return r.printed
     ? `The server printed a new code: ${line} It works once, until ${clock(r.expires_at)}.`
@@ -60,7 +63,6 @@ const tryAgain = (e: ClientError): string => {
 
 /** A refused Get a new code, in plain words; otherwise the server's own message. */
 export function newCodeProblem(e: ClientError): string {
-  if (e.status === 429) return `Too many tries. ${tryAgain(e)}`;
   if (e.status === 403 && /has its owner/.test(e.message)) return "This server has its owner already: sign in.";
   return e.message;
 }

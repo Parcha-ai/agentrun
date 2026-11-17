@@ -2958,18 +2958,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // A setup code to use, asked for with no credential (the person at the Setup code field, or whoever started the
       // server for them): a new one goes to the log only when the last is expired or spent; one still good is kept, so
-      // no visitor voids a link someone holds. The answer says which and when it runs out, never the code. Counted with
-      // the address's sign-in tries, so it is asked a few times a quarter hour, then waits.
+      // this request never voids a link someone holds. The answer says which and when it runs out, never the code.
+      // No origin check and no rate limit, unlike setup and sign-in: the documented caller is a bare curl, the answer
+      // holds nothing secret, and all a caller gets is at most one log line per code's 30 minutes. Counting asks with
+      // sign-in tries would let one visitor behind a shared proxy hold the button shut for everyone.
       case "/setup/code": {
         if (me.hasPassword()) throw new ApiError("forbidden", "this server has its owner: sign in");
-        const allowed = me.signIns.allow(clientOf(req));
-        if (!allowed.ok) {
-          const seconds = Math.ceil(allowed.retryAfterMs / 1000);
-          throw new ApiError("rate_limited", `too many tries from this address; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
-        }
-        allowed.done(false);
         const code = me.renewSetupCode();
-        if (!code) throw new ApiError("forbidden", "this server's setup takes no code: the first visit sets the password");
+        if (!code) throw new ApiError("forbidden", "no setup code to give: this server's setup takes no code, or its password is being set now");
         return send(res, 200, { printed: code.printed, expires_at: new Date(code.until).toISOString() });
       }
       case "/setup/import": {

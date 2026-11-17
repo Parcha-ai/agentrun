@@ -65,6 +65,20 @@ describe("SignIn's setup code field", () => {
     expect(host.querySelector('[role="status"]')?.textContent).toBe("The server printed a new code.");
   });
 
+  // A refusal is an error, announced as one beside the form's other problems, and the button works again after it.
+  it("a refused Get a new code is said as a problem, not as an answer, and the button can be pressed again", async () => {
+    let asked = 0;
+    const host = mount("agents.example.test", { onNewCode: async () => { if (asked++ === 0) throw new Error("the store is closed"); return "The server printed a new code."; } });
+    const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Get a new code")!;
+    await act(async () => { button.click(); });
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe("the store is closed");
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(button.disabled).toBe(false);
+    await act(async () => { button.click(); });
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toBe("The server printed a new code.");
+  });
+
   it("offers no new code where setup takes none", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

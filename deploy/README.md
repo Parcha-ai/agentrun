@@ -64,7 +64,7 @@ without restarting:
 
 Either prints a new `Set up this server:` line in the log only when the last code is expired or spent, and answers
 `{"printed": true|false, "expires_at": "<time>"}`, never the code. A code that is still good is kept (`printed:
-false`), so nobody can void a link you hold; the answer is a 403 once the owner is set. A restart prints a new code
+false`), so asking never voids a link you hold; the answer is a 403 once the owner is set. A restart prints a new code
 too, as does a fifth wrong try.
 
 If someone else makes the first visit (you deployed the server for them), send them the place, or the newest setup

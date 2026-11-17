@@ -21,7 +21,8 @@ export type SignInProps = {
    *  counting, counted, or its count unknown. */
   offer?: ImportOffer | null;
   /** Asks the server to print a new setup code to its log when the last one has run out (it keeps one still good):
-   *  resolves with what to tell the person, where the line is and until when it works, or why it was refused. Never a code. */
+   *  resolves with what to tell the person (where the line is and until when it works), and rejects with why it was
+   *  refused. Never a code. */
   onNewCode?: () => Promise<string>;
   /** The address this page was opened at (the browser's, by default): it picks where the Setup code field says to look. */
   host?: string;
@@ -57,8 +58,10 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, onNewC
   const newCode = async () => {
     if (!onNewCode || renewing) return;
     setRenewing(true);
-    const said = await onNewCode();
-    setRenewing(false); setRenewed(said);
+    // A refusal is a problem, said where the form's other problems are; an answer is a status under the button.
+    try { setRenewed(await onNewCode()); setProblem(null); }
+    catch (e) { setRenewed(null); setProblem(e instanceof Error ? e.message : String(e)); }
+    finally { setRenewing(false); }
   };
   const setup = mode === "setup";
   // A count of none has nothing to offer; counting, or a count unknown, still does.

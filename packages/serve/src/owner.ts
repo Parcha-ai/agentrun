@@ -174,14 +174,15 @@ export class Owner {
     return `${this.base}/setup#code=${this.setupCode.code}`;
   }
 
-  /** A setup code to use, for whoever asks with no credential: the one that stands is kept (never voided here, so a
-   *  visitor cannot spoil a link someone was given), and a new one is printed only when none is good (expired, or
-   *  spent). Answers which, and when the code now good runs out; never the code. Null on an open setup, which has none. */
+  /** A setup code to use, for whoever asks with no credential: the one that stands is kept (never voided here), and a
+   *  new one is printed only when none is good (expired, or spent). Answers which, and when the code now good runs
+   *  out; never the code. Null where there is none to give: an open setup, or a setup under way, whose spent code
+   *  needs no successor. */
   renewSetupCode(): { printed: boolean; until: number } | null {
-    if (this.openSetup) return null;
-    const printed = !this.setupCode || Date.now() > this.setupCode.until;
-    if (printed) this.setupLink();
-    return { printed, until: this.setupCode!.until };
+    if (this.openSetup || this.settingUp) return null;
+    const before = this.setupCode;
+    this.setupLink();
+    return { printed: this.setupCode !== before, until: this.setupCode!.until };
   }
 
   /** Whether `given` is the setup code. None given (`missing`) is no try: it never counts against the printed code. A
