@@ -3476,6 +3476,17 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "/triggers: schedules and signed webhooks that start an agent's capped runs or message a run: the source and target kinds this server takes, the shortest interval, how many firings each trigger keeps, the default catch-up window, and how many failed firings in a row turn a trigger off.",
       ...TRIGGER_MARK,
     },
+    sdk_runs: {
+      type: "object", additionalProperties: false, required: ["started_at", "title", "labels", "max_open_s"],
+      properties: {
+        started_at: { type: "boolean", description: "An SDK run's start (POST /agents/{agent_id}/sdk-runs) takes `started_at`, the run's created_at." },
+        title: { type: "boolean", description: "An SDK run's start takes `title`." },
+        labels: { type: "boolean", description: "An SDK run's start takes `labels`, as RunCreate.labels." },
+        max_open_s: { type: "integer", description: "The longest an SDK run takes evidence and its completion, in seconds after its start: each events batch keeps it open an hour more, up to this." },
+      },
+      description: "Backend SDK runs: what their start takes, and how long one may stay open.",
+      "x-agentrun-serve": "sdk/1",
+    },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },
   "Features/runs": {

@@ -905,7 +905,7 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, startedAt }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -914,13 +914,13 @@ class SqliteStore implements Store {
           // never lands, and a run never exists without the launch it was started with.
           return this.#queued(await db.transaction(async (tx) => {
             const at = now();
-            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
+            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, startedAt ?? at);
             if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
             if (launch) await writeLaunch(tx, id, launch, at);
             return runOf(row!);
           }));
         }
-        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, labelled, now()] }]);
+        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, labelled, startedAt ?? now()] }]);
         return this.#queued(runOf(result!.rows[0] as RunRecord));
       },
       createInline: async ({ agent, revision, run, launch }) => {

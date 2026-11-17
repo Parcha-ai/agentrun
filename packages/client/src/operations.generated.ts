@@ -1179,6 +1179,12 @@ export type Features = {
     };
     public_url?: boolean;
   };
+  sdk_runs?: {
+    started_at: boolean;
+    title: boolean;
+    labels: boolean;
+    max_open_s: number;
+  };
 };
 
 export type Meter = "tokens" | "agent_time" | "browser_time" | "disk" | "tools" | "learning";
@@ -3869,6 +3875,9 @@ export type StartSdkRunBody = {
     price_usd?: number;
   }>;
   workflow_adapters?: Array<"runNode" | "runJudge">;
+  started_at?: string;
+  title?: string;
+  labels?: Record<string, string>;
 };
 export interface StartSdkRunParams {
   "Idempotency-Key": string;
