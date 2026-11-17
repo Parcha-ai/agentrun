@@ -263,6 +263,12 @@ export type DefinitionInput = {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
+    audit_every?: number;
+    audit_every_later?: number;
+    audit_later_after?: number;
+    hold_window?: number;
+    hold_disagree?: number;
+    stop_window?: number;
   };
   checkout?: "pull_request" | "none";
 };
@@ -781,6 +787,7 @@ export type Run = {
     id: string;
     firing_key: string;
   } | null;
+  audit_of?: string | null;
 };
 
 export type RunResult = {
@@ -1405,7 +1412,7 @@ export type GetAgentArchilResponse = {
   } | null;
 };
 
-/** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
+/** The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop). */
 export type GetLearningLoopResponse = {
   agent: string;
   completed_runs: number;
@@ -1423,25 +1430,6 @@ export type GetLearningLoopResponse = {
     promoted: boolean | null;
     draft_errors: Array<string>;
     withheld: boolean;
-  }>;
-  guards: Array<{
-    workflow: string;
-    digest: string;
-    node: string;
-    signal: "self" | "jev" | "both";
-    threshold: number | null;
-    runs: number;
-    escalated: number;
-    right: number;
-    wrong: number;
-    grades_past: number;
-    replays: number;
-    points: Array<{
-      run_id: string;
-      p: number | null;
-      escalated: boolean;
-      correct: boolean | null;
-    }>;
   }>;
 };
 
@@ -1491,6 +1479,26 @@ export interface ListAgentsParams {
 }
 export type ListAgentsResponse = AgentList;
 
+/** The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits). */
+export type ListLearningAuditsResponse = {
+  agent: string;
+  audits: Array<{
+    run: string;
+    shadow_run: string | null;
+    workflow: string;
+    digest: string;
+    promoted_at: string | null;
+    source: "shadow" | "grade";
+    agreed: boolean | null;
+    served_cost: number | null;
+    shadow_cost: number | null;
+    at: string;
+    turn?: string;
+    skipped?: "no allowance";
+    parked?: true;
+  }>;
+};
+
 /** Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions). */
 export type ListLearningPromotionsResponse = {
   agent: string;
@@ -1498,8 +1506,7 @@ export type ListLearningPromotionsResponse = {
     workflow: string;
     digest: string;
     at: string;
-    decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-    source: "check" | "replay" | "dry_run" | "refit" | "graded";
+    decided: "promote" | "hold" | "replaying";
     reason: string;
     check?: {
       compile_after: number;
@@ -1517,6 +1524,7 @@ export type ListLearningPromotionsResponse = {
         failed: number;
         skipped_write: number;
       };
+      unstarted?: number;
       skipped_tools?: Array<{
         tool: string;
         inputs: number;
@@ -1532,50 +1540,44 @@ export type ListLearningPromotionsResponse = {
       }>;
       stopped?: true;
     };
-    replay?: {
-      n: number;
-      agree: number;
-      agent_acc: number;
-      wf_acc: number;
-      delta: number;
-      handed_back: number;
-      of?: Array<string>;
-      cost_usd?: number | null;
-      skipped_tools?: Array<{
-        tool: string;
-        inputs: number;
-        no_read_only_hint: boolean;
-      }>;
-      outcomes?: {
-        answered: number;
-        handed_back: number;
-        failed: number;
-        skipped_write: number;
-      };
-    };
     runs?: Array<string>;
     inputs?: Array<string>;
     replay_id?: string;
-    refit?: {
-      from: string;
-      guards: Array<{
-        node: string;
-        was: number | null;
-        threshold: number | null;
-        fit?: Record<string, unknown>;
-        escalate?: true;
-      }>;
-    };
-    checked?: number;
-    since?: number;
-    held_on?: Array<string>;
     commit?: string;
-    skipped_by?: string;
+    audit?: {
+      window: number;
+      disagree: number;
+      rows: number;
+      disagreements: Array<{
+        run: string;
+        served: string;
+        input: string;
+        agent: string | null;
+        draft: string | null;
+        graded?: true;
+      }>;
+      stopped?: true;
+    };
   }>;
   serving: Array<{
     workflow: string;
     digest: string | null;
     replaying: string | null;
+    state: "serving" | "checking" | "held" | "stopped";
+    check: {
+      n: number;
+      agreed: number;
+      alone: number;
+      attempt: 1 | 2;
+    } | null;
+    audit: {
+      window: number;
+      disagree: number;
+      rows: number;
+      disagreed: number;
+    } | null;
+    audits_off: string | null;
+    not_auditable: number;
   }>;
 };
 
@@ -2148,7 +2150,7 @@ export type GetLearningCostResponse = {
     n: number;
     run_id: string;
     started_at: string;
-    path: "agent" | "handed_back" | "workflow" | "replay";
+    path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
     learned_revision: string | null;
     cost_usd: number | null;
@@ -2201,6 +2203,9 @@ export type GetLearningCostResponse = {
       workflow_pct: number;
       agent_pct: number;
       cleared: boolean;
+      agreed: number;
+      alone: number;
+      agree_min: number;
     } | null;
   };
 };
@@ -3499,7 +3504,7 @@ export type GradeRunResponse = {
   correct: boolean;
   source: "feedback" | "eval";
   graded_at: string;
-  path: "agent" | "handed_back" | "workflow" | "replay";
+  path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
   workflow: string | null;
   workflow_digest: string | null;
   feedback: "look_back" | null;
@@ -3681,7 +3686,7 @@ export type GetRunLearningResponse = {
     correct: boolean;
     source: "feedback" | "eval";
     graded_at: string;
-    path: "agent" | "handed_back" | "workflow" | "replay";
+    path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
     workflow_digest: string | null;
     feedback: "look_back" | null;
@@ -5570,6 +5575,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getLearningLoop: {"method":"GET","path":"/agents/{agent_id}/learning/loop","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getNative: {"method":"GET","path":"/agents/{agent_id}/native","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listAgents: {"method":"GET","path":"/agents","pathParams":[],"multiSegment":[],"query":["limit","cursor","archived"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listLearningAudits: {"method":"GET","path":"/agents/{agent_id}/learning/audits","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningPromotions: {"method":"GET","path":"/agents/{agent_id}/learning/promotions","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5736,12 +5742,14 @@ export function resources(call: Call) {
       get: (agentId: string, options?: RequestOptions): Promise<Tagged<GetAgentResponse>> => call("getAgent", [agentId], undefined, undefined, options),
       /** The agent's own Archil disk, once its first run made it (GET /agents/{agent_id}/archil). */
       getAgentArchil: (agentId: string, options?: RequestOptions): Promise<GetAgentArchilResponse> => call("getAgentArchil", [agentId], undefined, undefined, options),
-      /** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
+      /** The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop). */
       getLearningLoop: (agentId: string, options?: RequestOptions): Promise<GetLearningLoopResponse> => call("getLearningLoop", [agentId], undefined, undefined, options),
       /** Read a native connection (GET /agents/{agent_id}/native). */
       getNative: (agentId: string, options?: RequestOptions): Promise<GetNativeResponse> => call("getNative", [agentId], undefined, undefined, options),
       /** List agents (GET /agents). */
       list: (params?: ListAgentsParams, options?: RequestOptions): Promise<ListAgentsResponse> => call("listAgents", [], undefined, params, options),
+      /** The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits). */
+      listLearningAudits: (agentId: string, options?: RequestOptions): Promise<ListLearningAuditsResponse> => call("listLearningAudits", [agentId], undefined, undefined, options),
       /** Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions). */
       listLearningPromotions: (agentId: string, options?: RequestOptions): Promise<ListLearningPromotionsResponse> => call("listLearningPromotions", [agentId], undefined, undefined, options),
       /** The agent's runs index (GET /agents/{agent_id}/runs). */

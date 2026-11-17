@@ -234,6 +234,23 @@ test("learning as an object is on with the loop's numbers set (compile_after, ag
   }
 });
 
+test("learning's audit numbers (audit_every, audit_every_later, audit_later_after, hold_window, hold_disagree, stop_window) are kept in the loop's order after its own; a bad one is a 422 naming the field", async (t) => {
+  const { api } = await serve(t);
+  const learning = { stop_window: 50, hold_disagree: 2, hold_window: 5, audit_later_after: 30, audit_every_later: 40, audit_every: 5, compile_after: 5 };
+  const created = await api("POST", "/agents", agent("audit", { learning }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(Object.keys(created.body.definition.learning), ["compile_after", "audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"]);
+  assert.deepEqual(created.body.definition.learning, learning);
+  // Each wrong value and the field its message names: hold_disagree over hold_window (set or its default 10) names
+  // hold_disagree.
+  for (const [wrong, field] of [[{ audit_every: 0 }, "audit_every"], [{ audit_every: 1.5 }, "audit_every"], [{ audit_every_later: "20" }, "audit_every_later"], [{ audit_later_after: -1 }, "audit_later_after"], [{ hold_window: 0 }, "hold_window"], [{ hold_disagree: 0 }, "hold_disagree"], [{ hold_disagree: 4, hold_window: 3 }, "hold_disagree"], [{ hold_disagree: 11 }, "hold_disagree"], [{ stop_window: 0 }, "stop_window"], [{ stop_window: null }, "stop_window"]]) {
+    const refused = await api("POST", "/agents", agent(`wrong-${Math.random().toString(36).slice(2, 8)}`, { learning: wrong }));
+    assert.equal(refused.status, 422, JSON.stringify(wrong));
+    assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]], JSON.stringify(wrong));
+    assert.match(refused.body.error.fields[0].message, new RegExp(`definition\\.learning\\.${field}\\b`), JSON.stringify(refused.body.error));
+  }
+});
+
 test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {
   const { store } = await storeOn(t);
   const edit = (definition) => checkDefinitionBody({ definition: { name: "x", ...definition } }, { creating: false });

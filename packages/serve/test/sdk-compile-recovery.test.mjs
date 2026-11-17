@@ -57,7 +57,7 @@ function scriptedRoute(corrected) {
 }
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
-  for (const corrected of [true, false]) test(`${runtime} HTTP learning exposes ${corrected ? "a checked draft awaiting promotion" : "exhausted compiler errors and its quiet window"}`, async t => {
+  for (const corrected of [true, false]) test(`${runtime} HTTP learning exposes ${corrected ? "a checked draft awaiting promotion" : "exhausted compiler errors, its one recompile, then none"}`, async t => {
     const server = await serve(t, { runner: false });
     const agentId = "sdk-compile-results";
     assert.equal((await server.api("POST", "/agents", { definition: {
@@ -111,10 +111,22 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     }
     const attempts = requests.filter(request => request.compile).length;
     assert.equal(attempts, corrected ? 2 : 4);
+    let asked = attempts;
+    if (!corrected) {
+      // Compile once: the failed drafts are the compile's attempt (a hold naming the failed check), which earns the one
+      // recompile on the next run, as a check's hold does; it fails too, and stops.
+      const recompile = await completeRun();
+      assert.equal(recompile.learning.compiled?.workflow, "release-status", "the one recompile");
+      assert.match(recompile.learning.draft_errors.join("\n"), refused);
+      asked = requests.filter(request => request.compile).length;
+      assert.equal(asked, 2 * attempts);
+      const { promotions } = (await server.api("GET", `/agents/${agentId}/learning/promotions`)).body;
+      assert.deepEqual(promotions.map(({ decided, check }) => [decided, check?.attempt, check?.n, check?.stopped ?? false]), [["hold", 1, 0, false], ["hold", 2, 0, true]], JSON.stringify(promotions));
+    }
     const next = await completeRun();
-    assert.equal(next.learning.compiled, null, "an attempted compile starts the quiet window even when all drafts fail");
+    assert.equal(next.learning.compiled, null, corrected ? "a draft waiting on its grade is not compiled again" : "a recompile that failed its checks stops: nothing compiles again");
     assert.deepEqual(next.learning.draft_errors, []);
-    assert.equal(requests.filter(request => request.compile).length, attempts, "the next run does not pay for another compiler attempt");
+    assert.equal(requests.filter(request => request.compile).length, asked, "the next run does not pay for another compiler attempt");
     assert.deepEqual((await server.api("GET", `/runs/${id}/learning`)).body, learning, "later runs do not erase the original attempt history");
   });
 }

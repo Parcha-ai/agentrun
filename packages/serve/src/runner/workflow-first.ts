@@ -1,12 +1,12 @@
 // workflow-first: a run of an agent whose learned revision holds one active workflow fitting the run's input starts on
 // that workflow, with no turn of the agent's model (a JIT's compiled path: the agent is the interpreter, the workflow is
-// the code it compiled, its escalate nodes are guards). The workflow answering is the run's answer; the workflow handing
+// the code it compiled, its escalate nodes hand a case back). The workflow answering is the run's answer; the workflow handing
 // the job back (it escalated, a node failed, its output failed its schema) is a deopt: the same run goes on as an
 // agentic run, the agent handed the workflow's trace, and the handback feeds the agent's next revision.
 //
 // The choice here is structural, never semantic: a workflow fits when its input schema has at least one required field
 // and the run's input passes it at the top level (validate.ts inputIssues, the check a run's input gets at start). Whether
-// the workflow can do the job is its own guards' call, never the engine's. Exactly one fitting active workflow serves;
+// the workflow can do the job is its own escalate nodes' call, never the engine's. Exactly one fitting active workflow serves;
 // none, or more than one (said in one log line), leaves the run to the agent. A launch's `workflowFirst: false` (RunCreate
 // `workflow_first`) forces the agent path. A handback is an escalation, never a failure: it asks for no revision (one run
 // is one sample; a revision is asked only of a workflow its promotion holds), and never keeps the workflow from serving.
@@ -27,12 +27,13 @@
 import { createHash } from "node:crypto";
 import { type LearnedWorkflow, LEARNING_LABEL } from "../learning.js";
 import type { RunLaunch } from "../run-launch.js";
-import { COST_WINDOW, type RunPath } from "../learning-cost.js";
+import { COST_WINDOW, type RunPath, SERVED_PATHS } from "../learning-cost.js";
+import { auditableLaunch } from "../learn/audit.js";
 
 export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
-import { endedIn, type GuardRow, guardsOf, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
+import { endedIn, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
 import { sameAnswer } from "../learn/promote.js";
 import type { Skipped } from "../learn/replay-calls.js";
 
@@ -110,7 +111,7 @@ export function costLineOf(past: readonly PastRun[], name: string, digest: strin
   }
   const agent = newest.filter((run) => pathFields(run.metrics).path === "agent");
   const first = Math.min(...newest.filter(ran).map((run) => run.startedAt));
-  const hand = agent.some(known) ? agent : newest.filter((run) => run.startedAt < first && !SERVED.includes(pathFields(run.metrics).path) && pathFields(run.metrics).path !== "replay");
+  const hand = agent.some(known) ? agent : newest.filter((run) => run.startedAt < first && !SERVED.includes(pathFields(run.metrics).path) && pathFields(run.metrics).path !== "replay" && pathFields(run.metrics).path !== "audit");
   const byHand = hand.filter(known).map((run) => run.allInUsd as number);
   return { served: meanOf(served) ?? { runs: 0, mean_usd: null }, by_hand: meanOf(byHand), unknown_runs: servedUnknown + hand.length - byHand.length };
 }
@@ -285,20 +286,21 @@ export function servedOf(entries: readonly { readonly kind: string; readonly dat
 /** The run-record fields a learning run's metrics carry, from the run-end classifier's `classified` path
  *  (runPathOverStore): the path it took, the learned revision it ran on, the learned workflow it ran (served first, or
  *  called by its agent) and, for one served first, its digest and the promotion it served under (`workflow_promotion`,
- *  which its grade keeps); and from its root `entries`, each step guard's check of its learned workflows' calls
- *  (`guards`, learned-nodes.ts guardsOf) and each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second
- *  pass), when one ran. learning-cost reads path and workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; loops?: LoopRow[]; replay?: ReplayMetrics } {
+ *  which its grade keeps), and `not_auditable` when a trigger started it (never audited); and from its root `entries`,
+ *  each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second pass), when one ran. learning-cost reads path
+ *  and workflow from here. None for a run that does not learn. */
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; not_auditable?: true; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> } {
+  // A shadow run (runner/audit.ts): path `audit` and the run it audits, whatever it did: no learning, no money rule.
+  if (launch.audit) return { path: "audit", audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } };
   if (!launch.learning) return {};
   const { path, workflow, digest, promotion } = classified ?? { path: "agent" as const, workflow: null };
-  const guards = guardsOf(entries);
   const loops = loopsOf(entries);
-  const rows = { ...(guards.length ? { guards } : {}), ...(loops.length ? { loops } : {}) };
+  const rows = loops.length ? { loops } : {};
   if (launch.replay) {
     // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
     // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow).
     const { of, workflow: name, digest: at } = launch.replay;
-    // Handed back when the workflow ended escalated (an escalate node or a guard: the workflow knowing its limits), however
+    // Handed back when the workflow ended escalated (an escalate node: the workflow knowing its limits), however
     // many of its nodes failed on the way and were recovered (a map's collected item); a workflow that itself ended failed
     // (a credential or tool the replay ran without, a step's output off its schema), or was refused, is failed: no
     // evidence. Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run.
@@ -306,7 +308,9 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
     return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
   }
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...rows };
+  // A served run a trigger started (learn/audit.ts auditableLaunch) is never audited: counted on the promotions read.
+  const notAuditable = SERVED_PATHS.includes(path) && !auditableLaunch(launch);
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(notAuditable ? { not_auditable: true as const } : {}), ...rows };
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */

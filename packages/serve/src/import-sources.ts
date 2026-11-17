@@ -227,7 +227,7 @@ export async function readSession(file: string, source: Source, { turns: keep = 
     activeMs: 0,
     copies: 0,
   };
-  const turns: Turn[] = [];
+  let turns: Turn[] = [];
   let first: number | undefined;
   let last: number | undefined;
   const names = new Map<string, string>();
@@ -236,13 +236,16 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   const current: Into["current"] = { keyed: new Map(), seen: seen ?? new Set(), copied: new Set() };
   const codex: Into["codex"] = { events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() };
   const titles: Into["titles"] = { summaries: [], uuids: new Set() };
-  const add = (turn: Turn, index = turns.length) => {
+  const rememberUser = (turn: Turn) => {
     if (turn.role === "user") {
       session.users += 1;
       session.firstPrompt ??= turn.text;
       session.titleText ??= personsWords(turn.text);
     }
-    if (keep) turns.splice(index, 0, turn);
+  };
+  const add = (turn: Turn) => {
+    rememberUser(turn);
+    if (keep) turns.push(turn);
   };
   const record = source === "claude-code" ? claudeRecord : source === "codex" ? codexRecord : piRecord;
   const lines = createInterface({
@@ -272,7 +275,23 @@ export async function readSession(file: string, source: Source, { turns: keep = 
   }
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
-  if (!codex.events) codex.held.forEach(({ index, turn }, k) => add(turn, index + k));
+  if (!codex.events && codex.held.length) {
+    // Held indexes refer to the non-user turns as read. Merge both ordered lists once: inserting each user into
+    // the middle of the transcript shifts its remaining turns again and again on a long current-Codex session.
+    const ordered: Turn[] = [];
+    let next = 0;
+    for (const { index, turn } of codex.held) {
+      rememberUser(turn);
+      if (keep) {
+        while (next < index) ordered.push(turns[next++]!);
+        ordered.push(turn);
+      }
+    }
+    if (keep) {
+      while (next < turns.length) ordered.push(turns[next++]!);
+      turns = ordered;
+    }
+  }
   if (!session.id) session.id = source === "pi" ? basename(file, ".jsonl").split("_").pop()! : basename(file, ".jsonl");
   const sourceTitle = titles.custom ?? titles.ai ?? titles.summaries.findLast(({ leaf }) => leaf === undefined || titles.uuids.has(leaf))?.title;
   if (sourceTitle) session.sourceTitle = sourceTitle;

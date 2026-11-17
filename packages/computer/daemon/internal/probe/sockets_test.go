@@ -148,8 +148,12 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 // shared count let a large root leave the next unsearched. Each root has its own budget, and a bound reached is said.
 func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootItsOwnBudget(t *testing.T) {
 	big := shortDir(t)
+	many := filepath.Join(big, "many")
+	if err := os.Mkdir(many, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 20; i++ {
-		if err := os.WriteFile(filepath.Join(big, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(many, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -172,5 +176,34 @@ func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootIts
 	words := strings.Join(search.Incomplete, "; ")
 	if len(search.Incomplete) != 2 || !strings.Contains(words, big) || !strings.Contains(words, "10 entries") || !strings.Contains(words, deep) || !strings.Contains(words, "deeper than 2") {
 		t.Fatalf("Incomplete = %q; want the large root (its entry budget) and the deep one (its depth), each named", search.Incomplete)
+	}
+	// The root itself, then many and 8 of its files fill the 10: the words name the folder that filled the budget.
+	if !strings.Contains(words, "(most under "+many+" 9)") {
+		t.Fatalf("Incomplete = %q; want the stopped walk to name %s, which filled its budget, with its 9 entries", search.Incomplete, many)
+	}
+}
+
+func TestConnectableSocketsNamesTheThreeHeaviestFoldersOfAStoppedWalkMostFirst(t *testing.T) {
+	// a, b, c and d hold 1, 4, 3 and 2 files, so with each folder they are 2, 5, 4 and 3 entries. With the root that is
+	// 15, the budget, and z, walked last, stops the walk.
+	root := shortDir(t)
+	for folder, files := range map[string]int{"a": 1, "b": 4, "c": 3, "d": 2} {
+		if err := os.Mkdir(filepath.Join(root, folder), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < files; i++ {
+			if err := os.WriteFile(filepath.Join(root, folder, fmt.Sprintf("f%d", i)), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "z"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	search := probe.ConnectableSockets([]string{root}, table(t, ""), probe.SocketBounds{Entries: 15, Depth: 8}, 2*time.Second)
+	want := fmt.Sprintf("(most under %s 5, %s 4, %s 3)", filepath.Join(root, "b"), filepath.Join(root, "c"), filepath.Join(root, "d"))
+	if len(search.Incomplete) != 1 || !strings.HasSuffix(search.Incomplete[0], want) {
+		t.Fatalf("Incomplete = %q; want the stopped walk to end %q: the three heaviest, most first, and not a (2 entries)", search.Incomplete, want)
 	}
 }

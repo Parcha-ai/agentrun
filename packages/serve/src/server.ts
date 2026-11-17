@@ -90,8 +90,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
+import { gradeRow, notAuditableOf } from "./runner/audit.js";
+import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -112,7 +115,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd, shadowSpendOf } from "./store-reads/learning.js";
 import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
@@ -642,6 +645,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
@@ -1563,8 +1567,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
       const newest = await store.learning.proposal(runId);
       const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
-      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then.
-      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends);
+      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then. Its all-in
+      // is not known while its audit's shadow run is queued or running (shadowSpendOf): the batch closes no row on it.
+      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends, (await shadowSpendOf(store, runId)).open);
     },
     // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
     shown: (agentId) => learningShown(agentId),
@@ -1582,6 +1587,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
+  // The agent's audit ledger on its learning folder's main (learn/audit.ts), oldest first.
+  const auditsOfAgent = async (agentId: string) => {
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      return await readAudits(workspace);
+    } finally {
+      await end().catch(() => undefined);
+    }
+  };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
   const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses });
@@ -2020,7 +2034,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const learning = await learningOfAgent(entry);
     const native = nativeOf(entry.revision?.body);
     const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
-    const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
+    const runs = (await listRunsOverStore(store, { agent: entry.agent.id }, ctx)).filter((run) => !isShadowRun(run.id));
     return {
       ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
@@ -2735,7 +2749,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
     const vd = viewDepsFor(origin);
-    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived);
+    // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
+    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
     if (status !== null) {
       // The v2 status is the run view's (store-view over the journal), per row.
       const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
@@ -3593,6 +3608,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
         const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_promotion?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
+        if (m.path === "audit" || isShadowRun(row.id)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "An audit's shadow run is never graded: grade the run it audits." }]);
         const path = RUN_PATHS.includes(m.path as never) ? (m.path as Grade["path"]) : "agent";
         const grade: Grade = {
           run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
@@ -3601,6 +3617,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
         const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
+        // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
+        // reads it with the shadows'. A row not written now is logged, never the grade refused.
+        const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
+        await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, body.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
         // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).
         const shown = await learningShown(row.agentId).catch(() => undefined);
@@ -4076,11 +4096,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { agent: id, ...cost });
       }
       case "listLearningPromotions": {
+        const entry = await needAgent(id);
+        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its check's numbers and decisions,
+        // its holds (a check's, an audit's). Every text in them cut as the other learning reads cut theirs
+        // (promotionsShown: a reason as well as each workflow's name). Beside what serves, each one's state, its check's
+        // numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
+        const records = await promotionsOf(store.settings, id);
+        const shown = await learningShown(id);
+        const shownRead = promotionsShown(records, shown);
+        // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
+        const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop);
+        // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
+        // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
+        const writer = auditWriterOf(entry.revision ?? undefined);
+        const auditsOff = writer === undefined ? null : shown.text(auditsOffWords(writer));
+        const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
+          ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
+          not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
+        })));
+        return send(res, 200, { agent: id, promotions: shownRead.promotions, serving });
+      }
+      case "listLearningAudits": {
         await needAgent(id);
-        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
-        // its refits, its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
-        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name).
-        return send(res, 200, { agent: id, ...promotionsShown(await promotionsOf(store.settings, id), await learningShown(id)) });
+        // The audit ledger (learn/audit.ts audits.jsonl), oldest first: each workflow's name and every other text cut as the
+        // promotions read cuts its own.
+        const shown = await learningShown(id);
+        const rows = await auditsOfAgent(id);
+        return send(res, 200, { agent: id, audits: rows.map((row) => ({ ...row, workflow: shown.name(row.workflow), run: shown.text(row.run), shadow_run: row.shadow_run === null ? null : shown.text(row.shadow_run), digest: shown.text(row.digest) })) });
       }
       case "createLearningBatch": {
         await needAgent(id);
@@ -4114,7 +4157,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getLearningLoop": {
         await needAgent(id);
-        // The loop's own record over the one store (store-reads/loop.ts): compile turns and guarded steps, aggregates only.
+        // The loop's own record over the one store (store-reads/loop.ts): compile turns, aggregates only.
         // Names cut as the other learning reads cut them; a compile's error texts cut by its run's own cut as its run's
         // learning read cuts them (run-learning-served.ts), and left out when that run's handed values can't be read.
         const shown = await learningShown(id);
@@ -4128,8 +4171,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
           return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
         }));
-        const guards = read.guards.map((one) => ({ ...one, workflow: shown.name(one.workflow), node: shown.text(one.node) }));
-        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles, guards });
+        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles });
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -4178,8 +4220,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const extra = unknownFields(body, ["inputs"]);
         if (extra.length) throw invalid(extra);
         const inputs = body.inputs === undefined ? "held" : body.inputs;
-        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= GRADES_KEPT)) {
-          throw new ApiError("bad_request", `inputs is "held" (the graded inputs the revision was last decided on, the default) or a whole number from 1 to ${GRADES_KEPT}: that many of the agent's newest graded inputs.`);
+        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= COMPILE_AFTER_MAX)) {
+          throw new ApiError("bad_request", `inputs is "held" (the runs the revision was last checked on, the default) or a whole number from 1 to ${COMPILE_AFTER_MAX}: that many of the agent's newest completed runs.`);
         }
         const [, , name, digest] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
         const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
@@ -4545,7 +4587,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  is not done (a read that failed, or its notice not saved): it is read again. */
   const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
-    if (readWaits.get(row.id) === seen) return true;
+    // An audit's shadow run waits on no one (runner/audit.ts AUDIT_PARKED): the park it ends at once is no one's to answer.
+    if (readWaits.get(row.id) === seen || isShadowRun(row.id)) return true;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];

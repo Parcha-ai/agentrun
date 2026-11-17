@@ -70,10 +70,13 @@ export interface RunLaunch {
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
-  /** A replay run (runner/promotion.ts): learned workflow `workflow` at `digest`, run alone on graded run `of`'s input to
-   *  decide whether that revision serves first (learn/promote.ts). Its guards read record-only (learn/promote.ts recordOnly), a hand-back ends it
-   *  with no agent turn, and it asks nothing at its end. Absent: a run of its own. */
+  /** A replay run (runner/promotion.ts): learned workflow `workflow` at `digest`, run alone on the agent's own run `of`'s input to
+   *  decide whether that revision serves first (learn/promote.ts). A hand-back ends it with no agent turn, and it asks nothing at its end. Absent: a run of its own. */
   readonly replay?: Replay;
+  /** A shadow run (runner/audit.ts): the audit of run `of`, which learned workflow `workflow` at `digest` served. The same
+   *  agent on the same input with learning off: its answer is what the served answer is compared with (learn/audit.ts),
+   *  it is no row of the run list, and it asks nothing at its end. Absent: a run of its own. */
+  readonly audit?: Replay;
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
@@ -169,6 +172,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.learning ? { learning: { given: launch.learning.given.map((note) => ({ file: note.file, name: note.name })), seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.seedNotes !== undefined ? { seedNotes: launch.learning.seedNotes } : {}), ...(launch.learning.notesLeftOut?.length ? { notesLeftOut: [...launch.learning.notesLeftOut] } : {}), ...(launch.learning.skills?.length ? { skills: [...launch.learning.skills] } : {}), ...(launch.learning.notesOnly ? { notesOnly: true } : {}), ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.gradeModel ? { gradeModel: launch.learning.gradeModel } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
+    ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -222,6 +226,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { given: [], seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
+    ...(readReplay(stored.audit) ? { audit: readReplay(stored.audit)! } : {}),
     ...(trigger ? { trigger } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),

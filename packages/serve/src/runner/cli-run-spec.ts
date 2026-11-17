@@ -69,6 +69,7 @@ import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid, toolFlowsFor } from "./promotion.js";
 import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
+import { AUDIT_PARKED, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -528,7 +529,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const tierRoute = tierRoutes.get(by as Tier);
       return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
-    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    // What its learning runs' grades and its audit's shadow took beside it, read by every gate with its own sessions
+    // (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
@@ -574,13 +576,16 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
   // (learningEndOfRun).
   let handedKeys: string[] = [];
-  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  // A replay run lays only the workflow it replays (runner/promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, seedLaid?.workflows ?? []);
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts),
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest
   // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
+  // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey };
+  if (launch.learning && !launch.replay && !launch.audit) await settleAudits(audits);
   const promotion = claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   });
@@ -658,8 +663,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
   // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
-  // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
-  const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
+  // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  // A run the promoted workflow served first starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
+  // withAudit): at its end, so the shadow's cap is what the run's own left.
+  const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -675,7 +682,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  });
+  }), { ...audits, launch });
 
   return {
     adapter,
@@ -700,6 +707,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
+    // An audit's shadow run waits on no one, as the pi spec's (runner/audit.ts AUDIT_PARKED).
+    ...(launch.audit ? { neverWaits: AUDIT_PARKED } : {}),
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
     // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.

@@ -179,6 +179,41 @@ class State:
             self.baseline[collection] = copy.deepcopy(mapping)
             return mapping[key]
 
+    def candidate_ids(self, harness, rows, *, projects):
+        """Resolve one candidate pass under one lock; publish new IDs before returning any.
+
+        Only canonical identity metadata is adopted locally. The caller's original
+        consent epoch stays unchanged and must still pass the delivery fence.
+        """
+        if not rows:
+            return []
+        with self._locked():
+            latest = self._read()
+            identities, directories = latest['identities'], latest['projects']
+            resolved, changed = [], False
+            for native_id, cwd in rows:
+                native, directory = harness + ':' + native_id, harness + ':' + cwd
+                if native not in identities:
+                    if len(identities) >= 4096:
+                        resolved.append(None)
+                        continue
+                    identities[native] = str(uuid4())
+                    changed = True
+                if projects and directory not in directories:
+                    if len(directories) >= 4096:
+                        resolved.append(None)
+                        continue
+                    directories[directory] = str(uuid4())
+                    changed = True
+                resolved.append((identities[native], directories.get(directory, 'unknown')))
+            if changed:
+                self._save(latest)
+            self.data['installation_id'] = latest['installation_id']
+            for collection in ('identities', 'projects'):
+                self.data[collection] = copy.deepcopy(latest[collection])
+                self.baseline[collection] = copy.deepcopy(latest[collection])
+            return resolved
+
     def identity(self, harness, native_id):
         return self._allocate("identities", harness + ":" + native_id)
 

@@ -158,6 +158,18 @@ function cutAt(text: string, found: readonly Span[]): string {
 /** A value shorter than this matches too much text by chance to be refused. */
 export const MIN_SECRET = 8;
 
+/** An excerpt of a run's input or answer as learning keeps it: `text` cut of the secrets `shown` knows, whole, then
+ *  shortened to `max` characters ("…" after a cut, never half a surrogate pair). Shortened first, a secret straddling the
+ *  cut would leave its prefix, which no redactor matches after. Every stored or prompted excerpt is made here: a check's
+ *  and an audit hold's disagreements (runner/promotion.ts decideCheck, runner/audit.ts applyHold), a compile turn's traces
+ *  (runner/learning-end.ts traceFrom) and the compile answer a retry quotes (learn/compile.ts). */
+export function excerptShown(text: string, shown: { readonly text: (text: string) => string }, max: number): string {
+  const clean = shown.text(text);
+  if (clean.length <= max) return clean;
+  const end = /[\uD800-\uDBFF]/.test(clean.charAt(max - 1)) ? max - 1 : max;
+  return `${clean.slice(0, end)}…`;
+}
+
 const squeeze = (text: string) => text.normalize("NFKC").replace(/\s+/gu, "");
 
 /** The base64 of `secret` as it can sit inside a longer blob: the characters that depend on the secret's bytes alone,

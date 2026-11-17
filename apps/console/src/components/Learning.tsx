@@ -276,7 +276,7 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       {learnFromTasks}
       <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} execution={execution} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} loop={loop} cost={cost} onReplayed={() => { void read(); }} />
+      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
         <section className="min-w-0 space-y-3" aria-label="Notes">

@@ -140,10 +140,19 @@ export class Computer {
 		this.#state = state;
 		this.#env = env;
 		// A: monitor() does not survive a restart of the object: watch again a container whose row is open.
-		void state.blockConcurrencyWhile(async () => {
-			const row = await state.storage.get<Row>("row");
-			if (row !== undefined && row.ended === undefined) this.#watch();
-		});
+		void state
+			.blockConcurrencyWhile(async () => {
+				const row = await state.storage.get<Row>("row");
+				if (row === undefined || row.ended !== undefined) return false;
+				this.#watch();
+				return true;
+			})
+			// L: a redeploy makes a new object that nothing has set the timeout for until the next alarm, up to an hour away.
+			// Outside the block (S: only quick steps hold the object); a failure waits for the alarm, which sets it again.
+			.then(async (open) => {
+				if (open && state.container.running) await state.container.setInactivityTimeout(IDLE_MS);
+			})
+			.catch(() => undefined);
 	}
 
 	async fetch(request: Request): Promise<Response> {

@@ -23,6 +23,7 @@ import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type Computer
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
+import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
@@ -34,8 +35,8 @@ export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace }
 /** An agent's computer setting. `image`: the one of the provider's configurations it selects; absent, the default. A
  *  sandbox's may ask for GPUs. `persistent`: the agent keeps its own computer between runs (agent-computer.ts). A
  *  desktop's or a phone's `surface` and `exec` go to the run's tools on the RunComputer (run-tools.ts); `exec: false`
- *  also mounts no folder in it and gives the run no shell. A desktop's or a phone's `record`: the claim records its
- *  screen (computer-for-claim.ts, computer-record.ts). */
+ *  also mounts no folder in it and gives the run no shell. A desktop's, a phone's or a browser's `record`: the claim
+ *  records its screen (computer-for-claim.ts, computer-record.ts). */
 export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean; readonly record?: boolean };
 
 /** Whether a computer (or its setting) takes its agent's programs away: `exec: false`. Only a desktop or a phone takes
@@ -90,6 +91,10 @@ export type ClaimBrowser = {
   url(id: string): Promise<string>;
   /** Ends the session; one already gone is ended. */
   close(id: string): Promise<void>;
+  /** Where the agent's setting asks for it (computer.record), records session `id`'s screen through `watch` (its live
+   *  view's, computer-record.ts browserWatch) until the caller stops it at the session's release, or the claim's release
+   *  stops it. Absent: nothing is recorded. */
+  readonly record?: (id: string, watch: RecordWatch) => Recording;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
   readonly downloads?: {
     list(id: string): Promise<BrowserFile[]>;

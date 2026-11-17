@@ -129,10 +129,9 @@ export type Promotions = Answer<"listLearningPromotions">;
 export type Promotion = Promotions["promotions"][number];
 /** What a learned workflow serves: its champion's digest (null: none, the agent takes its runs) and a newer revision replaying. */
 export type Serving = Promotions["serving"][number];
-/** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first) and its learned workflows' guarded steps. */
+/** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first). */
 export type LearningLoop = Answer<"getLearningLoop">;
 export type LoopCompile = LearningLoop["compiles"][number];
-export type LoopGuard = LearningLoop["guards"][number];
 /** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];

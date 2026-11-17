@@ -278,7 +278,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows"
+    "summary": "The self-learning loop's own record: each compile turn"
   },
   {
     "command": [
@@ -340,6 +340,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "List agents"
+  },
+  {
+    "command": [
+      "agents",
+      "list-learning-audits"
+    ],
+    "operationId": "listLearningAudits",
+    "method": "GET",
+    "path": "/agents/{agent_id}/learning/audits",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The audit ledger of the agent's serving learned workflows"
   },
   {
     "command": [

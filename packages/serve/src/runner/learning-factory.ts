@@ -8,8 +8,7 @@
 //   readMain   main as the grader reads it, from the folder's snapshot (learn/commit.ts readMain);
 //   commit     the folder's one write (learn/commit.ts learningCommit);
 //   merged     the run's merge when it is on main already, with the texts its own commit holds (learn/commit.ts mergedAt),
-//              for a resume after its commit;
-//   general    the generality pre-check (learn/general.ts), on this host's Jev, when it has one (passed in by the wiring).
+//              for a resume after its commit.
 
 import { learningCommit, type LearningChange, mainTexts, mergedAt, readMain } from "../learn/commit.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -21,7 +20,7 @@ import type { LoopFactory } from "./loop-contract.js";
 /** The harness a learning run's launch names (store/sqlite/run-patch.ts learningLaunchOf). */
 export const LEARNING_HARNESS = "learning";
 
-export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now" | "general" | "generalThreshold"> {
+export interface LearningFactoryDeps extends Pick<LearningLoopDeps, "ask" | "now"> {
   readonly store: Pick<Store, "runs" | "agents" | "learning">;
   /** The server's data directory: where each agent's learning folder is. */
   readonly data: string;
@@ -61,8 +60,6 @@ export function learningLoopFactory(deps: LearningFactoryDeps): LoopFactory {
     mainTexts: (ws, paths) => mainTexts(ws as Workspace, paths),
     merged: (ws, runId, paths, round) => mergedAt(ws as Workspace, runId, paths, round),
     ...(deps.now ? { now: deps.now } : {}),
-    ...(deps.general ? { general: deps.general } : {}),
-    ...(deps.generalThreshold !== undefined ? { generalThreshold: deps.generalThreshold } : {}),
     ...(deps.log ? { log: deps.log } : {}),
   });
 }

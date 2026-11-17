@@ -2,7 +2,7 @@ import { act, type ReactElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
 
@@ -316,5 +316,32 @@ describe("the design-system stories", () => {
         root = undefined;
       }
     }
+  });
+});
+
+// A picker sized by its words changes width with each pick unless it is `steady`. jsdom lays nothing out, so this holds
+// what the width comes from: every option's words in the field, hidden, in the picked words' own grid cell.
+describe("Picker, steady", () => {
+  const options = [{ value: "a", label: "GET · Short" }, { value: "b", label: "POST · The longest of them all" }];
+  const sizers = (host: HTMLElement) => [...host.querySelectorAll("button [data-picker-sizer]")];
+
+  it("holds every option's words in the field, hidden from sight and from a screen reader, whichever is picked", () => {
+    const host = mount(<Picker steady label="Operation" value="a" onChange={() => {}} options={options} />);
+    expect(sizers(host).map((n) => n.textContent)).toEqual(["GET · Short", "POST · The longest of them all"]);
+    for (const n of sizers(host)) { expect(n.getAttribute("aria-hidden")).toBe("true"); expect(n.className).toContain("invisible"); expect(n.className).toContain("row-start-1"); }
+    expect(host.querySelector("button")!.getAttribute("aria-label")).toBe("Operation");
+  });
+
+  it("opens a list no narrower than its longest row", async () => {
+    const host = mount(<Picker steady label="Operation" value="a" onChange={() => {}} options={options} />);
+    await click(host.querySelector("button")!);
+    expect(document.querySelector("[data-picker-list]")!.className).toContain("w-max");
+  });
+
+  it("a picker that is not steady holds only the picked words, and its list is the field's width", async () => {
+    const host = mount(<Picker label="Operation" value="a" onChange={() => {}} options={options} />);
+    expect(sizers(host)).toEqual([]);
+    await click(host.querySelector("button")!);
+    expect(document.querySelector("[data-picker-list]")!.className).not.toContain("w-max");
   });
 });
