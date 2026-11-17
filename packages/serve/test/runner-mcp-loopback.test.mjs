@@ -1,33 +1,30 @@
-// A runner in its own process (`agentrun-serve runner`, beside a server started with --no-runner on the same data
-// directory) takes the operator's loopback opt-in as the runner beside the server does: with AGENTRUN_MCP_ALLOW_LOOPBACK=1
-// set for it, and a server on that data directory started with the same, sharing its loopback (the same machine and
-// network namespace, as the server's note there says), its runs reach an MCP server on loopback. Without its own opt-in,
-// configured as on another host (AGENTRUN_RUNNER_LIVE_HOST), or with the note of a server whose loopback is not its own,
-// it is refused as before, nothing sent. The runner here is composed as runnerMain composes it (startRunnerProcess over
+// A runner in its own process (`agentrun-serve runner`, beside a server started with --no-runner, or in a service of its
+// own) takes the operator's loopback opt-in from its own environment alone, as the server takes its own (cli.ts
+// mcpLoopback): started with AGENTRUN_MCP_ALLOW_LOOPBACK=1, its runs reach an MCP server on its loopback; without it they
+// are refused, whatever the server was started with. It never reaches loopback at a server's own port (DEFAULT_PORT, and
+// a loopback AGENTRUN_PUBLIC_URL's). The runner here is composed as runnerMain composes it (startRunnerProcess over
 // runnerLoop, its environment the process's less test switches, with the faux model as --faux sets it). No socket leaves
 // this machine and no real key is used.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, FAUX, follow, retried, scratch, serve, startServe, withEnv } from "./support.mjs";
+import { agent, follow, retried, serve, withEnv } from "./support.mjs";
 
 const { fauxEnvOf } = await import("../dist/server.js");
 const { withoutFaux } = await import("../dist/model.js");
-const { ofStore, runnerLoop, startRunnerProcess } = await import("../dist/runner/main.js");
-/** The note's module, read in the tests that name it (the runs above need only the runner and the server). */
-const noted = () => import("../dist/mcp-local-install.js");
+const main = await import("../dist/runner/main.js");
+const { ofStore, runnerLoop, startRunnerProcess } = main;
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const MCP_TOKEN = `not-a-secret-${"runner-mcp-loopback-bearer"}`;
 const CONTENT = 'Call mcp__fake__add with {"a":2,"b":3}';
+/** The opt-in, as an operator sets it for a process. */
+const OPT_IN = { AGENTRUN_MCP_ALLOW_LOOPBACK: "1" };
 
-/** A local-install server with no runner, a fake MCP server on loopback saved on it, and an agent that calls its add
- *  unattended. `run()` starts one run of it (queued: nothing claims it yet). */
-async function localInstall(t) {
+/** A server started with the opt-in and no runner, a fake MCP server on loopback saved on it, and an agent that calls its
+ *  add unattended. `run()` starts one run of it (queued: nothing claims it yet). */
+async function optedInServer(t) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const server = await serve(t, { faux: FAUX_MCP, runner: false, mcpLoopback: true });
   const fake = await startFakeMcp({ token: MCP_TOKEN });
@@ -43,16 +40,17 @@ async function localInstall(t) {
     return started.body.run_id;
   };
   const calls = () => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "add").length;
-  return { server, run, calls };
+  return { server, fake, run, calls };
 }
 
 /** A runner in its own process's shape on `data`, with `env` beside the faux model (runnerMain: the process's
- *  environment less its test switches, then --faux's), until the test ends. Its warnings are kept in `said`. */
+ *  environment less its test switches and the opt-in, then --faux's), until the test ends. What it says on stderr is
+ *  kept in the array it answers. */
 async function standalone(t, data, name, env = {}) {
-  const runs = { ...withoutFaux(process.env), ...fauxEnvOf({ faux: FAUX_MCP }), ...env };
+  const { AGENTRUN_MCP_ALLOW_LOOPBACK: _inherited, AGENTRUN_PUBLIC_URL: _public, ...given } = withoutFaux(process.env);
+  const runs = { ...given, ...fauxEnvOf({ faux: FAUX_MCP }), ...env };
   const said = [];
   const realWrite = process.stderr.write.bind(process.stderr);
-  // runnerLoop says its loopback lines on stderr, as the runner process does: kept here too.
   process.stderr.write = (chunk, ...rest) => (said.push(String(chunk)), realWrite(chunk, ...rest));
   t.after(() => void (process.stderr.write = realWrite));
   const runner = await startRunnerProcess({ dataDir: data, name, env: runs, createLoop: ofStore((store, sealKey) => runnerLoop(store, data, runs, sealKey)), warn: (line) => said.push(line) });
@@ -66,104 +64,35 @@ async function answered(server, runId) {
   return (await server.api("GET", `/runs/${runId}`)).body.result?.final_answer;
 }
 
-test("a standalone runner whose operator set AGENTRUN_MCP_ALLOW_LOOPBACK=1, on the data directory of a local install that shares its loopback, reaches an MCP server on loopback", { timeout: 120_000 }, async (t) => {
-  const { server, run, calls } = await localInstall(t);
-  const said = await standalone(t, server.data, "runner-loopback", { AGENTRUN_MCP_ALLOW_LOOPBACK: "1" });
+test("a standalone runner started with its own AGENTRUN_MCP_ALLOW_LOOPBACK=1 reaches an MCP server on its loopback, and says it takes the variable", { timeout: 120_000 }, async (t) => {
+  const { server, run, calls } = await optedInServer(t);
+  const said = await standalone(t, server.data, "runner-opted-in", OPT_IN);
   assert.equal(await answered(server, await run()), "The tool said: 5");
   assert.equal(calls(), 1, "sent once");
-  assert.ok(said.some((line) => line.includes("shares the local-install server's loopback")), `the runner says why it reaches loopback: ${said.join("")}`);
+  assert.ok(said.some((line) => line.includes("AGENTRUN_MCP_ALLOW_LOOPBACK=1: this runner's runs may reach an MCP server on this machine's loopback, never at http://127.0.0.1:7340")), `the runner says it takes the variable: ${said.join("")}`);
 });
 
-test("a standalone runner without its own AGENTRUN_MCP_ALLOW_LOOPBACK=1 is refused an MCP server on loopback, nothing sent, beside a local install as before", { timeout: 120_000 }, async (t) => {
-  const { server, run, calls } = await localInstall(t);
+test("a standalone runner without AGENTRUN_MCP_ALLOW_LOOPBACK=1 is refused an MCP server on loopback, nothing sent, though the server was started with it: it never inherits the server's", { timeout: 120_000 }, async (t) => {
+  const { server, run, calls } = await optedInServer(t);
   await standalone(t, server.data, "runner-unsaid");
   assert.match(await answered(server, await run()), /address is refused here/);
   assert.equal(calls(), 0, "nothing sent");
 });
 
-test("a standalone runner configured as on another host (AGENTRUN_RUNNER_LIVE_HOST) is refused an MCP server on loopback even with the opt-in, nothing sent, and says why", { timeout: 120_000 }, async (t) => {
-  const { server, run, calls } = await localInstall(t);
-  const said = await standalone(t, server.data, "runner-remote", { AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "runner-b.example.test" });
-  assert.match(await answered(server, await run()), /address is refused here/);
-  assert.equal(calls(), 0, "nothing sent");
-  assert.ok(said.some((line) => line.includes("AGENTRUN_RUNNER_LIVE_HOST=runner-b.example.test")), `the runner says why: ${said.join("")}`);
-});
-
-test("a standalone runner with the opt-in, on a shared data directory whose server's loopback is another machine's (its note's mark is not the runner's), is refused, nothing sent", { timeout: 120_000 }, async (t) => {
-  const { LOCAL_INSTALL_NOTE, loopbackMark } = await noted();
-  const { server, run, calls } = await localInstall(t);
-  const file = join(server.data, LOCAL_INSTALL_NOTE);
-  const note = JSON.parse(readFileSync(file, "utf8"));
-  assert.equal(note.mark, loopbackMark(), "the server noted its own loopback");
-  assert.ok(note.own.includes(server.url), "and its own address, whose port a runner's loopback read never goes to");
-  writeFileSync(file, JSON.stringify({ ...note, mark: "linux boot another-machine net:[1]" }));
-  await standalone(t, server.data, "runner-elsewhere", { AGENTRUN_MCP_ALLOW_LOOPBACK: "1" });
+test("a standalone runner with the opt-in never reaches loopback at a server's own port: an MCP server at its AGENTRUN_PUBLIC_URL's loopback port is refused, nothing sent", { timeout: 120_000 }, async (t) => {
+  const { server, fake, run, calls } = await optedInServer(t);
+  // The MCP server stands where this runner's environment says its server is (a loopback public address).
+  await standalone(t, server.data, "runner-own-port", { ...OPT_IN, AGENTRUN_PUBLIC_URL: new URL(fake.url).origin });
   assert.match(await answered(server, await run()), /address is refused here/);
   assert.equal(calls(), 0, "nothing sent");
 });
 
-test("the note: a local install's start leaves it, any other start takes it away; a runner reads it at each claim, and reads none without its own opt-in or configured as remote", async (t) => {
-  const { LOCAL_INSTALL_NOTE, noteLocalInstall, readLocalInstallNote, standaloneLoopback } = await noted();
-  const data = await scratch(t);
-  const lines = [];
-  const local = standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1" }, data, (line) => lines.push(line), () => "mark-a");
-  assert.equal(local(), undefined, "no note yet: refused");
-  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], () => "mark-a");
-  assert.deepEqual(local(), { own: ["http://127.0.0.1:7340"] }, "read at the next claim, with the server's own addresses");
-  assert.deepEqual(readLocalInstallNote(data), { mark: "mark-a", own: ["http://127.0.0.1:7340"] });
-  await noteLocalInstall(data, false, ["http://127.0.0.1:7340"], () => "mark-a");
-  assert.equal(existsSync(join(data, LOCAL_INSTALL_NOTE)), false, "a start without the opt-in takes the note away");
-  assert.equal(local(), undefined, "and the runner's next claim is refused again");
-  assert.equal(lines.length, 3, `each change said once: ${lines.join(" | ")}`);
-  await noteLocalInstall(data, true, [], () => "mark-b");
-  assert.equal(local(), undefined, "another loopback's note: refused");
-  writeFileSync(join(data, LOCAL_INSTALL_NOTE), "{not json");
-  assert.equal(local(), undefined, "a note that is no note: refused");
-  assert.equal(standaloneLoopback({}, data, () => {}, () => "mark-a"), undefined, "no opt-in: nothing read");
-  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "true" }, data, () => {}, () => "mark-a"), undefined, "only 1 is the opt-in, as on the server");
-  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "runner-b.example.test" }, data, () => {}, () => "mark-a"), undefined, "configured as remote: nothing read");
-  assert.equal(typeof standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.1" }, data, () => {}, () => "mark-a"), "function", "a live host on loopback is this machine");
-});
-
-test("loopbackMark: on Linux, the booted kernel and the network namespace; two processes share a loopback when both match", async () => {
-  if (process.platform !== "linux") return;
-  const { loopbackMark } = await noted();
-  const files = { "/proc/sys/kernel/random/boot_id": "b-1\n", "/proc/self/ns/net": "net:[4026531840]" };
-  assert.equal(loopbackMark((path) => files[path]), "linux boot b-1 net:[4026531840]");
-  assert.notEqual(loopbackMark((path) => ({ ...files, "/proc/self/ns/net": "net:[4026532999]" })[path]), loopbackMark((path) => files[path]), "another container's namespace");
-  assert.notEqual(loopbackMark((path) => ({ ...files, "/proc/sys/kernel/random/boot_id": "b-2\n" })[path]), loopbackMark((path) => files[path]), "another machine, the same first namespace");
-});
-
-test("loopbackMark: on Linux with /proc unreadable there is no mark, never the host's name (two containers may share one): the runner takes no opt-in and says why, and the server leaves no note", async (t) => {
-  const { LOCAL_INSTALL_NOTE, loopbackMark, noteLocalInstall, standaloneLoopback } = await noted();
-  const hidden = () => { throw Object.assign(new Error("hidden"), { code: "EACCES" }); };
-  assert.equal(loopbackMark(hidden, "linux"), undefined, "unreadable: none");
-  assert.equal(loopbackMark(() => "", "linux"), undefined, "empty: none");
-  assert.match(loopbackMark(hidden, "darwin"), /^host /, "no namespaces elsewhere: the host's name");
-  const data = await scratch(t);
-  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], () => "mark-a");
-  const lines = [];
-  assert.equal(standaloneLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "1" }, data, (line) => lines.push(line), () => undefined), undefined, "a runner that can't tell its loopback reads nothing");
-  assert.match(lines.join(" "), /can't read where its loopback is/);
-  await noteLocalInstall(data, true, ["http://127.0.0.1:7340"], () => undefined);
-  assert.equal(existsSync(join(data, LOCAL_INSTALL_NOTE)), false, "a server that can't tell its loopback leaves no note, and takes an earlier one away");
-});
-
-test("a local install whose note can't be written fails its start and lets go of its port", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
-  const { LOCAL_INSTALL_NOTE } = await noted();
-  const data = join(await scratch(t), "agents");
-  // The note's name taken by a folder with something in it: renaming the written note over it fails.
-  mkdirSync(join(data, LOCAL_INSTALL_NOTE, "held"), { recursive: true });
-  const port = await new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => { const { port: free } = probe.address(); probe.close(() => resolve(free)); });
-  });
-  await assert.rejects(startServe({ data, port, faux: FAUX, drainTimeout: "5s", mcpLoopback: true }));
-  await new Promise((resolve, reject) => {
-    const again = createServer();
-    again.once("error", reject);
-    again.listen(port, "127.0.0.1", () => again.close(resolve));
-  });
+test("runnerLoopback: the opt-in from the runner's own environment alone, exactly 1; never at the default server port, nor at a loopback public address's", () => {
+  const { runnerLoopback } = main;
+  assert.equal(typeof runnerLoopback, "function", "a runner reads its own opt-in");
+  assert.equal(runnerLoopback({}), undefined, "none: refused");
+  assert.equal(runnerLoopback({ AGENTRUN_MCP_ALLOW_LOOPBACK: "true" }), undefined, "only 1 is the opt-in, as on the server");
+  assert.deepEqual(runnerLoopback(OPT_IN), { own: ["http://127.0.0.1:7340"] });
+  assert.deepEqual(runnerLoopback({ ...OPT_IN, AGENTRUN_PUBLIC_URL: "http://localhost:8443/console" }), { own: ["http://127.0.0.1:7340", "http://localhost:8443"] });
+  assert.deepEqual(runnerLoopback({ ...OPT_IN, AGENTRUN_PUBLIC_URL: "https://agents.example.test" }), { own: ["http://127.0.0.1:7340"] }, "a public address off loopback is no port of this machine's");
 });

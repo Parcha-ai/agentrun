@@ -44,7 +44,7 @@ import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type Mo
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
-import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
+import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
@@ -124,7 +124,6 @@ import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as m
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
-import { noteLocalInstall } from "./mcp-local-install.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute } from "./mcp-private-hosts.js";
@@ -187,7 +186,7 @@ export const CONTRACT = "agentrun.v2/0";
 /** A process's flags for a worker of it: without --input-type and the code string given with -e, --eval, -p or --print. */
 const workerArgs = (args: readonly string[]): string[] =>
   args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
-export const DEFAULT_PORT = 7340;
+export { DEFAULT_PORT };
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
 /** A run's live viewer, under the run's path (browser-live.ts): its run id, the family's address (`computer`, one for every
@@ -429,10 +428,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
   dial: HostedDial;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
-   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). That runner is told; a
-   *  runner in its own process reads it from the server's note in the data directory, and takes it only with its own
-   *  opt-in and the same loopback (mcp-local-install.ts). Never a store's, so another host's runner on a shared store
-   *  never inherits it. */
+   *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
+   *  it is this process's finding, never a store's, so another runner on a shared store never inherits it. A runner in
+   *  its own process takes its own operator's opt-in from its own environment (runner/main.ts runnerLoopback). */
   localInstall: boolean;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
@@ -4439,15 +4437,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listens: a hosted container listens on loopback behind its proxy too.
   const localInstall = options.mcpLoopback === true;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
-  // The same said to a runner in its own process on this data directory (runner/main.ts): a local install leaves its note
-  // there (its own addresses, and where its loopback is), any other start takes an earlier one away (mcp-local-install.ts).
-  // It listens already: a note that can't be written or taken away (a full disk) stops the start and lets go of the port,
-  // as the start's other stops let go of the store and the locks.
-  await noteLocalInstall(data, localInstall, mcpServers.own).catch(async (error: unknown) => {
-    server.closeAllConnections();
-    await new Promise<void>((done) => server.close(() => done()));
-    throw error;
-  });
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor

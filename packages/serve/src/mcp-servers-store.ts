@@ -30,7 +30,6 @@ import { harnessOf } from "./harness-table.js";
 import { droppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
 import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
-import { MCP_ALLOW_LOOPBACK_ENV } from "./mcp-local-install.js";
 
 /** How many writes an owner's save or tools refresh makes over a row whose credential a run's refresh keeps changing,
  *  each re-applied onto the row read again, before it is refused in words. */
@@ -766,9 +765,8 @@ function grantProblemsOf(env: NodeJS.ProcessEnv, server: string, tool: McpTool):
  *  token does not change the url. The staleness key an OAuth sign-in carries from start to callback. */
 const saving = (row: McpServerRow) => `${row.url} ${row.updatedAt}`;
 
-/** The env that says this server is a local install (cli.ts), the one kind an MCP server may be on loopback for; a
- *  standalone runner's operator sets it too (mcp-local-install.ts standaloneLoopback). */
-export { MCP_ALLOW_LOOPBACK_ENV };
+/** The env that says this server is a local install (cli.ts), the one kind an MCP server may be on loopback for. */
+export const MCP_ALLOW_LOOPBACK_ENV = "AGENTRUN_MCP_ALLOW_LOOPBACK";
 /** What a URL on loopback says on a server that is not one, with how to make it one. */
 export const loopbackWords = (host: string) => `${host} is this machine; set ${MCP_ALLOW_LOOPBACK_ENV}=1 when starting the server, only on a machine you alone use.`;
 

@@ -56,8 +56,8 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
-  /** Whether this runner may reach an MCP server whose URL is on loopback (adapter-run-spec.ts mcpReachOf): a runner
-   *  that shares a local-install server's loopback, beside it or in its own process with its own opt-in. Absent, never. */
+  /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): the runner
+   *  beside a local-install server, or a runner in its own process whose own environment opts in. Absent, never. */
   readonly loopback?: boolean;
   /** The own addresses of the local-install server beside this runner (AdapterSpecDeps.mcpOwn, Serve.own): a loopback
    *  URL on one of their ports is refused, as the server refuses it, so a run never reaches that server through an MCP

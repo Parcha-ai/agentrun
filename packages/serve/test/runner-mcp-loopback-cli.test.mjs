@@ -1,6 +1,7 @@
 // The self-hosted layout with an MCP server reachable only on loopback, in real processes: a server started with
 // --no-runner, listening on every interface behind a public address, and two `agentrun-serve runner` processes on its data
-// directory, each started with AGENTRUN_MCP_ALLOW_LOOPBACK=1 as the server is. On a store upgraded from the build before
+// directory, each started with its own AGENTRUN_MCP_ALLOW_LOOPBACK=1 (each process reads its own), in one container as a
+// self-hosted layout runs them, so the MCP server is on every process's loopback. On a store upgraded from the build before
 // pins were made at save (revisions.mcp_pin added by the server's open, every earlier revision with none), a revision
 // saved then is pinned at its first run and its call is reached; a new save pins at once; both runs reach the MCP server
 // on loopback from a standalone runner. A server started without the variable refuses that revision's run in words that
@@ -106,7 +107,7 @@ test("a --no-runner server and two standalone runners, all with AGENTRUN_MCP_ALL
   const fresh = await ended(api, second.body.run_id);
   assert.equal(fresh.answer, "The tool said: 5", `the new revision's run reached it: ${JSON.stringify(fresh.read)}`);
   assert.equal(calls(), 2, "each run's call sent once");
-  assert.ok(runners.some((runner) => runner.stderr().includes("shares the local-install server's loopback")), "a runner said it takes the opt-in");
+  for (const runner of runners) assert.match(runner.stderr(), /AGENTRUN_MCP_ALLOW_LOOPBACK=1: this runner's runs may reach an MCP server on this machine's loopback/, "each runner says it takes its own opt-in");
 });
 
 test("a server started without AGENTRUN_MCP_ALLOW_LOOPBACK=1 refuses an upgraded revision's run on a loopback MCP server in words that name the variable, not by asking for a save it would refuse too", { timeout: 120_000 }, async (t) => {
