@@ -76,14 +76,19 @@ const factWords = () => {
   const now = facts();
   return `files: ${now.files.join(", ") || "none"}, written ${now.written}, dropped ${now.dropped}`;
 };
+/** Fails with `why` (read before the stop) once the recording is stopped: its ffmpeg finished or killed, none left running. */
+const stopThenFail = async (why) => {
+  await recorder.stop("ended");
+  fail(why);
+};
 for (const [format, file, done] of [
   ["png", "frame.png", () => facts().written >= 1],
   ["jpeg", "frame.jpg", () => switchedAt !== undefined && facts().files.length === 2 && facts().written > switchedAt],
 ]) {
   const bytes = new Uint8Array(readFileSync(fileURLToPath(new URL(file, import.meta.url))));
   while (!done()) {
-    if (facts().ended) fail(`the recording ended by itself: ${facts().ended} (${factWords()})`);
-    if (deadlineHit) fail(`no ${format.toUpperCase()} frame written in ${DEADLINE_MS / 1000} s (${factWords()})`);
+    if (facts().ended) await stopThenFail(`the recording ended by itself: ${facts().ended} (${factWords()})`);
+    if (deadlineHit) await stopThenFail(`no ${format.toUpperCase()} frame written in ${DEADLINE_MS / 1000} s (${factWords()})`);
     handlers.frame({ seq: ++seq, format, bytes, width: 1920, height: 1080, frameWidth: 1920, frameHeight: 1080 }, () => {});
     await sleep(150);
   }
