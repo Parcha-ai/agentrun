@@ -138,20 +138,23 @@ describe("notes and the story", () => {
     ]);
     expect(stages[4]!.detail).toBe("of 3 runs it ran first");
   });
-  // The lead's rule (11-15): "at the same accuracy" only when the serving champion's check cleared the bar; else the
-  // ratio alone and why accuracy is not claimed. A ratio whose runs' cost isn't all known is no ratio: the sentence says why.
+  // A cleared check says what happened (it passed the agreement check: N of M agreed, against its bar), never "at the
+  // same accuracy" (#3064 review: an 80% bar is no equal accuracy); else the ratio alone and why accuracy is not claimed.
+  // A ratio whose runs' cost isn't all known is no ratio: the sentence says why.
   const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
   const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, notes: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
-  it("with a cleared check: about N times cheaper at the same accuracy, the check and what it served under it", () => {
-    const stage = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true } });
-    expect([stage.value, stage.detail, stage.state]).toEqual(["About 7x cheaper at the same accuracy", "Check: workflow 86% vs agent 82% on 40 inputs · served 59 runs, handed back 3", "done"]);
-    expect(cheaper({ times_cheaper: 6.6, replay: { n: 20, workflow_pct: 80.4, agent_pct: 82, cleared: true }, hand_backs: { ran: 1, back: 0 } }).value).toBe("About 7x cheaper at the same accuracy");
-    expect(cheaper({ times_cheaper: 1.3, replay: { n: 20, workflow_pct: 90, agent_pct: 90, cleared: true } }).value).toBe("About 1.3x cheaper at the same accuracy");
+  const passed = (agreed: number, alone: number, n = alone) => ({ n, workflow_pct: Math.round((agreed / alone) * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: 0.8 });
+  it("with a cleared check: about N times cheaper, the agreement check it passed (N of M agreed, its bar) and what it served under it, never the same accuracy", () => {
+    const stage = cheaper({ times_cheaper: 7, replay: passed(32, 40) });
+    expect([stage.value, stage.detail, stage.state]).toEqual(["About 7x cheaper", "Passed the agreement check: 32 of 40 agreed (bar 80%) · served 59 runs, handed back 3", "done"]);
+    expect(`${stage.value} ${stage.detail}`).not.toMatch(/same accuracy|as accurate/);
+    expect(cheaper({ times_cheaper: 6.6, replay: passed(17, 20), hand_backs: { ran: 1, back: 0 } })).toMatchObject({ value: "About 7x cheaper", detail: "Passed the agreement check: 17 of 20 agreed (bar 80%) · served 1 run, handed back 0" });
+    expect(cheaper({ times_cheaper: 1.3, replay: { ...passed(9, 10, 12), agree_min: 0.9 } })).toMatchObject({ value: "About 1.3x cheaper", detail: "Passed the agreement check: 9 of 10 agreed (bar 90%) · served 59 runs, handed back 3" });
   });
   it("without a cleared check: the ratio alone, and why accuracy is not claimed", () => {
     const none = cheaper({ times_cheaper: 7 });
     expect([none.value, none.detail, none.state]).toEqual(["7x cheaper", "accuracy not claimed: no check yet", "done"]);
-    const below = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 70, agent_pct: 82, cleared: false } });
+    const below = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 70, agent_pct: 82, cleared: false, agreed: 28, alone: 40, agree_min: 0.8 } });
     expect([below.value, below.detail]).toEqual(["7x cheaper", "accuracy not claimed: its check was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
   });
   // The after side is served runs only (never a replay): its count said with its level, and no figure when none is priced.
@@ -174,7 +177,7 @@ describe("notes and the story", () => {
     [{ unknown: 1, at_most: 0 }, "1 run's cost unknown"],
     [{ unknown: 0, at_most: 2 }, "2 runs' cost known only as at most"],
   ])("withheld %o: no ratio, and the sentence says why", (withheld, why) => {
-    const stage = cheaper({ times_cheaper: null, withheld, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true } });
+    const stage = cheaper({ times_cheaper: null, withheld, replay: passed(32, 40) });
     expect([stage.value, stage.detail, stage.state]).toEqual(["No ratio yet", `${why}: how many times cheaper shows once every run's cost is known`, "now"]);
     expect(withheldWords(withheld)).toBe(why);
   });

@@ -32,9 +32,9 @@ const FLOW = {
 const TEXT = JSON.stringify(FLOW);
 const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 
-/** A server with accounts and the owner's session; agent `source` learning, `graded` runs of it ended on the agent's path
- *  and graded right, then the workflow landed on its learning folder's main. */
-async function world(t, { graded = 5 } = {}) {
+/** A server with accounts and the owner's session; agent `source` learning (`learning`: its definition's), `graded` runs of
+ *  it ended on the agent's path and graded right, then the workflow landed on its learning folder's main. */
+async function world(t, { graded = 5, learning = true } = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = await serve(t, { learning: "on", accounts: true, openSetup: true });
   const { api, data, port, baseUrl } = server;
@@ -42,7 +42,7 @@ async function world(t, { graded = 5 } = {}) {
   const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
-  assert.equal((await api("POST", "/agents", agent("source", { learning: true }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("source", { learning }))).status, 201);
   // The graded runs: on the agent's path (no workflow learned yet), keeping nothing (`use`), each graded right.
   const runs = [];
   for (let i = 0; i < graded; i++) {
@@ -126,6 +126,21 @@ test("an owner replays a held revision on the inputs its hold was decided on: 20
     assert.ok(["completed", "failed", "escalated"].includes(run.status), JSON.stringify(run));
   }
   assert.equal((await api("GET", `${path.slice(0, path.lastIndexOf("/"))}/not-a-replay`)).status, 404, "an unknown replay is 404");
+});
+
+// Review on #3064 (PRRT_kwDOUmdVMs64PlpE): with no earlier check, an owner's replay picks the agent's own compile_after
+// (its definition's), never the default's 20: 5 picks 5 of 6 runs, 30 picks 30 of 31. Its record's bar says the same.
+for (const compileAfter of [5, 30]) test(`an owner's replay of a revision never checked, compile_after ${compileAfter} on the definition: it picks the agent's last ${compileAfter} completed runs`, { timeout: 480_000 }, async (t) => {
+  const { api, runs, replay } = await world(t, { graded: compileAfter + 1, learning: { compile_after: compileAfter } });
+  const started = await replay();
+  assert.equal(started.status, 202, started.text);
+  assert.equal(started.json.inputs, compileAfter, `the agent's compile_after, not the default 20: ${started.text}`);
+  const reserved = (await api("GET", "/agents/source/learning/promotions")).body.promotions.find((one) => one.replay_id === started.json.replay);
+  assert.equal(reserved?.decided, "replaying", JSON.stringify(reserved));
+  assert.deepEqual([...reserved.inputs].sort(), runs.slice(1).sort(), "the newest compileAfter of the agent's own completed runs");
+  assert.equal(reserved.check.compile_after, compileAfter, "the bar its record keeps is the definition's");
+  // Its runs end before the server closes.
+  for (const id of reserved.runs) await follow(api, id, ["completed", "failed", "escalated"], { deadlineMs: 120_000 });
 });
 
 test("a replay is refused: a token (403), an unknown agent, workflow or revision (404), a number of inputs out of range (400)", { timeout: 180_000 }, async (t) => {

@@ -219,6 +219,29 @@ test("(b) a draft that says what the agent said on its last runs, alone, is prom
   assert.equal((await w.replays()).length, 5, "no second replay");
 });
 
+// Review on #3064 (PRRT_kwDOUmdVMs64PlpM): records saved in a state this release no longer writes (queued, skipped) are
+// dropped on read, as if absent: no conversion. The promotions read shows neither, and the revision's check starts (its
+// reservation needs no earlier record of it).
+test("(b) a store holding a saved `queued` record of the revision and a `skipped` one: the promotions read shows neither, and the revision's check starts and promotes it", { timeout: 180_000 }, async (t) => {
+  const { promotionsKey, promotionsShown } = await import("../dist/learn/promote.js");
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5 });
+  const at = new Date().toISOString();
+  await w.server.settings.put(promotionsKey("agent-1"), { v: 1, items: [
+    { workflow: "answer", digest: DIGEST, at, decided: "queued", source: "replay", reason: "queued behind another revision's replay" },
+    { workflow: "answer", digest: DIGEST_2, at, decided: "skipped", source: "replay", reason: "skipped: a newer revision came first" },
+  ] });
+  const same = { text: (text) => text, name: (name) => name };
+  assert.deepEqual(promotionsShown(await promotionsOf(w.server.settings, "agent-1"), same), { promotions: [], serving: [] }, "the read shows neither");
+  await w.start("run-1", "What is six times seven");
+  assert.ok(w.logs.some((line) => line.includes(`answer at ${DIGEST} is new: checking it on 5 inputs`)), w.logs.join("\n"));
+  await w.replaysEnded(5);
+  const second = await w.start("run-2", "What is seven times six");
+  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", DIGEST], JSON.stringify(second.metrics));
+  const shown = promotionsShown(await promotionsOf(w.server.settings, "agent-1"), same);
+  assert.deepEqual(shown.promotions.map(({ digest, decided }) => [digest, decided]), [[DIGEST, "replaying"], [DIGEST, "promote"]], "neither old state is read or kept");
+  assert.deepEqual(shown.serving, [{ workflow: "answer", digest: DIGEST, replaying: null }]);
+});
+
 test("(f) the check scores the agent's recorded answers, never its grades: graded wrong, the agent's answers still promote the draft that says them", { timeout: 180_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 5 }, prior: 5 });
   for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41 }, source: "eval", at: new Date().toISOString(), path: "agent" });
@@ -360,4 +383,36 @@ test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, t
   const deps = { store, learningFolder: () => { opened++; throw new Error("folder opened: the compile is due"); } };
   await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
   assert.equal(opened > 0, true, "the 5 own runs are found behind the 250 served ones: the compile is due");
+});
+
+// Review on #3064 (PRRT_kwDOUmdVMs64PlpB): a passing draft waits on its grade however many runs kept learning since. The
+// compile ask reads the agent's kept learning whose grade has not ended (the store's grading read), never a window of the
+// newest proposals: 250 later runs' proposals never push it out, and no new compile is asked until its grade ends.
+test("(a) a passing draft's grade still queued after 250 later runs' kept learning: no new compile is asked; once its grade ends, one is", { timeout: 120_000 }, async (t) => {
+  const { compileAskOf: askOf } = await import("../dist/runner/learning-end.js");
+  const { learningFolderOf } = await import("../dist/learning.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-promote-once-grading-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", learning: { compile_after: 5 } } });
+  const body = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" } };
+  const ended = async (id, proposal, also = []) => {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal } }, ...also] });
+  };
+  // The compile: its draft passed its checks (a compiled digest), its learning run (the grade that merges it) queued.
+  await ended("compiled", { state: "proposed", compiled: { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: DIGEST } }, [{ table: "learning_run", row: { id: "grade-1" } }]);
+  for (let i = 0; i < 250; i++) await ended(`later-${i}`, { state: "dropped", reason: "empty", detail: "Nothing to keep." });
+  await store.runs.create({ id: "now", agentId: "agent-1", revisionId: "rev-1" }, { body });
+  assert.equal((await store.runs.get("grade-1"))?.state, "queued", "the grade waits");
+  assert.equal((await store.learning.proposals("agent-1", { limit: 200 })).some((one) => one.runId === "compiled"), false, "the newest 200 proposals no longer hold it");
+  const deps = { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), log: () => {} };
+  const ask = () => askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 });
+  assert.equal(await ask(), undefined, "the draft still waits on its grade: no new compile");
+  await store.runs.update(await store.claim("grade-1", "runner-a", { leaseMs: 60_000 }), { state: "ended" });
+  assert.notEqual(await ask(), undefined, "its grade ended (it landed or was dropped): the compile is asked");
 });

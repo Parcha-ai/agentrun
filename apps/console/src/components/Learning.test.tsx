@@ -1795,13 +1795,14 @@ describe("the loop on the Learning tab", () => {
     const t = await open(agent(true, { learning: { compile_after: 200 } }), { learning: async () => view({ notes: { items: [note(MINE, "Keep it to three lines")], total: 1, next_cursor: null } }), runs, loop });
     expect(t.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("150 of 200 completed runs");
   });
-  it("the cheaper stage: 'about N times cheaper at the same accuracy' over the replay's line when the serving replay cleared the bar; the reason in its place when a run's cost isn't all known", async () => {
+  it("the cheaper stage: 'about N times cheaper' over the agreement check it passed (N of M agreed, its bar) when the serving check cleared, never 'the same accuracy'; the reason in its place when a run's cost isn't all known", async () => {
     const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
-    const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true }, ...over }, workflows: [] });
+    const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 80, agent_pct: 100, cleared: true, agreed: 32, alone: 40, agree_min: 0.8 }, ...over }, workflows: [] });
     const t = await open(agent(true), { cost: costOf({}) });
     const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;
-    expect(stage.querySelector('[data-testid="stage-cheaper-value"]')!.textContent).toBe("About 7x cheaper at the same accuracy");
-    expect(stage.textContent).toContain("Check: workflow 86% vs agent 82% on 40 inputs · served 59 runs, handed back 3");
+    expect(stage.querySelector('[data-testid="stage-cheaper-value"]')!.textContent).toBe("About 7x cheaper");
+    expect(stage.textContent).toContain("Passed the agreement check: 32 of 40 agreed (bar 80%) · served 59 runs, handed back 3");
+    expect(stage.textContent).not.toMatch(/same accuracy/);
     act(() => root!.unmount());
     const held = await open(agent(true), { cost: costOf({ times_cheaper: null, withheld: { unknown: 3, at_most: 1 } }) });
     const withheld = held.host.querySelector('[data-testid="stage-cheaper"]')!;
