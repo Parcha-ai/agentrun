@@ -3,6 +3,7 @@
 // taken_at is set once: by the loop's journal commit that applies it, or by the runner's refusal with a reason.
 import { originOf } from "../timeline/index.js";
 import type { Command } from "./loop-contract.js";
+import type { LaunchSealedWrite } from "../store/store.js";
 
 /** stop and cancel both end the run, stopped: a cancel's end says it was cancelled, as main's cancel ends a run for good.
  *  browser_hand_back is a person's answer to the agent's browser hand-over (runner/hand-back.ts). computer_take_over and
@@ -19,7 +20,7 @@ export interface CommandInput {
 
 /** The store's insert: refuses a run that is final (RunFinal) in the insert itself, so it never races the run's end. */
 export interface CommandSink {
-  command(runId: string, command: { kind: string; body: Record<string, unknown> }, options?: { launchSealed?: Uint8Array }): Promise<Command>;
+  command(runId: string, command: { kind: string; body: Record<string, unknown> }, options?: LaunchSealedWrite): Promise<Command>;
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
@@ -83,7 +84,7 @@ function bodyProblem(kind: string, body: Record<string, unknown>): string | unde
 
 /** Inserts a command row for a run, after checking its kind and body. Rejects RunFinal (from the store) when the run is
  *  final, and a TypeError for a kind or body no runner would take. */
-export async function sendCommand(store: CommandSink, runId: string, input: CommandInput, options?: { launchSealed?: Uint8Array }): Promise<Command> {
+export async function sendCommand(store: CommandSink, runId: string, input: CommandInput, options?: LaunchSealedWrite): Promise<Command> {
   if (!COMMAND_KINDS.has(input.kind)) {
     throw new TypeError(`a command's kind is one of ${[...COMMAND_KINDS].join(", ")}, not ${JSON.stringify(input.kind)}`);
   }

@@ -233,9 +233,13 @@ export interface RunLaunchRow {
 }
 
 /** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
- *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither.
+ *  Given as a function, it is called inside that transaction with the sealed bytes the launch holds then (null when none:
+ *  a run whose end erased them), and its answer is written (null erases): a message that hands one secret keeps the
+ *  others the run holds, with no read outside the write that could bring back what an end erased. */
+export type LaunchSealed = Uint8Array | ((current: Uint8Array | null) => Uint8Array | null);
 export interface LaunchSealedWrite {
-  readonly launchSealed?: Uint8Array;
+  readonly launchSealed?: LaunchSealed;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the

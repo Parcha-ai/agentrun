@@ -71,6 +71,17 @@ export function gatewayBase(setting: string, value: string): string {
 }
 
 
+/** Whether `base` (a gatewayBase answer) is on the origin of serve's own gateway (AGENT_MODEL_BASE_URL): there a run's own
+ *  model key (run-model-key.ts) is sent, so the endpoint needs no standing key of the server's. */
+function onServeGateway(env: NodeJS.ProcessEnv, base: string): boolean {
+  if (!env.AGENT_MODEL_BASE_URL) return false;
+  try {
+    return new URL(gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL)).origin === new URL(base).origin;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Whether `wire` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
  * wire's own settings is. Those win, as on a host with no OpenRouter key: the endpoint the host names (ANTHROPIC_BASE_URL
@@ -135,7 +146,9 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
     // takes Anthropic's key alone: OpenRouter's never goes there.
     const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
-    if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+    // An endpoint on serve's own gateway's origin takes each run's own key where the server holds none (run-model-key.ts):
+    // the harness runs here with no standing key, and a run with no key to spend is refused at its start.
+    if (!env.ANTHROPIC_API_KEY && !onServeGateway(env, origin)) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
     return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
   }
   // A ChatGPT plan's model: OpenAI's Responses API on the plan's token, whatever else is set.

@@ -7,7 +7,7 @@
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
 // and webhook secret among them, and the outbound webhook's signing secret, each it held before too (trigger_settings),
 // but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
-// part. Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
+// part (a run's handed MCP credentials and its own model key). Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
 // owner's API token and the sign-in session secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
 // is left out: the store never holds one in the clear, and nothing of this runner can be handed it.
@@ -58,17 +58,20 @@ function jsonSecrets(text: string): string[] {
   return out;
 }
 
-/** A launch's sealed JSON: its own listed values (jsonSecrets), and each handed MCP credential's headers (store/seal.ts
- *  sealRunMcpAuth: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed. */
+/** A launch's sealed JSON: its own listed values (jsonSecrets), each handed MCP credential's headers (store/seal.ts
+ *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, and the run's own model
+ *  key (`{"model": {"key": "..."}}`). */
 function launchSecrets(text: string): string[] {
   const out = jsonSecrets(text);
-  let mcp: unknown;
+  let opened: { mcp?: unknown; model?: { key?: unknown } } | null;
   try {
-    mcp = (JSON.parse(text) as { mcp?: unknown } | null)?.mcp;
+    opened = JSON.parse(text) as typeof opened;
   } catch {
     return out;
   }
+  const mcp = opened?.mcp;
   if (mcp && typeof mcp === "object") for (const entry of Object.values(mcp)) out.push(...jsonSecrets(JSON.stringify(entry)));
+  if (typeof opened?.model?.key === "string") out.push(opened.model.key);
   return out;
 }
 

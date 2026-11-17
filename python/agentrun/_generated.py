@@ -5085,6 +5085,7 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     effort: Effort
     max_cost_usd: float
     quote_id: str
+    model_key: str
     mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
     labels: dict[str, str]
     workflow_first: bool
@@ -5730,6 +5731,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue]
 
 
@@ -5790,6 +5792,7 @@ class RunCreate(_RunCreateRequired, total=False):
     effort: Effort
     max_cost_usd: float
     quote_id: str
+    model_key: str
     mcp_auth: dict[str, RunCreateMcpAuthValue]
     labels: dict[str, str]
     workflow_first: bool
