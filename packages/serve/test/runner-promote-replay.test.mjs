@@ -39,6 +39,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, recordPromotion, servingOf } = await import("../dist/learn/promote.js");
+const { replayView } = await import("../dist/runner/promotion.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -338,6 +339,33 @@ test("a check whose launch was interrupted after 1 of its 20 runs, decided past 
   assert.equal(decided.check.disagreements.filter((one) => one.failed).length, 19, "each one never created is a failed input");
   assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\), and 1 of those said what the agent said \(100\.0%, the bar 80\.0%\) \(19 never started by the check's deadline/);
   assert.equal(await server.runs.get(missing[0]), undefined, "past its deadline nothing is created for it");
+  // Carried from #3032 (PRRT_kwDOUmdVMs64NjVq): the outcomes are the check's rows, so they add up to its n: the 19 never
+  // created are failed, on the record and over v2's replay read.
+  const outcomes = { answered: 1, handed_back: 0, failed: 19, skipped_write: 0 };
+  assert.deepEqual(decided.check.outcomes, outcomes, JSON.stringify(decided.check));
+  assert.equal(decided.check.unstarted, 19, "the record says how many were never created");
+  assert.doesNotMatch(decided.reason, /\(\d+ failed: a step failed/, `a run never created is said once, as never started: ${decided.reason}`);
+  const view = await replayView({ store: server, agentId: "agent-1" }, "answer", DIGEST, "interrupted");
+  assert.deepEqual({ status: view.status, decided: view.decided, inputs: view.inputs, outcomes: view.outcomes, n: view.score.n }, { status: "done", decided: "hold", inputs: 20, outcomes, n: 20 }, JSON.stringify(view));
+});
+
+// Every reserved run of a check never created (the server stopped right after reserving them): its read is failed, its
+// rows all failed and all never started.
+test("a check none of whose runs was ever created, decided past its deadline: v2's replay read is failed, every input failed and never started", { timeout: 180_000 }, async (t) => {
+  const { server, start, replaysEnded, restart, logs } = await world(t);
+  await start("run-1", "What is six times seven");
+  await replaysEnded(6);
+  const [reserved] = await promotionsOf(server.settings, "agent-1");
+  const missing = Array.from({ length: 6 }, (_, i) => `never-created-${i}`);
+  const interrupted = { ...reserved, at: new Date(0).toISOString(), runs: missing, inputs: reserved.inputs, replay_id: "none-created" };
+  assert.equal((await recordPromotion(server.settings, "agent-1", interrupted, () => true)).won, true);
+  await restart();
+  const second = await start("run-2", "What is seven times six");
+  assert.equal(second.metrics?.path, "agent", `${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
+  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, unstarted: decided.check.unstarted, outcomes: decided.check.outcomes }, { decided: "hold", n: 6, unstarted: 6, outcomes: { answered: 0, handed_back: 0, failed: 6, skipped_write: 0 } }, JSON.stringify(decided));
+  const view = await replayView({ store: server, agentId: "agent-1" }, "answer", DIGEST, "none-created");
+  assert.deepEqual({ status: view.status, decided: view.decided, inputs: view.inputs, failed: view.outcomes.failed }, { status: "failed", decided: "hold", inputs: 6, failed: 6 }, JSON.stringify(view));
 });
 
 /** One guarded agent step (its own confidence, `self`), its guard at `threshold`. */
