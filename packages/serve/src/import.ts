@@ -528,11 +528,20 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       // too, read through the same count (readChildren).
       const read: Session[] = [];
       const budget = budgetOf();
+      let over = false;
       for (const listed of files) {
         const stats = await stat(listed.file).catch(() => null);
-        if (stats) fits(budget, stats.size);
+        // Grown over the cap since the scan above: left out here as the import leaves it out, and read no further.
+        if (stats && !fits(budget, stats.size)) {
+          over = true;
+          break;
+        }
         const part = await readSession(listed.file, listed.source, { seen: seen(listed.source) }).catch(() => undefined);
         if (part) read.push(part);
+      }
+      if (over) {
+        skipped.push(tooLarge(files[0]!));
+        continue;
       }
       const parts = read.filter((part) => !ownless(part));
       if (!parts.length) continue;
