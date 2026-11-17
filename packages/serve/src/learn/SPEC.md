@@ -131,7 +131,11 @@ turn that is due is asked alone. An SDK task carries no owner feedback, so its r
 alone. The compile turn asks for the first workflow once the agent has its definition's `learning.compile_after` completed
 runs of its own (20 by default; a run its learned workflow answered alone and a check's replay run are not counted), and
 for a revision of one only when its promotion record holds it, once per hold. A hand-back, a stop by the money rule and a
-wrong grade of a served run ask for none: each is one sample, and the hold reads it among the workflow's others.
+wrong grade of a served run ask for none: each is one sample, and the hold reads it among the workflow's others. A job
+compiles once: while a passing draft waits on its grade nothing more is asked, and a turn whose drafts all fail their
+checks is the compile's attempt all the same, kept as a promotion record (a hold with nothing checked, `n` 0, its reason
+starting "its draft failed its checks" and naming them). A first compile's earns the one recompile, as a check's hold
+does; a recompile's stops (`check.stopped`).
 
 Promote once: a new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first
 run that lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each,
@@ -140,7 +144,7 @@ own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of th
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no answer alone), and `agreement` the
 share of those that say what the agent said. A newer revision that comes while a check runs waits and records nothing;
 the claim after the running check is decided starts the newest. It is
-promoted (source `check`) when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
+promoted when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
 (0.7). Under either bar it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on
 as data (each one's input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked
 the same way. Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or

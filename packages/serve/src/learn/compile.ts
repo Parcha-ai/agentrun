@@ -108,6 +108,27 @@ export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
   }));
 }
 
+/** The words a compile's promotion record starts with when every draft of its turn failed its checks (runner/
+ *  learning-end.ts recordDraftFailed): a hold with nothing checked, the compile's attempt all the same. */
+export const DRAFT_FAILED = "its draft failed its checks";
+
+/** Whether a promotion record is a compile turn's failed draft (DRAFT_FAILED), not a check's decision. */
+export const draftFailedOf = (record: PromotionRecord): boolean => record.check?.n === 0 && record.reason.startsWith(`${DRAFT_FAILED}:`);
+
+/** Which compile a new workflow's is, for an agent with no learned workflow: 2 (the one recompile) right after a first
+ *  compile whose drafts all failed their checks (the agent's newest record), else 1. */
+export function newCompileAttempt(records: readonly PromotionRecord[]): 1 | 2 {
+  const last = records.at(-1);
+  return last && draftFailedOf(last) && last.check?.attempt === 1 && !last.check.stopped ? 2 : 1;
+}
+
+/** Whether the agent's compile stopped on its drafts: its newest record is a recompile's failed draft (nothing compiles
+ *  a new workflow again until its owner acts). */
+export function compileStoppedOf(records: readonly PromotionRecord[]): boolean {
+  const last = records.at(-1);
+  return last !== undefined && draftFailedOf(last) && last.check?.stopped === true;
+}
+
 /** Whether a store run ended completed (its state `ended`, a plain completion). */
 export const completedRun = (run: { readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed");
 /** Whether a store run is a completed run of the agent's own (completedRun), not one its learned workflow answered alone
@@ -499,7 +520,9 @@ export const UNNAMED = "(unnamed)";
 
 /** The compile turn, start to end: ask, read, check (`check` over the look-back's answer with the draft in it), and on a refusal ask again with the errors, at most 1 + COMPILE_RETRIES
  *  times and within `deadlineMs`. What it ends with: `kept` with the answer and what the checks made of it when an
- *  attempt passed; else none, with every attempt. Notes over NOTES_MAX ask nothing: one attempt says why. */
+ *  attempt passed; else none, with every attempt, and `drafted` when an attempt answered (its drafts failed their
+ *  checks: the compile's attempt, DRAFT_FAILED; a turn that never answered is none). Notes over NOTES_MAX ask nothing:
+ *  one attempt says why. */
 export async function compileTurn<C extends CheckedLike>(input: {
   /** One attempt's ask (`attempt` from 1), within `deadlineMs`: its answer, or undefined when the turn timed out or failed. */
   readonly ask: (prompt: string, attempt: number, deadlineMs: number) => Promise<{ answer: string } | undefined>;
@@ -510,7 +533,7 @@ export async function compileTurn<C extends CheckedLike>(input: {
   readonly now?: () => number;
   /** Already-opened secret values, used only when a stateless SDK retry repeats its own failed answer as data. */
   readonly refuse?: readonly string[];
-}): Promise<{ record?: CompiledRecord; kept?: { answer: string; checked: C }; draftErrors: string[] }> {
+}): Promise<{ record?: CompiledRecord; kept?: { answer: string; checked: C }; draftErrors: string[]; drafted?: true }> {
   const now = input.now ?? Date.now;
   const deadline = now() + (input.deadlineMs ?? COMPILE_TIMEOUT_MS);
   const attempts: CompileAttempt[] = [];
@@ -522,6 +545,7 @@ export async function compileTurn<C extends CheckedLike>(input: {
     return { record: { workflow: name || UNNAMED, from_notes: [], attempts: [{ ok: false, errors }] }, draftErrors: errors };
   }
   let fromNotes: readonly string[] = [];
+  let answered = false;
   const firstPrompt = compilePrompt(input.compile);
   let prompt = firstPrompt;
   for (let attempt = 1; attempt <= 1 + COMPILE_RETRIES; attempt++) {
@@ -533,6 +557,7 @@ export async function compileTurn<C extends CheckedLike>(input: {
       attempts.push({ ok: false, errors: ["the turn ended before it answered"] });
       break;
     }
+    answered = true;
     const read = readCompile(said.answer, input.compile);
     let errors: string[];
     if (!read.ok) errors = [read.error];
@@ -559,5 +584,5 @@ export async function compileTurn<C extends CheckedLike>(input: {
   if (!attempts.length) return { draftErrors: [] };
   const last = attempts.findLast((one) => one.errors.length)?.errors ?? [];
   // A draft that never named itself is recorded all the same, under UNNAMED: every attempt is.
-  return { record: { workflow: name || UNNAMED, from_notes: fromNotes, attempts }, draftErrors: [...last] };
+  return { record: { workflow: name || UNNAMED, from_notes: fromNotes, attempts }, draftErrors: [...last], ...(answered ? { drafted: true as const } : {}) };
 }

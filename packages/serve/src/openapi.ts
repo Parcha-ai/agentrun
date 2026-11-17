@@ -1310,7 +1310,7 @@ const LEARNING_COST = closed({
       workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "The share of them it answered alone with the agent's own recorded answer, in percent to a tenth." },
       agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's accuracy on them, in percent: 100, its own answers being the label." },
       cleared: { type: "boolean", description: "The check passed: a serving champion was promoted on it." },
-    }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves, or it was promoted on no input (a dry run)." },
+    }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
@@ -1461,7 +1461,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/promotions": {
     get: {
       operationId: "listLearningPromotions", tags: ["agents"], summary: "Each learned workflow revision's promotion: its replay's numbers and whether it serves",
-      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's one check, a replay of it on the inputs of the agent's last completed runs scored against the agent's own recorded answers (replaying, then promoted or held, with its numbers), or one promoted on its dry run. A revision serves only once its check promotes it; the champion (the revision promoted last) keeps serving while a newer one is checked or after it is held, and `serving` says which digest serves and which is checked. One revision of a workflow is checked at a time and a running check finishes. Aggregates only: no input or answer. What the console's Learning tab marks on its cost chart.",
+      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's one check, a replay of it on the inputs of the agent's last completed runs scored against the agent's own recorded answers (replaying, then promoted or held, with its numbers), a draft held with nothing to check it on, or a compile whose drafts all failed their checks (a hold with nothing checked, its reason naming the failed checks: the compile's attempt; a recompile's stops). A revision serves only once its check promotes it; the champion (the revision promoted last) keeps serving while a newer one is checked or after it is held, and `serving` says which digest serves and which is checked. One revision of a workflow is checked at a time and a running check finishes. Aggregates only: no input or answer. What the console's Learning tab marks on its cost chart.",
       parameters: [AGENT_ID],
       responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves and the one replaying." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",

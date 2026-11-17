@@ -53,7 +53,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
-import { agentRun, lastOwnRuns } from "../learn/compile.js";
+import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
 import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -299,11 +299,13 @@ async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">)
 }
 
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first
- *  check's hold (this revision is its one recompile), else 1. A stop with nothing checked (stopUnchecked) is no first
- *  check's hold: it spends no recompile. */
+ *  check's hold, or a first compile's failed draft (this revision is its one recompile), else 1. A stop with nothing
+ *  checked (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first revision after a first
+ *  compile whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that compile's recompile too. */
 function attemptOf(records: readonly PromotionRecord[], name: string, digest: string): 1 | 2 {
   const before = records.findLast((one) => one.workflow === name && one.digest !== digest);
-  return before?.decided === "hold" && before.check?.attempt === 1 && !before.check.stopped ? 2 : 1;
+  if (!before) return newCompileAttempt(records.filter((one) => one.digest !== digest));
+  return before.decided === "hold" && before.check?.attempt === 1 && !before.check.stopped ? 2 : 1;
 }
 
 /** An agent run a check may read its input from: a completed run of its own (agentRun: no learned workflow answered it

@@ -54,6 +54,9 @@ export interface ReflectDeps {
    *  from what they quote: undefined when the run compiles nothing (its job not due, a notes-only agent, a workflow
    *  that answered). Absent, or a read that throws: no compile turn. */
   readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => Promise<CompileAsk | undefined>;
+  /** Compile once: a compile turn whose drafts all failed their checks (one answered, none passed) is the compile's
+   *  attempt, kept on a promotion record (learning-end.ts recordDraftFailed) that compileFacts reads. Absent: none kept. */
+  readonly compileFailed?: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => Promise<void>;
   /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
   readonly compileDeadlineMs?: number;
   /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
@@ -295,6 +298,8 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
           : checked.reason === "checker" ? { ...checked, problems: [...checked.problems, ...problems] }
           : checked;
         compiled = { record: result.record, draft_errors: result.draftErrors };
+        // Compile once: its failed drafts are the compile's attempt, on record before the learning closes.
+        if (result.drafted && deps.compileFailed) await deps.compileFailed({ runId: input.runId, agentId: input.agentId, compile, workflow: result.record.workflow, errors: result.draftErrors }).catch(() => undefined);
       }
     }
     const compiledFields = compiled ? { compiled: compiled.record, ...(compiled.draft_errors?.length ? { draft_errors: compiled.draft_errors } : {}) } : {};

@@ -237,9 +237,14 @@ test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is 
   await w.replaysEnded(5);
   const second = await w.start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const records = await promotionsOf(w.server.settings, "agent-1");
+  const held = records.findLast(({ digest }) => digest === DIGEST);
   assert.deepEqual([held.decided, held.check.agree_min, held.check.alone_min, held.check.n, held.check.agreed, held.check.alone], ["hold", 0.9, 0.7, 5, 4, 5], JSON.stringify(held.check));
   assert.deepEqual(held.check.disagreements, [{ run: "prior-0", input: JSON.stringify({ content: "Question 0?", question: "Question 0" }), agent: AGENT_SAYS, draft: JSON.stringify({ answer: 41, sure: true }) }]);
+  // Run-2's end asked the one revision; the faux model's draft of it failed its checks: the recompile's attempt, so it stops.
+  const failed = records.at(-1);
+  assert.deepEqual([failed.workflow, failed.decided, failed.check.attempt, failed.check.n, failed.check.stopped, failed.check.agree_min], ["answer", "hold", 2, 0, true, 0.9], JSON.stringify(failed));
+  assert.match(failed.reason, /^its draft failed its checks: .+It was the recompile, so it stops/);
 });
 
 /** Odd questions: the first revision answers 41 (the agent said 42) or hands back; the revision says 42 when `fixed`. */
