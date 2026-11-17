@@ -367,7 +367,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // gone, and shows as its id.
   const [namesRead, setNamesRead] = useState(false);
   const namesAsked = useRef(0);
-  // The active agents whose learned items wait for their owner's OK, with how many (Needs you).
+  // The active agents whose learned workflows wait for their owner's OK, with how many (Needs you).
   const [learningWaits, setLearningWaits] = useState<{ agent_id: string; name: string; pending: number }[]>([]);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
@@ -553,7 +553,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     // Up to 100 runs of each status, newest first; each read lands apart, and one that fails keeps its section's last answer.
     const upTo = (status: RunStatus) => allPages((cursor) => v2.listRuns(50, cursor, { status }), (p) => p.runs, 2);
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
-    // run that ends leaving learned items shows in Needs you at the next read. A failed read keeps the last answer.
+    // run that ends leaving learned workflows shows in Needs you at the next read. A failed read keeps the last answer.
     const waiting = () => allPages((cursor) => v2.listAgents({ archived: false, cursor }), (p) => p.agents)
       .then((agents) => { if (live) setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) }))); }, () => {});
     const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working"), waiting()])

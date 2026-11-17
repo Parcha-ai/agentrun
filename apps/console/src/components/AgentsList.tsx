@@ -64,7 +64,7 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
   const archived = !!a.archived_at;
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
-  // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
+  // Its learned workflows that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   return (
     <li className={cn("flex flex-col border p-5 transition-colors hover:border-border-strong", archived && "opacity-70")}>

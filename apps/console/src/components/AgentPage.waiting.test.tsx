@@ -44,7 +44,7 @@ async function open(agents: Agent[], opened = "runs") {
   return { asked, tab, badge, click };
 }
 
-describe("AgentPage, learned items waiting for the owner's OK", () => {
+describe("AgentPage, learned workflows waiting for the owner's OK", () => {
   it("counts them on the Learning tab from the agent's own learning.pending, with no read of what it learned", async () => {
     const p = await open([agentWith({ pending: 3 })]);
     expect(p.badge()?.textContent).toBe("3");
