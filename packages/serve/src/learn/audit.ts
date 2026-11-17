@@ -1,9 +1,12 @@
-// The audit ledger: audits.jsonl at the top of an agent's git learning folder, one JSON row per line, written by the host
-// alone (runner/audit.ts, and the server for an owner's grade). A row is one finished audit of a run a promoted learned
-// workflow served first: its shadow run's answer (the same agent on the same input, learning off) against the served one
-// (source `shadow`), or an owner's grade of the served run (source `grade`, agreed = the grade). The hold rule reads the
-// newest rows of the serving revision (holdOf). The engine never reads a row's domain: only whether two answers say the
-// same (learn/promote.ts sameAnswer) and what each run cost.
+// The audit ledger: audits.jsonl at the top of an agent's git learning folder, one JSON line each, appended by the host
+// alone (runner/audit.ts, and the server for an owner's grade). A `started` line is a shadow audit begun (written before
+// its shadow run is created); a row is one finished audit of a run a promoted learned workflow served first: its shadow
+// run's answer (the same agent on the same input, learning off) against the served one (source `shadow`, the started
+// line's result), or an owner's grade of the served run (source `grade`, agreed = the grade). The open audits are the
+// started lines with no result row: settlement reads their two runs by id, so none is ever lost to a window of runs.
+// Each line keeps the promotion it counts for (`promoted_at`), and the hold rule reads the newest rows of the serving
+// revision's current promotion (holdOf). The engine never reads a row's domain: only whether two answers say the same
+// (learn/promote.ts sameAnswer) and what each run cost.
 import { createHash } from "node:crypto";
 import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
 import type { Workspace } from "../workspace/index.js";
@@ -12,29 +15,56 @@ import type { McpPin } from "../mcp-gateway.js";
 import type { RunLaunch } from "../run-launch.js";
 import { pinAnnotations, toolClassOf, toolWord } from "./replay-calls.js";
 import { AUDITS_FILE, type FolderChange, type FolderRead, readLearning } from "./folder.js";
-import { type PromotionRecord, servingOf } from "./promote.js";
+import { type PromotionRecord, promotionStartOf, servingOf } from "./promote.js";
 
 export { AUDITS_FILE };
 
 /** The newest rows the ledger keeps: twice the widest window a definition may set (AUDIT_MAX), and a file well under the
- *  folder's file cap (a row is a few hundred bytes). */
+ *  folder's file cap (a line is a few hundred bytes); with them, the started lines of theirs, and every open one. */
 export const AUDITS_KEPT = 2_000;
 /** What every shadow run's id starts with: its served run's id follows (shadowRunId). No server-minted id starts so. */
 export const SHADOW_PREFIX = "audit.";
 
 /** One finished audit. `run`: the served run; `shadow_run`: its shadow (null for a grade's row); `workflow` at `digest`
- *  served it; `agreed`: whether the two answers say the same (a grade's: the grade), null when either answer is missing
- *  (a shadow that failed: no evidence either way, never counted by the hold rule); the two runs' costs (null unknown). */
+ *  served it, under the promotion begun at `promoted_at` (learn/promote.ts promotionStartOf: the one serving when its
+ *  shadow started, or at the grade; null: none); `agreed`: whether the two answers say the same (a grade's: the grade),
+ *  null when either answer is missing (a shadow that failed or never ran: no evidence either way, never counted by the
+ *  hold rule); the two runs' costs (null unknown). */
 export interface AuditRow {
   readonly run: string;
   readonly shadow_run: string | null;
   readonly workflow: string;
   readonly digest: string;
+  readonly promoted_at: string | null;
   readonly source: "shadow" | "grade";
   readonly agreed: boolean | null;
   readonly served_cost: number | null;
   readonly shadow_cost: number | null;
   readonly at: string;
+}
+
+/** A shadow audit begun (runner/audit.ts startAudit), written before its shadow run is created: open until a row of
+ *  source `shadow` for the same `run` is written. */
+export interface AuditStarted {
+  readonly source: "started";
+  readonly run: string;
+  readonly shadow_run: string;
+  readonly workflow: string;
+  readonly digest: string;
+  readonly promoted_at: string | null;
+  readonly at: string;
+}
+
+/** One line of the ledger, in the order written. */
+export type LedgerLine = AuditRow | AuditStarted;
+
+/** The rows of `lines` (the finished audits), oldest first. */
+export const rowsOf = (lines: readonly LedgerLine[]): AuditRow[] => lines.filter((line): line is AuditRow => line.source !== "started");
+
+/** The started lines of `lines` with no result row yet: the audits settlement still owes, oldest first. */
+export function openAudits(lines: readonly LedgerLine[]): AuditStarted[] {
+  const done = new Set(lines.filter((line) => line.source === "shadow").map((line) => line.run));
+  return lines.filter((line): line is AuditStarted => line.source === "started" && !done.has(line.run));
 }
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -80,77 +110,93 @@ export const auditsOffWords = (tool: string): string => `audits off: ${toolWord(
  *  shadow, which could answer there too: its served run is not auditable (its record's metrics.not_auditable). */
 export const auditableLaunch = (launch: Pick<RunLaunch, "trigger" | "inputOrigin" | "files">): boolean => !launch.trigger && !launch.inputOrigin && !launch.files?.length;
 
-const isRow = (value: unknown): value is AuditRow => {
+const isLine = (value: unknown): value is LedgerLine => {
   if (value === null || typeof value !== "object") return false;
-  const row = value as Record<string, unknown>;
+  const line = value as Record<string, unknown>;
   const cost = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one));
-  return typeof row.run === "string" && (row.shadow_run === null || typeof row.shadow_run === "string") && typeof row.workflow === "string" && typeof row.digest === "string"
-    && (row.source === "shadow" || row.source === "grade") && (row.agreed === null || typeof row.agreed === "boolean") && cost(row.served_cost) && cost(row.shadow_cost) && typeof row.at === "string";
+  const common = typeof line.run === "string" && typeof line.workflow === "string" && typeof line.digest === "string" && (line.promoted_at === null || typeof line.promoted_at === "string") && typeof line.at === "string";
+  if (line.source === "started") return common && typeof line.shadow_run === "string";
+  return common && (line.shadow_run === null || typeof line.shadow_run === "string") && (line.source === "shadow" || line.source === "grade")
+    && (line.agreed === null || typeof line.agreed === "boolean") && cost(line.served_cost) && cost(line.shadow_cost);
 };
 
-/** The rows of a ledger's text, oldest first; a line that is no row is skipped. */
-export function parseAudits(text: string): AuditRow[] {
-  const out: AuditRow[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
+/** The lines of a ledger's text, in the order written; one out of shape is skipped. */
+export function parseLedger(text: string): LedgerLine[] {
+  const out: LedgerLine[] = [];
+  for (const raw of text.split("\n")) {
+    if (!raw.trim()) continue;
     try {
-      const value = JSON.parse(line) as unknown;
-      if (isRow(value)) out.push({ run: value.run, shadow_run: value.shadow_run, workflow: value.workflow, digest: value.digest, source: value.source, agreed: value.agreed, served_cost: value.served_cost, shadow_cost: value.shadow_cost, at: value.at });
+      const value = JSON.parse(raw) as unknown;
+      if (!isLine(value)) continue;
+      const { run, workflow, digest, promoted_at, at } = value;
+      out.push(value.source === "started"
+        ? { source: "started", run, shadow_run: value.shadow_run, workflow, digest, promoted_at, at }
+        : { run, shadow_run: value.shadow_run, workflow, digest, promoted_at, source: value.source, agreed: value.agreed, served_cost: value.served_cost, shadow_cost: value.shadow_cost, at });
     } catch {
-      // A torn line is no row.
+      // A torn line is no line.
     }
   }
   return out;
 }
 
-/** The ledger's text for `rows`: the newest AUDITS_KEPT, one per line. */
-export const auditsText = (rows: readonly AuditRow[]): string => rows.slice(-AUDITS_KEPT).map((row) => JSON.stringify(row)).join("\n") + "\n";
+/** The ledger's text for `lines`: from the AUDITS_KEPT-th newest row on, and every open started line before it. */
+export function auditsText(lines: readonly LedgerLine[]): string {
+  const rows = lines.flatMap((line, i) => (line.source === "started" ? [] : [i]));
+  const from = rows.length > AUDITS_KEPT ? rows[rows.length - AUDITS_KEPT]! : 0;
+  const open = new Set<LedgerLine>(openAudits(lines));
+  return lines.filter((line, i) => i >= from || open.has(line)).map((line) => JSON.stringify(line)).join("\n") + "\n";
+}
 
-/** The ledger's rows on the folder's main as `folder` reads it (none before the first row). */
-export async function auditsOf(folder: FolderRead): Promise<AuditRow[]> {
+/** The ledger's lines on the folder's main as `folder` reads it (none before the first). */
+export async function ledgerOf(folder: FolderRead): Promise<LedgerLine[]> {
   const at = folder.snapshot?.audits;
-  return at ? parseAudits(await folder.body(AUDITS_FILE, at.oid)) : [];
+  return at ? parseLedger(await folder.body(AUDITS_FILE, at.oid)) : [];
 }
 
-/** The ledger's rows on the folder's main. */
-export const readAudits = (ws: Workspace): Promise<AuditRow[]> => readLearning(ws, auditsOf);
+/** The ledger's rows on the folder's main: its finished audits, oldest first. */
+export const readAudits = async (ws: Workspace): Promise<AuditRow[]> => rowsOf(await readLearning(ws, ledgerOf));
 
-/** The change that adds `rows` to the ledger `before` (none when each is there already: a row is one per served run and
- *  source, and per shadow run), with the rows it adds. */
-export function auditChange(before: readonly AuditRow[], rows: readonly AuditRow[]): { added: AuditRow[]; change?: FolderChange } {
-  const key = (row: AuditRow) => `${row.source}:${row.run}`;
-  const known = new Set(before.map(key));
-  const added: AuditRow[] = [];
-  for (const row of rows) {
-    if (known.has(key(row))) continue;
-    known.add(key(row));
-    added.push(row);
+/** A line's place in the ledger: one per served run and source (a started line's, its shadow's row, a grade's row). */
+export const lineKey = (line: LedgerLine): string => `${line.source}:${line.run}`;
+
+/** The change that appends `lines` to the ledger `before` (none when each is there already: lineKey), with the lines it
+ *  appends. */
+export function auditChange(before: readonly LedgerLine[], lines: readonly LedgerLine[]): { added: LedgerLine[]; change?: FolderChange } {
+  const known = new Set(before.map(lineKey));
+  const added: LedgerLine[] = [];
+  for (const line of lines) {
+    if (known.has(lineKey(line))) continue;
+    known.add(lineKey(line));
+    added.push(line);
   }
-  return added.length ? { added, change: { by: { host: `${added.length} audit row${added.length === 1 ? "" : "s"}` }, writes: [{ path: AUDITS_FILE, text: auditsText([...before, ...added]) }] } } : { added };
+  const rows = rowsOf(added).length;
+  const said = rows ? `${rows} audit row${rows === 1 ? "" : "s"}` : `${added.length} audit${added.length === 1 ? "" : "s"} started`;
+  return added.length ? { added, change: { by: { host: said }, writes: [{ path: AUDITS_FILE, text: auditsText([...before, ...added]) }] } } : { added };
 }
 
-/** The rows the hold rule counts for `workflow` at `digest`: those with a verdict, the newest `hold_window` of them. */
-export const windowOf = (rows: readonly AuditRow[], workflow: string, digest: string, loop: Pick<AuditLoop, "hold_window">): AuditRow[] =>
-  rows.filter((row) => row.workflow === workflow && row.digest === digest && row.agreed !== null).slice(-loop.hold_window);
+/** The rows the hold rule counts for `workflow` at `digest` under the promotion begun at `promotedAt` (learn/promote.ts
+ *  promotionStartOf; none counted for null): those with a verdict, the newest `hold_window` of them. */
+export const windowOf = (rows: readonly AuditRow[], workflow: string, digest: string, promotedAt: string | null, loop: Pick<AuditLoop, "hold_window">): AuditRow[] =>
+  promotedAt === null ? [] : rows.filter((row) => row.workflow === workflow && row.digest === digest && row.promoted_at === promotedAt && row.agreed !== null).slice(-loop.hold_window);
 
 /** The hold rule: the counted rows (windowOf) when at least `hold_disagree` of them disagree, else undefined. */
-export function holdOf(rows: readonly AuditRow[], workflow: string, digest: string, loop: Pick<AuditLoop, "hold_window" | "hold_disagree">): { rows: AuditRow[]; disagreed: AuditRow[] } | undefined {
-  const counted = windowOf(rows, workflow, digest, loop);
+export function holdOf(rows: readonly AuditRow[], workflow: string, digest: string, promotedAt: string | null, loop: Pick<AuditLoop, "hold_window" | "hold_disagree">): { rows: AuditRow[]; disagreed: AuditRow[] } | undefined {
+  const counted = windowOf(rows, workflow, digest, promotedAt, loop);
   const disagreed = counted.filter((row) => row.agreed === false);
   return disagreed.length >= loop.hold_disagree ? { rows: counted, disagreed } : undefined;
 }
 
 /** A workflow's audit line, as the promotions read shows it: the bar, and the counted rows and disagreements now. */
 export type AuditLine = { readonly window: number; readonly disagree: number; readonly rows: number; readonly disagreed: number };
-export function auditLineOf(rows: readonly AuditRow[], workflow: string, digest: string, loop: Pick<AuditLoop, "hold_window" | "hold_disagree">): AuditLine {
-  const counted = windowOf(rows, workflow, digest, loop);
+export function auditLineOf(rows: readonly AuditRow[], workflow: string, digest: string, promotedAt: string | null, loop: Pick<AuditLoop, "hold_window" | "hold_disagree">): AuditLine {
+  const counted = windowOf(rows, workflow, digest, promotedAt, loop);
   return { window: loop.hold_window, disagree: loop.hold_disagree, rows: counted.length, disagreed: counted.filter((row) => row.agreed === false).length };
 }
 
 /** What the promotions read says of each learned workflow beside what serves (learn/promote.ts servingOf, in its order):
  *  `state` (`checking`, its newest record is a check at work; `serving`, a revision serves; `stopped`, its newest record
- *  is a hold that stops it; `held`, else), its newest decided check's numbers, and its audit line over the serving (else
- *  the newest) revision's rows. */
+ *  is a hold that stops it; `held`, else), its newest decided check's numbers, and its audit line over the rows of the
+ *  serving (else the newest) revision's newest promotion (the ones the hold rule counts). */
 export type ServingLine = {
   readonly state: "serving" | "checking" | "held" | "stopped";
   readonly check: { readonly n: number; readonly agreed: number; readonly alone: number; readonly attempt: 1 | 2 } | null;
@@ -169,7 +215,7 @@ export function servingLinesOf(records: readonly PromotionRecord[], rows: readon
     return {
       state,
       check: checked ? { n: checked.n!, agreed: checked.agreed ?? 0, alone: checked.alone ?? 0, attempt: checked.attempt } : null,
-      audit: at === undefined ? null : auditLineOf(rows, workflow, at, loop),
+      audit: at === undefined ? null : auditLineOf(rows, workflow, at, promotionStartOf(records, workflow, at)?.at ?? null, loop),
     };
   });
 }

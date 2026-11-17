@@ -339,6 +339,16 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
   return now?.decided === "promote" ? now : undefined;
 }
 
+/** The newest promotion of `workflow` at `digest`: the record that began its newest run of promote records (winsOf), or
+ *  undefined when none was ever promoted. Its `at` names that promotion: an audit row keeps the one serving when its
+ *  evidence began (learn/audit.ts promoted_at), and the hold rule counts only the rows of the one serving now, so a
+ *  digest its owner's replay promotes again after a hold starts on no rows. */
+export function promotionStartOf(records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined {
+  let start: PromotionRecord | undefined;
+  for (const [i, win] of winsOf(records)) if (i === win && records[i]!.workflow === workflow && records[i]!.digest === digest) start = records[i];
+  return start;
+}
+
 /** Each promote record's win, by index: the index of the promote record that began its digest's run of promote records
  *  (its first, or the first after a record of that digest that was not promote: a replay that promoted a held revision).
  *  A graded check's mark (a promote after a promote, runner/promotion.ts stillServing) is never a win of its own. */

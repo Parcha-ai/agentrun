@@ -18,7 +18,7 @@ import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DI
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
 import { NOTE_FILE } from "./notes.js";
 import { answersAlone, type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, LABEL_MAX, PROMOTE_BAR, type PromotionRecord, promotionOf, replayingOf } from "./promote.js";
-import { redactSecrets } from "./secrets.js";
+import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
 
 /** How many of the agent's last runs (before the ending one, which is in the session already) the compile turn reads. */
@@ -680,7 +680,7 @@ export async function compileTurn<C extends CheckedLike>(input: {
     // Native/managed sessions retain the earlier turn. SDK booked requests are independent: every retry must carry
     // the same bounded contract/catalog/notes and only its immediately preceding, redacted failed answer as data.
     prompt = input.compile.workflowAdapters !== undefined
-      ? [again, firstPrompt, ...fenced("the previous compile answer", clean(redactSecrets(said.answer, input.refuse ?? [], Number.POSITIVE_INFINITY), 32_000))].join("\n\n")
+      ? [again, firstPrompt, ...fenced("the previous compile answer", excerptShown(said.answer, { text: (text) => clean(redactSecrets(text, input.refuse ?? [], Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY) }, 32_000))].join("\n\n")
       : again;
   }
   if (!attempts.length) return { draftErrors: [] };

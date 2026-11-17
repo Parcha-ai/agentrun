@@ -229,8 +229,10 @@ test("(b, c) an audit row lands in audits.jsonl with both costs, and the shadow'
   const row = rows.find((one) => one.run === "served-1");
   assert.ok(row, `${AUDITS_FILE}: ${JSON.stringify(rows)}`);
   const shadowRow = await w.server.runs.get(shadow.id);
+  // Counted for the promotion that served it: its promote record's `at`.
+  const promotedAt = (await promotionsOf(w.server.settings, "agent-1"))[0].at;
   assert.deepEqual({ ...row, at: typeof row.at }, {
-    run: "served-1", shadow_run: shadow.id, workflow: "answer", digest: DIGEST, source: "shadow", agreed: true,
+    run: "served-1", shadow_run: shadow.id, workflow: "answer", digest: DIGEST, promoted_at: promotedAt, source: "shadow", agreed: true,
     served_cost: served.costUsd, shadow_cost: shadowRow.costUsd, at: "string",
   });
   assert.ok(served.costUsd > 0 && shadowRow.costUsd > 0, `both runs are priced: ${served.costUsd}, ${shadowRow.costUsd}`);
@@ -478,6 +480,7 @@ function servedStore(served, learning, digest) {
   rows.reverse();
   const made = [];
   const store = {
+    settings: { get: async () => undefined },
     agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
     runs: {
       list: async ({ state, archived, limit } = {}) => rows.filter((row) => (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived)).slice(0, limit ?? rows.length),
@@ -489,16 +492,19 @@ function servedStore(served, learning, digest) {
   return { store, made, rows };
 }
 
-test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 served runs and their 1,100 shadows counts 1,100, so the rate switches to audit_every_later past audit_later_after", async () => {
+test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 served runs and their 1,100 shadows counts 1,100, so the rate switches to audit_every_later past audit_later_after", async (t) => {
   const { startAudit } = await import("../dist/runner/audit.js");
   const { lastRunsOf } = await import("../dist/learn/compile.js");
   const learning = { audit_every: 1, audit_every_later: 1000, audit_later_after: 1000 };
   const runId = Array.from({ length: 1000 }, (_, i) => `next-${i}`).find((id) => !drawn(id, 1000));
   const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
   const serve = { name: "answer", digest: DIGEST };
+  // A drawn run's started line is written to the agent's learning folder before its shadow is made.
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-count-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const claimOf = async (served) => {
     const { store, made } = servedStore(served, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => { throw new Error("no folder"); }, log: () => {}, runId, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
     return { store, made };
   };
   // 900 served: under audit_later_after, every served run is drawn (1 in 1).

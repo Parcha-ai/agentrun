@@ -1499,6 +1499,7 @@ export type ListLearningAuditsResponse = {
     shadow_run: string | null;
     workflow: string;
     digest: string;
+    promoted_at: string | null;
     source: "shadow" | "grade";
     agreed: boolean | null;
     served_cost: number | null;

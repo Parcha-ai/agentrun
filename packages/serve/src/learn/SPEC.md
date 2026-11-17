@@ -20,7 +20,7 @@ refund-policy-path.md             one note per file
 prefers-tables.md
 skills/find-policies/SKILL.md     a skill: how to do a job the agent does again
 workflows/find-policies/          a workflow draft: its workflow.json and its README.md, together
-audits.jsonl                      the audit ledger: one row per finished audit of a served run, host-written
+audits.jsonl                      the audit ledger: a started line and a row per audit of a served run, host-written
 ```
 
 The folder is plain git with one branch, `main`; git is its history and its undo. The host is its only writer: no run
@@ -164,21 +164,28 @@ Only a run started over the API is drawn: one a trigger started (its checkout, t
 audited, counted `not_auditable` on the promotions read. And only an agent every tool of which only reads, by the rule a
 check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `readOnlyHint`, a built-in by READ_TOOLS, the
 computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
-(`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run starts its
-shadow run at its claim (`runner/audit.ts` startAudit): the same agent and revision on the same input with learning off
-(no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit` naming the run it audits. The
-shadow is no row of the run list, GET /runs/{id} reads it with `audit_of`, and its cost is the served run's learning
-(its `cost.usd` and its learning cost in the cost series). Each claim of a run that learns first writes a row to
-`audits.jsonl` for each shadow that ended whose served run ended too: `{run, shadow_run, workflow, digest, source:
-"shadow", agreed, served_cost, shadow_cost, at}`, `agreed` by `sameAnswer` (null when either answer is missing, never
-counted). An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the grade).
-The host alone writes the ledger, one commit a write with a `host:` subject and no trailer (no change a person or a run
-made), and keeps its newest 2,000 rows, each claim's batch oldest served run first. The hold is a function of the
-ledger: every such claim applies the rule again over the rows as they are, rows added or not, so a hold a crash lost
-after its rows were committed is made at the next claim. The hold rule (`applyHold`) reads the serving revision's newest
-`learning.hold_window` (10) rows with a verdict: `learning.hold_disagree` (3) disagreements or more hold it (source
+(`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run first
+appends a started line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, at}`),
+then starts its shadow run at its claim (`runner/audit.ts` startAudit): the same agent and revision on the same input
+with learning off (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit` naming the
+run it audits; a shadow whose line could not be written is never created. The shadow is no row of the run list, GET
+/runs/{id} reads it with `audit_of`, and its cost is the served run's learning (its `cost.usd` and its learning cost in
+the cost series). Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
+each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, at}`, `agreed` by `sameAnswer` (null when
+either answer is missing or a run is gone, never counted). An owner's grade of a run the workflow answered alone is a
+row too (`source: "grade"`, `agreed` the grade). `promoted_at` names the promotion the line counts for: the `at` of the
+promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
+shadow started or the grade was given. The host alone appends to the ledger, one commit a write with a `host:` subject
+and no trailer (no change a person or a run made), and keeps its newest 2,000 rows with their started lines and every
+open one, each claim's batch oldest served run first. GET .../learning/audits reads the rows. The hold is a function of
+the ledger: every such claim applies the rule again over the rows as they are, rows added or not, so a hold a crash lost
+after its rows were committed is made at the next claim. The hold rule (`applyHold`) reads the newest
+`learning.hold_window` (10) rows with a verdict of the serving revision's current promotion (so a revision its owner's
+replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (source
 `audit`, the record's `audit` keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
-agent's answer and the workflow's). The agent takes the runs, and its next run it fits asks one recompile with those
+agent's answer and the workflow's, each text cut of the host's secrets whole before it is shortened to 1,200 characters,
+`learn/secrets.ts` excerptShown, as a check's are). The agent takes the runs, and its next run it fits asks one recompile with those
 disagreements as data; S3a's check decides it on its usual inputs plus the disagreeing ones. A second audit hold within
 `learning.stop_window` (100) served runs of the first stops it instead (`audit.stopped`, reason "stopped: the workflow
 disagreed with the agent twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule

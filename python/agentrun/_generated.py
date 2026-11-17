@@ -2239,6 +2239,7 @@ class ListLearningAuditsResponseAuditsItem(TypedDict):
     shadow_run: str | None
     workflow: str
     digest: str
+    promoted_at: str | None
     source: Literal["shadow", "grade"]
     agreed: bool | None
     served_cost: float | None

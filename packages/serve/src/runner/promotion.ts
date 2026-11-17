@@ -93,6 +93,7 @@ import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, ser
 import { learningCommit } from "../learn/commit.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { recordOnly } from "../learn/promote.js";
+import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
 
@@ -612,13 +613,9 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   const agrees = (row: CheckRow) => alone(row) && sameAnswer(row.answer, row.agent);
   const score = { n: ran.length, agreed: ran.filter(agrees).length, alone: ran.filter(alone).length };
   const ok = checkPasses(score, bar);
-  // Each text is cut of the host's secrets whole, then shortened: shortened first, a secret straddling the cut would leave
-  // its prefix, which no redactor matches.
+  // Each text is cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown).
   const shown = await deps.shown();
-  const cut = (text: string) => {
-    const clean = shown.text(text);
-    return clean.length > CHECK_TEXT_MAX ? `${clean.slice(0, CHECK_TEXT_MAX)}…` : clean;
-  };
+  const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
   // An input it answered that a guard (or a recorded escalate) hands back when serving is a hand-back, named by its step.
   const servedBack = (row: CheckRow) => {
     const guard = handsBackAt(row, thresholds);

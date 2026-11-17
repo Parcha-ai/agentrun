@@ -37,7 +37,7 @@ import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../lea
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
-import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
+import { excerptShown, MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { META_TOOLS } from "../meta-tool-names.js";
 import { holdsSecret, LEARNING_LABEL, PROPOSAL, secretsShown } from "../learning.js";
@@ -406,7 +406,8 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
  *  shape. */
 export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
   const rows = withoutFeedbackRounds(timeline).filter((row) => row.agent_label !== LEARNING_LABEL);
-  const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
+  const shown = { text: (text: string) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim() };
+  const cut = (text: string | null | undefined) => excerptShown(String(text ?? ""), shown, TRACE_TEXT);
   const messages = rows.filter(isMessageRow);
   const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));
   const models = modelsOwn(rows);

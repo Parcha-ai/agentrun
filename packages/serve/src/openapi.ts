@@ -1421,6 +1421,7 @@ const AUDIT_ROW = closed({
   shadow_run: { ...NULL_STRING, description: "Its shadow run (the same agent on the same input with learning off, GET /runs/{id}'s `audit_of` names the served run); null for a grade's row." },
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision that served it." },
+  promoted_at: { type: ["string", "null"], format: "date-time", description: "The promotion of that revision the row counts for: its promote record's `at` (GET .../learning/promotions), the one serving when the shadow started or the grade was given. The hold rule counts only the rows of the revision's promotion now, so a revision its owner's replay promotes again after a hold starts on none. Null: none." },
   source: { enum: ["shadow", "grade"], description: "`shadow`: the shadow run's answer compared with the served one. `grade`: an owner's grade of a run the workflow answered alone (PUT /runs/{id}/grade)." },
   agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed): no evidence, not counted." },
   served_cost: { type: ["number", "null"], minimum: 0, description: "What the served run cost; null when unknown." },
