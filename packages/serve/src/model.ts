@@ -20,6 +20,7 @@ import { ADAPTER_FACTS } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
+import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
@@ -122,6 +123,8 @@ export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harnes
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
   // Signed in to a ChatGPT plan, codex and pi run on it by default: a key's model is then named (`openai/<id>`).
   if (PLAN_HARNESSES.includes(harness) && signedIn(env) && !env.AGENT_MODEL_BASE_URL) return `${PLAN_PROVIDER}/${planModel(env)}`;
+  // On Claude Code's login on this machine, claude-agent runs Anthropic's model on it by default (provider.ts).
+  if (onClaudeLogin(env, harness)) return LOGIN_DEFAULT_MODEL;
   const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
   return row ? rowModel(row, harness) : env[DEFAULT_MODEL_ENV] || undefined;
 }

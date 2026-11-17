@@ -1,0 +1,134 @@
+// A session on a person's own Claude Code login (login.ts): the CLI gets where the login is and nothing else, no model
+// URL, key or token ever; the host asks the CLI for its status and reads only that answer; responses are booked from the
+// CLI's stream, billed to the plan.
+import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+import { claudeAgentAdapter, claudeLoginCommand, claudeLoginStatus, parseClaudeLoginStatus } from '@parcha/agentrun-harness-claude';
+import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { durableEnv } from '../dist/env.js';
+import { loginBooking } from '../dist/login.js';
+
+process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
+const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-login-'));
+after(() => rmSync(ROOT, { recursive: true, force: true }));
+let n = 0;
+const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
+/** What never reaches the CLI on a login. */
+const TOKENS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+
+/** A login whose directories no one may open: anything that reads them fails. */
+function sealedLogin() {
+  const base = scratch();
+  const login = { dir: join(base, 'login'), profiles: join(base, 'login', 'anthropic') };
+  mkdirSync(login.profiles, { recursive: true });
+  chmodSync(login.profiles, 0o000);
+  chmodSync(login.dir, 0o000);
+  after(() => { chmodSync(login.dir, 0o700); chmodSync(login.profiles, 0o700); });
+  return login;
+}
+
+test('on a login the CLI environment names where the login is, and no model URL, key or token, the app\'s own included', () => {
+  const login = { dir: '/data/claude-login', profiles: '/data/claude-login/anthropic' };
+  const env = durableEnv({ home: '/s/home', configDir: '/s/config', tmpDir: '/s/tmp', cacheDir: '/s/cache', login, model: 'claude-haiku-5-5', extra: { ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_OAUTH_TOKEN: 't', ANTHROPIC_BASE_URL: 'http://x', KEEP: '1' } });
+  for (const name of TOKENS) assert.equal(env[name], undefined, name);
+  assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.dir);
+  assert.equal(env.ANTHROPIC_CONFIG_DIR, login.profiles);
+  // Its config dir is the session's: the SDK copies a credentials file out of that one when it resumes.
+  assert.equal(env.CLAUDE_CONFIG_DIR, '/s/config');
+  assert.equal(env.KEEP, '1');
+  assert.throws(() => durableEnv({ home: '/h', configDir: '/c', tmpDir: '/t', cacheDir: '/k', model: 'm' }), /model port and key, or a login/);
+});
+
+test('the login status reads loggedIn and the account words, and nothing that is not an answer', () => {
+  assert.deepEqual(parseClaudeLoginStatus('{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"a@b.c","orgName":"Org","subscriptionType":"max"}'), { signedIn: true, method: 'claude.ai', email: 'a@b.c', organization: 'Org', plan: 'max' });
+  assert.deepEqual(parseClaudeLoginStatus('{"loggedIn":false,"authMethod":"none"}'), { signedIn: false, method: 'none' });
+  assert.equal(parseClaudeLoginStatus('{"loggedIn":true,"authMethod":"none"}').signedIn, false);
+  assert.equal(parseClaudeLoginStatus('Not logged in'), undefined);
+  assert.equal(parseClaudeLoginStatus('[]'), undefined);
+  assert.equal(parseClaudeLoginStatus('{"email":"a@b.c"}'), undefined);
+});
+
+test('the sign-in line names the login directories for the CLI, quoted where a shell needs it', () => {
+  assert.equal(claudeLoginCommand({ dir: '/data/claude-login', profiles: '/data/claude-login/anthropic' }), 'CLAUDE_CONFIG_DIR=/data/claude-login CLAUDE_SECURESTORAGE_CONFIG_DIR=/data/claude-login ANTHROPIC_CONFIG_DIR=/data/claude-login/anthropic claude auth login');
+  assert.match(claudeLoginCommand({ dir: "/my data/it's", profiles: '/p' }), /^CLAUDE_CONFIG_DIR='\/my data\/it'\\''s' /);
+});
+
+/** A stand-in CLI that writes what it was started with beside itself and answers `status`. */
+function fakeCli(status) {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(require('node:path').join(__dirname, 'seen.json'), JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.stdout.write(${JSON.stringify(JSON.stringify(status))});\nprocess.exit(${status.loggedIn ? 0 : 1});\n`, { mode: 0o755 });
+  return { cli, seen: () => JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')) };
+}
+
+test('the status check asks the CLI with the login directories alone, never opening them, and reads its answer', async () => {
+  const login = sealedLogin();
+  const signedIn = fakeCli({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'max' });
+  assert.deepEqual(await claudeLoginStatus(signedIn.cli, login), { signedIn: true, method: 'claude.ai', plan: 'max' });
+  const { argv, env } = signedIn.seen();
+  assert.deepEqual(argv, ['auth', 'status', '--json']);
+  assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.dir);
+  assert.equal(env.ANTHROPIC_CONFIG_DIR, login.profiles);
+  for (const name of TOKENS) assert.equal(env[name], undefined, name);
+  assert.notEqual(env.CLAUDE_CONFIG_DIR, login.dir);
+  assert.notEqual(env.HOME, login.dir);
+  const signedOut = fakeCli({ loggedIn: false, authMethod: 'none' });
+  assert.deepEqual(await claudeLoginStatus(signedOut.cli, login), { signedIn: false, method: 'none' });
+});
+
+test('each response the CLI streams is booked from its events, billed to the plan, and a refused admission halts the drive', async () => {
+  const asked = [];
+  const booked = [];
+  const halted = [];
+  const models = { beforeRequest: async (r) => { asked.push(r); return { turn: asked.length }; }, afterRequest: async (usage, ticket, ended) => { booked.push({ usage, ticket, ended }); } };
+  const book = loginBooking(models, 'claude-haiku-5-5', (e) => halted.push(e));
+  const ev = (event) => ({ type: 'stream_event', parent_tool_use_id: null, event });
+  book.observe(ev({ type: 'message_start', message: { id: 'm1', usage: { input_tokens: 10, cache_read_input_tokens: 4, cache_creation_input_tokens: 2, output_tokens: 1 } } }));
+  book.observe(ev({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } }));
+  book.observe(ev({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 7 } }));
+  book.observe(ev({ type: 'message_stop' }));
+  // One the turn's end leaves open is booked as it stands.
+  book.observe(ev({ type: 'message_start', message: { id: 'm2', usage: { input_tokens: 3, output_tokens: 0 } } }));
+  await book.settle();
+  assert.deepEqual(asked.map((r) => r.model), ['claude-haiku-5-5', 'claude-haiku-5-5']);
+  assert.deepEqual(booked, [
+    { usage: { input: 10, output: 7, cacheRead: 4, cacheWrite: 2, billing: 'plan', usd: null }, ticket: { turn: 1 }, ended: { end: 'answered', usd: null } },
+    { usage: { input: 3, output: 0, billing: 'plan', usd: null }, ticket: { turn: 2 }, ended: { end: 'answered', usd: null } },
+  ]);
+  assert.deepEqual(halted, []);
+
+  const refusing = loginBooking({ beforeRequest: async () => { throw new Error('turn_limit'); }, afterRequest: async () => assert.fail('a refused request is not booked') }, 'm', (e) => halted.push(e));
+  refusing.observe(ev({ type: 'message_start', message: { usage: {} } }));
+  refusing.observe(ev({ type: 'message_stop' }));
+  await refusing.settle();
+  assert.deepEqual(halted.map((e) => e.message), ['turn_limit']);
+});
+
+test('a session on a login starts its CLI with no model URL, key or token, a config dir apart from the login, and no host port', async () => {
+  const login = sealedLogin();
+  const seen = [];
+  const sdk = fakeSdk({ mirrorLagMs: 10, script: ['call submit {"value":{"answer":"ok"}}'], onQuery: (options) => seen.push(options) });
+  assert.throws(() => claudeAgentAdapter({ model: 'claude-haiku-5-5', login, provider: { origin: 'http://127.0.0.1:1', credential: () => 'k' }, standIn: { command: process.execPath }, sdk }), /a provider or a login/);
+  const adapter = claudeAgentAdapter({ model: 'claude-haiku-5-5', login, sessionsDir: join(scratch(), 'sessions'), standIn: { command: process.execPath }, sdk });
+  const ports = [];
+  const store = memorySessionStore();
+  const runNode = createHarnessRunner({ ...adapter, open: async (spec, io) => { const session = await adapter.open(spec, io); ports.push(session.port?.('side')); return session; } }, { store });
+  const SCHEMAS = { Out: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } };
+  const result = await runWorkflow({ v: 2, name: 'login', schemas: SCHEMAS, output: { schemaId: 'Out', path: 'final' }, root: { node: 'agent', label: 'task', instructions: 'Answer.', out: 'Out', as: 'final' } }, {}, { runNode });
+  assert.equal(result.status, 'complete', JSON.stringify(result.error ?? null));
+  assert.ok(seen.length >= 1);
+  for (const options of seen) {
+    for (const name of TOKENS) assert.equal(options.env[name], undefined, name);
+    assert.equal(options.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.dir);
+    assert.equal(options.env.ANTHROPIC_CONFIG_DIR, login.profiles);
+    assert.ok(!options.env.CLAUDE_CONFIG_DIR.startsWith(login.dir), options.env.CLAUDE_CONFIG_DIR);
+  }
+  // No host port: no request of the host's goes on a person's login.
+  assert.deepEqual(ports, [undefined]);
+});
