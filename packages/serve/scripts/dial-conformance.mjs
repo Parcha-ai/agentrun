@@ -184,7 +184,7 @@ const RUN_HEADER = "x-dial-conformance-run";
 /** One GET of `url` on a new connection, closed after it (no keep-alive agent): its status and RUN_HEADER. */
 function askOnce(url, signal) {
 	return new Promise((done, fail) => {
-		const get = url.startsWith("https:") ? httpsGet : httpGet;
+		const get = new URL(url).protocol === "https:" ? httpsGet : httpGet;
 		const req = get(url, { agent: false, headers: { "cache-control": "no-store" }, timeout: 10_000, ...(signal ? { signal } : {}) }, (res) => {
 			res.on("error", fail);
 			res.on("end", () => done({ status: res.statusCode, run: res.headers[RUN_HEADER] }));

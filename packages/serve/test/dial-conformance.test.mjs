@@ -252,8 +252,15 @@ test("reachesThisRun's ask opens a connection for each ask, even to a server tha
   server.on("connection", () => connections++);
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   try {
-    await reachesThisRun(`http://127.0.0.1:${server.address().port}`, "run-1", undefined, { every: 1 });
+    await reachesThisRun(`HTTP://127.0.0.1:${server.address().port}`, "run-1", undefined, { every: 1 });
     assert.equal(connections, 3);
+    // A scheme in capitals is the URL's own: HTTPS:// goes to the TLS client, whose handshake this plain server fails,
+    // rather than to the plain one, which would refuse the protocol.
+    await assert.rejects(reachesThisRun(`HTTPS://127.0.0.1:${server.address().port}`, "run-1", undefined, { within: 200, every: 50 }), (error) => {
+      assert.match(error.message, /did not reach this process within 0 s \(last: /);
+      assert.doesNotMatch(error.message, /not supported/);
+      return true;
+    });
   } finally {
     server.closeAllConnections();
     await new Promise((done) => server.close(done));
