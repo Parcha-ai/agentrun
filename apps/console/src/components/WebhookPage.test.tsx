@@ -81,6 +81,23 @@ describe("WebhookPage", () => {
     expect(again.host.textContent).toContain("https://hooks.example.test/agentrun");
   });
 
+  it("copies the secret it shows this once with one press, and says so", async () => {
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async (t: string) => { writes.push(t); }) } });
+    try {
+      const { v2 } = server({ webhook: NONE, attempts: [] });
+      const page = await open(v2);
+      await page.type("https://hooks.example.test/agentrun");
+      await page.click(/^Save$/);
+      const shown = page.host.querySelector('[aria-label="Webhook secret"]')!;
+      await page.click(/Copy secret/, shown);
+      expect(writes).toEqual([SECRET]);
+      expect(shown.querySelector('[role="status"]')?.textContent).toBe("Copied");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    }
+  });
+
   it("lists the last attempts, newest first, with the receiver's answer or why it failed and when it is tried again", async () => {
     const { v2 } = server({ webhook: SET, attempts: [
       attempt({ webhook_id: "msg_failed000000000000000000000000", status_code: 503, error: "answered 503", retry_at: "2026-11-03T12:06:00.000Z", type: "run.needs_input" }),

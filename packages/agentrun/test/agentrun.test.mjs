@@ -753,6 +753,21 @@ test("the setup skill names a hosted cloud session before the questions, and its
   assert.deepEqual(lines, ["set: CLAUDE_CODE_REMOTE", "set: SSH_CONNECTION"], "each signal set, by name");
   assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no value is printed");
 });
+// A person whose assistant set the server up was handed a link to click, then a command that prints the code, when the
+// page could have been open already with the code in it. The skill has the assistant open the setup link itself.
+test("the setup skill opens the setup page, code filled in, in the person's browser, and hands over a link only when it can open none", () => {
+  const start = skillSection(setupSkill(), "3. Start it where they chose");
+  const at = start.indexOf("### Open the setup page");
+  assert.ok(at > start.indexOf("curl -fsSL https://agentrun.ai/install | sh\n"), "the step follows the start");
+  assert.match(start.slice(0, at).replace(/\s+/g, " "), /it ends by opening the setup page there, where they set the owner password; otherwise open it for them \(below\)/);
+  const step = start.slice(at).replace(/\s+/g, " ");
+  assert.match(step, /never send a link for them to click while you can open it, and never a command that prints or fetches the code/);
+  assert.match(step, /run `~\/\.agentrun\/bin\/agentrun open` on that machine/, "an installed server's link comes from agentrun open");
+  for (const opener of ['open "<link>"', 'xdg-open "<link>"', 'start "" "<link>"', "your client's browser or preview tool"]) assert.ok(step.includes(opener), opener);
+  assert.match(step, /Only when you have neither, send the link itself/);
+  assert.match(step, /Set up this server: <address>\/setup#code=<code>/, "the link is the one the log prints, code and all");
+  assert.match(step, /Never the API token/);
+});
 function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
   mkdirSync(join(dir, "fake"));
