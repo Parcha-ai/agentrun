@@ -6,8 +6,8 @@
 // Known miss: a write that leaves a file's size and mtime both as they were (`touch -d`, `cp -p` onto a file of the same
 // size) is not seen. A same-size rewrite within the same millisecond is, by the racy rule (git's): a file whose mtime is
 // within 1 s of the newest in its listing is pulled again at the first sync at least 1 s later. Bytes read that are the
-// ones last put there (that re-read, a touch) are not put again. A directory the computer's user can't read keeps what
-// the sink holds under it until it reads again: files.list lists one without what it holds.
+// ones last put there (that re-read, a touch) are not put again. While a directory the computer's user can't read hides
+// what the sink holds under it (files.list lists one without what it holds), a sync writes nothing and fails in words.
 import { createHash } from "node:crypto";
 import { pullTarStream, readFile } from "./files.js";
 import { WORKSPACE } from "./mount.js";
@@ -122,7 +122,7 @@ class Slots {
 }
 
 /** The folder's modes and links, from a listing; built by fromEntries, so a path such as `__proto__` is a key like any. */
-function metaOf(listing: ReadonlyMap<string, Pick<FileEntry, "type" | "mode" | "target">>): FolderMeta {
+function metaOf(listing: ReadonlyMap<string, FileEntry>): FolderMeta {
 	const modes: [string, number][] = [];
 	const links: [string, string][] = [];
 	for (const [path, entry] of [...listing].sort(([a], [b]) => (a < b ? -1 : 1))) {
@@ -196,19 +196,22 @@ export class FolderSync {
 		const failed = (code: ComputerErrorCode, words: string) => failures.push({ code, words });
 
 		// A directory listed with nothing under it where the manifest holds something may be one its user can't read:
-		// files.list keeps such a directory but not what it holds. What the manifest holds under one is kept as it is.
+		// files.list keeps such a directory but not what it holds. Then nothing is written: what is under it is unknown.
 		const parents = (entries: Iterable<[string, { type: string }]>) => new Set([...entries].filter(([, entry]) => entry.type !== "symlink").map(([path]) => parentOf(path)));
 		const [holdsNow, heldBefore] = [parents(listing), parents(manifest)];
 		const unreadable = await this.#unreadable(
 			[...listing].filter(([path, entry]) => entry.type === "dir" && heldBefore.has(path) && !holdsNow.has(path)).map(([path]) => path),
 			signal,
 		);
-		const kept = (path: string) => unreadable.some((dir) => under(path, dir));
+		if (unreadable.length > 0) {
+			const shown = unreadable.slice(0, 3).map((dir) => `${dir}/`);
+			return fail("refused", `the run's folder holds ${shown.join(", ")}${unreadable.length > shown.length ? ", ..." : ""}, which the computer's user can't read, so nothing is synced until it can (chmod u+rx)`);
+		}
 
 		// What changed: a type that differs is removed first, with what the manifest holds under it.
 		const retyped = [...listing].filter(([path, entry]) => manifest.has(path) && manifest.get(path)?.type !== entry.type).map(([path]) => path);
 		const early = new Set([...manifest.keys()].filter((path) => retyped.some((changed) => path === changed || under(path, changed))));
-		const removed = [...manifest.keys()].filter((path) => !listing.has(path) && !early.has(path) && !kept(path)).sort(deepestFirst);
+		const removed = [...manifest.keys()].filter((path) => !listing.has(path) && !early.has(path)).sort(deepestFirst);
 		for (const path of [...early].sort(deepestFirst)) {
 			const known = manifest.get(path) as Known;
 			if (known.type === "symlink") manifest.delete(path);
@@ -271,7 +274,7 @@ export class FolderSync {
 		};
 		const recorded = new Set([...manifest].filter(([, known]) => known.type !== "symlink").flatMap(([path]) => ancestors(path)));
 		for (const [path, entry] of listing) if (entry.type === "symlink" && open(path)) manifest.set(path, knownOf(entry, true));
-		const dirs = [...listing].filter(([path, entry]) => entry.type === "dir" && open(path) && !unreadable.includes(path)).sort(([a], [b]) => deepestFirst(a, b));
+		const dirs = [...listing].filter(([path, entry]) => entry.type === "dir" && open(path)).sort(([a], [b]) => deepestFirst(a, b));
 		for (const [path, entry] of dirs) {
 			const isNew = newDirs.has(path);
 			let made = false;
@@ -300,7 +303,7 @@ export class FolderSync {
 		}
 
 		// The modes and links last, once everything else landed, where they differ from the last written.
-		const meta = metaOf(new Map<string, Pick<FileEntry, "type" | "mode" | "target">>([...listing, ...[...manifest].filter(([path]) => kept(path))]));
+		const meta = metaOf(listing);
 		const json = JSON.stringify(meta);
 		if (failures.length === 0 && json !== this.#meta) {
 			const wrote = await this.#sink.meta(meta).catch((error: unknown) => fail("refused", error instanceof Error ? error.message : String(error)));

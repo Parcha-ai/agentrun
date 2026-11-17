@@ -141,26 +141,26 @@ const refusingSink = (refusing) => {
 	return sink;
 };
 
-test("a directory the computer's user can't read keeps what the sink holds under it: nothing is deleted, its modes and links stay, and an emptied one still empties", async () => {
+test("a directory the computer's user can't read hides what the sink holds under it: the sync writes nothing and says so; readable again, it goes on, and an emptied one empties", async () => {
 	const state = { entries: [dir("d"), file("d/a"), link("d/l", "a"), dir("e"), file("e/b")] };
 	const sink = fakeSink();
 	const sync = new FolderSync(scripted(state), sink);
 	assert.deepEqual(await sync.baseline(), { ok: true, value: undefined });
 	// chmod 000 d: files.list keeps d, without what it holds, and a files.list of d alone is refused. rm e/b: e is empty.
-	state.entries = [dir("d", 0), dir("e")];
+	// A new file beside them waits too: nothing past an unknown is written.
+	state.entries = [dir("d", 0), dir("e"), file("n")];
 	state.unreadable = ["/workspace/d"];
-	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 1, removed: 1, meta: true } });
+	assert.deepEqual(await sync.sync(), { ok: false, error: { code: "refused", message: "the run's folder holds d/, which the computer's user can't read, so nothing is synced until it can (chmod u+rx)" } });
+	assert.deepEqual(sink.calls, []);
+	// Readable again, as it was: e empties, n lands, d is as the sink holds it.
+	state.entries = [dir("d"), file("d/a"), link("d/l", "a"), dir("e"), file("n")];
+	state.unreadable = [];
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 1, mkdir: 1, removed: 1, meta: false } });
 	assert.deepEqual(sink.calls, [
+		["put", "n", "A"],
 		["mkdir", "e"],
 		["remove", "e/b", "file"],
-		["meta", { modes: { d: 0 }, links: { "d/l": "a" } }],
 	]);
-	// Readable again, as it was: nothing to write.
-	sink.calls.length = 0;
-	state.entries = [dir("d"), file("d/a"), link("d/l", "a"), dir("e")];
-	state.unreadable = [];
-	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 0, meta: true } });
-	assert.deepEqual(sink.calls, [["meta", { modes: {}, links: { "d/l": "a" } }]]);
 });
 
 test("a path whose old entry the sink did not remove keeps it: the next sync removes it again before it writes the new one", async () => {
