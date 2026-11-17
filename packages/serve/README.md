@@ -2259,9 +2259,16 @@ key, in order, and undoes what it made when a later step fails:
 
 A config field named like a credential is sealed at the create. That is a field whose value is a string (not empty) or
 a number, and where a word of the name, read as its singular (`tokens` as `token`), is secret, password, passwd,
-passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, authorization, bearer or cookie; where
-connection is followed by string (`connection_string`); or where the last word is key (`api_key`, `api_keys`). The rule
-errs toward sealing: `max_tokens` is sealed too. A field the event's schema marks with `format: "password"` or
+passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, sig, authorization, bearer or cookie;
+where connection is followed by string (`connection_string`); or where the last word is key (`api_key`, `api_keys`). A
+credential word right next to a count word (max, min, num, number, count, limit, total, used, usage, budget, remaining,
+per, length, size or quota) names a count, not a credential: `max_tokens`, `token_count`, `token_limit`, `tokens_used`
+and `maxTokens` stay as they are, a number in one too, while `access_token`, `refresh_token` and `bot_token` are sealed.
+A string that is an address carrying a credential, in any scheme (`https`, `postgres`, `redis`, `amqp`,
+`mongodb+srv`...), is sealed whole, whatever its field's name and at any depth: one with a user part (`user:pass@`,
+`:pass@`, or a token alone as in `https://TOKEN@host`), or with a query or fragment parameter named by the rule above
+(`token`, `api_key`, `access_token`, `sig`) that has a value. An address with none stays as it is; one whose user part
+holds no secret (`ssh://git@host`) is sealed all the same. A field the event's schema marks with `format: "password"` or
 `writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
 such a value below the config's top level is refused `422`, naming it. For example, HubSpot's deal-stage event takes
 `{app_id, developer_api_key}`. Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
@@ -2273,7 +2280,13 @@ takes them as passwords. A PATCH that leaves a sealed field out or sends `"[seal
 change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
 The trigger's delete retires the value into a sealed row until the runs that saw it end. A trigger saved by an earlier server with such a value in plain text is answered
 masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
-and sealed at the next start (by its name alone: no schema is read then). On SQLite that rewrite runs with
+and sealed at the next start by the same rule. After that start, without holding it up, the server reads the schema of
+each event such a trigger uses, once, and seals the fields it marks the same way, logging `composio_config_sealed` per
+trigger. It writes a trigger only while the trigger is as it read it: one changed or deleted meanwhile is left (its
+values sealed for it removed again, the log saying `composio_config_not_sealed`) for the next start. Being already
+serving, it runs no `VACUUM`: the rewrite runs with `secure_delete` on, the marker below stays, the log says
+`store_scrub_not_done` with `reason=deferred`, and the next start's scrub finishes it before it serves. When Composio
+can't be reached, the log says `composio_config_schemas_unread` once with a code and the next start tries again. On SQLite that rewrite runs with
 `secure_delete` on, then a `VACUUM` and a WAL checkpoint,
 so the store's files keep no copy of the old row: neither the one rewritten nor one an earlier update of the row left in
 free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
