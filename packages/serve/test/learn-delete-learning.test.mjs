@@ -14,7 +14,8 @@ import { storeOn } from "./store-helpers.mjs";
 const { deleteLearning, LearningInFlight } = await import("../dist/learn/delete.js");
 const { learningFolderOf, seedOf } = await import("../dist/learning.js");
 const { promotionsOf, gradesOf } = await import("../dist/learn/promote.js");
-const { readAudits } = await import("../dist/learn/audit.js");
+const { auditChange, ledgerOf, readAudits } = await import("../dist/learn/audit.js");
+const { writeLearning } = await import("../dist/learn/folder.js");
 
 const KEYS = (agentId) => [`learning.promotions.${agentId}`, `learning.grades.${agentId}`, `learning.evals.${agentId}`];
 const ROW = { run: "run-1", shadow_run: "audit.run-1", workflow: "answer", digest: "a".repeat(16), promoted_at: null, source: "shadow", agreed: true, served_cost: 0.1, shadow_cost: 0.4, at: "2026-11-17T06:00:00.000Z" };
@@ -29,7 +30,8 @@ async function learned(t) {
     await store.agents.create({ id: agentId, name: agentId }, { id: `rev-${agentId}`, kind: "agentic", body: { instructions: "Go.", learning: true } });
     await seedOf(data, agentId);
     const { workspace, end } = learningFolderOf(data, agentId);
-    await workspace.append("audits.jsonl", `${JSON.stringify(ROW)}\n`);
+    // The ledger is read from the folder's main, so its row is committed there as the host appends one.
+    await writeLearning(workspace, async (folder) => ({ result: null, change: auditChange(await ledgerOf(folder), [ROW]).change }));
     await end();
     await store.settings.put(`learning.promotions.${agentId}`, { v: 1, items: [{ workflow: "answer", digest: "a".repeat(16), at: "2026-11-17T06:00:00.000Z", decided: "promote", reason: "checked" }] });
     await store.settings.put(`learning.grades.${agentId}`, { v: 1, items: [{ run: "run-1", correct: true, source: "feedback", at: "2026-11-17T06:00:00.000Z", path: "agent" }] });

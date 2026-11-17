@@ -135,6 +135,133 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, after_state: afterState, times_cheaper: times, hand_backs: handBacks, withheld, replay };
 }
 
+/** The paths of the runs that do a job: the bill's run index counts these. A replay checks a revision and an audit's
+ *  shadow audits a run: their spend is learning, booked where it falls (billOf) and carried by the runs they serve. */
+export const JOB_PATHS: readonly RunPath[] = ["agent", "workflow", "handed_back"];
+
+/** One run of the bill: `n` its place among the agent's runs that do a job (JOB_PATHS, 1 the first), `actual_usd` the
+ *  booked $ to it, every run before it included, and `agent_usd` the agent for all of it: the baseline times the runs
+ *  the bill shows to it (null with no baseline). */
+export type BillPoint = { n: number; run_id: string; actual_usd: number; agent_usd: number | null };
+
+/** A revision's learning spend and what its served runs carry of it (amortize): `spend_usd` (its check's replay runs;
+ *  null when one's cost is unknown), `k` the served runs it is spread over (its check's compile_after), `served` how
+ *  many of those have run, `attributed_usd` what they carry, `unattributed_usd` the rest, and `state`: `checking`
+ *  (its check is at work), `serving` (it is the champion) or `stopped` (held or replaced: nothing more will carry it). */
+export type RevisionSpend = { workflow: string; digest: string; spend_usd: number | null; k: number; state: "checking" | "serving" | "stopped" };
+export type RevisionShare = RevisionSpend & { served: number; attributed_usd: number | null; unattributed_usd: number | null };
+
+/** The owner's bill over the series (GET /agents/{id}/learning/cost `bill`, billOf), booked $ only: `points`, one a run
+ *  that does a job; `baseline` the mean own $ (learning left out) of the `agent` runs before the first promotion (every
+ *  one with none yet) known exactly; `promoted` the first run from the first promotion on; `break_even` the first run from
+ *  `promoted` on after which `actual_usd` never again exceeds `agent_usd` (null: not yet, or nothing promoted), and
+ *  `gap_usd` the bill less the line at the last run while there is none; `withheld` the runs (a replay among them) whose
+ *  cost is unknown or only a bound, on neither line; `booked_usd` the last point's `actual_usd`. With the v2 split
+ *  (amortize): `revisions` and `unattributed_usd`, the spend no run carries yet. */
+export type Bill = {
+  baseline: { runs: number; mean_usd: number } | null;
+  promoted: { n: number; run_id: string; at: string } | null;
+  points: BillPoint[];
+  break_even: { n: number; run_id: string } | null;
+  gap_usd: number | null;
+  withheld: number;
+  booked_usd: number;
+  revisions: RevisionShare[];
+  unattributed_usd: number | null;
+};
+
+const micro = (value: number) => Math.round(value * 1e6);
+
+/** The bill over `runs` (the cost series, oldest first, replays among them) and `promotedAt` (when the agent's first
+ *  promotion was decided, null for none): each run that does a job, all in (its own $, its look-back, grade and audit
+ *  shadow), with each replay's $ joining the run that does a job it followed (the first one when none did), cumulative;
+ *  against the baseline times the runs shown so far. Sums are in micro-dollars, so a tie reads as a tie. */
+export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omit<Bill, "revisions" | "unattributed_usd"> {
+  const jobs = runs.filter((run) => JOB_PATHS.includes(run.path));
+  const priced = (run: CostRun) => run.total_usd !== null && !run.cost_upper_bound;
+  const before = jobs.filter((run) => run.path === "agent" && (promotedAt === null || run.started_at < promotedAt) && run.cost_usd !== null && !run.cost_upper_bound);
+  const baseline = before.length ? { runs: before.length, mean_usd: usd(before.reduce((sum, run) => sum + run.cost_usd!, 0) / before.length) } : null;
+  // Each replay's $ joins the job it followed; one before every job joins the first.
+  const extra = new Map<string, number>();
+  let withheld = 0;
+  let last: string | undefined;
+  const early: number[] = [];
+  for (const run of runs) {
+    if (JOB_PATHS.includes(run.path)) {
+      last = run.run_id;
+      if (early.length) extra.set(last, (extra.get(last) ?? 0) + early.splice(0).reduce((a, b) => a + b, 0));
+      continue;
+    }
+    if (run.path !== "replay") continue;
+    if (!priced(run)) {
+      withheld += 1;
+      continue;
+    }
+    if (last === undefined) early.push(micro(run.total_usd!));
+    else extra.set(last, (extra.get(last) ?? 0) + micro(run.total_usd!));
+  }
+  const points: BillPoint[] = [];
+  let actual = 0;
+  let shown = 0;
+  const line = baseline ? micro(baseline.mean_usd) : null;
+  const diffs: number[] = [];
+  jobs.forEach((run, at) => {
+    if (!priced(run)) {
+      withheld += 1;
+      actual += extra.get(run.run_id) ?? 0;
+      return;
+    }
+    shown += 1;
+    actual += micro(run.total_usd!) + (extra.get(run.run_id) ?? 0);
+    const agent = line === null ? null : line * shown;
+    points.push({ n: at + 1, run_id: run.run_id, actual_usd: actual / 1e6, agent_usd: agent === null ? null : agent / 1e6 });
+    diffs.push(agent === null ? Number.NaN : actual - agent);
+  });
+  const first = promotedAt === null ? -1 : jobs.findIndex((run) => run.started_at >= promotedAt);
+  const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: promotedAt! };
+  let breakEven: Bill["break_even"] = null;
+  if (promoted && line !== null) {
+    const from = points.findIndex((point) => point.n >= promoted.n);
+    if (from >= 0) {
+      const over = diffs.findLastIndex((diff, at) => at >= from && diff > 0);
+      const at = over < 0 ? from : over + 1;
+      if (at < points.length) breakEven = { n: points[at]!.n, run_id: points[at]!.run_id };
+    }
+  }
+  const gap = !breakEven && line !== null && points.length ? diffs.at(-1)! / 1e6 : null;
+  return { baseline, promoted, points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual / 1e6 };
+}
+
+/** Each revision's spend split over its first `k` served runs (`served`: the runs a learned workflow served, oldest
+ *  first, with the digest that served each), in micro-dollars: each carries spend/k, the first ones a micro-dollar more
+ *  until the split is exact; a run past the k-th carries none of it. `shares`: what each served run carries, by run id
+ *  (null when its revision's spend is unknown); what a revision's runs have not carried is its `unattributed_usd`, and
+ *  `unattributed_usd` their sum (null once one is unknown). */
+export function amortize(revisions: readonly RevisionSpend[], served: readonly { run_id: string; digest: string }[]): { shares: Map<string, number | null>; revisions: RevisionShare[]; unattributed_usd: number | null } {
+  const shares = new Map<string, number | null>();
+  let rest: number | null = 0;
+  const out = revisions.map((revision): RevisionShare => {
+    const runs = served.filter((one) => one.digest === revision.digest).slice(0, revision.k);
+    if (revision.spend_usd === null) {
+      for (const run of runs) shares.set(run.run_id, null);
+      rest = null;
+      return { ...revision, served: runs.length, attributed_usd: null, unattributed_usd: null };
+    }
+    const total = micro(revision.spend_usd);
+    const each = Math.floor(total / revision.k);
+    const over = total - each * revision.k;
+    let carried = 0;
+    runs.forEach((run, at) => {
+      const share = each + (at < over ? 1 : 0);
+      carried += share;
+      shares.set(run.run_id, share / 1e6);
+    });
+    if (rest !== null) rest += total - carried;
+    return { ...revision, served: runs.length, attributed_usd: carried / 1e6, unattributed_usd: (total - carried) / 1e6 };
+  });
+  return { shares, revisions: out, unattributed_usd: rest === null ? null : rest / 1e6 };
+}
+
 /** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that
  *  a spreadsheet would read as a formula (one starting with =, +, -, @, a tab or a carriage return) starts with a `'`, so
  *  it opens as the text it is. */

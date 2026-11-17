@@ -12,7 +12,8 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
-import { type CostReplay, costSummary, type CostRun, type CostSummary, RUN_PATHS, type RunPath, runCostOf } from "../learning-cost.js";
+import { amortize, type Bill, billOf, type CostReplay, costSummary, type CostRun, type CostSummary, type RevisionSpend, RUN_PATHS, type RunPath, runCostOf, SERVED_PATHS } from "../learning-cost.js";
+import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
 import { PAST_RUNS, type PastRun, servedAnswerOf, servedAnswerStands, servedOf, workflowCostsOf } from "../runner/workflow-first.js";
@@ -271,7 +272,7 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
  *  run's learning. A run that learns whose record names no path (its end's patch was late or failed, or no runner wrote
  *  its end) is left out too and counted (`unknown_path_runs`): its path and cost are not known, never `agent` at $0.
  *  `limit`: the latest runs shown, each keeping its number; the summary is over every run. */
-export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number; unknown_path_runs: number; workflows: ReturnType<typeof workflowCostsOf> }> {
+export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number; unknown_path_runs: number; workflows: ReturnType<typeof workflowCostsOf>; bill: Bill }> {
   const kinds = new Map<string, string | undefined>();
   const listed = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId);
   // Every run's launch and learning in a few reads (agentRecordsOf), never a read a run.
@@ -294,8 +295,72 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
   const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
-  const replay = servingReplayOf(await promotionsOf(store.settings, agentId), runs);
-  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs, replay), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
+  const promotions = await promotionsOf(store.settings, agentId);
+  const replay = servingReplayOf(promotions, runs);
+  // The owner's bill: booked $, every run of the series (billOf), and what of each revision's check its served runs carry.
+  const inSeries = new Set(runs.map((run) => run.run_id));
+  const ledger = revisionLedgerOf(promotions, ended.filter((run) => inSeries.has(run.id)));
+  const bill: Bill = { ...billOf(runs, firstPromotedAt(promotions)), revisions: ledger.revisions, unattributed_usd: ledger.unattributed_usd };
+  return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs, replay), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows, bill };
+}
+
+/** When the agent's first promotion was decided (the oldest record that says promote), null for none. */
+const firstPromotedAt = (records: readonly PromotionRecord[]): string | null => records.filter((one) => one.decided === "promote").map((one) => one.at).sort()[0] ?? null;
+
+type LedgerRow = Pick<RunRecord, "id" | "metrics" | "startedAt" | "costUsd" | "costAtMostUsd">;
+const metricOf = (row: LedgerRow) => (row.metrics ?? {}) as { path?: unknown; workflow_digest?: unknown };
+const digestOfRow = (row: LedgerRow): string | undefined => (typeof metricOf(row).workflow_digest === "string" ? (metricOf(row).workflow_digest as string) : undefined);
+
+/** Each revision of the agent's learned workflows (one per workflow and digest its promotion records name, in the order
+ *  they were first recorded) with its learning spend, and what its served runs carry of it (amortize), over `rows`: the
+ *  agent's ended runs that do a job or check one (no shadow, no imported or archived run). A revision's spend is its
+ *  check: the replay runs that ran it (metrics.path `replay` at its digest), whatever check of the compile (the first
+ *  draft's or the one recompile's, a revision of its own) it was; unknown once one's cost is (null, or only a bound). Its
+ *  compile turn ran in the session of the run that looked back, whose own cost (cost.usd) holds it. It is spread over its
+ *  first K served runs (`workflow` or `handed_back` at its digest), K its check's compile_after; `state` from its newest
+ *  record. */
+export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[]): ReturnType<typeof amortize> {
+  const ordered = [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+  const newest = new Map<string, PromotionRecord>();
+  for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, record);
+  const revisions = [...newest.values()].map((record): RevisionSpend => {
+    const replays = ordered.filter((row) => metricOf(row).path === "replay" && digestOfRow(row) === record.digest);
+    const known = replays.every((row) => row.costUsd !== null && typeof row.costAtMostUsd !== "number");
+    const spend = known ? Math.round(replays.reduce((sum, row) => sum + row.costUsd!, 0) * 1e6) / 1e6 : null;
+    const state = record.decided === "replaying" ? "checking" : championOf(records, record.workflow)?.digest === record.digest ? "serving" : "stopped";
+    return { workflow: record.workflow, digest: record.digest, spend_usd: spend, k: record.check?.compile_after ?? COMPILE_AFTER_DEFAULT, state };
+  });
+  const served = ordered.flatMap((row) => (SERVED_PATHS.includes(metricOf(row).path as RunPath) && digestOfRow(row) ? [{ run_id: row.id, digest: digestOfRow(row)! }] : []));
+  return amortize(revisions, served);
+}
+
+/** Run `runId`'s path and its costs as GET /runs/{id} shows them (A8): `path` its record's (metrics.path, RUN_PATHS:
+ *  `agent` for a run that does not learn; null while it has not ended, for a workflow revision's run, and for a run that
+ *  learns whose end named none); `learning_usd` the spend learning booked outside its own session and gave it: its
+ *  grades, its audit shadow's cost, and its share of its revision's check (revisionLedgerOf); `all_in_usd` its own
+ *  cost (its row's: `usd`) and that. A replay or a shadow run carries none: its spend is on the runs it serves, so its
+ *  `learning_usd` and `all_in_usd` are 0, and the sum of every run's `all_in_usd` and the bill's `unattributed_usd` is
+ *  the booked total. Null while unknown (the run or its shadow still at work, a grade's or a check's cost unknown),
+ *  never $0. Undefined for an unknown run. */
+export async function runAllInOverStore(store: Store, runId: string, usd?: number | null): Promise<{ path: RunPath | null; learning_usd: number | null; all_in_usd: number | null } | undefined> {
+  const run = await store.runs.get(runId);
+  if (!run) return undefined;
+  const own = usd === undefined ? (typeof run.costAtMostUsd === "number" ? null : run.costUsd) : usd;
+  const ended = FINAL_STATES.includes(run.state);
+  const kind = (await store.agents.revision(run.revisionId))?.kind;
+  const started = kind === "workflow" ? undefined : await learningStartOfRun(store, run.id).catch(() => undefined);
+  const path = !ended || kind === "workflow" ? null : (pathOfRow(run.metrics, started)?.path ?? null);
+  if (!ended) return { path, learning_usd: null, all_in_usd: null };
+  if (path === "replay" || path === "audit" || isShadowRun(run.id)) return { path, learning_usd: 0, all_in_usd: 0 };
+  const { grade } = await learningSpendOf(store, run.id, run.costUsd);
+  const shadow = (await shadowSpendOf(store, run.id)).usd;
+  let share: number | null = 0;
+  if (path !== null && SERVED_PATHS.includes(path) && digestOfRow(run)) {
+    const listed = (await store.runs.list({ agentId: run.agentId })).filter((one) => one.agentId === run.agentId && FINAL_STATES.includes(one.state) && !one.importedFrom && one.archivedAt === null && !isShadowRun(one.id));
+    share = revisionLedgerOf(await promotionsOf(store.settings, run.agentId), listed).shares.get(run.id) ?? 0;
+  }
+  const learning = grade === null || shadow === null || share === null ? null : Math.round((grade + shadow + share) * 1e6) / 1e6;
+  return { path, learning_usd: learning, all_in_usd: learning === null || own === null ? null : Math.round((own + learning) * 1e6) / 1e6 };
 }
 
 /** The check the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
@@ -403,7 +468,20 @@ export async function costRunOf(store: RunRecords, run: RunRecord, n: number): P
 export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
-  for (const run of await store.runs.list({ agentId, limit: PAST_RUNS })) {
+  const page = await store.runs.list({ agentId, limit: PAST_RUNS });
+  // Each run's audit shadow is read off the page (allInOf's shadowSpendOf): a shadow starts after the run it audits ends,
+  // so it is newer than that run and on the same page of the newest runs; one not on it was never started.
+  const shadows = new Map(page.filter((run) => isShadowRun(run.id)).map((run) => [run.id, run]));
+  const learningStart = records.runs.learningStart;
+  const paged: RunRecords = {
+    learning: records.learning,
+    runs: {
+      launch: (id) => records.runs.launch(id),
+      get: (id) => (isShadowRun(id) ? Promise.resolve(shadows.get(id)) : records.runs.get(id)),
+      ...(learningStart ? { learningStart: (id: string) => learningStart.call(records.runs, id) } : {}),
+    },
+  };
+  for (const run of page) {
     if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null || isShadowRun(run.id)) continue;
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) !== "workflow") kept.push(run);
@@ -411,7 +489,7 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   // A few reads a run, a batch at a time: a launch reads up to PAST_RUNS of them.
   const past: PastRun[] = [];
   for (let at = 0; at < kept.length; at += 16) {
-    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(records, run)).total_usd })))));
+    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(paged, run)).total_usd })))));
   }
   return past;
 }

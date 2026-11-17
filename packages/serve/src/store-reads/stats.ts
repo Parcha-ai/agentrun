@@ -5,6 +5,7 @@
 // out what is archived; a run's archive is its own or its agent's.
 import type { Store } from "../store/store.js";
 import { runReadState, type RunReadState } from "./runs.js";
+import { isShadowRun } from "../learn/audit.js";
 
 /** The run states the stats count by, as the old store named them. */
 export type RunState = RunReadState;
@@ -48,13 +49,20 @@ export async function stats(store: Store): Promise<StoreStats> {
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind === "workflow" ? "workflow" : "agentic");
     const state = runReadState(run, kinds.get(run.revisionId)!);
     const runArchived = run.archivedAt !== null;
-    if (state === "running" && !runArchived && !archivedAgent.has(run.agentId)) running.push(run.id);
+    // An audit's shadow run is learning spend on the run it audits, never a run of its own: its cost, once known, is in
+    // the dollars; it is in no count, and never running work.
+    const shadow = isShadowRun(run.id);
+    if (state === "running" && !runArchived && !archivedAgent.has(run.agentId) && !shadow) running.push(run.id);
     if (runArchived) {
-      hidden.set(run.agentId, (hidden.get(run.agentId) ?? 0) + 1);
+      if (!shadow) hidden.set(run.agentId, (hidden.get(run.agentId) ?? 0) + 1);
       continue;
     }
     let g = shown.get(run.agentId);
     if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, known: 0 }));
+    if (shadow) {
+      if (state !== "running" && run.costUsd !== null) g.costUsd += run.costUsd;
+      continue;
+    }
     g.counts.total += 1;
     g.counts[state] += 1;
     if (state !== "running" && run.costUsd !== null) {

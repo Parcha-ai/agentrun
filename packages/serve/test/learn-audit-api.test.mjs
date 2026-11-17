@@ -83,7 +83,7 @@ async function world(t, learning, tools = [], options = {}) {
   return { ...server, doc, meets, run, shadowOf, main };
 }
 
-test("(h) served runs over v2 read like any run: the answer text, documented timeline kinds, cost.usd all in with the shadow's; the shadow is the audit of its run and no row of the list; the workflow's state, check numbers, audit line and rows are v2 reads", { timeout: 300_000 }, async (t) => {
+test("(h) served runs over v2 read like any run: the answer text, documented timeline kinds in the documented order, its path, cost.usd its own and the shadow's on learning_usd; the shadow is the audit of its run and no row of the list; the workflow's state, check numbers, audit line and rows are v2 reads", { timeout: 300_000 }, async (t) => {
   const { api, store, doc, meets, run, shadowOf } = await world(t, { audit_every: 1 });
   const alone = await run({ content: "What is 1 plus 41?" });
   const escalated = await run({ content: HAND_BACK });
@@ -103,6 +103,14 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
     const rows = (await api("GET", `/runs/${id}/timeline`)).body.rows;
     assert.ok(rows.length > 0);
     for (const row of rows) assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, row), [], JSON.stringify(row));
+    // Its row sequence, as openapi's learned_nodes and llms.txt say: the message, the learned_workflow call and its result,
+    // then the answer and the usage; a hand-back puts a phase row and the agent's own rows between the two.
+    const kinds = rows.map((row) => row.kind);
+    assert.deepEqual(kinds.slice(0, 3), ["user_message", "tool_use", "tool_result"], JSON.stringify(kinds));
+    assert.deepEqual(rows.slice(1, 3).map((row) => row.tool_name), ["learned_workflow", "learned_workflow"]);
+    assert.deepEqual(kinds.slice(-2), ["final_answer", "usage"], JSON.stringify(kinds));
+    if (path === "workflow") assert.equal(kinds.length, 5, `served alone, nothing else: ${JSON.stringify(kinds)}`);
+    else assert.equal(kinds[3], "phase", `a hand-back opens with a phase row: ${JSON.stringify(kinds)}`);
     // Its path; cost.usd its own requests (its hand-back's among them); its shadow's on learning_usd (its revision's
     // check ran no replay run here: nothing else to pass on), all_in_usd the two.
     assert.equal(view.path, path);
