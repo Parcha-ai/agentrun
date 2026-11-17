@@ -2930,7 +2930,11 @@ AgentRun Server is for one person, who signs in to the console with a password (
 no `AGENTRUN_PUBLIC_URL`, listening on loopback (the default), the start prints `Set your password: <url>/setup`, and the
 first visit sets it, 12 characters or more. With a public address, or listening on any other address (`0.0.0.0` in the
 image, a LAN address), the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the
-token, in the code field or as the Bearer): anyone who reaches the port could otherwise set the password first. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+token, in the code field or as the Bearer): anyone who reaches the port could otherwise set the password first. A code
+works once and lasts 30 minutes. `POST /v2/setup/code`, with no credential (the console's **Get a new code**), prints a
+new one to the log when the last is expired or spent and keeps one still good, so this request never voids a link
+someone holds; it answers `{printed, expires_at}`, never the code, and 403 once the password is set, while it is being set, or where setup
+takes no code. A restart prints a new code too. The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
 session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days.
 **Sign out** (`POST /v2/auth/sign-out`) signs out this browser: its session is revoked on the server (a copy of its
 cookie stops working too) and its cookie cleared, and every other browser stays signed in. **Sign out everywhere** (`POST /v2/auth/sign-out-everywhere`) ends every session on every browser and phone,
