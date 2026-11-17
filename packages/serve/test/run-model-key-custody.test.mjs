@@ -96,8 +96,11 @@ test("a server with no model key: a run and a message without model_key are 422 
   assert.deepEqual([...new Set(bearers(gw))], [`Bearer ${KEY_ONE}`], "every request tied to the run carried the run's first key, and only it");
   await until(async () => (await store.runs.launch(runId)).sealed === null, "the turn's end erases the run's key");
 
+  const commandsBefore = (await store.commands(runId, 0)).length;
   const missing = await api("POST", `/runs/${runId}/messages`, { content: "And then?" });
   assert.deepEqual([missing.status, missing.body.error?.code], [422, "model_key_required"], JSON.stringify(missing.body));
+  // Refused inside the message's own write, which then writes nothing: the run is not opened again, no steer is queued.
+  assert.deepEqual([(await api("GET", `/runs/${runId}`)).body.status, (await store.commands(runId, 0)).length], ["completed", commandsBefore], "nothing written");
   const before = bearers(gw).length;
   const sent = await api("POST", `/runs/${runId}/messages`, { content: "And then?", model_key: KEY_TWO });
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
