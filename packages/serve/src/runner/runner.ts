@@ -459,11 +459,13 @@ export function startRunner(options: RunnerOptions): Runner {
             if (!PASSES_A_BLOCKED_ROW.has(row.kind) || held.passed.has(row.id)) continue;
             try {
               const passed = await held.loop.command(row);
-              held.passed.add(row.id);
+              // Marked handed on only once its answer is kept: a refusal whose write fails is asked of the loop again at the
+              // next delivery, so its caller hears it once the store answers, never a silence.
               if ("refused" in passed) {
                 await store.take(held.claim, row.id, "refused", passed.refused);
                 emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: passed.refused });
               }
+              held.passed.add(row.id);
             } catch (error) {
               if (isFenced(error) || held.sealed || killed) throw error;
             }

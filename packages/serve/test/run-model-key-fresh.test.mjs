@@ -203,3 +203,55 @@ test("a stop that keeps the run's computer, behind a message whose key cannot be
   const steer = (await opened.server.commands("run-1", 0)).find((command) => command.kind === "steer");
   assert.equal(steer.takenAt, null, "the message stays untaken");
 });
+
+test("a computer command refused past a blocked message whose refusal write fails is asked again at the next delivery, and its refusal is kept once the store answers (red before: it was marked handed on before the write, and its caller never heard)", { timeout: 30_000 }, async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const seen = [];
+  let finish = () => {};
+  const createLoop = () => {
+    const ended = new Promise((resolve) => (finish = resolve));
+    return {
+      start: () => ended,
+      command: async (row) => {
+        seen.push(row.kind);
+        if (row.kind === "steer") throw new Error("the run's model key could not be read from its launch (injected)");
+        return { refused: "no computer is held for this run (fake)" };
+      },
+      stop: async (reason) => void (reason.kind !== "command" && finish({ state: "failed", error: { code: "stopped", message: "stopped" } })),
+    };
+  };
+  // The runner's store, whose first refusal write fails, as a store that cannot be reached for a moment does.
+  const base = opened.runners[0];
+  let takeFails = 1;
+  const store = new Proxy(base, {
+    get: (target, key) => {
+      if (key === "take") {
+        return async (...args) => {
+          if (args[2] === "refused" && takeFails > 0) {
+            takeFails -= 1;
+            throw new Error("the store could not be written (injected)");
+          }
+          return target.take(...args);
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await until(async () => (await opened.server.runs.get("run-1")).runner !== null, "the run claimed");
+  await opened.server.command("run-1", { kind: "steer", body: { text: "and then?" } });
+  await until(() => seen.includes("steer"), "the message's delivery failed");
+  const call = await opened.server.command("run-1", { kind: "computer_call", body: {} });
+  const row = await until(async () => {
+    const now = (await opened.server.commands("run-1", call.id - 1)).find((command) => command.id === call.id);
+    return now?.refused ? now : undefined;
+  }, "the computer call's refusal kept once the store answered", 10_000);
+  assert.equal(takeFails, 0, "the first refusal write failed");
+  assert.equal(row.refused, "no computer is held for this run (fake)");
+  assert.ok(seen.filter((kind) => kind === "computer_call").length >= 2, `asked again after the failed write: ${JSON.stringify(seen)}`);
+  const steer = (await opened.server.commands("run-1", 0)).find((command) => command.kind === "steer");
+  assert.equal(steer.takenAt, null, "the message stays untaken");
+});
