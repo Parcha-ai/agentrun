@@ -207,6 +207,17 @@ test("before generating, an earlier unpublished AgentRun template that deploys s
   assert.match(rows.find((r) => r[0] === "template generated")[2], /replaces live/);
 });
 
+test("a failed deploy is reported with its last log lines, the setup code's line left out, and its project still deleted", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const call = client.call.bind(client);
+  client.call = async (op, v) => (op === "Deployments" ? (await call(op, v), { deployments: { edges: [{ node: { id: "<deployment>", status: "FAILED" } }] } }) : call(op, v));
+  const rows = await run(client, { workspaceId: "ws", log: quiet });
+  const stopped = rows.find((r) => r[0] === "stopped")[2];
+  assert.match(stopped, /deploy ended FAILED[\s\S]*Healthcheck failed![\s\S]*\(a line with the setup code, not shown\)/);
+  assert.doesNotMatch(stopped, /#code=/);
+  assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
+});
+
 test("a workspace not named as expected stops the run before anything is made", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws", workspaceName: "Someone else" });
   const rows = await run(client, { workspaceId: "ws", expectWorkspace: "Parcha", log: quiet });

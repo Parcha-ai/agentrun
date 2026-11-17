@@ -61,6 +61,7 @@ export const OPS = {
   Domains: `query Domains($projectId: String!, $environmentId: String!, $serviceId: String!) { domains(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) { serviceDomains { domain targetPort } } }`,
   Variables: `query Variables($projectId: String!, $environmentId: String!, $serviceId: String!) { variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) }`,
   DeploymentLogs: `query DeploymentLogs($id: String!, $filter: String) { deploymentLogs(deploymentId: $id, filter: $filter, limit: 200) { message timestamp } }`,
+  BuildLogs: `query BuildLogs($id: String!) { buildLogs(deploymentId: $id, limit: 200) { message timestamp } }`,
   Usage: `query Usage($projectId: String!, $startDate: DateTime) { usage(projectId: $projectId, startDate: $startDate, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_GB]) { measurement value } }`,
   TemplatePublish: `mutation TemplatePublish($id: String!, $input: TemplatePublishInput!) { templatePublish(id: $id, input: $input) { id code status } }`,
   ProjectDelete: `mutation ProjectDelete($id: String!) { projectDelete(id: $id) }`,
@@ -157,7 +158,7 @@ export async function checkApi(client, log) {
     ProjectRename: { id, name: WALK_PROJECT }, WorkflowStatus: { id }, Project: { id },
     Deployments: { input: { projectId: id, environmentId: id, serviceId: id } },
     Domains: { projectId: id, environmentId: id, serviceId: id }, Variables: { projectId: id, environmentId: id, serviceId: id },
-    DeploymentLogs: { id, filter: "Set up this server" },
+    DeploymentLogs: { id, filter: "Set up this server" }, BuildLogs: { id },
     Usage: { projectId: id, startDate: new Date(0).toISOString() },
     TemplatePublish: { id, input: { ...PUBLISH, readme: "check", workspaceId: id } },
     ProjectDelete: { id }, TemplateDelete: { id, input: { workspaceId: id } },
@@ -290,6 +291,14 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
 
 const minutes = (ms) => `${(ms / 60_000).toFixed(1)} min`;
 
+/** A failed deployment's last build and deploy log lines, read before its project is deleted. A line with the setup
+ *  code in it is left out. */
+async function lastLines(client, id) {
+  const read = async (op, field) => (await client.call(op, { id }).then((d) => d[field], (e) => [{ message: `(${op}: ${e.message})` }])).slice(-25);
+  const lines = [...(await read("BuildLogs", "buildLogs")), ...(await read("DeploymentLogs", "deploymentLogs"))];
+  return lines.map((l) => `    ${/#code=|setup code|AGENTRUN_TOKEN=/i.test(l.message) ? "(a line with the setup code, not shown)" : l.message}`).join("\n");
+}
+
 /** What the project used, from Railway's usage query, costed at the list prices; or why it could not be read. */
 async function usageOf(client, projectId, since) {
   try {
@@ -328,7 +337,7 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     if (!environmentId || !serviceId) throw new Error(`the walk's project has no service named ${service.name}`);
     const deployment = await until(client, "the service's deploy succeeded", 20 * 60_000, 10_000, async () => {
       const d = edges((await client.call("Deployments", { input: { projectId, environmentId, serviceId } })).deployments)[0];
-      if (d && ["FAILED", "CRASHED", "REMOVED", "SKIPPED"].includes(d.status)) throw new Error(`the service's deploy ended ${d.status} (deployment ${d.id})`);
+      if (d && ["FAILED", "CRASHED", "REMOVED", "SKIPPED"].includes(d.status)) throw new Error(`the service's deploy ended ${d.status} (deployment ${d.id}); its last log lines:\n${await lastLines(client, d.id)}`);
       return d?.status === "SUCCESS" ? d : undefined;
     });
     times.deployed = Date.now();
@@ -515,6 +524,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     Deployments: () => ({ deployments: { edges: [{ node: { id: "<deployment>", status: "SUCCESS", createdAt: "<time>" } }] } }),
     Domains: () => ({ domains: { serviceDomains: [{ domain, targetPort: 7340 }] } }),
     Variables: () => ({ variables: env }),
+    BuildLogs: () => ({ buildLogs: [{ message: "Healthcheck failed!", timestamp: "<time>" }] }),
     DeploymentLogs: () => ({ deploymentLogs: [{ message: `Set up this server: https://${domain}/setup#code=${"x".repeat(22)} (or paste AGENTRUN_TOKEN)`, timestamp: "<time>" }] }),
     Usage: () => ({ usage: [{ measurement: "CPU_USAGE", value: 0.5 }, { measurement: "MEMORY_USAGE_GB", value: 3 }, { measurement: "DISK_USAGE_GB", value: 2 }, { measurement: "NETWORK_TX_GB", value: 0.001 }] }),
     TemplatePublish: () => ({ templatePublish: { id: "<template>", code: "<code>", status: "PUBLISHED" } }),
