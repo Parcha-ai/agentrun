@@ -7,12 +7,13 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, patchVersion } from "../scripts/dial-conformance.mjs";
+import { driftedVersion, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -177,6 +178,93 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
   assert.deepEqual(await refused, ["HTTP/1.1 404 Not Found", "HTTP/1.1 404 Not Found"]);
   assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address still answered by another process (a host's previous instance) is waited out", { skip: BUILT, timeout: 120_000 }, async () => {
+  const port = await freePort();
+  // The public address, as a host that picks an instance per connection moves it over: its first four connections stay
+  // with the previous instance, which answers every request on them with its own /v2/health (no run id) and keeps them
+  // open, so an ask that kept one alive would never reach the script; every later connection goes to the script as is
+  // (the machine's daemon fetch with its token, and its attach socket).
+  let asked = 0;
+  const front = createServer((socket) => {
+    socket.on("error", () => undefined);
+    if (++asked <= 4) {
+      let said = "";
+      return void socket.on("data", (chunk) => {
+        said += chunk;
+        for (; said.includes("\r\n\r\n"); said = said.slice(said.indexOf("\r\n\r\n") + 4)) socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: keep-alive\r\n\r\n{"status":"ok"}');
+      });
+    }
+    const behind = connect(port, "127.0.0.1");
+    behind.on("error", () => socket.destroy());
+    socket.pipe(behind).pipe(socket);
+  });
+  await new Promise((done) => front.listen(0, "127.0.0.1", done));
+  try {
+    const ran = await run(["--provider", FIXTURE, "--only", "health.declared"], { PORT: String(port), AGENTRUN_PUBLIC_URL: `http://127.0.0.1:${front.address().port}/` });
+    const lines = ran.stderr.split("\n");
+    const at = (start) => lines.findIndex((line) => line.startsWith(`dial-conformance: ${start}`));
+    const health = `http://127.0.0.1:${front.address().port}/v2/health`;
+    assert.ok(at(`${health} reaches another process`) >= 0, ran.stderr);
+    assert.ok(at(`${health} reaches this process (3 answers in a row, after`) > at(`${health} reaches another process`), ran.stderr);
+    assert.match(ran.stderr, /and 4 answers from another\)/);
+    assert.ok(at("skip health.declared") > at(`${health} reaches this process`), "the run's first case comes after");
+    assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
+  } finally {
+    await new Promise((done) => front.close(done));
+  }
+});
+
+test("reachesThisRun: three of this run's answers in a row, a miss or a failed ask starting the count again; past its time it refuses in words; its signal stops an ask in flight and the wait between asks", async () => {
+  const answers = (said) => {
+    const asked = [];
+    const ask = async (url) => {
+      asked.push(url);
+      const one = said[asked.length - 1] ?? "old";
+      if (one === "down") throw new Error("connect ECONNREFUSED");
+      return { status: 200, run: one === "mine" ? "run-1" : undefined };
+    };
+    return { asked, ask };
+  };
+  const ok = answers(["old", "mine", "mine", "down", "mine", "old", "mine", "mine", "mine"]);
+  await reachesThisRun("https://dial.example.test/", "run-1", undefined, { every: 1, ask: ok.ask });
+  assert.deepEqual([ok.asked.length, new Set(ok.asked)], [9, new Set(["https://dial.example.test/v2/health"])]);
+  const never = answers([]);
+  await assert.rejects(reachesThisRun("https://dial.example.test", "run-1", undefined, { within: 50, every: 5, ask: never.ask }), {
+    message: /^https:\/\/dial\.example\.test\/v2\/health did not reach this process within 0 s \(last: 200 from another process\): the machines would dial another, so nothing was created$/,
+  });
+  // Stopped while it waits a minute between asks, and while an ask that never answers is in flight: at once, either way.
+  const stalled = (url, signal) => new Promise((_, fail) => signal.addEventListener("abort", () => fail(signal.reason), { once: true }));
+  for (const ask of [never.ask, stalled]) {
+    const stop = new AbortController();
+    const begun = Date.now();
+    setTimeout(() => stop.abort(new Error("stopped")), 50);
+    await assert.rejects(reachesThisRun("https://dial.example.test", "run-1", stop.signal, { every: 60_000, ask }), { message: /stopped|aborted/ });
+    assert.ok(Date.now() - begun < 5_000, `stopped after ${Date.now() - begun} ms`);
+  }
+});
+
+test("reachesThisRun's ask opens a connection for each ask, even to a server that keeps them alive", async () => {
+  let connections = 0;
+  const server = createHttpServer((req, res) => res.writeHead(200, { "x-dial-conformance-run": "run-1", "content-length": "2", connection: "keep-alive" }).end("{}"));
+  server.keepAliveTimeout = 60_000;
+  server.on("connection", () => connections++);
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    await reachesThisRun(`HTTP://127.0.0.1:${server.address().port}`, "run-1", undefined, { every: 1 });
+    assert.equal(connections, 3);
+    // A scheme in capitals is the URL's own: HTTPS:// goes to the TLS client, whose handshake this plain server fails,
+    // rather than to the plain one, which would refuse the protocol.
+    await assert.rejects(reachesThisRun(`HTTPS://127.0.0.1:${server.address().port}`, "run-1", undefined, { within: 200, every: 50 }), (error) => {
+      assert.match(error.message, /did not reach this process within 0 s \(last: /);
+      assert.doesNotMatch(error.message, /not supported/);
+      return true;
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((done) => server.close(done));
+  }
 });
 
 test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, or with an --only that names nothing in the suite", async () => {
