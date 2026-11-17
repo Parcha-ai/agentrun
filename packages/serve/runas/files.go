@@ -14,6 +14,11 @@ import (
 // fixMode copies the owner bits to the group, clears others, setuid and
 // sticky, and keeps setgid on directories.
 func fixMode(mode uint32, isDir bool) uint32 {
+	// A directory is always the owner's to open: one a run left at 0o000 is the
+	// server's group's to enter and remove again (0o2770), never kept shut.
+	if isDir {
+		mode |= 0o700
+	}
 	m := (mode & 0o700) | ((mode & 0o700) >> 3)
 	if isDir {
 		m |= 0o2000

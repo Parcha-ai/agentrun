@@ -644,6 +644,9 @@ func TestFixMode(t *testing.T) {
 		{0o4755, false, 0o770},
 		{0o1777, true, 0o2770},
 		{0o2750, true, 0o2770},
+		{0o000, true, 0o2770},
+		{0o500, true, 0o2770},
+		{0o000, false, 0o000},
 	} {
 		if got := fixMode(c.mode, c.dir); got != c.want {
 			t.Errorf("fixMode(%#o, %v) = %#o, want %#o", c.mode, c.dir, got, c.want)
