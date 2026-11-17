@@ -319,6 +319,12 @@ describe("the owner's session", () => {
 });
 
 describe("setup's import status", () => {
+  it("sends the projects chosen at setup by id, and no import at all when none is", async () => {
+    const { fn, calls } = fakeFetch(() => json(201, { signed_in: true }));
+    const v2 = createClient({ fetch: fn });
+    await v2.setup("pw-1", undefined, ["imp-a", "imp-b"]); await v2.setup("pw-2", undefined, []);
+    expect(calls.map((c) => c.init?.body)).toEqual(['{"password":"pw-1","import":["imp-a","imp-b"]}', '{"password":"pw-2"}']);
+  });
   it("reads a 200 that says there is no offer as none, and a 404 (no such route without accounts, or to a caller not signed in) or a 403 too", async () => {
     const answers: [number, unknown][] = [
       [200, { offer: false }],
