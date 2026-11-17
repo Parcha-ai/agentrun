@@ -152,7 +152,14 @@ export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.pai
  *  run ends failed in them, past its cap too, as a cap refusal for good ends it. Its code is the cap's, so the refused
  *  request reads as the cap's refusal (no model error row of its own). */
 export const stopRun = async (words: string): Promise<void> => {
-  await ledgers.getStore()?.pause?.({ refuse: words, code: SPEND_CAP_REACHED, forGood: true });
+  const pause = ledgers.getStore()?.pause;
+  if (pause) await stopRunWith(pause)(words);
+};
+
+/** Stops the run whose pause is `pause` (its ledger's: the adapter loop's RunLedger.pause), in `words`, as stopRun does,
+ *  from any caller: one outside a tool call (the owner's computer channel) too. */
+export const stopRunWith = (pause: NonNullable<Ledger["pause"]>) => async (words: string): Promise<void> => {
+  await pause({ refuse: words, code: SPEND_CAP_REACHED, forGood: true });
 };
 
 /** One paid step on the run's one ledger `paid`, under call `call`: admitted at `holdUsd` (refused unsent: the cap's words,

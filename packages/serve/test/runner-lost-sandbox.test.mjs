@@ -22,6 +22,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { callComputer } = await import("../dist/computer-channel.js");
 const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
 
 const RUN = "run-1";
@@ -103,7 +104,7 @@ function sandboxes() {
   return docker;
 }
 
-async function opened(t, computer = { kind: "sandbox", provider: "docker" }) {
+async function opened(t, computer = { kind: "sandbox", provider: "docker" }, extra = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-lost-sandbox-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [server];
@@ -118,7 +119,7 @@ async function opened(t, computer = { kind: "sandbox", provider: "docker" }) {
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const docker = sandboxes();
-  const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf } };
+  const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf }, ...extra };
   const ends = [];
   const start = async (fetch) => {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -187,6 +188,32 @@ test("the loss after two new sandboxes ends the run failed, served as computer_u
   const said = await run.summaries();
   assert.deepEqual(said.filter((summary) => summary?.startsWith("Its computer was lost")), ["Its computer was lost; started a new one (c2).", "Its computer was lost; started a new one (c3)."]);
   assert.equal(run.docker.held.size, 0, "nothing left running");
+});
+
+test("the final loss found by the owner's computer channel, outside any tool call, still ends the run failed computer_unavailable when the model then answers with no call", { timeout: 120_000 }, async (t) => {
+  // No new sandbox allowed: the first loss is the final one.
+  const run = await opened(t, undefined, { recreates: 0 });
+  let armed = false;
+  run.docker.lose = (_one, method) => armed && method === "files.stat";
+  const requests = [];
+  const scripted = scriptedOrigin([WRITE, { say: "done" }], requests);
+  let channel;
+  // Before the model's answer to the write: the owner's channel calls the computer, which finds it deleted.
+  const fetch = async (url, init) => {
+    if (requests.length === 1) {
+      armed = true;
+      channel = await callComputer(run.server, RUN, { method: "files.stat", params: { path: "/workspace" } }, { pollMs: 20 });
+    }
+    return scripted(url, init);
+  };
+  await run.start(fetch);
+  const row = await run.settled(["failed"]);
+  assert.equal(channel.ok, false);
+  assert.match(channel.error.message, /^computer_unavailable: the run's sandbox was lost 1 time, and a run starts at most 0 new ones/, JSON.stringify(channel));
+  assert.equal(row.state, "failed", "the model's answer did not end it completed");
+  const served = await run.served();
+  assert.equal(served.error.code, "computer_unavailable", JSON.stringify(served.error));
+  assert.deepEqual(run.docker.made, ["c1"]);
 });
 
 test("a call answered gone while the provider's read of the machine fails (a 5xx): not lost, nothing new made, the next call goes to the same sandbox", { timeout: 120_000 }, async (t) => {

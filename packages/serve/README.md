@@ -713,7 +713,7 @@ sandbox under the same claim and runs there, also when the lost one was kept thr
 tried again at the next tool call, under the same request, and does not count. In Mode 2 the new sandbox mounts the run's folder again with a new mount
 credential, and the lost one's credential is removed. The run's folder is kept; what was on the lost sandbox outside it
 (its processes, `/tmp`) is gone. The timeline says `Its computer was lost; started a new one (<name>).` A claim starts
-at most 2 new sandboxes. The loss after that fails the run at once with error code `computer_unavailable`, in the provider's
+at most 2 new sandboxes. The loss after that fails the run at once, whichever call finds it with error code `computer_unavailable`, in the provider's
 words. A provider error that does not show the sandbox gone (a 5xx, a timeout, its read of the machine failing) starts
 nothing. A desktop, a phone, a paired computer and an agent's own computer are never started again this way.
 

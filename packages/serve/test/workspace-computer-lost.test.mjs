@@ -15,7 +15,7 @@ import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
 import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
-import { KEEP_MS, writeKept } from "../dist/workspace/computer-kept.js";
+import { KEEP_MS, readKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -117,24 +117,26 @@ async function claim({ recreates, kept = false } = {}) {
     return local.mountSpec();
   };
   workspace.attach = (computer, check) => local.attach(computer, check);
-  const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "modal" } }, store, {
+  /** The run's claim at `epoch`, on this store and provider: a resume is a later one. */
+  const at = (epoch) => computerForClaim({ runId: "run-1", epoch, computer: { kind: "sandbox", provider: "modal" } }, store, {
     mode: 2,
     kinds: KINDS,
     sealKey,
     providers: { modal: () => provider },
     spec: () => ({ lifetimeMs: 60_000, network: "none" }),
     workspace,
-    check: { readBackOf, epoch: 3 },
+    check: { readBackOf, epoch },
     revokeMount: async () => void (record.revoked += 1),
     inheritMount: () => void (record.inherited += 1),
     onComputerNote: (words) => void record.notes.push(words),
     ...(recreates === undefined ? {} : { recreates }),
   });
+  const answer = await at(3);
   const client = answer.computer.computer.client;
   const paused = [];
   /** One call of the computer's, inside a tool call of the run's (its ledger, whose pause the run stops through). */
   const inCall = (method, params) => bookedIn({ call: "toolu_1", pause: async (refusal) => void paused.push(refusal) }, () => client.call(method, params));
-  return { record, answer, client, inCall, paused };
+  return { record, answer, client, inCall, paused, store, at };
 }
 
 const STAT = ["files.stat", { path: "/workspace" }];
@@ -247,4 +249,19 @@ test("a sandbox taken back from the run's park and then lost is started again un
   assert.deepEqual(record.released, [["c0", "delete"]]);
   assert.deepEqual(record.notes, ["Its computer was lost; started a new one (c1)."]);
   await answer.release();
+});
+
+test("a kept sandbox replaced under this claim, then parked, is kept as the new one under this claim's epoch, and the next claim takes it back with that epoch's mount check", async () => {
+  const { record, inCall, answer, store, at } = await claim({ kept: true });
+  record.lose = (id) => id === "c0";
+  await inCall(...STAT);
+  assert.equal((await inCall(...STAT)).ok, true, "c1 replaced the kept c0");
+  assert.equal(await answer.park("approval"), true, "the park keeps it");
+  const row = await readKept(store.settings, "run-1");
+  assert.deepEqual([row.id, row.epoch], ["c1", 3], "the new one, under the epoch its labels and mount carry, not the park's 2");
+  const resumed = await at(4);
+  assert.equal(record.created.length, 1, "the resume made nothing");
+  assert.equal(resumed.computer.computer.id, "c1", "it took back c1");
+  assert.equal(resumed.computer.check.epoch, 3, "its mount read back under epoch 3");
+  await resumed.release();
 });

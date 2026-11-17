@@ -20,7 +20,7 @@ export const lostRecreatedWords = (name: string): string => `Its computer was lo
 /** The run's end once its sandbox was lost again after `recreates` new ones (the claim's bound): the provider's words,
  *  `why`, last. */
 export const lostEnd = (recreates: number, why: string): string =>
-  `${LOST_END}the run's sandbox was lost ${recreates + 1} times, and a run starts at most ${recreates} new ${recreates === 1 ? "one" : "ones"} in place of a lost one: ${why.replace(/[.!?]+$/, "")}.`;
+  `${LOST_END}the run's sandbox was lost ${recreates + 1} ${recreates === 0 ? "time" : "times"}, and a run starts at most ${recreates} new ${recreates === 1 ? "one" : "ones"} in place of a lost one: ${why.replace(/[.!?]+$/, "")}.`;
 
 /** The message of a run's end in lostEnd's words: what follows its code; undefined for any other summary. */
 export const lostEndMessage = (summary: string | null | undefined): string | undefined =>

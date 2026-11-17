@@ -189,6 +189,10 @@ export interface ComputerForClaimDeps {
   /** The most new sandboxes the claim starts in place of ones its provider lost mid-run (lostAware); the next loss past
    *  them ends the run, code computer_unavailable. Default LOST_RECREATES (2). */
   readonly recreates?: number;
+  /** Stops the run for good in `words`, from any caller (paid-calls.ts stopRunWith over the run's ledger's pause): how a
+   *  loss past `recreates` ends the run, whoever's call found it (the owner's computer channel too). Absent: the ledger
+   *  of the tool call that found it (stopRun), and a loss found outside one stops nothing. */
+  readonly stopRun?: (words: string) => Promise<void>;
   /** Whether the run's journal says an earlier claim made the run a computer of its own (ClaimComputer.made, recorded by
    *  the adapter loop: computer-journal.ts hadComputer): asked at a later claim that makes a fresh one, before anything
    *  is rented, so a claim that finds no older computer of the run to let go (the earlier claim let its own go at its
@@ -472,7 +476,7 @@ type Renewal = {
   remake(times: number): Promise<ProviderComputer>;
   /** Told once a new one is up, with its name: the run's Timeline row. */
   started(name: string): void;
-  /** The run's end in `words`, once a lost sandbox is past the bound (paid-calls.ts stopRun). */
+  /** The run's end in `words`, once a lost sandbox is past the bound: the run's own stop (ComputerForClaimDeps.stopRun). */
   stop(words: string): Promise<void>;
   /** Whether a lost sandbox may be started again now: inside a tool call of the run's, and the claim still held. */
   may(): boolean;
@@ -786,7 +790,7 @@ export async function computerForClaim(
   let lapsed = false;
   /** What a park of this claim keeps (ClaimComputer.park): a desktop, a phone or a sandbox it made through its provider, or took
    *  back, with its provider, its connection's close and the claim epoch its labels carry. */
-  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; readonly epoch: number } | undefined;
+  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; epoch: number } | undefined;
   /** A vendor's provider (or a local one's), made with the keys and the configuration the setting selected: that
    *  configuration is built by its own create() options (Orgo's Windows: { os: "windows" }), beside the keys'. */
   const vendorProvider = async (entry: ProviderEntry, keys: Readonly<Record<string, string>>, configuration: { readonly options?: Readonly<Record<string, unknown>> }): Promise<ComputerProvider> => {
@@ -854,8 +858,13 @@ export async function computerForClaim(
       }
       return again;
     },
-    started: (name) => deps.onComputerNote?.(lostRecreatedWords(name)),
-    stop: (words) => stopRun(words),
+    started: (name) => {
+      // A park after this keeps the new one, whose labels and mount are this claim's epoch's (a kept one taken back
+      // carried its park's).
+      if (keepable) keepable.epoch = launch.epoch;
+      deps.onComputerNote?.(lostRecreatedWords(name));
+    },
+    stop: (words) => (deps.stopRun ?? stopRun)(words),
     may: () => inToolCall() && deps.signal?.aborted !== true,
   });
   const side: ClaimSide = {
