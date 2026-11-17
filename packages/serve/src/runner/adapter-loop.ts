@@ -242,6 +242,10 @@ export interface AdapterRunSpec {
    *  words the loop says so in on the run's timeline as it parks (computer-deps.ts computerKeptWords). Absent: a park lets
    *  the computer go. */
   readonly keptWords?: string;
+  /** The run waits on no one (an audit's shadow run, runner/audit.ts AUDIT_PARKED): where it would park (an approval, a
+   *  raise of its cap, a person's answer) it ends failed at once in these words, saying what it would wait on, every call
+   *  still waiting withdrawn in the end's commit (parkClaim). Absent: it parks. */
+  readonly neverWaits?: string;
   /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
    *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
@@ -278,6 +282,15 @@ type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
 
 /** What a CLI's request held at a cut turn (TurnCut) is refused with: the turn ended at the person's question. */
 const TURN_CUT_AT_QUESTION = "the turn ended at its question to the person";
+
+/** What a run that waits on no one (AdapterRunSpec.neverWaits) would have waited on, by its park's cause: its end says so. */
+const WAITS_ON: Readonly<Record<ParkCause, string>> = {
+  approval: "a person's approval of a tool call",
+  answer: "a person's answer to its question",
+  cap: "a raise of its cap",
+  refusal: "a raise of its cap",
+  workflow: "a person's approval of a tool call",
+};
 
 /** A CLI's turn cut at a turn-ending host tool's call (ask_person; timeline endsTurn). pi ends its turn on the tool's
  *  control.terminate; a CLI hands the tool's answer to its model and goes on. So once the call's end is on the record
@@ -3869,6 +3882,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  the park cuts (its call held at the tool bridge) may still be streaming its answer: closed under it, its booking
    *  would be lost and the next claim would book the turn cut, at an unknown price. Past the bound, it is that cut. */
   async function parkClaim(on: Harness, theGate: Gate, cause: ParkCause): Promise<LoopEnd> {
+    // A run that waits on no one (AdapterRunSpec.neverWaits) ends here instead: its park's entry (the ask, the budget, the
+    // question) landed with it parked, and this end, in the same claim, withdraws what waits (writeEnd), books what it
+    // spent, and lets nothing go parked.
+    const never = specNow?.neverWaits;
+    if (never !== undefined && root) return writeEnd(on, root, theGate, { state: "failed", summary: `${never}: it would wait on ${WAITS_ON[cause]}` }, []);
     await releaseHost(on);
     await bookingsSettled();
     await keepAtPark(on, cause);
@@ -3975,8 +3993,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
     // A person's stop or cancel withdraws every call still waiting for its answer, in the end's own commit: the approval
-    // card reads answered (withdrawn), never waiting for good on a final run.
-    const byPerson = data.state === "stopped" || stopReason?.kind === "command";
+    // card reads answered (withdrawn), never waiting for good on a final run. So does the end of a run that waits on no one
+    // (neverWaits): the ask its park wrote is withdrawn with it.
+    const byPerson = data.state === "stopped" || stopReason?.kind === "command" || specNow?.neverWaits !== undefined;
     // A cancel's calls read cancelled with their run; a stop's, withdrawn.
     const withdrawn = byPerson ? withdrawnAnswers(await entriesOf(theGate.journal, conversation.id, context), isoNow(), stopReason?.kind === "command" && stopReason.cancel ? "canceled" : "withdrawn") : [];
     // A CLI's call on the record from its gate and never sent (parked, or its runner gone before its send): its record ends

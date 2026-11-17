@@ -69,7 +69,7 @@ import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid, toolFlowsFor } from "./promotion.js";
 import { pathMetrics, workflowFirstOf } from "./workflow-first.js";
-import { auditPark, settleAudits, withAudit } from "./audit.js";
+import { AUDIT_PARKED, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -540,11 +540,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     : {
         capUsd,
         // A park names the cap the loop holds the run to then (a raise's, else this one).
-        // An audit's shadow run is never parked at its cap: it fails, capped (runner/audit.ts auditPark).
-        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => {
-          const park = parkOf(refusal as CapRefused, capNow);
-          return launch.audit ? auditPark(park) : park;
-        },
+        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => parkOf(refusal as CapRefused, capNow),
         checkRaise,
         followUpOf: (raised: number) => followUpOf(raised),
       };
@@ -711,6 +707,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
+    // An audit's shadow run waits on no one, as the pi spec's (runner/audit.ts AUDIT_PARKED).
+    ...(launch.audit ? { neverWaits: AUDIT_PARKED } : {}),
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
     // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.

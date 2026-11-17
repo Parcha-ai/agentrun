@@ -28,10 +28,12 @@ export const SHADOW_PREFIX = "audit.";
 /** One finished audit. `run`: the served run; `shadow_run`: its shadow (null for a grade's row, or one never started);
  *  `workflow` at `digest` served it, under the promotion begun at `promoted_at` (learn/promote.ts promotionStartOf: the
  *  one serving when its shadow started, or at the grade; null: none); `agreed`: whether the two answers say the same (a
- *  grade's: the grade), null when either answer is missing (a shadow that failed, stopped on its cap or never ran: no
- *  evidence either way, never counted by the hold rule); the two runs' costs (null unknown). `skipped`: a drawn run whose
- *  cap left its shadow no allowance (less than a run's smallest cap): no shadow was started. `capped`: its shadow stopped
- *  on its cap (what the served run's cap left), so it has no answer. */
+ *  grade's: the grade), null when either answer is missing (a shadow that failed, parked or never ran: no evidence either
+ *  way, never counted by the hold rule); the two runs' costs (null unknown). `turn`: the served run's answer the audit is
+ *  of, the id of its answer row (its newest final answer when the audit began, or at the grade): a follow-up's later
+ *  answer is never the one compared; absent when it had none. `skipped`: a drawn run whose cap left its shadow no
+ *  allowance (less than a run's smallest cap): no shadow was started. `parked`: its shadow came to wait on a person (an
+ *  approval, a question, a raise of its cap: what the served run's cap left) and ended there, so it has no answer. */
 export interface AuditRow {
   readonly run: string;
   readonly shadow_run: string | null;
@@ -42,13 +44,14 @@ export interface AuditRow {
   readonly agreed: boolean | null;
   readonly served_cost: number | null;
   readonly shadow_cost: number | null;
+  readonly turn?: string;
   readonly skipped?: "no allowance";
-  readonly capped?: true;
+  readonly parked?: true;
   readonly at: string;
 }
 
 /** A shadow audit begun (runner/audit.ts startAudit), written before its shadow run is created: open until a row of
- *  source `shadow` for the same `run` is written. */
+ *  source `shadow` for the same `run` is written. `turn`: the served run's answer row it audits (AuditRow.turn). */
 export interface AuditStarted {
   readonly source: "started";
   readonly run: string;
@@ -56,6 +59,7 @@ export interface AuditStarted {
   readonly workflow: string;
   readonly digest: string;
   readonly promoted_at: string | null;
+  readonly turn?: string;
   readonly at: string;
 }
 
@@ -118,15 +122,19 @@ const isLine = (value: unknown): value is LedgerLine => {
   if (value === null || typeof value !== "object") return false;
   const line = value as Record<string, unknown>;
   const cost = (one: unknown) => one === null || (typeof one === "number" && Number.isFinite(one));
-  const common = typeof line.run === "string" && typeof line.workflow === "string" && typeof line.digest === "string" && (line.promoted_at === null || typeof line.promoted_at === "string") && typeof line.at === "string";
+  const common = typeof line.run === "string" && typeof line.workflow === "string" && typeof line.digest === "string" && (line.promoted_at === null || typeof line.promoted_at === "string")
+    && (line.turn === undefined || typeof line.turn === "string") && typeof line.at === "string";
   if (line.source === "started") return common && typeof line.shadow_run === "string";
   return common && (line.shadow_run === null || typeof line.shadow_run === "string") && (line.source === "shadow" || line.source === "grade")
     && (line.agreed === null || typeof line.agreed === "boolean") && cost(line.served_cost) && cost(line.shadow_cost);
 };
 
-/** Why a row has no verdict, as written (AuditRow.skipped, AuditRow.capped): never one of a row with one. */
-const noVerdictOf = (line: AuditRow): Pick<AuditRow, "skipped" | "capped"> =>
-  line.agreed !== null ? {} : line.skipped === "no allowance" ? { skipped: "no allowance" } : line.capped === true ? { capped: true } : {};
+/** Why a row has no verdict, as written (AuditRow.skipped, AuditRow.parked): never one of a row with one. */
+const noVerdictOf = (line: AuditRow): Pick<AuditRow, "skipped" | "parked"> =>
+  line.agreed !== null ? {} : line.skipped === "no allowance" ? { skipped: "no allowance" } : line.parked === true ? { parked: true } : {};
+
+/** A line's turn (AuditRow.turn), as written: none when it has none. */
+const turnOf = (line: { readonly turn?: string }): Pick<AuditRow, "turn"> => (line.turn === undefined ? {} : { turn: line.turn });
 
 /** The lines of a ledger's text, in the order written; one out of shape is skipped. */
 export function parseLedger(text: string): LedgerLine[] {
@@ -138,8 +146,8 @@ export function parseLedger(text: string): LedgerLine[] {
       if (!isLine(value)) continue;
       const { run, workflow, digest, promoted_at, at } = value;
       out.push(value.source === "started"
-        ? { source: "started", run, shadow_run: value.shadow_run, workflow, digest, promoted_at, at }
-        : { run, shadow_run: value.shadow_run, workflow, digest, promoted_at, source: value.source, agreed: value.agreed, served_cost: value.served_cost, shadow_cost: value.shadow_cost, ...noVerdictOf(value), at });
+        ? { source: "started", run, shadow_run: value.shadow_run, workflow, digest, promoted_at, ...turnOf(value), at }
+        : { run, shadow_run: value.shadow_run, workflow, digest, promoted_at, source: value.source, agreed: value.agreed, served_cost: value.served_cost, shadow_cost: value.shadow_cost, ...turnOf(value), ...noVerdictOf(value), at });
     } catch {
       // A torn line is no line.
     }

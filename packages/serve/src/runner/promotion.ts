@@ -669,16 +669,21 @@ async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   return made;
 }
 
-/** A run's final answer, whole (its last final answer row that is not its end-of-run turn's), or null: none, or its
- *  record could not be read. */
-export async function answerOf(store: PromotionDeps["store"], runId: string, context: Context): Promise<string | null> {
+/** A run's final answer row, its text whole (its last final answer row that is not its end-of-run turn's), or null: none,
+ *  or its record could not be read. `turn`: the row of that id instead (the answer an audit is of, runner/audit.ts), so an
+ *  answer a follow-up gave since is never read for it. */
+export async function answerRowOf(store: PromotionDeps["store"], runId: string, context: Context, turn?: string): Promise<{ id: string; text: string } | null> {
   try {
     const rows = await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } });
-    return rows.findLast((row) => row.kind === "final_answer" && row.agent_label !== LEARNING_LABEL)?.text ?? null;
+    const row = rows.findLast((one) => one.kind === "final_answer" && one.agent_label !== LEARNING_LABEL && (turn === undefined || one.id === turn));
+    return typeof row?.text === "string" ? { id: row.id, text: row.text } : null;
   } catch {
     return null;
   }
 }
+
+/** A run's final answer, whole (answerRowOf's text; `turn`: that row's), or null. */
+export const answerOf = async (store: PromotionDeps["store"], runId: string, context: Context, turn?: string): Promise<string | null> => (await answerRowOf(store, runId, context, turn))?.text ?? null;
 
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: Skipped }; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 

@@ -169,14 +169,17 @@ check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `read
 computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
 (`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run, at its
 end (`runner/audit.ts` withAudit, before the end commits, the workflow read from its journal), first appends a started
-line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, at}`), then starts its
-shadow run (startAudit). A capped run's shadow is capped at what the served run's cap left: its cap now, less what it
+line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, turn, at}`, `turn` the id
+of the run's newest answer row then: the answer audited), then starts its shadow run (startAudit). A capped run's shadow is capped at what the served run's cap left: its cap now, less what it
 spent under it and the grade its end queues (`runner/learning-end.ts` auditRoomOf), so the two never spend past the
 served run's cap; the served run's later gates count the shadow beside it (besideOf: its cost once it ended, its cap
 until then). With less than a run's smallest cap left (`RUN_CAP_MIN_USD`, $0.01) or a spend not known, no shadow is
-started: the row `{..., shadow_run: null, agreed: null, skipped: "no allowance"}` is written instead. A shadow that stops
-on its cap fails, never parks (auditPark: nobody raises a shadow's cap), and its row is `capped: true` with `agreed`
-null: neither agreed nor disagreed, never counted toward the hold. The shadow is the same agent and revision on the
+started: the row `{..., shadow_run: null, agreed: null, skipped: "no allowance"}` is written instead. A shadow never
+waits on a person: where it would park (an approval its tool settings ask, a raise of its cap, a question) it ends failed
+at once in AUDIT_PARKED's words, the ask its park wrote withdrawn in that end's commit, its cost booked
+(`AdapterRunSpec.neverWaits`, the adapter loop's parkClaim; the gate is not bypassed: nothing it asks about runs, and no
+one is asked). A shadow ended once its cost passed its cap (the kernel's overCapEnd) is one too. Its row is
+`parked: true` with `agreed` null: neither agreed nor disagreed, never counted toward the hold. The shadow is the same agent and revision on the
 same input with learning off (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit`
 naming the run it audits; a shadow whose line could not be written is never created. The shadow is no row of the run
 list, GET /runs/{id} reads it with `audit_of`, and its cost is the served run's learning (its `cost.usd` and its learning
@@ -184,9 +187,11 @@ cost in the cost series). While the shadow is queued or running the served run's
 (`store-reads/learning.ts` shadowSpendOf): its `cost.usd`, `cost.all_in_usd` and learning cost read null, and a
 learning batch closes no row on it, nor saves its cost, until the shadow ends (`learning-batch.ts` Figures.unsettled). Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
-digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, at}`, `agreed` by `sameAnswer` (null when
-either answer is missing or a run is gone, never counted). An owner's grade of a run the workflow answered alone is a
-row too (`source: "grade"`, `agreed` the grade). `promoted_at` names the promotion the line counts for: the `at` of the
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by `sameAnswer` of the
+shadow's answer and the served run's answer row `turn`, read from the run by that id (null when either answer is
+missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
+hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
+grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the
 promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
 shadow started or the grade was given. The host alone appends to the ledger, one commit a write with a `host:` subject
 and no trailer (no change a person or a run made), and keeps its newest 2,000 rows with their started lines and every

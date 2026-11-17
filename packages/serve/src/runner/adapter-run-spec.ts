@@ -67,7 +67,7 @@ import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid, toolFlowsFor } from "./promotion.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
-import { auditPark, settleAudits, withAudit } from "./audit.js";
+import { AUDIT_PARKED, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
@@ -642,16 +642,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     freeRequests: freeModelRequestsOf(deps.env),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
-  // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one). An audit's shadow run is
-  // never parked at its cap: it fails, capped (runner/audit.ts auditPark).
+  // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).
   const cap = capUsd === undefined
     ? undefined
     : {
         capUsd,
-        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => {
-          const park = parkOf(refusal as CapRefused, capNow);
-          return launch.audit ? auditPark(park) : park;
-        },
+        park: (refusal: { message: string; forGood: boolean; figures?: CapRefused["figures"] }, capNow: number) => parkOf(refusal as CapRefused, capNow),
         checkRaise,
         followUpOf: (raised: number) => followUpOf(raised),
       };
@@ -844,6 +840,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
+    // An audit's shadow run waits on no one: where it would park (an approval, a raise of its cap, a person's answer) it
+    // ends at once, its row `parked` (runner/audit.ts).
+    ...(launch.audit ? { neverWaits: AUDIT_PARKED } : {}),
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),
