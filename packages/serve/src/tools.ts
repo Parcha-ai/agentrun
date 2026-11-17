@@ -32,6 +32,7 @@ import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.j
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
+import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
@@ -407,7 +408,8 @@ export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: 
  *  (browser-computer.ts), each driven over its CDP URL by pi-browser's raw-CDP driver: the agent's computer, where it is
  *  a browser (the claim's, computer-for-claim.ts), else the one the run's plane names (tool-plane.ts: picked, else
  *  Browserbase where the server holds its keys, else Kernel), kept for the run's life; a plane that names none (a run kept
- *  from before the pick) is Browserbase. Its sessions' custody lives in the run's own store. No recording; the owner
+ *  from before the pick) is Browserbase. Its sessions' custody lives in the run's own store. No vendor's recording:
+ *  where the agent's computer says computer.record, each session's video is the live view's screencast. The owner
  *  watches it live, takes it over and hands it back, and the agent may ask them to (browser-live.ts, browser-person.ts).
  *  A session the run still holds is released when the run is let go. Where the plane says unavailable (its vendor's key
  *  gone since), each call is refused, saying why. Its session time is the run's spend, held under its cap before it runs
@@ -553,6 +555,9 @@ const browserTool: ToolEntry = {
     // (host.liveViewers); never a file in the run's folder, which is the agent's workspace.
     const viewers = live.sessionHandovers(host.liveViewers, at?.host);
     const onSession = (row: { session: { tag: string }; liveView: { fullscreen: string } | null }, change: string) => viewers.changed(row, change);
+    // Where the agent's computer records (its claim's `record`, computer.record): each session's video, by its computer,
+    // from its launch (or its reopening after a restart) to its release, through the live view's one screencast of it.
+    const recordSession = sessionRecordings(view, computer?.record);
     // Its session time is the run's spend, at its provider's price, and held under the run's cap (browser-cost.ts).
     const providerName = (parts.provider as { name?: string } | undefined)?.name ?? vendor;
     const price = browserPrice(providerName, host.env);
@@ -580,6 +585,7 @@ const browserTool: ToolEntry = {
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      await recordSession(row.session.tag, change === "released" ? null : row.session.resourceId);
       // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
       if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
       await saved?.(row, change);
@@ -637,6 +643,7 @@ const browserTool: ToolEntry = {
         try {
           const opened = await watched?.liveView?.({ id: row.resourceId!, tag: row.tag });
           await viewers.reopened(row.tag, opened?.fullscreen);
+          if (opened) await recordSession(row.tag, row.resourceId);
         } catch {
           // A browser that cannot be reached has no view to give: the owner reads none, as for any session without one.
         }

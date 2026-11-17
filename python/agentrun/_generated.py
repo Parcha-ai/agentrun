@@ -3383,6 +3383,7 @@ class _ListComposioEventsResponseEventsItemRequired(TypedDict):
     description: str
     config: dict[str, Any]
     polled: bool
+    sealed: list[str]
 
 
 class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
@@ -6560,6 +6561,7 @@ class _CreateTriggerBodySource6Required(TypedDict):
 class CreateTriggerBodySource6(_CreateTriggerBodySource6Required, total=False):
     accept: list[CreateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -6787,6 +6789,7 @@ class _CreateTriggerResponseSource6Required(TypedDict):
 class CreateTriggerResponseSource6(_CreateTriggerResponseSource6Required, total=False):
     accept: list[CreateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7130,6 +7133,7 @@ class _GetTriggerResponseSource6Required(TypedDict):
 class GetTriggerResponseSource6(_GetTriggerResponseSource6Required, total=False):
     accept: list[GetTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7417,6 +7421,7 @@ class _ListTriggersResponseTriggersItemSource6Required(TypedDict):
 class ListTriggersResponseTriggersItemSource6(_ListTriggersResponseTriggersItemSource6Required, total=False):
     accept: list[ListTriggersResponseTriggersItemSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7699,6 +7704,7 @@ class _UpdateTriggerBodySource6Required(TypedDict):
 class UpdateTriggerBodySource6(_UpdateTriggerBodySource6Required, total=False):
     accept: list[UpdateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7925,6 +7931,7 @@ class _UpdateTriggerResponseSource6Required(TypedDict):
 class UpdateTriggerResponseSource6(_UpdateTriggerResponseSource6Required, total=False):
     accept: list[UpdateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 

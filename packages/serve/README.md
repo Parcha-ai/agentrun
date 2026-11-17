@@ -749,7 +749,9 @@ one computer that it keeps between runs, instead of a fresh one for each run:
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
 
 **A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
-screen during each of the agent's runs. Off by default; a desktop or a phone only (another kind is 422).
+screen during each of the agent's runs. Off by default; a desktop, a phone or a browser (a sandbox is 422). A browser's is
+each session's page, one file per session (its computer), from the live view's own screencast of it, which the viewer
+shares: frames come as the page changes.
 
 - **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
   any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
@@ -1405,7 +1407,8 @@ saying why. Kernel's browsers run headless, and keep no downloads, so a run on K
 run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
-reads at once included. There is no recording. The owner watches the browser live, takes it over and hands it back, and
+reads at once included. No vendor records it; an agent whose browser computer says `record: true` gets its own video
+of each session ([A video of each run](#computers)). The owner watches the browser live, takes it over and hands it back, and
 the agent can ask them to (below). When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
 ([saved sign-ins](#saved-sign-ins)).
@@ -2245,6 +2248,24 @@ key, in order, and undoes what it made when a later step fails:
   deleted with the last.
 - The trigger here. Its `source` names what was made: `instance_id` and `hook`.
 
+A config field named like a credential is sealed at the create. That is a field whose value is a string and where a word
+of the name is secret, password, passwd, passphrase, token, credential, apikey, authorization, bearer or cookie, or where
+the last word is key. A create with such a value below the config's top level is refused `422`, naming it. For
+example, HubSpot's deal-stage event takes `{app_id, developer_api_key}`. Composio's trigger schemas mark no field
+secret, so the name decides. The value is kept in the composio source's sealed settings, next to the subscription's
+secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
+`source.sealed_config` names the field. The events list names these fields per event under `sealed`, and the console
+takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
+change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
+The trigger's delete removes the value. A trigger saved by an earlier server with such a value in plain text is answered
+masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
+and sealed at the next start. On SQLite that rewrite runs with `secure_delete` on, then a `VACUUM` and a WAL checkpoint,
+so the store's files keep no copy of the old row: neither the one rewritten nor one an earlier update of the row left in
+free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
+checkpoint is done. A start that finds it (the server stopped mid-way, or a reader in another connection held the
+checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version stays until the
+database vacuums it. The log line names the trigger and the field, never the value.
+
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
 says whether there is one, never the address, and the console turns New app trigger off without one, with the line
@@ -2992,6 +3013,10 @@ work is done and before the answer is sent, so a retry after a restart gets the 
 between the work and the save loses it, and a save that fails still answers. A run create's key is also kept with its
 run in the agent store, written with the run itself, so a retry after any restart, or after that day, gets that run (as
 it is now, marked `Idempotent-Replayed: true`), and another body under the key is still `409 idempotency_mismatch`.
+The file keeps no request body. A key's fingerprint is an HMAC of the body under a key derived from the seal key. A
+trigger create's answer is kept as a read answers it (a composio trigger's sealed config as `"[sealed]"`); every other
+answer, a run's input among them, is kept and replayed as it was. A record an earlier server wrote with the body itself
+is rewritten at the start, and the log says how many.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.

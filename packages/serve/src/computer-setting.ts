@@ -5,7 +5,7 @@
 // persistent: true keeps the agent's own computer between its runs, where the configuration declares persistence. A
 // desktop's or a phone's surface ("code" or "tools") is how the agent drives it, and exec: false gives the agent no
 // shell and no program start on it (run-tools.ts); the owner's own computer calls keep everything. record: true makes
-// each run a video of a desktop's or a phone's screen (computer-record.ts). The v2 API's `place` is this
+// each run a video of a desktop's, a phone's or a browser's screen (computer-record.ts). The v2 API's `place` is this
 // setting's view, one to one where it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is
 // {kind: "sandbox", provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder
 // on the runner, so its place reads runner.
@@ -35,7 +35,7 @@ export type ComputerSetting =
   | { readonly kind: "none" }
   | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean }
   | { readonly kind: "desktop" | "phone"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly surface?: ComputerSurface; readonly exec?: boolean; readonly record?: boolean }
-  | { readonly kind: "browser"; readonly provider: string; readonly image?: string; readonly persistent?: boolean };
+  | { readonly kind: "browser"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly record?: boolean };
 
 /** A GPU type's name as a setting keeps it: the vendor's own ("T4", "A100-80GB", "RTX-PRO-6000"); store/agent-body.ts
  *  keeps the same. */
@@ -72,7 +72,7 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
   // true: each run's video of the screen (computer-record.ts), made with this server's ffmpeg, so a server without one
   // refuses it here.
   record: {
-    kinds: ["desktop", "phone"],
+    kinds: ["desktop", "phone", "browser"],
     check: (value, field) => {
       if (typeof value !== "boolean") return [{ field, reason: "wrong_type", message: `${field} is true (each run records a video of the computer's screen) or false (as absent)` }];
       const missing = value ? recorderMissing() : undefined;

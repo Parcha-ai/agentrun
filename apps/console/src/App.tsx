@@ -739,7 +739,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
             <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5"><Code className="size-4" aria-hidden /><h1 className="caps text-body font-semibold">API playground</h1></header>
             <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4">
               <label className="sr-only" htmlFor="api-operation">API operation</label>
-              <Picker id="api-operation" label="API operation" value={where.operation ?? "run"} onChange={(operation) => {
+              <Picker id="api-operation" label="API operation" steady value={where.operation ?? "run"} onChange={(operation) => {
                 const target = playgroundTarget;
                 const params = new URLSearchParams();
                 if (operation !== "run") params.set("operation", operation);

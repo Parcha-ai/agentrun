@@ -158,6 +158,33 @@ describe("the schedules list", () => {
     expect(t.text()).not.toContain("not shown here");
     expect(t.text()).not.toContain("undefined");
   });
+  // The page is framed as every list page is (Connected agents, Runs): a header bar with the place's icon and its name in
+  // caps, and the actions in that bar, the one main action last.
+  it("has the list pages' header bar: the navigation's icon, the name in caps, the actions at its right", async () => {
+    const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
+    const header = t.host.querySelector("header")!;
+    const h1 = header.querySelector("h1")!;
+    expect(h1.textContent).toBe("Triggers");
+    expect(h1.className.split(" ")).toContain("caps");
+    expect(h1.querySelector("svg")?.getAttribute("class")).toContain("lucide-calendar-clock");
+    for (const c of ["min-h-12", "border-b"]) expect(header.className.split(" ")).toContain(c);
+    const actions = [...header.querySelectorAll("button")];
+    expect(actions.map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New schedule"]);
+    // Toolbar-sized, and one main action, the last.
+    for (const b of actions) expect(b.className.split(" "), b.textContent ?? "").toContain("h-control-sm");
+    expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, true]);
+  });
+
+  it("offers the five kinds as peers, unframed, when there is none: no main action among them", async () => {
+    const t = await open(server({ triggers: [] }).v2, {});
+    const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
+    // No frame around the panel: the five cards are its only boxes, and it starts at the page's own left edge.
+    expect(panel.className).not.toMatch(/primary|border|\bp-\d/);
+    expect(panel.parentElement!.className.split(" ")).toContain("px-5");
+    for (const b of panel.querySelectorAll("li button")) expect(b.className, b.textContent ?? "").not.toMatch(/bg-primary/);
+    expect(t.host.querySelector("header h1")?.textContent).toBe("Triggers");
+  });
+
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     expect(t.text()).toContain("No triggers yet");

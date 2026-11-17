@@ -204,14 +204,14 @@ public final class UiDriver {
 		if (target.window != null) {
 			for (Device.AxWindow w : windows) {
 				if (!String.valueOf(w.id()).equals(target.window)) continue;
-				if (target.app != null && !target.app.equals(appOf(w))) throw RpcError.notFound("window " + target.window + " is not " + target.app + "'s: observe again for its windows");
+				if (target.app != null && !target.app.equals(appOf(w))) throw RpcError.notFound("window " + target.window + " is not " + named(target.app) + "'s: observe again for its windows");
 				return w;
 			}
 			throw RpcError.notFound("window " + target.window + " is not on the screen: observe again for the windows there");
 		}
 		if (target.app != null) {
 			for (Device.AxWindow w : windows) if (target.app.equals(appOf(w))) return w;
-			throw RpcError.notFound(target.app + " has no window on the screen (" + shown(windows) + "): open it with apps.launch first");
+			throw RpcError.notFound(named(target.app) + " has no window on the screen (" + shown(windows) + "): open it with apps.launch first");
 		}
 		for (Device.AxWindow w : windows) if ("application".equals(w.type()) && w.active()) return w;
 		for (Device.AxWindow w : windows) if ("application".equals(w.type()) && w.focused()) return w;
@@ -248,7 +248,7 @@ public final class UiDriver {
 			for (;;) {
 				if (app.equals(device.apps().foreground())) return;
 				if (clock.now() - begun >= LAUNCH_WINDOW_MS) {
-					throw RpcError.timeout("apps.launch: " + app + " did not come to the front within " + LAUNCH_WINDOW_MS + " ms");
+					throw RpcError.timeout("apps.launch: " + named(app) + " did not come to the front within " + LAUNCH_WINDOW_MS + " ms");
 				}
 				cancel.check();
 				clock.sleep(LAUNCH_POLL_MS);
@@ -264,15 +264,21 @@ public final class UiDriver {
 				return;
 			}
 			if (clock.now() - begun >= LAUNCH_WINDOW_MS) {
-				throw RpcError.timeout("apps.launch: " + app + " opened no window within " + LAUNCH_WINDOW_MS + " ms (" + shown(windows) + ")");
+				throw RpcError.timeout("apps.launch: " + named(app) + " opened no window within " + LAUNCH_WINDOW_MS + " ms (" + shown(windows) + ")");
 			}
 			cancel.check();
 			clock.sleep(LAUNCH_POLL_MS);
 		}
 	}
 
-	/** The windows the tree shows, for a not_found: the accessibility tree shows window 3 application "Home" of com.x. */
-	private static String shown(List<Device.AxWindow> windows) {
+	/** An app id in an error's words: its label (Wikipedia, System UI), else "the app (id)". */
+	private String named(String id) {
+		String label = device.apps().label(id);
+		return label != null && !label.isEmpty() && !label.equals(id) ? label : "the app (" + id + ")";
+	}
+
+	/** The windows the tree shows, for a not_found: the accessibility tree shows window 3 application "Home" of Launcher. */
+	private String shown(List<Device.AxWindow> windows) {
 		if (windows.isEmpty()) return "the accessibility tree shows no window";
 		StringBuilder s = new StringBuilder("the accessibility tree shows ");
 		for (int i = 0; i < windows.size() && i < WINDOWS_NAMED; i++) {
@@ -282,7 +288,7 @@ public final class UiDriver {
 			s.append("window ").append(w.id()).append(' ').append(w.type());
 			if (title != null && !title.isEmpty()) s.append(" \"").append(title.length() > 40 ? title.substring(0, 40) + "..." : title).append('"');
 			String app = appOf(w);
-			s.append(app == null ? " with no root" : " of " + app);
+			s.append(app == null ? " with no root" : " of " + named(app));
 		}
 		if (windows.size() > WINDOWS_NAMED) s.append("; and ").append(windows.size() - WINDOWS_NAMED).append(" more");
 		return s.toString();

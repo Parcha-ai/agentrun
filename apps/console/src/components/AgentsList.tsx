@@ -1,6 +1,6 @@
 import { ObservedSessions } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
-import { Archive, ArchiveRestore, Bot, History, Pencil, Play, Search, Workflow } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   return (
     <section className="flex min-h-full flex-col">
       <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
-        <h1 className="caps flex items-center gap-2 text-body font-semibold"><Bot className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
+        <h1 className="caps flex items-center gap-2 text-body font-semibold"><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <CodingAgentAction variant="primary" label="Build an agent" prompt={buildAgentPrompt(location.origin)} playgroundHref="#/playground?operation=create-agent" />}</div>
       </header>
       <div className="p-5 md:p-6">
@@ -69,9 +69,10 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
   return (
     <li className={cn("flex flex-col border p-5 transition-colors hover:border-border-strong", archived && "opacity-70")}>
       <button type="button" className="flex min-w-0 items-start gap-2.5 text-left" onClick={() => actions.onOpen?.(a.agent_id)}>
-        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        {/* The icon sits in a box as tall as the name's line, centred in it, so it is level with the name and its chips. */}
+        <span data-agent-card-icon className="flex h-6 shrink-0 items-center"><Icon className="size-4 text-muted-foreground" aria-hidden /></span>
         <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-2">
+          <span className="flex min-h-6 flex-wrap items-center gap-2">
             <span className="text-base font-semibold">{a.definition.name}</span>
             <Chip>{a.kind}</Chip>
             {a.kind === "agentic" && <Chip>{sdk ? backendSdkLabel(sdk.runtime) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
