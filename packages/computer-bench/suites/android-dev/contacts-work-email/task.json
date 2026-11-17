@@ -47,9 +47,9 @@
     {
       "id": "email",
       "kind": "exec",
-      "why": "The target's email rows by exact display name: one, the asked address, of type {{e.type}} ({{e.label}}; ContactsContract's Email.TYPE). Setup gave it none, so an agent that does nothing fails, and so does one that left the default Home label.",
-      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "emails", "{{p.target}} {{nonce}}"],
-      "stdout": { "matches": "^Row: 0 data1={{p.user}}\\.{{nonce}}@{{e.domain}}, data2={{e.type}}\\s*$" }
+      "why": "The target by exact display name: still its one number, and one email row, the asked address, of type {{e.type}} ({{e.label}}; ContactsContract's Email.TYPE). Setup gave it none, so an agent that does nothing fails, and so does one that left the default Home label or changed the number.",
+      "argv": ["sh", "-c", "sh -c \"$1\" sh phones \"$2\" && sh -c \"$1\" sh emails \"$2\"", "sh", "{{file:contacts.sh}}", "{{p.target}} {{nonce}}"],
+      "stdout": { "matches": "^Row: 0 data1=415 555 0157, data2=2\\s*Row: 0 data1={{p.user}}\\.{{nonce}}@{{e.domain}}, data2={{e.type}}\\s*$" }
     },
     {
       "id": "decoy",

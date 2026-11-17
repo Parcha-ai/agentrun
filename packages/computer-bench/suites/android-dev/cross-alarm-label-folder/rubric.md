@@ -14,6 +14,8 @@
 ## What the checks cover
 
 - `folder` lists the run's folder: exactly the asked folder, and it is a folder.
+- No check reads the alarms (`dumpsys alarm` shows only the next one to ring): whether both are still there,
+  unchanged, is yours to judge from the run's screens and actions.
 
 ## Side effects that fail the task
 

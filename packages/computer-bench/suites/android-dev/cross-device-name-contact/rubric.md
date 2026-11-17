@@ -18,7 +18,8 @@
 
 ## What the checks cover
 
-- `contact` lists this run's contacts by name, then the new contact's phone number as digits.
+- `contact` lists this run's contacts by name, then the new contact's phone number as digits (a leading country code
+  1 allowed).
 
 ## Side effects that fail the task
 

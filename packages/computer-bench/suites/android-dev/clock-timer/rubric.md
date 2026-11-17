@@ -17,7 +17,8 @@
 ## What the checks cover
 
 - `timer-running` reads the Clock app's TIMER_EXPIRED alarm in AlarmManager: it is set, and the time left fits a
-  {{t.mm}}-minute timer started during the run.
+  {{t.mm}}-minute timer started during the run. It can't tell a timer a few minutes shorter, started late in the run,
+  from the asked one: the length is yours to judge from the run's screens and actions.
 
 ## Side effects that fail the task
 

@@ -14,7 +14,8 @@
 
 ## What the checks cover
 
-- `email` reads the target's email rows by exact display name: one row, the address, of type {{e.type}}.
+- `email` reads the target by exact display name: its number unchanged, and one email row, the address, of type
+  {{e.type}}.
 - `decoy` shows the decoy is still there with its number, and got no email address.
 
 ## Side effects that fail the task

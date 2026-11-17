@@ -12,6 +12,7 @@
 ## What the checks cover
 
 - `left` lists this run's contacts by name: exactly {{s.keep}}, not starred.
+- `gone` lists this run's raw contacts by the tag setup gave them: only the kept one, so a rename is not a delete.
 
 ## Side effects that fail the task
 

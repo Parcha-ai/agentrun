@@ -133,7 +133,7 @@ Samsung build), and Settings is `com.android.settings` alone. The Settings oracl
 | android.settings.time-format | Settings | dev | 6 | `settings get system time_12_24` |
 | android.settings.color-motion | Settings | dev | 12 | color inversion, `animator_duration_scale` and `cmd uimode night`, one read |
 | android.settings.three-changes | Settings | dev | 18 (long) | notification history, `time_12_24` and `animator_duration_scale`, one read |
-| android.clock.timer | Clock | dev | 8 | `dumpsys alarm`: the TIMER_EXPIRED alarm's original length |
+| android.clock.timer | Clock | dev | 8 | `dumpsys alarm`: the TIMER_EXPIRED alarm's time left (the grader judges the length) |
 | android.contacts.favorite | Contacts | dev | 3 | `content query` of the nonce's contacts: target starred, decoy not |
 | android.contacts.work-phone | Contacts | dev | 3 | answer: the work number, not the mobile, home or the decoy's work number; phone rows unchanged |
 | android.files.delete-pdfs | Files | dev | 8 | `ls -1` of the run's folder: the PDFs gone, the text file and the folder kept |
@@ -141,7 +141,7 @@ Samsung build), and Settings is `com.android.settings` alone. The Settings oracl
 | android.settings.text-size-bold | Settings | heldout | 8 | `font_scale` and `font_weight_adjustment`, one read |
 | android.settings.auto-rotate | Settings | heldout | 6 | `settings get system accelerometer_rotation` |
 | android.clock.alarm-repeat-days | Clock | heldout | 10 | `dumpsys alarm` next alarm clock, as weekday and time |
-| android.contacts.delete-contact | Contacts | heldout | 5 | `content query` of the nonce's contacts: only the kept one left |
+| android.contacts.delete-contact | Contacts | heldout | 5 | `content query` of the nonce's contacts, and of setup's raw contacts by tag: only the kept one left |
 | android.contacts.work-email | Contacts | heldout | 10 | the target's email row (address and type Work/Home/Other), and the decoy still there with its number and no email |
 | android.contacts.count-favorites | Contacts | heldout | 4 | answer: the count and the favourites' names; starred count and contact count unchanged |
 | android.files.new-folder | Files | heldout | 7 | `ls -1` of the parent, the sibling folder and the run's folder; the new entry is a folder |

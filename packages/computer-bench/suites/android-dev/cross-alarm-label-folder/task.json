@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.cross.alarm-label-folder",
-  "version": 2,
+  "version": 3,
   "title": "Read an alarm's label in Clock and make a folder named after it in Files",
   "split": "dev",
   "tags": ["cross-app", "clock", "files", "create", "long"],
@@ -36,6 +36,7 @@
   ],
   "instruction": "In the Clock app, find the label of the {{r.say}} alarm. Then, in the Files app, create a folder named exactly that label inside Download/computer-bench-{{nonce}}. Leave the alarms as they are.",
   "budget": { "steps": 35, "usd": 2, "wall_s": 420 },
+  "sufficient": false,
   "checks": [
     {
       "id": "folder",
