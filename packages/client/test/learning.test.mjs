@@ -164,3 +164,10 @@ test('an unknown backend runtime is refused before any request', async () => {
   await assert.rejects(new BackendLearningClient(server.config).begin({ runtime: 'shell', input: 'x', instructions: 'y' }), /Unsupported backend SDK runtime/);
   assert.equal(server.requests.length, 0);
 });
+
+for (const runtime of ['openclaw', 'capy']) test(`${runtime} with a workflow bridge is refused before any request`, async () => {
+  const server = service({ runtime });
+  const workflows = { catalog: [], adapters: [] };
+  await assert.rejects(new BackendLearningClient({ ...server.config, workflows }).begin({ runtime, input: 'x', instructions: 'y' }), /notes and skills/);
+  assert.equal(server.requests.length, 0);
+});
