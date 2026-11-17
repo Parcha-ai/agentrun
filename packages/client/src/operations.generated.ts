@@ -259,7 +259,11 @@ export type DefinitionInput = {
     [key: string]: unknown;
   };
   approvals?: "ask" | "never";
-  learning?: true | false | "notes";
+  learning?: true | false | "notes" | {
+    compile_after?: number;
+    agree_min?: number;
+    alone_min?: number;
+  };
   checkout?: "pull_request" | "none";
 };
 
@@ -1397,6 +1401,7 @@ export type GetAgentArchilResponse = {
 /** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
 export type GetLearningLoopResponse = {
   agent: string;
+  completed_runs: number;
   compiles: Array<{
     run_id: string;
     round: number;
@@ -1487,8 +1492,39 @@ export type ListLearningPromotionsResponse = {
     digest: string;
     at: string;
     decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-    source: "replay" | "dry_run" | "refit" | "graded";
+    source: "check" | "replay" | "dry_run" | "refit" | "graded";
     reason: string;
+    check?: {
+      compile_after: number;
+      agree_min: number;
+      alone_min: number;
+      attempt: 1 | 2;
+      n?: number;
+      agreed?: number;
+      alone?: number;
+      of?: Array<string>;
+      cost_usd?: number | null;
+      outcomes?: {
+        answered: number;
+        handed_back: number;
+        failed: number;
+        skipped_write: number;
+      };
+      skipped_tools?: Array<{
+        tool: string;
+        inputs: number;
+        no_read_only_hint: boolean;
+      }>;
+      disagreements?: Array<{
+        run: string;
+        input: string;
+        agent: string | null;
+        draft?: string;
+        escalated?: string;
+        failed?: true;
+      }>;
+      stopped?: true;
+    };
     replay?: {
       n: number;
       agree: number;

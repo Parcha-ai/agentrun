@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
@@ -168,7 +168,9 @@ test(`${IN_FLIGHT} runs in flight on the faux harness, on a busy store: every en
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say your thinking.", harness: HARNESS, tools: ["read"], learning: true } });
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);
+  const flows = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }];
+  const seed = await landWorkflows(dir, "agent-1", flows);
+  await promoteChecked(server.settings, "agent-1", flows);
   const ids = Array.from({ length: IN_FLIGHT }, (_, i) => `run-${i + 1}`);
   for (const [i, id] of ids.entries()) {
     const launch = { input: { content: `What is ${i} times seven?`, question: `What is ${i} times seven` }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-6.1-terra" }, learning: startAt(seed) };

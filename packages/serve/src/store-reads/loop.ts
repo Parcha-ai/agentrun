@@ -6,8 +6,9 @@
 // Aggregates and the checks' own words only: no input, no answer.
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { GuardRow } from "../learned-nodes.js";
-import { GRADES_KEPT, gradesOf, promotionsOf } from "../learn/promote.js";
-import { promotedOf } from "../learn/compile.js";
+import { GRADES_KEPT, gradesOf, promotionOf, promotionsOf } from "../learn/promote.js";
+import { lastOwnRuns, promotedOf } from "../learn/compile.js";
+import { loopOf } from "../learning-setting.js";
 import { roundsOf } from "./learning.js";
 
 /** How many compile turns the read gives, the newest. */
@@ -92,8 +93,13 @@ function perStep(rows: readonly GuardRow[]): { node: string; signal: GuardRow["s
  *  workflows' guarded steps, over its ended runs (not imported, not archived). A compile's `promoted` is its revision's
  *  promotion as the records say now (null while undecided): whether it serves now is the promotions read's `serving`. A step's `correct` is the run's grade only on a run its workflow answered alone (path `workflow`): a
  *  hand-back's answer was the agent's, and a replay run is never graded. */
-export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; guards: LoopGuard[] }> {
+export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; guards: LoopGuard[]; completed_runs: number }> {
   const ended = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+  // The completed runs of the agent's own toward its compile (what compileDue counts), at most compile_after: the tab
+  // says "N of compile_after" from this, never from the one page of runs it reads.
+  const current = (await store.agents.get(agentId))?.currentRevision;
+  const body = current ? (await store.agents.revision(current))?.body as { learning?: unknown } | undefined : undefined;
+  const completed_runs = (await lastOwnRuns(store, agentId, loopOf(body?.learning).compile_after)).length;
   const [grades, promotions] = await Promise.all([gradesOf(store.settings, agentId).catch(() => []), promotionsOf(store.settings, agentId).catch(() => [])]);
   const graded = new Map(grades.map((grade) => [grade.run, grade.correct]));
   // The grades kept are the newest GRADES_KEPT (putGrade trims the oldest): once full, a run that ended before the oldest
@@ -136,9 +142,13 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
       if (!named && !errors.length) continue;
       const attempts = Array.isArray(named?.attempts) ? named.attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
       const kept16 = typeof named?.digest === "string" && /^[0-9a-f]{16}$/.test(named.digest) ? named.digest : null;
+      // A draft its check had nothing to run on stopped (runner/promotion.ts stopUnchecked): its record's reason is one
+      // of the draft's errors, never silent.
+      const own = named && kept16 ? promotionOf(promotions, named.workflow as string, kept16) : undefined;
+      const unchecked = own?.decided === "hold" && own.source === "check" && own.check?.stopped && own.check.n === 0 ? [own.reason] : [];
       compiles.push({
         createdAt: kept.createdAt, run_id: run.id, round: kept.round, at: new Date(kept.createdAt).toISOString(), workflow: named ? (named.workflow as string) : null, from_notes: texts(named?.from_notes), attempts,
-        digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: errors,
+        digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: [...errors, ...unchecked],
       });
     }
   }
@@ -146,5 +156,5 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   // Newest first by when each round kept it (a later round of an earlier run can be newer than a later run's), the run's
   // start and its round breaking a tie.
   const newest = compiles.map((one, i) => ({ one, i })).sort((a, b) => b.one.createdAt - a.one.createdAt || b.i - a.i).slice(0, LOOP_COMPILES_MAX);
-  return { compiles: newest.map(({ one: { createdAt: _createdAt, ...one } }) => one), guards };
+  return { compiles: newest.map(({ one: { createdAt: _createdAt, ...one } }) => one), guards, completed_runs };
 }

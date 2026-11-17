@@ -46,7 +46,7 @@ export async function demonstrateWorkflows({ runtime, createBackend,
   const options = { baseUrl, apiKey, fetch: capture, instructions: WORKFLOW_INSTRUCTIONS, learningTimeoutMs: 180_000 };
   const client = new AgentRun({ baseUrl, apiKey, fetch: send });
   const agentId = `${agentPrefix}-on`, controlId = `${agentPrefix}-off`;
-  const on = await createBackend({ ...options, agentId, name: `${runtime} workflow release reporter`, learning: true });
+  const on = await createBackend({ ...options, agentId, name: `${runtime} workflow release reporter`, learning: { compile_after: 5 } });
   let off;
   const run = async (stage, backend, prompt, service) => {
     onProgress({ stage, state: 'running' });
@@ -62,9 +62,9 @@ export async function demonstrateWorkflows({ runtime, createBackend,
     let learned = await client.learning.get(agentId);
     assert.ok(learned.skills.some(skill => skill.status === 'active' && skill.run),
       'No checked skill was accepted. Inspect Learning Dojo; this demo does not seed or approve learning.');
-    // The ordinary compiler considers a job after five completed runs (or three kept notes),
-    // when it has no workflow and no recent compile. Teaching plus four practice runs reaches
-    // that run threshold without changing policy or fabricating history.
+    // The compiler considers a job after the agent's `learning.compile_after` completed runs (5 here,
+    // set on the agent at registration; 20 by default), when it has no workflow and no recent compile.
+    // Teaching plus four practice runs reaches it without fabricating history.
     for (let index = 1; index <= 4; index++) {
       await run(`practice-${index}`, on, releaseTask('demo-api'), 'demo-api');
       learned = await client.learning.get(agentId);

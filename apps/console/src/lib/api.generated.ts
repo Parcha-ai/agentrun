@@ -439,7 +439,11 @@ export interface components {
       } | undefined;
     };
     approvals?: "ask" | "never";
-    learning?: true | false | "notes";
+    learning?: true | false | "notes" | {
+      compile_after?: number;
+      agree_min?: number;
+      alone_min?: number;
+    };
     checkout?: "pull_request" | "none";
   };
   Effort: "low" | "medium" | "high";
@@ -2562,6 +2566,7 @@ export interface operations {
     body: never;
     answer: {
       agent: string;
+      completed_runs: number;
       compiles: {
         run_id: string;
         round: number;
@@ -3935,8 +3940,39 @@ export interface operations {
         digest: string;
         at: string;
         decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-        source: "replay" | "dry_run" | "refit" | "graded";
+        source: "check" | "replay" | "dry_run" | "refit" | "graded";
         reason: string;
+        check?: {
+          compile_after: number;
+          agree_min: number;
+          alone_min: number;
+          attempt: 1 | 2;
+          n?: number;
+          agreed?: number;
+          alone?: number;
+          of?: string[];
+          cost_usd?: number | null;
+          outcomes?: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
+          skipped_tools?: {
+            tool: string;
+            inputs: number;
+            no_read_only_hint: boolean;
+          }[];
+          disagreements?: {
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+          }[];
+          stopped?: true;
+        };
         replay?: {
           n: number;
           agree: number;

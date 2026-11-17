@@ -4,9 +4,15 @@
 # use into the data's harnesses, at its pin and by the lock serve ships (src/harness-install.ts). Their adapters develop
 # against them as dev dependencies, and npm ci installs those, so the Dockerfile removes them and runs this check on the
 # final image's tree.
+# It also carries serve's scripts/dial-conformance.mjs, which a host such as Render runs from the image for a dial
+# provider's conformance run (node /opt/agentrun/packages/serve/scripts/dial-conformance.mjs --provider fly).
 #   image-check.sh <root>
 set -eu
 root=${1:?usage: image-check.sh <root>}
+if [ ! -f "$root/packages/serve/scripts/dial-conformance.mjs" ]; then
+  printf 'image check: %s has no packages/serve/scripts/dial-conformance.mjs, which a dial provider'"'"'s conformance run starts\n' "$root" >&2
+  exit 1
+fi
 found=$(find "$root" \( \
   -path '*/node_modules/@anthropic-ai/claude-agent-sdk' -o -path '*/node_modules/@anthropic-ai/claude-agent-sdk-*' \
   -o -path '*/node_modules/@anthropic-ai/claude-code' -o -path '*/node_modules/.bin/claude' \

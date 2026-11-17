@@ -16,7 +16,7 @@ const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).s
 test("the image's build context holds the workspace and the console's sources, and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
+  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "packages/serve/scripts/dial-conformance.mjs", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",

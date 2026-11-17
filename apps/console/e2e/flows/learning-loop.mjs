@@ -186,7 +186,8 @@ export default {
         const story = page.getByTestId("loop-story");
         await story.waitFor();
         const compile = await story.getByTestId("stage-compiled").textContent();
-        check(/1 of 3 notes, 0 of 5 runs: a workflow compiles at 3 notes or 5 runs/.test(compile ?? ""), `${theme} ${width}px early: the compile stage says ${compile}`);
+        // Compile at N (learning: true: compile_after 20): its completed runs alone count, never its notes.
+        check(/Not yet0 of 20 completed runs: a workflow compiles at 20, then is checked once on those runs' inputs against the agent's own answers$/.test(compile ?? "") && !/note/.test(compile ?? ""), `${theme} ${width}px early: the compile stage says ${compile}`);
         await shoot(story, `loop-early-${theme}-${width}.png`);
       }
     }

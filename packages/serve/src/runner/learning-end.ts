@@ -31,7 +31,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { type CompileAsk, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_AFTER_RUNS, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { completedRun, type CompileAsk, lastOwnRuns,type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { loopOf } from "../learning-setting.js";
 import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
@@ -134,7 +135,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // A notes run (`learning: "notes"`) compiles nothing, and looks back on every run. A run of a job that compiles
     // workflows looks back only on its owner's feedback (ownerSaid).
     ...(start.notesOnly ? {} : {
-      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, ...(start.seedNotes !== undefined ? { seedNotes: start.seedNotes } : {}), seedWorkflows: start.workflows?.length ?? 0 }),
+      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => compileAskOf(deps, { ...input, input: launch.input, seedWorkflows: start.workflows?.length ?? 0 }),
       ownerSaid: async (runId: string) => {
         const [entries, rows] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })]);
         return ownerSaid(entries, rows);
@@ -378,8 +379,17 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
 /** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
 const HELD_ASKED_READ = 200;
 
-/** Whether a store run ended completed (its state `ended`, a plain completion). */
-const completedRun = (run: { readonly state: string; readonly outcome: string | null }) => run.state === "ended" && (run.outcome === null || run.outcome === "completed");
+
+/** The loop's numbers (learning-setting.ts loopOf) of the revision run `runId` runs: its definition's `learning`. */
+async function loopOfRun(store: Store, runId: string) {
+  try {
+    const run = await store.runs.get(runId);
+    const revision = run ? await store.agents.revision(run.revisionId) : undefined;
+    return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
+  } catch {
+    return loopOf(undefined);
+  }
+}
 /** The most tool calls of one run a trace keeps, and the most of a call's input or a message it holds, in characters. */
 const TRACE_CALLS = 20;
 const TRACE_TEXT = 600;
@@ -411,16 +421,17 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its replay on the
  *  agent's graded inputs, or its graded served runs, fell under the bar; its champion served the run, or the agent did by
  *  hand), its text as main holds it, with the hold's numbers, once per hold (none when any run since the hold compiled
- *  it, read from the agent's kept learning); else, when the job is due (compileDue: the run completed, the agent has no
- *  learned workflow active or waiting, none of its last COMPILE_QUIET_RUNS runs compiled, and it keeps enough notes or
- *  has run enough), a new one. Nothing else asks one: a hand-back, a wrong grade of a served answer and the money rule's
+ *  it, read from the agent's kept learning; a check's hold with the inputs it disagreed on, a stopped check's none);
+ *  else, when the job is due (compileDue: the run completed, the agent has no learned workflow active or waiting, none
+ *  of its last COMPILE_QUIET_RUNS runs compiled, and it has its definition's compile_after completed agent runs), a new
+ *  one. Nothing else asks one: a hand-back, a wrong grade of a served answer and the money rule's
  *  stop are single runs, which the hold reads among many. Either way the
  *  agent's active notes whole, the traces of its last COMPILE_TRACES completed runs before this one, the tools a call node
  *  may run (draftTools) with what each takes and gives, its decision providers, the run's input (`input`, its fields for
  *  the workflow's input schema), the agent's output schema when it has one (its final output's shape) and the DSL's
  *  language with this host's addendum. Undefined when it compiles nothing, or
  *  when the folder can't be read. */
-export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; input?: unknown; seedNotes?: number; seedWorkflows?: number }): Promise<CompileAsk | undefined> {
+export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; input?: unknown; seedWorkflows?: number }): Promise<CompileAsk | undefined> {
   // A revision is asked only of a workflow its promotion holds, once per hold. One run is one sample: a hand-back, a wrong
   // grade of a served answer or the money rule's stop asks for none (with a 10-15% base error rate on both sides, one
   // wrong answer says nothing about the workflow); the hold, read over many runs, does.
@@ -428,13 +439,17 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // is held) is held: the run's own may be one (its champion served it, or it went by hand).
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
   const heldNames = heldNamesOf(records);
+  // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
+  // completed agent runs, the ending one counted.
+  const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);
   // The agent's latest runs, newest first: those after the ending one in the list started before it.
-  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: 200 });
+  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: Math.max(200, 2 * compileAfter + COMPILE_QUIET_RUNS) });
   const at = listed.findIndex((run) => run.id === input.runId);
   const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
   const done = earlier.filter(completedRun);
+  const byHand = (await lastOwnRuns(deps.store, input.agentId, compileAfter, input.runId)).length;
   let compiledLately = false;
-  const dueWith = (notes: number, workflows: number) => compileDue({ completed: input.outcome === "completed", notes, runs: Math.min(done.length, COMPILE_AFTER_RUNS) + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately });
+  const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
   // Every learning round a run kept: its newest, and each before it (a follow-up opened the run again after it).
   const roundsOf = async (runId: string): Promise<(LearningProposal | undefined)[]> => {
@@ -448,7 +463,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   compiledLately = lately.some((kept) => compiledOf(kept) !== undefined);
   // First by what the run started from (its seed's notes and the workflows it was offered): a run not due by them
   // opens no folder, unless one of its workflows is held. Main is read below for the turn itself, and decides again.
-  if (!heldNames.size && !dueWith(input.seedNotes ?? 0, input.seedWorkflows ?? 0)) return undefined;
+  if (!heldNames.size && !dueWith(input.seedWorkflows ?? 0)) return undefined;
   const dsl = await import("@parcha/agentrun-dsl");
   // Every text the turn is told passes the check a run's start makes (learning.ts holdsSecret, as chooseWorkflows reads a
   // learned workflow) over what the run must never learn (`refuse`): one that holds a secret is left out whole, never sent
@@ -474,7 +489,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
       if (heldNames.size) {
         // The one active workflow that fits the run's input (the one workflow-first would serve), held at main's digest.
         const active: { name: string; workflow: string }[] = [];
-        for (const one of workflows) if (one.status === "active") { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
+        for (const one of workflows) if (one.status === "active" && heldNames.has(one.name)) { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
         const fitting = active.filter((one) => fits(one as never, input.input, dsl.resolveSchemaForWorkflow as never));
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
         if (record?.decided === "hold") [held, current] = [record, fitting[0]!.workflow];
@@ -508,10 +523,13 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const since = Date.parse(read.held.at);
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
-    const { workflow, digest, source, reason, replay } = read.held;
-    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}) };
+    const { workflow, digest, source, reason, replay, check } = read.held;
+    // A check's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is (traceFrom).
+    const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
+    const checked = check ? { ...check, ...(check.disagreements ? { disagreements: check.disagreements.map((one) => ({ ...one, input: cut(one.input), agent: one.agent === null ? null : cut(one.agent), ...(one.draft !== undefined ? { draft: cut(one.draft) } : {}), ...(one.escalated !== undefined ? { escalated: cut(one.escalated) } : {}) })) } : {}) } : undefined;
+    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}), ...(checked ? { check: checked } : {}) };
   }
-  if (!held && !dueWith(read.notes.length, read.workflows)) return sayLeftOut(), undefined;
+  if (!held && !dueWith(read.workflows)) return sayLeftOut(), undefined;
   // An earlier run's trace is cut of each value it held (traceFrom); one that still holds a secret (a value in a call's
   // input spelled in JSON escapes, a shape the cut does not take) is left out whole.
   const traces = (await Promise.all(done.slice(0, COMPILE_TRACES).reverse().map((run) => traceOf(deps.store, run.id, input.refuse).catch(() => undefined)))).filter((one): one is CompileTrace => {

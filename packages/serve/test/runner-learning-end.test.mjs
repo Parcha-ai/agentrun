@@ -111,8 +111,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
 
 const runner = (learning) => (dir) => ({ input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, ...(learning ? { learning: learning(dir) } : {}) });
 
-/** Agent-1's folder with `count` active notes on main: a job it has learned enough of to be compiled (learn/compile.ts
- *  compileDue). */
+/** Agent-1's folder with `count` active notes on main: what its compile turn reads of what it learned. */
 async function noted(dir, count = 3) {
   await seedOf(dir, "agent-1");
   const repo = repoOf(dir, "agent-1");
@@ -126,7 +125,8 @@ async function noted(dir, count = 3) {
   git(repo, ["commit", "-q", "-m", "notes"]);
   await resnap(dir, "agent-1");
 }
-/** A learning start over agent-1's folder as it is now, with `count` notes kept first (none: compiles nothing yet). */
+/** A learning start over agent-1's folder as it is now, with `count` notes kept first (the compile turn reads them; its
+ *  definition's compile_after says when it is asked). */
 const compiling = (count = 3) => async (dir) => {
   if (count) await noted(dir, count);
   const seed = await seedOf(dir, "agent-1");
@@ -173,7 +173,7 @@ test("a run that does not learn, through the same runner, is asked nothing and k
 
 test("the tools the compile turn offers a call node follow the server's tool settings in the store", async (t) => {
   // The store denies web_search: the prompt offers what the store says.
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_search"], learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_search"], learning: { compile_after: 1 } }, compiling(), async (server) => {
     await saveToolSettings(server, { web_search: { permission: "deny" } });
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
@@ -226,14 +226,14 @@ test("a re-ask whose answer keeps a note but still holds the broken draft does n
   assert.deepEqual(kept.proposal.proposal.notes.map(({ file }) => file), ["retry-slowly.md"], "the first answer's note, not the failed repair's");
 });
 
-test("an agent with 3 kept notes and no learned workflow gets a compile turn after its look-back, with its notes and the DSL's own reference; with 2 notes and no earlier runs, none", async (t) => {
-  for (const count of [3, 2]) {
-    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling(count));
+test("an agent with compile_after 1 and no learned workflow gets a compile turn after its look-back on its first completed run, with its notes and the DSL's own reference; with compile_after 2 and no earlier runs, none", async (t) => {
+  for (const after of [1, 2]) {
+    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: after } }, compiling());
     await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }] });
     const row = await w.ended();
     const { users } = await w.turnOf(row);
     const prompt = compileAskIn(users);
-    if (count === 2) {
+    if (after === 2) {
       assert.equal(prompt, "", "not due: no compile turn");
       assert.equal(users.length, 3, "the job's message, the owner's feedback and the look-back's prompt");
       continue;
@@ -248,7 +248,7 @@ test("an agent with 3 kept notes and no learned workflow gets a compile turn aft
 
 test("the compile ask describes each tool a call node may run, by the server's own words for what it takes and gives", async (t) => {
   const { toolOf } = await import("../dist/tools.js");
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_fetch"], learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "web_fetch"], learning: { compile_after: 1 } }, compiling(), async (server) => {
   });
   await w.start((deps) => learningEndOfRun(w.launch, deps));
   const row = await w.ended();
@@ -263,7 +263,7 @@ test("the compile ask describes each MCP tool a call node may run by its server'
   const gives = { type: "object", properties: { id: { type: "string" } } };
   // create_issue allowed, delete_issue denied, github's unset (ask: its learned_workflow call asks once, #2424).
   const settings = { "mcp:linear/create_issue": { permission: "allow" }, "mcp:linear/delete_issue": { permission: "deny" } };
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/create_pull_request"], toolSettings: settings, learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:linear/delete_issue", "mcp:github/create_pull_request"], toolSettings: settings, learning: { compile_after: 1 } }, compiling(), async (server) => {
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [
       { name: "create_issue", description: "Create an issue in a team", input_schema: takes, output_schema: gives },
       { name: "delete_issue", description: "Delete an issue", input_schema: { type: "object" } },
@@ -283,7 +283,7 @@ test("the compile ask describes each MCP tool a call node may run by its server'
 
 test("with no one to answer an ask (the store's approvers row: the server's accounts off), the compile ask offers no MCP tool set to ask: its learned call would be refused at once (#2424); one set to allow is still offered (LS-07)", async (t) => {
   const { writeApprovers } = await import("../dist/server-approvers.js");
-  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/create_pull_request"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: true }, compiling(), async (server) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read", "mcp:linear/create_issue", "mcp:github/create_pull_request"], toolSettings: { "mcp:linear/create_issue": { permission: "allow" } }, learning: { compile_after: 1 } }, compiling(), async (server) => {
     await writeApprovers(server.settings, false);
     await server.mcp.put({ name: "linear", url: "https://mcp.linear.example/mcp", auth: "none", tools: [{ name: "create_issue", description: "Create an issue in a team", input_schema: { type: "object" } }] });
     await server.mcp.put({ name: "github", url: "https://mcp.github.example/mcp", auth: "none", tools: [{ name: "create_pull_request", description: "Open a pull request", input_schema: { type: "object" } }] });
@@ -459,7 +459,7 @@ const judgeDraft = `\`\`\`\`workflow check\n---\ndescription: Checks a claim; us
 
 test("on a run with decision providers the compile turn allows judge nodes and a compiled judge workflow is kept; with none it offers none, the draft is refused on every attempt and its errors go with the learning", async (t) => {
   for (const decided of [true, false]) {
-    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
+    const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } }, compiling());
     const providers = await decisionProvidersIn({ TYPESAFE_API_KEY: "fake-test-key", AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV });
     assert.ok(providers?.providers.jev, "setup: the faux Jev");
     await w.start((deps) => learningEndOfRun(w.launch, { ...deps, ...(decided ? { decisionProviders: async () => providers } : {}) }), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }, { say: judgeDraft }] });
@@ -467,7 +467,7 @@ test("on a run with decision providers the compile turn allows judge nodes and a
     const turn = await w.turnOf(row);
     const prompt = compileAskIn(turn.users).replace(/\s+/g, " ");
     assert.ok(prompt, "the run was asked its compile turn");
-    // No step guard, Jev or none: code checks and escalate steps hand a case back.
+    // No step guard, Jev or none (S2), and no Jev default (S1): code checks and escalate steps hand a case back.
     assert.ok(prompt.includes("Author no step guard"), "no guard asked");
     assert.ok(!prompt.includes('"guard": {"signal"'), "none to copy");
     const kept = await w.server.learning.proposal("run-1");
@@ -491,7 +491,7 @@ const compiledBlock = ({ output = "answer", tools } = {}) => `\`\`\`\`workflow a
 })}\n\`\`\`\``;
 
 test("compile: a draft the checks refuse goes back with their words, up to 3 times; the fixed draft is proposed beside the note, every attempt recorded", async (t) => {
-  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } }, compiling());
   await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: compiledBlock({ tools: ["read"] }) }, { say: compiledBlock({ output: "other" }) }, { say: compiledBlock() }] });
   const row = await w.ended();
   const { users } = await w.turnOf(row);
@@ -527,7 +527,7 @@ test("compile: a draft the checks refuse goes back with their words, up to 3 tim
 });
 
 test("compile: a draft that never passes is never silent: its errors go with the learning entry and the look-back's note still goes on", async (t) => {
-  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true }, compiling());
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } }, compiling());
   const bad = compiledBlock({ tools: ["read"] });
   await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: bad }, { say: bad }, { say: bad }, { say: bad }] });
   const row = await w.ended();
@@ -562,7 +562,7 @@ const shapedBlock = (out) => `\`\`\`\`workflow answer\n---\ndescription: Picks a
 
 test("compile against the agent's output schema: a draft answering part of the object fails its dry run in the schema's words and the retry that answers the whole object is kept; with no output schema the partial draft is kept at once", async (t) => {
   for (const schema of [MCC_SCHEMA, undefined]) {
-    const w = await world(t, { instructions: "Pick the code.", tools: ["read"], learning: true, ...(schema ? { outputSchema: schema } : {}) }, compiling());
+    const w = await world(t, { instructions: "Pick the code.", tools: ["read"], learning: { compile_after: 1 }, ...(schema ? { outputSchema: schema } : {}) }, compiling());
     await w.start((deps) => learningEndOfRun(w.launch, deps), { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: REFLECTED }, { say: shapedBlock(PART) }, { say: shapedBlock(MCC_SCHEMA) }] });
     const row = await w.ended();
     const { users } = await w.turnOf(row);

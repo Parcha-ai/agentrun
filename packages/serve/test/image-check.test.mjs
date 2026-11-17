@@ -33,7 +33,23 @@ const tree = async (t, files, links = {}) => {
 
 // The packages an image legitimately carries, next to the names the check refuses: the Codex adapter is the server's own
 // dependency, its CLI is not.
-const kept = ["node_modules/@anthropic-ai/sdk/package.json", "node_modules/@openai/other/package.json", "node_modules/@parcha/agentrun-serve/package.json", "node_modules/@parcha/agentrun-harness-codex/package.json", "node_modules/.bin/agentrun-serve"];
+const kept = ["node_modules/@anthropic-ai/sdk/package.json", "node_modules/@openai/other/package.json", "node_modules/@parcha/agentrun-serve/package.json", "node_modules/@parcha/agentrun-harness-codex/package.json", "node_modules/.bin/agentrun-serve", "packages/serve/scripts/dial-conformance.mjs"];
+
+test("the image check refuses a tree without serve's scripts/dial-conformance.mjs, which a dial provider's conformance run starts", async (t) => {
+  const root = await tree(t, kept.filter((file) => !file.endsWith("dial-conformance.mjs")));
+  const result = check(root);
+  assert.equal(result.status, 1, `exit ${result.status}: ${result.stdout}`);
+  assert.equal(result.stderr, `image check: ${root} has no packages/serve/scripts/dial-conformance.mjs, which a dial provider's conformance run starts\n`);
+});
+
+test("the image keeps serve's scripts: the context's allowlist takes packages/ whole, and the final stage copies the build's tree", async () => {
+  const ignore = (await readFile(new URL("../../../.dockerignore", import.meta.url), "utf8")).split("\n").map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"));
+  assert.ok(ignore.includes("!packages/"), "the allowlist takes packages/");
+  for (const line of ignore.filter((one) => !one.startsWith("!"))) assert.equal(/scripts|\.mjs/.test(line), false, `.dockerignore leaves out no script: ${line}`);
+  const stages = (await readFile(DOCKERFILE, "utf8")).split(/^FROM /m).slice(1);
+  assert.match(stages.find((stage) => /^\S+ AS build\n/.test(stage)) ?? "", /^COPY \. \.$/m, "the build stage copies the whole context");
+  assert.match(stages.at(-1) ?? "", /^COPY --from=build --chown=root:root \/src \/opt\/agentrun$/m, "the final stage copies the build's tree to /opt/agentrun");
+});
 
 test("a tree with none of the held-back CLIs passes the image check", async (t) => {
   const result = check(await tree(t, kept));

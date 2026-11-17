@@ -1,11 +1,13 @@
-// Promotion by replay (champion/challenger): a learned workflow's new revision (a new digest) serves a run first only once
-// a replay of it on the agent's last graded inputs answers within PROMOTE_BAR of the agent's own answers on the same
-// inputs. Grades are what a person or an eval said of a run (PUT /runs/{id}/grade): right or wrong, and the answer's
-// expected fields when they know them. A replay runs the workflow alone on a graded run's recorded input (a run of its own,
-// at workflow cost, runner/promotion.ts); a step it hands back on counts as the agent's recorded answer for that input,
-// never as a failure (October's lesson: escalation is the workflow knowing its limits). This module is the arithmetic and
-// the two records the store keeps (the agent's grades, its workflows' promotion records), over the settings table; the
-// orchestration is runner/promotion.ts, the threshold refit learn/refit.ts.
+// Promotion (champion/challenger): a learned workflow's new revision (a new digest) serves a run first only once its one
+// check passes (source `check`): replayed on the inputs of the agent's last compile_after completed runs, of those it ran
+// on it answered at least alone_min alone, and at least agree_min of those said what the agent's own recorded answer said
+// (sameAnswer, checkPasses; the bar is the agent definition's, learning-setting.ts). No grade is read for it. A replay
+// runs the workflow alone on a run's recorded input (a run of its own, at workflow cost, runner/promotion.ts); a step it
+// hands back on is not an answer alone. The old graded path (a replay within PROMOTE_BAR of the agent on graded inputs,
+// the graded hold and refit of a serving revision) is kept for the records it made; no new revision takes it. Grades are
+// what a person or an eval said of a run (PUT /runs/{id}/grade). This module is the arithmetic and the two records the
+// store keeps (the agent's grades, its workflows' promotion records), over the settings table; the orchestration is
+// runner/promotion.ts, the threshold refit learn/refit.ts.
 import type { GuardRow } from "../learned-nodes.js";
 import type { RunPath } from "../learning-cost.js";
 import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
@@ -104,8 +106,11 @@ export interface PromotionRecord {
   readonly digest: string;
   readonly at: string;
   readonly decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-  readonly source: "replay" | "dry_run" | "refit" | "graded";
+  readonly source: "check" | "replay" | "dry_run" | "refit" | "graded";
   readonly reason: string;
+  /** A compiled draft's one check (source `check`, runner/promotion.ts): its bar while it replays, its numbers once
+   *  decided. */
+  readonly check?: CheckRecord;
   readonly replay?: ReplayScore & { readonly of: readonly string[]; readonly cost_usd?: number | null; readonly skipped_tools?: readonly SkippedTool[]; readonly outcomes?: ReplayOutcomes };
   readonly runs?: readonly string[];
   /** A replaying record's graded runs, one per `runs` entry in order: the input each reserved replay run replays, so a
@@ -143,6 +148,58 @@ export interface PromotionRecord {
   readonly commit?: string;
 }
 
+/** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), and
+ *  which check of the compile it is (`attempt`: 1, the first draft's; 2, the one recompile's, after which it stops). */
+export interface CheckBar {
+  readonly compile_after: number;
+  readonly agree_min: number;
+  readonly alone_min: number;
+  readonly attempt: 1 | 2;
+}
+
+/** One input a check's draft did not agree on: the agent's run (`run`) and its input, the agent's recorded answer
+ *  (`agent`), and the draft's answer, or why it handed the input back (`escalated`), or that a step of it failed
+ *  (`failed`). Each text cut to CHECK_TEXT_MAX: what a recompile reads as data. */
+export interface CheckDisagreement {
+  readonly run: string;
+  readonly input: string;
+  readonly agent: string | null;
+  readonly draft?: string;
+  readonly escalated?: string;
+  readonly failed?: true;
+}
+
+/** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone with
+ *  the agent's recorded answer (sameAnswer), `alone` answered alone (no escalate, no failed step, no guard under its
+ *  serving threshold); the inputs (`of`, the agent's runs), what its replay runs cost, their outcomes, the tools that
+ *  stopped its skipped inputs, the inputs it did not agree on, and `stopped` when a recompile's check held it too
+ *  (nothing compiles again). */
+export type CheckRecord = CheckBar & {
+  readonly n?: number;
+  readonly agreed?: number;
+  readonly alone?: number;
+  readonly of?: readonly string[];
+  readonly cost_usd?: number | null;
+  readonly outcomes?: ReplayOutcomes;
+  readonly skipped_tools?: readonly SkippedTool[];
+  readonly disagreements?: readonly CheckDisagreement[];
+  readonly stopped?: true;
+};
+
+/** The most characters of an input or an answer a check's disagreement keeps. */
+export const CHECK_TEXT_MAX = 1_200;
+
+/** A check's two shares: `agreement`, of the inputs the draft answered alone those that say what the agent said (0 when
+ *  it answered none alone); `alone`, of the inputs it ran on those it answered alone (0 when none ran). */
+export const checkShares = (score: { readonly n: number; readonly agreed: number; readonly alone: number }): { agreement: number; alone: number } =>
+  ({ agreement: score.alone ? score.agreed / score.alone : 0, alone: score.n ? score.alone / score.n : 0 });
+
+/** Whether a check promotes its draft: agreement at least the bar's agree_min, and alone at least its alone_min. */
+export const checkPasses = (score: { readonly n: number; readonly agreed: number; readonly alone: number }, bar: Pick<CheckBar, "agree_min" | "alone_min">): boolean => {
+  const shares = checkShares(score);
+  return score.n > 0 && score.alone > 0 && shares.agreement >= bar.agree_min - 1e-9 && shares.alone >= bar.alone_min - 1e-9;
+};
+
 /** What a replay's runs are launched with (PromotionRecord.launch). */
 export interface ReplayLaunch {
   readonly revision: string;
@@ -160,7 +217,7 @@ export interface SkippedTool {
 }
 
 /** The tools that stopped `rows`' skipped inputs, most inputs first (then by name). */
-export function skippedToolsOf(rows: readonly ReplayRow[]): SkippedTool[] {
+export function skippedToolsOf(rows: readonly Pick<ReplayRow, "outcome" | "skipped">[]): SkippedTool[] {
   const by = new Map<string, { inputs: number; unmarked: boolean }>();
   for (const row of rows) {
     if (row.outcome !== "skipped_write" || !row.skipped) continue;
