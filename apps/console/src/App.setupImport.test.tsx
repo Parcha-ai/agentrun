@@ -164,7 +164,7 @@ describe("App, setup's import of this machine's sessions", () => {
     await setPassword(host);
     await submit(host);
     await until(host, () => sent.length);
-    expect(await until(host, () => /did not finish in three starts and was given up/.test(host.textContent ?? ""), 6000)).toBe(true);
+    expect(await until(host, () => /was given up before it finished/.test(host.textContent ?? ""), 6000)).toBe(true);
   }, 15_000);
 
   it("an import that ends while the agents list is open reads the agents' names again, though that list is not a runs view", async () => {

@@ -171,7 +171,7 @@ const IMPORT_READ_TRIES = 30;
 function importLine(s: ImportState): string {
   if (s.state === "running") return "Importing this machine's sessions: agents appear as they arrive.";
   if (s.state === "stopped") return "The import of this machine's sessions stopped. It goes on when the server starts again.";
-  if (s.state === "failed") return "The import of this machine's sessions did not finish in three starts and was given up. The server's log says why.";
+  if (s.state === "failed") return "The import of this machine's sessions was given up before it finished. The server's log says why.";
   const runs = `${s.runs.toLocaleString("en-US")} session${s.runs === 1 ? "" : "s"}`;
   return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
 }

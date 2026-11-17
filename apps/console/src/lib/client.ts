@@ -42,7 +42,7 @@ export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string;
 export type ImportCandidate = { id: string; name: string; path: string; sessions: number; sources: string[]; last_active: string | null };
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
  *  (null for each when the count failed) and the projects to choose from (`candidates`, the latest active first; the
- *  server names at most 500). After: the import's state (`failed`: given up after three starts that did not end it).
+ *  server names at most 500). After: the import's state (`failed`: given up before it finished).
  *  `{ offer: false }`: none, either way. */
 export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null; candidates?: ImportCandidate[] };
 export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | { state: "failed" };
