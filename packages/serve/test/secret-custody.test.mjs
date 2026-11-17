@@ -140,8 +140,7 @@ function descriptors(pid) {
 /** A canary for every secret this test expects the launcher to name, checked against its list. */
 function canaries() {
   for (const name of READ) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
-  // Short, each its own: every secret set at once goes over the launcher's pipe, which holds 4096 bytes for sure, and
-  // the list grows with pi-ai's providers. The tokens' are the API's, 32 characters or more.
+  // Each its own. The tokens' are the API's, 32 characters or more.
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   // The seal key's must be a key the server takes (43 base64url characters: it never starts on a bad one), and is still a
   // canary: the canary is base64url, padded to a key's length.
@@ -700,21 +699,75 @@ test("on claude-agent, with its turn held inside the Claude CLI, no process of t
   assert.ok(seen.some((cmdline) => /claude-agent-sdk-[a-z0-9-]+\/claude /.test(`${cmdline} `)), `the Claude CLI is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
 });
 
-test("secrets past what a pipe is sure to hold are refused before the server starts, saying so, never a hang", async (t) => {
+/** The server a big-secrets case starts with `--`: it counts the launcher's writers (every process but itself whose
+ *  command line carries its mark, as a fork of the launcher's does), then exits 7 without reading (`exit`), or reads its
+ *  secrets as serve does (dist/secrets.js, on import) and prints each one's length and hash, and stays until killed. */
+const BIG_SERVER = `
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+const [mark, mode, names] = process.argv.slice(1);
+const writers = readdirSync("/proc").filter((pid) => /^[0-9]+$/.test(pid) && Number(pid) !== process.pid && (() => { try { return readFileSync("/proc/" + pid + "/cmdline", "latin1").includes(mark); } catch { return false; } })()).length;
+if (mode === "exit") { console.log(JSON.stringify({ writers })); process.exit(7); }
+const { handedSecret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const got = Object.fromEntries(names.split(" ").map((name) => [name, [Buffer.byteLength(handedSecret(name) ?? ""), createHash("sha256").update(handedSecret(name) ?? "").digest("hex")]]));
+console.log(JSON.stringify({ writers, got }));
+setInterval(() => {}, 60_000);
+`;
+
+/** Four keys of 20 KiB each, past the 64 KiB a pipe holds unread, so the launcher's writer is still there, blocked, when
+ *  the server starts; the SSH key's has lines, as a PEM key's does. Every other secret of the environment unset. */
+function bigSecrets() {
+  const value = (tag, sep = "") => `not-a-secret-${tag}-${randomBytes(10_240).toString("hex").match(/.{1,64}/g).join(sep)}`;
+  const secrets = { AGENT_MODEL_API_KEY: value("gateway"), OPENAI_API_KEY: value("openai"), ANTHROPIC_API_KEY: value("anthropic"), AGENT37_SSH_KEY: `${value("ssh", "\n")}\n` };
+  return { secrets, env: { ...Object.fromEntries(SECRET_NAMES.map((name) => [name, undefined])), ...secrets } };
+}
+
+/** Spawns the launcher on BIG_SERVER with `secrets`; answers the child, its mark and what it prints. */
+async function launchBig(t, env, mode) {
   const tmp = await scratch(t);
-  const child = spawn(LAUNCHER, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, XDG_CONFIG_HOME: tmp, AGENT_MODEL_API_KEY: `not-a-secret-${"x".repeat(5_000)}` } });
-  let out = "";
-  child.stderr.on("data", (chunk) => (out += chunk));
-  // "close", not "exit": "exit" can come before the stderr pipe is read, and the refusal would read as "".
-  const code = await Promise.race([new Promise((resolve) => child.once("close", resolve)), sleep(10_000).then(() => "hung")]);
-  assert.equal(code, 1, out);
-  assert.match(out, /more than the 4096 a pipe is sure to hold/);
+  const mark = `big-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const child = spawn(LAUNCHER, ["--", process.execPath, "--input-type=module", "-e", BIG_SERVER, mark, mode, Object.keys(env).filter((name) => env[name] !== undefined).join(" ")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, TMPDIR: tmp } });
+  t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
+  let [out, err] = ["", ""];
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  // "close", not "exit": "exit" can come before the stdout pipe is read.
+  const closed = new Promise((resolve) => child.once("close", resolve));
+  return { child, mark, closed, output: () => out, errors: () => err };
+}
+
+/** Waits up to 5 s for no process of this user to carry `mark` on its command line (the server `but` aside) or a secret
+ *  in its environment or command line; answers what is still there. */
+async function noneLeft(mark, values, but) {
+  const left = () => processes().filter((p) => (p.pid !== but && p.cmdline.includes(mark)) || values.some((value) => p.environ.includes(value) || p.cmdline.includes(value))).map((p) => `${p.pid} ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 80)}`);
+  for (const end = Date.now() + 5_000; left().length && Date.now() < end; ) await sleep(50);
+  return left();
+}
+
+test("secrets of 80 KiB in all, past what a pipe holds unread, reach the server whole; its launcher's writer is there until it reads, and then no process holds one", { timeout: 60_000 }, async (t) => {
+  const { secrets, env } = bigSecrets();
+  const { child, mark, output, errors } = await launchBig(t, env, "read");
+  for (const end = Date.now() + 30_000; !output().includes("\n"); await sleep(50)) assert.ok(Date.now() < end && child.exitCode === null, `the server read its secrets: ${errors()}`);
+  const { writers, got } = JSON.parse(output());
+  assert.equal(writers, 1, "one writer, blocked on the full pipe, before the server read");
+  assert.deepEqual(got, Object.fromEntries(Object.entries(secrets).map(([name, value]) => [name, [Buffer.byteLength(value), createHash("sha256").update(value).digest("hex")]])), "each secret whole");
+  // The server still running: only its writer could hold one, and it is gone.
+  assert.deepEqual(await noneLeft(mark, Object.values(secrets), child.pid), [], "no launcher process is left, and no process holds a secret");
+});
+
+test("a server that exits without reading its secrets leaves no launcher process behind: its writer's next write fails, and it exits", { timeout: 60_000 }, async (t) => {
+  const { secrets, env } = bigSecrets();
+  const { child, mark, closed, output, errors } = await launchBig(t, env, "exit");
+  const code = await Promise.race([closed, sleep(30_000).then(() => "hung")]);
+  assert.equal(code, 7, `the server's own exit: ${errors()}`);
+  assert.deepEqual(JSON.parse(output()), { writers: 1 }, "its writer was there, blocked");
+  assert.deepEqual(await noneLeft(mark, Object.values(secrets), child.pid), [], "within 5 s of the server's exit");
 });
 
 test("a secret is handed over byte for byte, never read as shell: one full of shell syntax runs nothing, and reaches the gateway whole", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const token = `not-a-secret-${"token"}-${process.pid}-${"t".repeat(24)}`;
-  // Command substitution, backticks, a separator, quotes and spaces, then enough to come near the 4096-byte limit.
+  // Command substitution, backticks, a separator, quotes and spaces, then a few kilobytes more.
   const hostile = `not-a-secret-$(touch ${join(dir, "PWNED")})\`touch ${join(dir, "PWNED2")}\`;x 'y "z ${"k".repeat(3_600)}`;
   const endpoint = await responsesEndpoint(t, "42", 10);
   const env = { ...Object.fromEntries([...SECRET_NAMES, ...MODEL_SETTINGS].map((name) => [name, undefined])), AGENTRUN_TOKEN: token, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL_API_KEY: hostile };
