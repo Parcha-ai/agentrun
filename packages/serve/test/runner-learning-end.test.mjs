@@ -424,7 +424,7 @@ test("compile: a draft that never passes is never silent: its errors go with the
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.corrections, kept?.proposal?.workflows], ["merged", 1, undefined], JSON.stringify(kept?.proposal));
   assert.equal(kept.proposal.compiled.attempts.length, 4);
   assert.ok(kept.proposal.draft_errors.length > 0);
-  assert.ok((kept.proposal.problems ?? []).some((problem) => problem.rule === "workflow" && problem.detail.includes("workflows/answer/workflow.json")), JSON.stringify(kept.proposal.problems));
+  assert.ok((kept.proposal.problems ?? []).some((problem) => problem.rule === "workflow" && problem.path === "workflows/answer/workflow.json" && problem.detail.includes("the workflow DSL refuses it")), JSON.stringify(kept.proposal.problems));
   const end = await runLearningEnd(w.server, "run-1");
   assert.deepEqual(end.draft_errors, kept.proposal.draft_errors);
   assert.ok(end.problems.some((problem) => problem.rule === "workflow"), "its end carries the problems too");
