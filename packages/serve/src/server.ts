@@ -1622,12 +1622,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
   const runReadDepsFor = (origin: string): ViewDeps => ({ ...viewDepsFor(origin), recordings });
-  // Each run's listing, built from its view once per change, so a runs list reads rows alone (run-listing.ts). Its items
-  // keep no console link (a list adds the one for the address its request reached), so the origin here is never served.
-  lister = startLister(store, () => viewDepsFor(ownOriginOf()), {
-    log: (what, error) => log?.(logLine(what, { error: error.message })),
-    ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
-  });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -4649,6 +4643,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));
     throw error;
+  });
+  // Each run's listing, built from its view once per change, so a runs list reads rows alone (run-listing.ts): started once
+  // this server listens and knows its own address (ownOriginOf). Its items keep no console link (a list adds the one for
+  // the address its request reached), so the origin here is never served.
+  lister = startLister(store, () => viewDepsFor(ownOriginOf()), {
+    log: (what, error) => log?.(logLine(what, { error: error.message })),
+    ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every

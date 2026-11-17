@@ -155,6 +155,23 @@ test("a run's learning, and a grade with words that opens the run again, are lis
   await filtersMatchViews(api, "?agent=learner");
 });
 
+test("the server's lister starts once the server knows its own address: a store with runs to build logs no failed build at the start", { timeout: 120_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  await storeOf(data, 3, 2);
+  const lines = [];
+  const server = await startServe({ data, port: 0, faux: FAUX, log: (line) => lines.push(line) });
+  try {
+    await server.listingSettled();
+    assert.deepEqual(lines.filter((line) => line.includes("run_listing_unbuilt")), [], "no listing failed to build");
+    const { body } = await client(server.baseUrl, server.token)("GET", "/runs?limit=5");
+    assert.equal(body.runs.length, 3);
+  } finally {
+    await server.close();
+  }
+});
+
 test("a journal commit alone, with the run's row as it was, puts the run's listing behind, so a list shows what it stored", { timeout: 60_000 }, async (t) => {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
