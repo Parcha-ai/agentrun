@@ -564,6 +564,25 @@ function setupRecipe(source = false) {
   assert.ok(step, "the skill has its server-start recipe");
   return step;
 }
+// Setup once deployed to a hosting provider the person never chose. The skill asks where before anything is installed
+// or deployed, with the machines they already run agents on as a choice of their own, and looks for those agents first.
+test("the setup skill asks where AgentRun should run before installing or deploying, and names no host unasked", () => {
+  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
+  const section = (title) => skill.split(/^## /m).find((part) => part.startsWith(`${title}\n`)) ?? "";
+  const where = section("Choose where to run it");
+  const [, ask, ...rest] = where.split("\n\n");
+  assert.match(ask, /^Ask before installing or deploying anything\./, "the question comes first");
+  assert.match(ask, /wait for the\s+person's answer/, "it waits for the answer");
+  assert.deepEqual([...rest[0].matchAll(/^- \*\*(.+?):\*\*/gm)].map((m) => m[1]),
+    ["This computer", "A machine they already run agents on", "A hosting provider", "AgentRun Cloud"], "the four places, in order");
+  assert.match(where, /Never create a service on Render or any other provider unless the person named that provider/);
+  assert.doesNotMatch(where, /offer AgentRun Cloud first|Honor a deployment choice/, "no place is preferred or inferred");
+  const found = section("Find the agents they already run");
+  assert.ok(skill.indexOf("## Find the agents they already run") < skill.indexOf("## Choose where to run it"), "existing agents are found before a place is chosen");
+  for (const look of ["crontab -l", "systemctl list-timers", "launchctl list", "claude -p", "codex exec"]) assert.ok(found.includes(look), look);
+  assert.match(found, /With their permission, look on this machine without changing it/);
+  assert.ok(skill.indexOf("## Choose where to run it") < skill.indexOf("npx @parcha/agentrun --no-open"), "the question precedes the install recipe");
+});
 function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
   mkdirSync(join(dir, "fake"));
