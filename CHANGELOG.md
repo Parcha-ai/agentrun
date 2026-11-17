@@ -10,7 +10,8 @@ AgentRun is an open-source platform that supercharges your agents. It adds self-
 
 - No store change: SQLite stays at schema version 11 and Postgres at 16, with no migration. Keep the same data folder and start command, and change only the image to `v0.1.0-beta.44`.
 - Cloudflare computers: redeploy the Cloudflare relay from beta.44 (`packages/computer/relays/cloudflare`, `npx wrangler deploy`). Its version is unchanged, so beta.43 works with the redeployed relay too.
-- Composio triggers: the first start seals every credential in a trigger's config. The value moves into the sealed settings, the trigger keeps `"[sealed]"` in its place, and its Composio instance is not changed. The log names each trigger and field, never the value.
+- Composio triggers: the first start seals the credentials in each trigger's config. Each value moves into the sealed settings, the trigger keeps `"[sealed]"` in its place, and its Composio instance is not changed. The log names each trigger and field, never the value.
+  - A field that only its event's schema marks as a credential is sealed after the start, once Composio answers for that event. When Composio can't be reached the log says `composio_config_schemas_unread`, and those fields stay as they are until the next start.
 - The first start also rewrites the Idempotency-Key records of the last day: each keeps an HMAC of its request instead of the body, and a trigger create's kept answer is masked. The log says how many.
 - An agent revision that names no place now runs on the runner unless one of its tools needs a shell (`bash`, a background tool). beta.43 ran every such revision in the Docker box where the server has Docker. A new agent that names no tools is still saved with the Docker box and a shell, and agents saved with a place keep it.
 - Going back is setting the image back to `v0.1.0-beta.43`, on SQLite and Postgres alike. What beta.43 does with what only beta.44 writes:
