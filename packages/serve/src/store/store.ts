@@ -125,9 +125,44 @@ export interface RevisionRow {
  *  failed run says so in its state. */
 export type RunOutcome = "completed" | "escalated" | "stopped" | "cancelled";
 
+/** A runs list's filter (Runs.listed). */
+export interface ListedFilter {
+  readonly agentId?: string;
+  readonly revisionId?: string;
+  readonly labels?: RunLabels;
+  readonly archived: boolean;
+  readonly status?: string;
+  /** Only runs still going (no settled status on the row) whose listing is behind. */
+  readonly going?: boolean;
+  readonly limit: number;
+  readonly offset?: number;
+}
+/** A run as a list reads it (Runs.listed): its row, its agent's archive time, and its listing as kept (null: none built). */
+export interface ListedRun {
+  readonly row: RunRow;
+  readonly agentArchivedAt: number | null;
+  readonly listing: { readonly item: Record<string, unknown>; readonly cut: string } | null;
+  readonly listStatus: string | null;
+  /** The run's list_mark now: the mark a listing built from here is written at. */
+  readonly listMark: number;
+  /** The listing is behind now (Runs.behind's three ways): a list builds it before it shows it. */
+  readonly behind: boolean;
+}
 /** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
  *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
  *  are over for good. */
+/** A run's listing as the server writes it (Runs.putListing): its list item (`item`), its status, whether a runner held the
+ *  run when it was built, when it goes stale by the clock alone (null: never), and what outside the run it read (flags). */
+export interface RunListing {
+  readonly item: Record<string, unknown>;
+  /** The digest of the server's secrets the item was cut of. */
+  readonly cut: string;
+  readonly status: string;
+  readonly live: boolean;
+  readonly until: number | null;
+  readonly flags: number;
+}
+
 export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
   return run.state === "stopped" && run.outcome === "stopped" && kind === "agentic" && run.importedFrom === null;
 }
@@ -730,6 +765,28 @@ export interface Runs {
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
+  /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
+   *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
+   *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
+   *  neither); `status` on the row's status (`list_status`: a settled run's from its row, in the write that settled it;
+   *  another's from its listing); `going` keeps only runs still going whose listing is behind. A built-in learning run and
+   *  an audit's shadow run are never listed. */
+  listed(filter: ListedFilter): Promise<{ readonly rows: readonly ListedRun[]; readonly more: boolean }>;
+  /** Agent `agentId`'s runs counted in one read (an agent's view): every run it has (`count`), and those still going
+   *  (`live`: queued, running or parked, or an agentic run a person stopped, which a message continues). A built-in learning
+   *  run and an audit's shadow run are none of them. */
+  counts(agentId: string): Promise<{ readonly count: number; readonly live: number }>;
+  /** Up to `limit` runs whose listing is behind, the runs no runner holds first, then newest first: built never, or before
+   *  the latest write that moved what the run's view shows (listing_mark < list_mark), or built while a runner held it and
+   *  that claim has run out on the store's clock, or past the time it goes stale by the clock (listing_until). `mark`:
+   *  the run's list_mark now, the mark its listing is built at. `held`: a runner holds its claim now. */
+  behind(options: { limit: number }): Promise<{ readonly id: string; readonly mark: number; readonly held: boolean }[]>;
+  /** Writes run `runId`'s listing as built at `mark` (behind's): kept only when no listing built at a later mark is there
+   *  already. True when it was written. */
+  putListing(runId: string, mark: number, listing: RunListing): Promise<boolean>;
+  /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
+   *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
+  relist(options: { flags: number; agentId?: string }): Promise<number>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner

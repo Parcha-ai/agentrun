@@ -1,0 +1,266 @@
+// A runs list reads the runs' rows (store/schema.ts RUN_LISTING_COLUMNS), never a run's view: each run's listing is built
+// from its view once per change and kept on its row. These hold what a caller depends on: the list shows each run as the
+// run's own read does at that moment (summaryOfView of GET /runs/{id}, the item main's list built from the view), field by
+// field, in every status, a write that moves a run included; a status filter finds each run where its read says it is;
+// and one list makes the same number of store calls, and reads the same rows, at 20 runs and at 200.
+import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
+import http from "node:http";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
+import { agent, answerFlow, client, FAUX, flowAgent, follow, serve, startServe } from "./support.mjs";
+
+const { Connection } = await import("../dist/store/sqlite/connection.js");
+const { openSqliteStore } = await import("../dist/store/index.js");
+const { listedItem, listingOverStore, summaryOfView, summaryOverStore } = await import("../dist/store-view.js");
+
+const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
+
+/** Every item of the list at `path` (pages of 100). */
+async function everyItem(api, path) {
+  const items = [];
+  for (let cursor = null; ; ) {
+    const { status, body } = await api("GET", `${path}${path.includes("?") ? "&" : "?"}limit=100${cursor ? `&cursor=${cursor}` : ""}`);
+    assert.equal(status, 200, JSON.stringify(body));
+    items.push(...body.runs);
+    if (!(cursor = body.next_cursor)) return items;
+  }
+}
+
+/** Each listed item against the item main's list built from the run's view (summaryOfView of the run's own read, read
+ *  just after), field by field, its keys too. */
+async function sameAsViews(api, items, why) {
+  for (const item of items) {
+    const { status, body: view } = await api("GET", `/runs/${item.run_id}`);
+    assert.equal(status, 200, JSON.stringify(view));
+    const expected = summaryOfView(view);
+    assert.deepEqual(Object.keys(item).sort(), Object.keys(expected).sort(), `${why}: ${item.run_id} (${expected.status}) lists the same fields`);
+    for (const key of Object.keys(expected)) assert.deepEqual(item[key], expected[key], `${why}: ${item.run_id} (${expected.status}) lists ${key} as its read says it`);
+  }
+}
+
+/** Each status's filtered list holds exactly the runs whose own read says that status. The filtered lists are read first,
+ *  so none finds a run by what a list without a filter built just before, and the settled statuses before the others: a
+ *  run that settled since its listing was built is found by its row's own write, not by a list of the status it left
+ *  building it first. */
+async function filtersMatchViews(api, query = "") {
+  const filtered = {};
+  for (const status of [...STATUSES].reverse()) filtered[status] = (await everyItem(api, `/runs?status=${status}${query ? `&${query.slice(1)}` : ""}`)).map((item) => item.run_id);
+  const all = await everyItem(api, `/runs${query}`);
+  const statusOf = new Map();
+  for (const { run_id } of all) statusOf.set(run_id, (await api("GET", `/runs/${run_id}`)).body.status);
+  for (const status of STATUSES) assert.deepEqual(filtered[status], all.map((item) => item.run_id).filter((id) => statusOf.get(id) === status), `status=${status}${query} lists the runs whose read says ${status}`);
+}
+
+test("a runs list shows each run as the run's own read does, field by field, in every status, and a status filter finds each where its read says it is", { timeout: 240_000 }, async (t) => {
+  // The listings' builder runs only when the test asks (listingSettled): every list after a move is the list's own work.
+  const server = await serve(t, { maxRuns: 1, listerIdleMs: Infinity });
+  const { api, data } = server;
+  assert.equal((await api("POST", "/agents", agent("one"))).status, 201);
+  assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
+  const start = async (agentId, input) => {
+    const started = await api("POST", `/agents/${agentId}/runs`, { input });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    return started.body.run_id;
+  };
+  const held = (file) => ({ content: `Answer once ${join(data, file)} exists.` });
+
+  const completed = await start("one", { content: "What is six times seven?" });
+  await follow(api, completed, ["completed"]);
+  const failed = await start("one", { content: "Fail now." });
+  await follow(api, failed, ["failed"]);
+  const workflow = await start("flow", { question: "What is six times seven?" });
+  await follow(api, workflow, ["completed"]);
+  const archived = await start("one", { content: "What is one plus one?" });
+  await follow(api, archived, ["completed"]);
+  assert.equal((await api("POST", `/runs/${archived}/archive`)).status, 200);
+  const cancelled = await start("one", held("never"));
+  await follow(api, cancelled, ["working"]);
+  assert.equal((await api("POST", `/runs/${cancelled}/cancel`)).status, 202);
+  await follow(api, cancelled, ["cancelled"]);
+  const stopped = await start("one", held("never"));
+  await follow(api, stopped, ["working"]);
+  assert.equal((await api("POST", `/runs/${stopped}/stop`)).status, 200);
+  await follow(api, stopped, ["input_required"]);
+  // A workflow pauses (an agentic run does not), once the node in flight ends: its first node holds until a file the test
+  // makes after the pause, and the second never starts.
+  const pause = held("paused").content;
+  const twoSteps = answerFlow(pause);
+  twoSteps.root.steps.push({ ...twoSteps.root.steps[0], label: "again", instructions: "Answer the question.", as: "again" });
+  assert.equal((await api("POST", "/agents", flowAgent("pausing", twoSteps))).status, 201);
+  const paused = await start("pausing", { question: pause });
+  await follow(api, paused, ["working"]);
+  assert.equal((await api("POST", `/runs/${paused}/pause`)).body.paused, true);
+  await writeFile(join(data, "paused"), "");
+  for (const end = Date.now() + 30_000; (await api("GET", `/runs/${paused}`)).body.status !== "paused"; await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < end, "the workflow reads paused");
+  const working = await start("one", held("go"));
+  await follow(api, working, ["working"]);
+  // The one place is the working run's (the paused run parked and let it go): this one waits for it.
+  const queued = await start("one", { content: "What is two plus two?" });
+
+  await server.listingSettled();
+  const listed = await everyItem(api, "/runs");
+  assert.deepEqual(new Set(listed.map((item) => item.status)), new Set(STATUSES), "a run in every status");
+  await sameAsViews(api, listed, "settled");
+  await sameAsViews(api, await everyItem(api, "/runs?archived=true"), "archived");
+  await filtersMatchViews(api);
+  await filtersMatchViews(api, "?agent=one");
+
+  // A run that moves is listed as it is now, without waiting for the server's lister: its row says it is behind.
+  await writeFile(join(data, "go"), "");
+  await follow(api, working, ["completed"]);
+  await follow(api, queued, ["completed"]);
+  await filtersMatchViews(api);
+  await sameAsViews(api, await everyItem(api, "/runs"), "just moved");
+  // A message continues the run a person stopped: it is listed going again at once.
+  assert.equal((await api("POST", `/runs/${stopped}/messages`, { content: "What is three plus three?" })).status < 300, true);
+  await follow(api, stopped, ["completed", "input_required"]);
+  await sameAsViews(api, await everyItem(api, "/runs?agent=one"), "continued");
+  // A run that asks its person a question: the ask is its journal's, and the list says input_required as its read does.
+  assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
+  const asks = await start("asks", { content: `Pick a region once ${join(data, "ask")} exists.` });
+  await follow(api, asks, ["working"]);
+  await sameAsViews(api, await everyItem(api, "/runs?agent=asks"), "before its ask");
+  await writeFile(join(data, "ask"), "");
+  for (const end = Date.now() + 30_000; (await api("GET", `/runs/${asks}`)).body.status !== "input_required"; await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < end, "the run asks");
+  await sameAsViews(api, await everyItem(api, "/runs?agent=asks"), "asked");
+  await filtersMatchViews(api, "?agent=asks");
+});
+
+test("a run's learning, and a grade with words that opens the run again, are listed as the run's read says them at once", { timeout: 240_000 }, async (t) => {
+  const first = await serve(t);
+  assert.equal((await first.api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
+  const started = await first.api("POST", "/agents/learner/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(first.api, runId, ["completed"], { deadlineMs: 120_000 });
+  for (const end = Date.now() + 120_000; !(await first.api("GET", `/runs/${runId}`)).body.learning; await new Promise((resolve) => setTimeout(resolve, 250))) {
+    assert.ok(Date.now() < end, "the run's learning is read");
+  }
+  await first.stop();
+  // The same data with no runner and no builder of its own: the run the grade opens again stays queued, and every list
+  // shows what the list itself read.
+  const { api } = await serve(t, { data: first.data, runner: false, listerIdleMs: Infinity });
+  await sameAsViews(api, await everyItem(api, "/runs?agent=learner"), "learning read");
+  const graded = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: "The answer is forty-two, in words." });
+  assert.equal(graded.status, 200, JSON.stringify(graded.body));
+  assert.equal(graded.body.feedback, "look_back", "the grade's words open the run again");
+  const opened = (await api("GET", `/runs/${runId}`)).body;
+  assert.notEqual(opened.status, "completed", `the run reads open again for its look-back, with no runner to take it: ${opened.status}/${opened.state}`);
+  await sameAsViews(api, await everyItem(api, "/runs?agent=learner"), "graded with words");
+  await filtersMatchViews(api, "?agent=learner");
+});
+
+test("a journal commit alone, with the run's row as it was, puts the run's listing behind, so a list shows what it stored", { timeout: 60_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = await openSqliteStore({ dataDir: join(dir, "agents"), role: "server" });
+  t.after(() => store.close());
+  const deps = { origin: "http://127.0.0.1:7340", serverSecrets: () => [] };
+  await store.agents.create({ id: "one", name: "one" }, { id: "rev-one", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "one", revisionId: "rev-one" });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 3_600_000 });
+  const journal = store.journal(claim);
+  await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
+  const listed = async () => (await store.runs.listed({ archived: false, limit: 50 })).rows[0];
+  assert.equal(await store.runs.putListing("run-1", (await listed()).listMark, await listingOverStore(store, "run-1", deps)), true);
+  const built = await listed();
+  assert.equal(built.behind, false, "the held run's listing is current once built");
+  // A turn's answer and its cost: the journal's alone, no row write beside it.
+  const answer = { id: await journal.mintId(), conversationId: 1, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Forty-two." }], usage: { cost: { total: 0.25 } }, timestamp: 0 }] };
+  await commitWrites(journal, [{ type: "entry", value: answer }], BACKGROUND_CONTEXT);
+  const now = await summaryOverStore(store, "run-1", deps);
+  assert.notDeepEqual(listedItem(built.listing, deps.origin, null, []), now, "the commit moved what the run's read shows");
+  assert.equal((await listed()).behind, true, "the commit put the run's listing behind, so the next list builds it again");
+  assert.deepEqual(listedItem(await listingOverStore(store, "run-1", deps), deps.origin, null, []), now, "built again, it lists as the run's read");
+});
+
+/** Counts the store calls each GET of a runs list makes, and the rows its reads hand back: every call on a store connection
+ *  made while that request is handled (its async context), none of the server's own background work. */
+function storeCallsPerList(t) {
+  const request = new AsyncLocalStorage();
+  let last;
+  const emit = http.Server.prototype.emit;
+  http.Server.prototype.emit = function (event, req, ...rest) {
+    if (event === "request" && req.method === "GET" && /^\/v2\/runs(\?|$)/.test(req.url)) return request.run((last = { calls: 0, rows: 0 }), () => emit.call(this, event, req, ...rest));
+    return emit.call(this, event, req, ...rest);
+  };
+  t.after(() => (http.Server.prototype.emit = emit));
+  for (const name of ["exec", "run", "runCounted", "get", "all", "write", "transaction"]) {
+    const original = Connection.prototype[name];
+    Connection.prototype[name] = function (...args) {
+      const counted = request.getStore();
+      const result = original.apply(this, args);
+      if (!counted) return result;
+      counted.calls++;
+      if (name === "all") return result.then((rows) => ((counted.rows += rows.length), rows));
+      if (name === "get") return result.then((row) => ((counted.rows += row === undefined ? 0 : 1), row));
+      return result;
+    };
+    t.after(() => (Connection.prototype[name] = original));
+  }
+  /** The calls and rows of the last list request. */
+  return () => last;
+}
+
+/** A store of `count` runs of one agent, each with `entries` journal entries (the person's message, then the agent's
+ *  answers): a third completed, a third failed, the rest claimed and working under a long lease (no runner beside the
+ *  server here). Made through the store's own calls. */
+async function storeOf(data, count, entries) {
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  try {
+    await store.agents.create({ id: "bench", name: "bench" }, { id: "rev-bench", kind: "agentic", body: { instructions: "Answer." } });
+    for (let i = 0; i < count; i++) {
+      const id = `run-${String(i).padStart(4, "0")}`;
+      await store.runs.create({ id, agentId: "bench", revisionId: "rev-bench" });
+      const claim = await store.claim(id, "runner-a", { leaseMs: 3_600_000 });
+      const journal = store.journal(claim);
+      const writes = [{ type: "conversation", value: { id: 1 } }, { type: "entry", value: { id: await journal.mintId(), conversationId: 1, kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text: "Go on." }], timestamp: 0 }] } }];
+      for (let e = 1; e < entries; e++) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: 1, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: `Step ${e}.` }], usage: { cost: { total: 0.001 } }, timestamp: 0 }] } });
+      await commitWrites(journal, writes, BACKGROUND_CONTEXT);
+      if (i % 3 === 0) await store.runs.update(claim, { state: "ended", costUsd: 0.01 });
+      else if (i % 3 === 1) await store.runs.update(claim, { state: "failed", costUsd: 0.01 });
+    }
+  } finally {
+    await store.close();
+  }
+}
+
+// A page of 5, under each status's count at 20 runs: a list that cuts its page in the query reads the same rows at both.
+test("one runs list makes the same store calls, and reads the same rows, at 20 runs and at 200: none per run, with a status filter or without", { timeout: 300_000 }, async (t) => {
+  const callsOfLast = storeCallsPerList(t);
+  const calls = {};
+  const rows = {};
+  for (const count of [20, 200]) {
+    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const data = join(dir, "agents");
+    await storeOf(data, count, 5);
+    const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+    try {
+      await server.listingSettled?.();
+      const api = client(server.baseUrl, server.token);
+      for (const query of ["", "?status=working", "?status=failed", "?status=input_required"]) {
+        const answer = await api("GET", `/runs${query}${query ? "&" : "?"}limit=5`);
+        assert.equal(answer.status, 200, JSON.stringify(answer.body));
+        assert.equal(answer.body.runs.length, query === "?status=input_required" ? 0 : 5, `${query}: a full page`);
+        const counted = callsOfLast();
+        (calls[query || "all"] ??= {})[count] = counted?.calls;
+        (rows[query || "all"] ??= {})[count] = counted?.rows;
+      }
+    } finally {
+      await server.close();
+    }
+  }
+  for (const [query, at] of Object.entries(calls)) {
+    assert.ok(Number.isInteger(at[20]) && at[20] > 0, `${query}: the list's calls were counted (${JSON.stringify(at)})`);
+    assert.equal(at[200], at[20], `${query}: one list makes ${at[20]} store calls at 20 runs and ${at[200]} at 200: the same, none per run`);
+    assert.ok(at[200] <= 2, `${query}: one list makes at most two store calls with nothing behind (${at[200]})`);
+    const read = rows[query];
+    assert.equal(read[200], read[20], `${query}: one list reads ${read[20]} rows at 20 runs and ${read[200]} at 200: the same, its page cut in the query`);
+  }
+});

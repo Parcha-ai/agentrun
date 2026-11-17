@@ -214,8 +214,15 @@ From a checkout, the same command in its root, with `--build` to build the image
 (trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
-The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
-(`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
+The image's default command, `server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`, starts
+two processes in the container: the server with `--no-runner`, and one runner on the same `/data` once the server answers
+`GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
+stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
+`runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
+its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+
+The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
+6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
@@ -807,7 +814,9 @@ passes the binding's conformance cases (below) needs no change here.
 - **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
   run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
   (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+  so. The image's default command starts its runner apart; give the image the server's options alone
+  (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
+  second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over

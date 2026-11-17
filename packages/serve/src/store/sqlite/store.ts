@@ -11,7 +11,7 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS } from "../schema.js";
 import {
   AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -69,6 +69,17 @@ type FiringRecord = {
   error: string | null; count: number | null; attempts: number; retry_at: number | null; payload: string | null; attrs: string | null; notified: number | null;
   catch_up: number | null; paused: number | null; shown: number | null; waits_on: string | null;
 };
+/** No audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."): the prefix compared as it is, which LIKE does not on
+ *  SQLite (it folds case). */
+const NOT_A_SHADOW_RUN = "substr(runs.id, 1, 6) <> 'audit.'";
+/** A runner holds the run's claim at `now` (SQL), and the run is not over. */
+const heldAt = (now: string) => `(runs.runner IS NOT NULL AND runs.claimed_until >= ${now} AND runs.state NOT IN ('ended', 'stopped', 'failed'))`;
+/** The run's listing is behind at `now` (SQL; its parameters twice, `params`): built before the latest write that moved
+ *  what its view shows, or while a runner held it and that claim has run out, or past the time an ask it waits on expires. */
+const listingBehind = (now: string) => ({
+  sql: `(runs.listing_mark < runs.list_mark OR (runs.listing_live = 1 AND NOT ${heldAt(now)}) OR (runs.listing_until IS NOT NULL AND runs.listing_until <= ${now}))`,
+  params: (at: readonly SqliteValue[]): SqliteValue[] => [...at, ...at],
+});
 const FIRING_COLUMNS = "trigger_id, key, by, nominal_at, status, at, run_id, reason, error, count, attempts, retry_at, payload, attrs, notified, catch_up, paused, shown, waits_on";
 const firingOf = (r: FiringRecord): FiringRow => ({
   triggerId: r.trigger_id, key: r.key, by: r.by ?? "manual", nominalAt: r.nominal_at ?? r.at, status: r.status, at: r.at, runId: r.run_id, reason: r.reason,
@@ -303,7 +314,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       await connection.write([...DDL.map((sql) => ({ sql })), { sql: "INSERT INTO store_meta (singleton, schema_version) VALUES (1, ?) ON CONFLICT (singleton) DO NOTHING", params: [SCHEMA_VERSION] }], { full: true });
       found = await versionOf(connection);
     }
-    if (found !== SCHEMA_VERSION) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
+    // Version 11 (0.1.0-beta.43 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
+    // in one durable write once the columns an earlier build of 11 lacked are in, every run behind until its lister builds
+    // it. A runner refuses 11 until that server has.
+    const upgrading = found === SCHEMA_VERSION - 1;
+    if (upgrading && role === "runner") throw new Error(`Start the AgentRun server to bring this store from version ${found} to ${SCHEMA_VERSION} before opening a runner. The runner does not upgrade this store.`);
+    if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
     if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new Error("Start the AgentRun server to install MCP and Monid revision metadata before opening a runner. The runner does not upgrade this store.");
     const nativeOwners=(await connection.all<{name:string}>("PRAGMA table_info(settings)")).some(column=>column.name==='connector_id');
@@ -350,6 +366,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       await backfillNativeCommandOwners(connection);
+      if (upgrading) {
+        const present = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
+        await connection.write(listingUpgrade(present).map((sql) => ({ sql })), { full: true });
+      }
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -976,6 +996,73 @@ class SqliteStore implements Store {
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
         return rows.map(runOf);
+      },
+      // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
+      // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
+      listed: async ({ agentId, revisionId, labels, archived, status, going, limit, offset = 0 }) => {
+        const n = clock();
+        const behind = listingBehind(n.sql);
+        // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
+        const where: string[] = [`runs.${NOT_A_LEARNING_RUN}`, NOT_A_SHADOW_RUN];
+        const params: SqliteValue[] = [];
+        if (agentId !== undefined) (where.push("runs.agent_id = ?"), params.push(agentId));
+        if (revisionId !== undefined) (where.push("runs.revision_id = ?"), params.push(revisionId));
+        for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("runs.labels")), params.push(key, value));
+        where.push(`COALESCE(runs.archived_at, agents.archived_at) IS ${archived ? "NOT NULL" : "NULL"}`);
+        if (status !== undefined) (where.push("runs.list_status = ?"), params.push(status));
+        // A run still going (no settled status on its row) whose listing is behind: its list_status may say what it was.
+        if (going) (where.push(`(${SETTLED_LIST_STATUS}) IS NULL`, behind.sql), params.push(...behind.params(n.params)));
+        const rows = await db.all<RunRecord & { agent_archived_at: number | null; listing: string | null; list_status: string | null; list_mark: number; behind: number }>(
+          `SELECT ${RUN_COLUMNS.split(", ").map((column) => `runs.${column}`).join(", ")}, agents.archived_at AS agent_archived_at, runs.listing, runs.list_status, runs.list_mark,
+                  ${behind.sql} AS behind
+             FROM runs JOIN agents ON agents.id = runs.agent_id WHERE ${where.join(" AND ")} ORDER BY runs.started_at DESC, runs.id DESC LIMIT ? OFFSET ?`,
+          ...behind.params(n.params), ...params, limit + 1, offset,
+        );
+        return {
+          rows: rows.slice(0, limit).map((row) => ({
+            row: runOf(row), agentArchivedAt: row.agent_archived_at, listStatus: row.list_status, listMark: Number(row.list_mark), behind: Boolean(Number(row.behind)),
+            listing: row.listing === null ? null : (JSON.parse(row.listing) as { item: Record<string, unknown>; cut: string }),
+          })),
+          more: rows.length > limit,
+        };
+      },
+      counts: async (agentId) => {
+        const [row] = await db.all<{ count: number; live: number | null }>(
+          `SELECT COUNT(*) AS count, SUM(CASE WHEN runs.state IN ('queued', 'running', 'parked')
+               OR (runs.state = 'stopped' AND runs.outcome = 'stopped' AND runs.imported_from IS NULL AND revisions.kind = 'agentic') THEN 1 ELSE 0 END) AS live
+             FROM runs JOIN revisions ON revisions.id = runs.revision_id
+             WHERE runs.agent_id = ? AND ${NOT_A_SHADOW_RUN} AND runs.${NOT_A_LEARNING_RUN}`,
+          agentId,
+        );
+        return { count: Number(row?.count ?? 0), live: Number(row?.live ?? 0) };
+      },
+      // The rows whose listing is behind, by the three ways one falls behind, each over its own partial index.
+      behind: async ({ limit }) => {
+        const n = clock();
+        const held = heldAt(n.sql);
+        const rows = await db.all<{ id: string; mark: number; held: number }>(
+          `SELECT id, list_mark AS mark, held FROM (
+             SELECT id, list_mark, started_at, ${held} AS held FROM runs WHERE listing_mark < list_mark
+             UNION SELECT id, list_mark, started_at, ${held} AS held FROM runs WHERE listing_live = 1 AND NOT ${held}
+             UNION SELECT id, list_mark, started_at, ${held} AS held FROM runs WHERE listing_until IS NOT NULL AND listing_until <= ${n.sql}
+           ) AS behind ORDER BY held, started_at DESC, id DESC LIMIT ?`,
+          ...n.params, ...n.params, ...n.params, ...n.params, ...n.params, limit,
+        );
+        return rows.map((row) => ({ id: row.id, mark: Number(row.mark), held: Boolean(Number(row.held)) }));
+      },
+      putListing: async (runId, mark, { item, cut, status, live, until, flags }) => {
+        const [result] = await db.write([{
+          sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND listing_mark <= ? RETURNING id",
+          params: [json({ item, cut }), status, mark, live ? 1 : 0, until, flags, runId, mark],
+        }]);
+        return (result?.rows.length ?? 0) > 0;
+      },
+      relist: async ({ flags, agentId }) => {
+        const [result] = await db.write([{
+          sql: `UPDATE runs SET list_mark = list_mark + 1 WHERE listing_flags <> 0 AND (listing_flags & ?) <> 0${agentId === undefined ? "" : " AND agent_id = ?"} RETURNING id`,
+          params: [flags, ...(agentId === undefined ? [] : [agentId])],
+        }]);
+        return result?.rows.length ?? 0;
       },
       // The run-change feed: the rows the runs_changed trigger wrote, each in its write's transaction, after the cursor's
       // seq. One writer numbers them in commit order, so the last one read is the watermark and the cursor is its seq. A

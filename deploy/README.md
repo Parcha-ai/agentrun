@@ -6,8 +6,9 @@ This guide covers the open-source deployment you operate: its server, runners, p
 AgentRun runs as two kinds of process on one store:
 
 - **The server** serves the API and the console, sets the store up (it is the only one that migrates it), and records
-  each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner beside itself
-  (a single container, as on Render).
+  each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner in its own
+  process. The image's default command runs the server with `--no-runner` and one runner as two processes in a single
+  container (as on Render).
 - **A runner** claims runs from the store and runs them, many at once, as many as its host's memory holds by each run's
   harness (a claude-agent run 288 MB, a pi run 128 MB; its host's memory is its container's limit when it has one, so
   give each runner on a shared host its own) and at most `--loops` (default `AGENTRUN_MAX_RUNS`, else as
@@ -31,7 +32,7 @@ load: copy its whole address into the console.
 
 ## One container, no key
 
-The server and one runner in one container, its data on a named volume, its port on this machine's loopback:
+The server and one runner in one container, two processes on one data volume, its port on this machine's loopback:
 
 ```sh
 (umask 077; [ -f agentrun.env ] || echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" > agentrun.env)   # once; keep this file
@@ -55,7 +56,15 @@ docker run --hostname server -v agentrun-data:/data --env-file agentrun.env ghcr
 docker run -v agentrun-data:/data --env-file agentrun.env ghcr.io/parcha-ai/agentrun-server:beta runner --data /data --name runner-1 [--loops N] [--drain-timeout D]
 ```
 
-The image's default command is the server with a runner beside it, for one container on its own (above).
+The image's default command, for one container on its own (above), is
+`server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`. It starts the server with those options
+and `--no-runner`, and one runner on the same data once the server answers `GET /v2/health`. The runner takes the
+server's `--data`, `--drain-timeout`, `--max-runs` (as `--loops`) and `--faux`. Each process has its own store
+connection, so a busy runner never holds up the API. A `docker stop` reaches both, and each drains as it does on its
+own. If either exits, the other stops and the container exits non-zero, so a restart policy starts both again.
+
+Any other arguments are one command, run as given: `runner ...` is a runner, `reset-password --data /data` resets the
+password, and server options alone are a server with its runner in its own process, which a paired computer needs.
 
 What each takes, from its environment alone:
 
@@ -159,9 +168,10 @@ On a database you run yourself, the store's role needs no `CREATE` on the databa
 and given to it (`CREATE SCHEMA agentrun AUTHORIZATION <role>`, or the name in `AGENTRUN_STORE_SCHEMA`): the server
 migrates a schema its role owns.
 
-**Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
-it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
-`--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`. A first
+**Render.** `render.yaml` at the repository's root runs the image's default command: the server and one runner, two
+processes in one service, on a disk only that one service can mount. More runners on Render need the Postgres store:
+the server with `--no-runner`, and each runner a background worker from the same image with
+`runner --data /data --name <name>`. A first
 deploy needs no model key: leave Render's key fields blank, paste `AGENTRUN_TOKEN` from the service's Environment tab
 at the first visit to set your password, then Continue with ChatGPT (Settings → Model keys, or the first screen), then
 run your first agent. Or paste a key in Render's form, or add one in the console.
