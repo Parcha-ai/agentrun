@@ -360,7 +360,12 @@ class MorphHost implements MachineHost {
 	async #baseOf(name: string, call: HostCall): Promise<string | undefined> {
 		const listed = await this.#rest<{ data?: unknown }>("GET", `/snapshot?${encodeURIComponent(`metadata[${BUILD_LABEL}]`)}=${encodeURIComponent(name)}`, undefined, call);
 		const bases = (Array.isArray(listed?.data) ? (listed.data as MorphSnapshot[]) : []).filter((one) => one?.metadata?.[BUILD_LABEL] === name && SNAPSHOT_ID.test(one.id)).sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
-		for (const failed of bases.filter((one) => one.status === "failed")) await this.#rest("DELETE", `/snapshot/${failed.id}`, undefined, call);
+		// Another build may have deleted it first: its 404 is done.
+		for (const failed of bases.filter((one) => one.status === "failed")) {
+			await this.#rest("DELETE", `/snapshot/${failed.id}`, undefined, call).catch((error) => {
+				if (codeOf(error) !== "not_found") throw error;
+			});
+		}
 		return (bases.find((one) => one.status === "ready") ?? bases.find((one) => one.status === "pending"))?.id;
 	}
 
@@ -369,15 +374,16 @@ class MorphHost implements MachineHost {
 	 * snapshot is made: 78 s from the POST to ready at 1 vCPU / 2 GiB / 8 GiB of disk (d7/morph-branch-3), past the 60 s
 	 * of one call (d7/morph-live-1 timed out there while Morph went on and made it), and no size is known to be faster. So
 	 * the call has the build's remaining time. An answer that is lost all the same (a timeout, a dropped connection, a 5xx
-	 * after the send) may still have made it: the account is looked at again by the label, and one found is the base. With
-	 * none found the create's failure is thrown, and the next build finds the base by its label once Morph lists it.
+	 * after the send) may still have made it: the account is looked at again by the label, and one found is the base. That
+	 * look takes no cancel signal, like the create, so a cancelled build still holds the id and its finally deletes it.
+	 * With none found the create's failure is thrown, and the next build finds the base by its label once Morph lists it.
 	 */
-	async #newBase(name: string, end: number, call: HostCall): Promise<string> {
+	async #newBase(name: string, end: number): Promise<string> {
 		let made: MorphSnapshot;
 		try {
 			made = await this.#rest<MorphSnapshot>("POST", "/snapshot", { image_id: BASE_IMAGE, ...BOX_SIZE, metadata: { [BUILD_LABEL]: name } }, { timeoutMs: Math.max(1, end - Date.now()) });
 		} catch (error) {
-			const found = await this.#baseOf(name, call);
+			const found = await this.#baseOf(name, { timeoutMs: BUILD_CALL_MS });
 			if (found === undefined) throw error;
 			return found;
 		}
@@ -413,7 +419,7 @@ class MorphHost implements MachineHost {
 		const notCancelled = (what: string) => {
 			if (signal?.aborted) throw new HostError("aborted", `the box build was aborted after ${what}`);
 		};
-		const base = (await this.#baseOf(name, call)) ?? (await this.#newBase(name, end, call));
+		const base = (await this.#baseOf(name, call)) ?? (await this.#newBase(name, end));
 		// Set once the box snapshot is asked for: from then on it may need the base, which is kept.
 		let snapshotted = false;
 		let vm: string | undefined;

@@ -517,6 +517,18 @@ test("a base create whose answer is lost adopts the base Morph made, found by it
 	assert.equal(lost.ok, false);
 	assert.match(lost.error.message, /POST \/api\/snapshot: fetch failed/);
 	assert.equal(other.fake.rest.instances.size, 0, "nothing built");
+	// One cancelled while Morph makes it, its answer lost: the look again takes no cancel, so the base is held, then deleted.
+	const cancelled = await setup(t);
+	const own = [...cancelled.fake.rest.snapshots.keys()];
+	const controller = new AbortController();
+	cancelled.fake.rest.fail("POST", /^\/api\/snapshot$/, () => {
+		cancelled.fake.rest.snapshot({ status: "pending", metadata: { [BUILD]: BOX } });
+		controller.abort();
+		throw new TypeError("fetch failed");
+	});
+	const aborted = await cancelled.provider.prepareImage({ signal: controller.signal });
+	assert.equal(aborted.error?.code, "aborted", aborted.error?.message);
+	assert.deepEqual([...cancelled.fake.rest.snapshots.keys()], own, "the base Morph made is deleted; the account's own snapshot stays");
 });
 
 test("a ready labelled base an earlier build left is used, not made again", async (t) => {
@@ -542,6 +554,15 @@ test("a failed labelled base is deleted, and the build makes a new one", async (
 	assert.equal(ready.ok, true, ready.error?.message);
 	assert.equal(fake.rest.snapshots.has(failed), false, "the failed base is deleted");
 	assert.equal(fake.rest.calls.filter((one) => one.method === "POST" && one.path === "/api/snapshot").length, 1, "a new base");
+	// Another build deleted it first: its delete's 404 is done, and the build goes on.
+	const raced = await setup(t);
+	const gone = raced.fake.rest.snapshot({ status: "failed", metadata: { [BUILD]: BOX } }).id;
+	raced.fake.rest.fail("DELETE", new RegExp(`^/api/snapshot/${gone}$`), () => {
+		raced.fake.rest.snapshots.delete(gone);
+		return new Response(JSON.stringify({ detail: "Snapshot not found" }), { status: 404 });
+	});
+	const after = await raced.provider.prepareImage();
+	assert.equal(after.ok, true, after.error?.message);
 });
 
 // --- the registry and the conformance module ---
