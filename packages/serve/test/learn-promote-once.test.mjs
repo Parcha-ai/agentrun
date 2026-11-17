@@ -323,3 +323,27 @@ test("(c) a stopped workflow is never asked a recompile, whatever else is held: 
   await w.start("run-1", "Question 10");
   assert.deepEqual(w.asks.get("run-1"), []);
 });
+
+// Review on #3032 r4 (PRRT_kwDOUmdVMs64MQC-): the compile ask counts the agent's own completed runs before anything limits
+// the read, as the check's inputs are: 250 runs a workflow served since never push the agent's own N out of the window.
+test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, the workflow retired: the compile ask still fires", async () => {
+  const { compileAskOf: askOf } = await import("../dist/runner/learning-end.js");
+  const rows = [];
+  for (let i = 0; i < 5; i++) rows.push({ id: `own-${i}`, agentId: "agent-1", revisionId: "rev-1", state: "ended", outcome: "completed", metrics: null, archivedAt: null, importedFrom: null });
+  for (let i = 0; i < 250; i++) rows.push({ id: `served-${i}`, agentId: "agent-1", revisionId: "rev-1", state: "ended", outcome: "completed", metrics: { path: "workflow", workflow: "answer" }, archivedAt: null, importedFrom: null });
+  rows.push({ id: "now", agentId: "agent-1", revisionId: "rev-1", state: "running", outcome: null, metrics: null, archivedAt: null, importedFrom: null });
+  const newestFirst = [...rows].reverse();
+  let opened = 0;
+  const store = {
+    settings: { get: async () => undefined },
+    runs: {
+      get: async (id) => rows.find((row) => row.id === id),
+      list: async ({ state, archived, limit } = {}) => newestFirst.filter((row) => (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived)).slice(0, limit),
+    },
+    agents: { revision: async () => ({ body: { learning: { compile_after: 5 } } }) },
+    learning: { proposal: async () => undefined },
+  };
+  const deps = { store, learningFolder: () => { opened++; throw new Error("folder opened: the compile is due"); } };
+  await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
+  assert.equal(opened > 0, true, "the 5 own runs are found behind the 250 served ones: the compile is due");
+});

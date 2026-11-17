@@ -7,7 +7,7 @@
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { GuardRow } from "../learned-nodes.js";
 import { GRADES_KEPT, gradesOf, promotionOf, promotionsOf } from "../learn/promote.js";
-import { agentRun, promotedOf } from "../learn/compile.js";
+import { lastOwnRuns, promotedOf } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
 import { roundsOf } from "./learning.js";
 
@@ -99,7 +99,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   // says "N of compile_after" from this, never from the one page of runs it reads.
   const current = (await store.agents.get(agentId))?.currentRevision;
   const body = current ? (await store.agents.revision(current))?.body as { learning?: unknown } | undefined : undefined;
-  const completed_runs = Math.min(loopOf(body?.learning).compile_after, ended.filter(agentRun).length);
+  const completed_runs = (await lastOwnRuns(store, agentId, loopOf(body?.learning).compile_after)).length;
   const [grades, promotions] = await Promise.all([gradesOf(store.settings, agentId).catch(() => []), promotionsOf(store.settings, agentId).catch(() => [])]);
   const graded = new Map(grades.map((grade) => [grade.run, grade.correct]));
   // The grades kept are the newest GRADES_KEPT (putGrade trims the oldest): once full, a run that ended before the oldest

@@ -31,7 +31,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { agentRun, completedRun, type CompileAsk,type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { completedRun, type CompileAsk, lastOwnRuns,type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
 import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
@@ -447,7 +447,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const at = listed.findIndex((run) => run.id === input.runId);
   const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
   const done = earlier.filter(completedRun);
-  const byHand = earlier.filter(agentRun).length;
+  const byHand = (await lastOwnRuns(deps.store, input.agentId, compileAfter, input.runId)).length;
   let compiledLately = false;
   const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;

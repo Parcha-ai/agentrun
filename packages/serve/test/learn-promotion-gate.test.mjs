@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 
 const { promotionGate } = await import("../dist/runner/promotion.js");
 const { GRADES_KEPT, gradesOf, putGrade, promotionOf, promotionsOf, PROMOTIONS_KEPT, recordPromotion, REFIT_EVERY } = await import("../dist/learn/promote.js");
+const { secretsShown } = await import("../dist/learning.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 
 const flowOf = (guard) => JSON.stringify({ v: 2, name: "answer", schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } }, input: { schemaId: "In" }, output: { schemaId: "In", path: "question" },
@@ -183,7 +184,7 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
     command: async (runId, command) => (commands.push([runId, command.kind]), { id: `c-${commands.length}`, runId, ...command }),
   };
   const logs = [];
-  const gateOf = (now = Date.now) => promotionGate({ store, agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line), now, ...(newest ? { newest: typeof newest === "function" ? newest : async () => newest } : {}), ...(champion ? { champion } : {}) });
+  const gateOf = (now = Date.now) => promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line), now, ...(newest ? { newest: typeof newest === "function" ? newest : async () => newest } : {}), ...(champion ? { champion } : {}) });
   return { settings, created, commands, logs, gateOf, rows, launches };
 }
 
@@ -496,4 +497,28 @@ test("a run already executing on A (an earlier claim of it served A) keeps A aft
   // Executing on B (it served B's text in place of a laid A), re-claimed once B is held: still B.
   const { gate, a, b, da, db, logs } = await twoChampionsOf({ held: true, kept: { workflow: "answer", digest: workflowDigest({ workflow: flowOf(undefined).replace("Answer.", "Answer, revision B.") }), outcome: "handed_back" } });
   assert.equal((await gate(a, da))?.workflow.workflow, b.workflow, `${db}: ${logs.join("\n")}`);
+});
+
+// Review on #3032 r4 (PRRT_kwDOUmdVMs64MQC5): a check's disagreement texts are redacted whole, then cut: a saved secret that
+// straddles the cut at CHECK_TEXT_MAX never leaves its prefix in the record (cut first, the redactor no longer matched it).
+test("a saved secret straddling the cut of a disagreement text leaves no part of it in the record or the promotions read", async () => {
+  const { decideCheck } = await import("../dist/runner/promotion.js");
+  const { CHECK_TEXT_MAX, promotionsShown } = await import("../dist/learn/promote.js");
+  const secret = ["Zq81Trb", "N4wX7cV", "2mKp09L", "dHy5aEg", "3UfJxQ"].join("");
+  const straddling = (what) => `${what} `.repeat(300).slice(0, CHECK_TEXT_MAX - 20) + secret + " and then more words after it";
+  const { settings, logs } = await replayStoreOf({ graded: 0 });
+  const shown = secretsShown([secret]);
+  const row = { of: "r-1", input: straddling("input"), agent: straddling("agent"), outcome: "answered", answer: straddling("draft"), guards: [] };
+  const handed = { of: "r-2", input: "short", agent: "x", outcome: "handed_back", answer: null, escalated: straddling("escalated"), guards: [] };
+  const read = { rows: [row, handed], cost: 0, outcomes: { answered: 1, handed_back: 1, skipped_write: 0, failed: 0 }, unstarted: 0 };
+  const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => shown };
+  const decided = await decideCheck(deps, "answer", "dig", bar, read, new Map(), () => true, {});
+  assert.equal(decided.record.decided, "hold", JSON.stringify(decided.record));
+  const everyText = (value) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(everyText) : value && typeof value === "object" ? Object.values(value).flatMap(everyText) : []);
+  const leaks = (texts) => texts.filter((text) => { for (let i = 0; i + 8 <= secret.length; i++) if (text.includes(secret.slice(i, i + 8))) return true; return false; });
+  const stored = (await promotionsOf(settings, "a")).at(-1);
+  assert.ok(stored.check.disagreements.length >= 2, JSON.stringify(stored.check));
+  assert.deepEqual(leaks(everyText(stored.check.disagreements)), [], "the stored disagreements");
+  assert.deepEqual(leaks(everyText(promotionsShown([stored], shown))), [], "the promotions read");
 });

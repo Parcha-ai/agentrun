@@ -786,6 +786,25 @@ test("an APK that is not there, or whose bytes are not its pinned sha256, is ref
 	]) await assert.rejects(create({ apiKey: KEY, ...given }), words, JSON.stringify(given));
 });
 
+test("the phone's live view asks phoned for JPEG frames at most 720 wide, the frames the viewer and the run's video take; a caller's maxWidth wins", async () => {
+	const { provider, fake } = await setup();
+	const { value: ref } = await provider.create(SPEC, req());
+	const watchOf = async (options) => {
+		const frames = [];
+		const watched = await provider.watch(ref, { frame: (frame) => frames.push(frame), ended: (error) => assert.fail(`ended: ${error.message}`) }, options);
+		assert.equal(watched.ok, true, JSON.stringify(watched));
+		for (let i = 0; i < 50 && frames.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+		await watched.value.close();
+		return frames[0];
+	};
+	const frame = await watchOf();
+	assert.deepEqual([frame.format, frame.frameWidth, frame.frameHeight, frame.width, frame.height], ["jpeg", 720, 1600, 1080, 2400], "720 wide, the screen's own pixels unchanged for input");
+	assert.equal(fake.phone.calls.filter((call) => call.method === "screen.watch")[0].params.maxWidth, 720);
+	const asked = await watchOf({ maxWidth: 1280, quality: 80 });
+	assert.equal(asked.frameWidth, 1080, "a caller that asks a width gets it");
+	assert.deepEqual(fake.phone.calls.filter((call) => call.method === "screen.watch").at(-1).params, { after: 0, maxWidth: 1280, quality: 80 });
+});
+
 test("without phoned's jar, connect is not_found in words naming the build; a phoned that never says hello is refused naming its log on the phone", async () => {
 	const missing = join(dir, "no-such-phoned.jar");
 	const { provider, fake } = await setup({}, { phoned: missing });

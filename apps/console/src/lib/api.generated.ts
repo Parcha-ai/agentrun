@@ -1738,6 +1738,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -1864,6 +1866,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -3242,6 +3246,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -4355,6 +4361,8 @@ export interface operations {
           every_s: number;
           items?: string;
           id?: string;
+          updated?: string;
+          fields?: string[];
           accept?: {
             event: string;
             actions?: string[];
@@ -5583,6 +5591,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -5709,6 +5719,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];

@@ -12,6 +12,7 @@
 // The notes a kept draft does the work of get `compiled_into: <workflow>` in their front matter when it merges
 // (learn/commit.ts), and stay served: a run the workflow hands back is done by hand with them.
 import { createHash } from "node:crypto";
+import type { RunRow, Store } from "../store/store.js";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { childNodes, LEARNED_MAX_TURNS, frontMatter, WORKFLOW_NAME, WORKFLOWS_DIR } from "./skills.js";
 import { NOTE_BLOCK, parseReflection, SKILL_BLOCK, WORKFLOW_BLOCK } from "./reflect.js";
@@ -144,6 +145,24 @@ export const agentRun = (run: { readonly state: string; readonly outcome: string
   const path = (run.metrics as { path?: unknown } | null | undefined)?.path;
   return completedRun(run) && path !== "workflow" && path !== "replay";
 };
+
+/** The first page of the agent's ended runs lastOwnRuns reads; each page after it is OWN_PAGE_GROWTH times the one before,
+ *  until it holds `n` of the agent's own runs or the agent has no more. */
+const OWN_PAGE_MIN = 200;
+const OWN_PAGE_GROWTH = 4;
+
+/** The agent's last `n` completed runs of its own (agentRun: not one its learned workflow answered alone, not a replay;
+ *  never `exceptRunId`, an archived run or an imported one), newest first, picked before anything else limits them: runs
+ *  its workflow served since, however many, never push them out of the read (it reads more of the agent's ended runs
+ *  until it has `n`, or there are no more). The one read of what compile_after counts and of a check's inputs. */
+export async function lastOwnRuns(store: Pick<Store, "runs">, agentId: string, n: number, exceptRunId?: string): Promise<RunRow[]> {
+  const own = (row: RunRow) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom;
+  for (let limit = Math.max(OWN_PAGE_MIN, 3 * n); ; limit *= OWN_PAGE_GROWTH) {
+    const listed = await store.runs.list({ agentId, state: "ended", archived: false, limit });
+    const found = listed.filter(own).slice(0, n);
+    if (found.length >= n || listed.length < limit) return found;
+  }
+}
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
  *  waiting for its owner's OK), none of its last COMPILE_QUIET_RUNS runs compiled, and it has `compileAfter` completed

@@ -83,6 +83,7 @@ import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/j
 import type { McpPin } from "../mcp-gateway.js";
 import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
+import { lastOwnRuns } from "../learn/compile.js";
 import { answersAlone, championOf, type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, sameAnswer, PROMOTIONS_KEPT, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayLaunch, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, scoreOf, type SkippedTool, skippedToolsOf, thresholdsOf, withinBar } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -131,13 +132,16 @@ export interface PromotionDeps {
    *  (startReplay). Absent: a replay run is handed none (a per_run server's calls are refused unsent, the input failed). */
   readonly sealKey?: Buffer;
   readonly now?: () => number;
+  /** The host's secrets as a reader cuts them (learning.ts secretsShown): a check's texts are cut of them whole, before
+   *  they are shortened (decideCheck). */
+  readonly shown: () => Promise<Shown>;
 }
 
 /** The claim's promotion ports: `folder`, the agent's learning folder where the run's place keeps it, a refit's revision
  *  written on it as a merge from the claim's seed (a workflow.json changed on main since is a conflict, never written over),
  *  and a champion read from it at its record's commit, cut of the server's secrets (`shown`) as the claim's lay is; and
  *  the workflow an earlier claim of this run served (`kept`, from its journal: none on a first claim). */
-export function claimPromotion(deps: Omit<PromotionDeps, "commit" | "champion" | "kept"> & { readonly folder: () => LearningFolder; readonly shown: () => Promise<Shown> }): PromotionDeps {
+export function claimPromotion(deps: Omit<PromotionDeps, "commit" | "champion" | "kept"> & { readonly folder: () => LearningFolder }): PromotionDeps {
   const seed = deps.launch.learning?.seed;
   return {
     ...deps,
@@ -422,11 +426,6 @@ function attemptOf(records: readonly PromotionRecord[], name: string, digest: st
   return before?.decided === "hold" && before.source === "check" && before.check?.attempt === 1 && !before.check.stopped ? 2 : 1;
 }
 
-/** The first page of the agent's ended runs checkInputs reads; each page after it is CHECK_PAGE_GROWTH times the one
- *  before, until it holds `n` of the agent's own runs or the agent has no more. */
-const CHECK_PAGE_MIN = 200;
-const CHECK_PAGE_GROWTH = 4;
-
 /** The inputs a check runs its draft on: the agent's last `n` completed runs of its own (its learned workflow did not
  *  answer them alone, and none is a replay; never the claimed run, an archived or imported one), newest first, picked
  *  before anything else limits them: runs its workflow served since, however many, never push them out of the read (it
@@ -435,16 +434,7 @@ const CHECK_PAGE_GROWTH = 4;
  *  agent's runs it looked at (`looked`, at most `n`) and why each it looked at is no input (`unfit`, `files`). */
 async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, n: number): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
-  const agents = (row: RunRow) => {
-    const path = metricsOf(row).path;
-    return row.id !== deps.runId && row.state === "ended" && (row.outcome === null || row.outcome === "completed") && path !== "workflow" && path !== "replay" && row.archivedAt === null && !row.importedFrom;
-  };
-  let own: RunRow[] = [];
-  for (let limit = Math.max(CHECK_PAGE_MIN, 3 * n); ; limit *= CHECK_PAGE_GROWTH) {
-    const listed = await deps.store.runs.list({ agentId: deps.agentId, state: "ended", archived: false, limit });
-    own = listed.filter(agents).slice(0, n);
-    if (own.length >= n || listed.length < limit) break;
-  }
+  const own = await lastOwnRuns(deps.store, deps.agentId, n, deps.runId);
   const out: ReplayInput[] = [];
   let files = 0;
   for (const row of own) {
@@ -569,7 +559,7 @@ const inputText = (input: unknown): string => (typeof input === "string" ? input
 /** What a replay run's workflow said when it handed its input back: its learned_workflow call's result. */
 async function handedBackOf(store: PromotionDeps["store"], runId: string, context: Context): Promise<string | undefined> {
   try {
-    const rows = await runTimeline(store, runId, context, { settled: true, caps: { text: CHECK_TEXT_MAX } });
+    const rows = await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } });
     return rows.findLast((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL)?.tool_result_preview ?? undefined;
   } catch {
     return undefined;
@@ -596,14 +586,20 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  agree on, which the agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds
  *  it too stops: nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the
  *  digest's record (the one write: of two claims at once, one decides). */
-async function decideCheck(deps: PromotionDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number }, thresholds: ReadonlyMap<string, number>, still: (was: PromotionRecord | undefined) => boolean, extra: Partial<PromotionRecord>) {
+export async function decideCheck(deps: PromotionDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number }, thresholds: ReadonlyMap<string, number>, still: (was: PromotionRecord | undefined) => boolean, extra: Partial<PromotionRecord>) {
   const now = deps.now ?? Date.now;
   const ran = read.rows.filter((row) => row.outcome !== "skipped_write");
   const alone = (row: CheckRow) => row.outcome === "answered" && !handsBackAt(row, thresholds);
   const agrees = (row: CheckRow) => alone(row) && sameAnswer(row.answer, row.agent);
   const score = { n: ran.length, agreed: ran.filter(agrees).length, alone: ran.filter(alone).length };
   const ok = checkPasses(score, bar);
-  const cut = (text: string) => (text.length > CHECK_TEXT_MAX ? `${text.slice(0, CHECK_TEXT_MAX)}…` : text);
+  // Each text is cut of the host's secrets whole, then shortened: shortened first, a secret straddling the cut would leave
+  // its prefix, which no redactor matches.
+  const shown = await deps.shown();
+  const cut = (text: string) => {
+    const clean = shown.text(text);
+    return clean.length > CHECK_TEXT_MAX ? `${clean.slice(0, CHECK_TEXT_MAX)}…` : clean;
+  };
   // An input it answered that a guard (or a recorded escalate) hands back when serving is a hand-back, named by its step.
   const servedBack = (row: CheckRow) => {
     const guard = handsBackAt(row, thresholds);
@@ -1199,7 +1195,7 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   }
   const { launch, revisionId } = await ask.launchOf(graded[0]!.launch.input as Json);
   if (!launch.learning || launch.learning.notesOnly) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, notes only, or this server's is off).`);
-  const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, ...(ask.now ? { now: ask.now } : {}) };
+  const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, ...(ask.now ? { now: ask.now } : {}) };
   const said = `replaying on ${plural(graded.length, "graded input")}${owed.length ? ` (the ${plural(owed.length, "served run")} graded wrong it was held on among them)` : ""}, as its owner asked`;
   // Kept only while the revision's newest record is still the one read here: each record write stamps a new `at`.
   const reserved = await reserve(deps, found.workflow, digest, gradedRuns(graded), said, (was) => was?.at === own?.at && was?.decided === own?.decided, owed);
