@@ -442,11 +442,11 @@ const record = join(resolve(data), SERVER_FILE);
 const stop = stopOnSignals({
   close: () => {
     removeOwnRecord(record);
-    telemetry.close();
     // A drain that has runs to wait on says so, as a run's own process did on the server's stop.
     const busy = runnerProc?.runner.held().length ?? 0;
     if (busy > 0 && drainMs > 0) console.error(`agentrun-serve: stopping: waiting up to ${Math.ceil(drainMs / 1000)} s for ${busy} ${busy === 1 ? "run" : "runs"} to finish ${busy === 1 ? "its turn" : "their turns"}`);
-    return Promise.all([runnerProc?.close() ?? Promise.resolve(), serve.close()]).then(() => undefined);
+    // The counts' last write (telemetry.ts) is waited for once the runner has said its last run's end.
+    return Promise.all([(runnerProc?.close() ?? Promise.resolve()).then(() => telemetry.close()), serve.close()]).then(() => undefined);
   },
   // The stop's deadline waits out the runner's whole close: its drain, then the stop of the loops left, so a run's end
   // and release are never cut short (besideStopping).

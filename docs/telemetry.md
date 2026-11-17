@@ -32,7 +32,8 @@ Turned off, the server writes no id and sends nothing.
 AGENTRUN_TELEMETRY=debug npx @parcha/agentrun
 ```
 
-Each event is printed on stderr as it would be sent, and none is sent.
+Each event is printed on stderr in the form it would be sent, at every start, and none is sent. Debug never replaces
+the notice: the first start that can send after it still prints the notice and sends nothing.
 
 ## When it sends
 
@@ -82,7 +83,8 @@ use.
 ## What it costs the server
 
 Nothing waits on a send. A send has three seconds, a failed one is dropped without a line, and nothing is retried. A
-server with no network runs the same.
+server with no network runs the same. A run's end is counted in memory and written to `.telemetry.json` behind it, so
+no request or run waits on the disk.
 
 ## What the counts miss
 

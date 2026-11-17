@@ -42,7 +42,7 @@ test("turned off, it writes no file, sends nothing and prints no notice", async 
   const r = receiver();
   const t = start(data, r, { env: { DO_NOT_TRACK: "1" } });
   t.runEnded("ended");
-  t.close();
+  await t.close();
   assert.equal(t.notice, undefined);
   assert.deepEqual(r.got, []);
   await assert.rejects(readFile(join(data, TELEMETRY_FILE)), { code: "ENOENT" });
@@ -96,28 +96,58 @@ test("the first completed run is said once; runs are kept as a count and sent as
   t.runEnded("failed");
   t.runEnded("ended");
   t.runEnded("ended");
-  t.close();
+  await t.close();
+  // The three ends are kept by the time close answers, written behind the calls.
+  assert.equal(JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8")).runs, 3);
   assert.deepEqual(r.got.map(({ body }) => [body.event, body.properties.runs]), [["server_started", "0"], ["first_run_completed", "1-10"]]);
   // The count outlives the process, and the first completed run is never said again.
   const again = start(data, r);
   again.runEnded("ended");
-  again.close();
+  await again.close();
   assert.deepEqual(r.got.slice(2).map(({ body }) => [body.event, body.properties.runs]), [["server_started", "1-10"]]);
   assert.deepEqual([0, 1, 10, 11, 100, 101, 5000].map(runsRange), ["0", "1-10", "1-10", "11-100", "11-100", "101+", "101+"]);
 });
 
-test("debug prints each event and sends none", async () => {
+test("debug prints each event at every start and sends none", async () => {
   const data = await scratch();
   const r = receiver();
   const lines = [];
   const options = { env: { AGENTRUN_TELEMETRY: "debug" }, key: "", say: (line) => lines.push(line) };
   const first = start(data, r, options);
   assert.equal(first.notice, undefined);
-  first.close();
-  start(data, r, options).close();
+  await first.close();
+  await start(data, r, options).close();
   assert.deepEqual(r.got, []);
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /^agentrun-serve telemetry \(debug, not sent\): \{"event":"server_started"/);
+  assert.equal(lines.length, 2);
+  for (const line of lines) assert.match(line, /^agentrun-serve telemetry \(debug, not sent\): \{"event":"server_started"/);
+});
+
+test("debug never stands in for the notice: the first start that can send after it prints the notice and sends nothing", async () => {
+  const data = await scratch();
+  const r = receiver();
+  const debug = start(data, r, { env: { AGENTRUN_TELEMETRY: "debug" }, say: () => {} });
+  debug.runEnded("ended");
+  await debug.close();
+  const kept = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8"));
+  assert.equal(kept.noticed_at, undefined);
+
+  const on = start(data, r);
+  await on.close();
+  assert.equal(on.notice, TELEMETRY_NOTICE);
+  assert.deepEqual(r.got, []);
+  // The id debug showed is the id sent later, so what a person saw printed is what is sent.
+  await start(data, r).close();
+  assert.deepEqual(r.got.map(({ body }) => [body.event, body.distinct_id]), [["server_started", kept.id]]);
+});
+
+test("ends that come together are all kept by the time close answers, each write whole", async () => {
+  const data = await scratch();
+  const r = receiver();
+  await start(data, r).close();
+  const t = start(data, r);
+  for (let i = 0; i < 50; i++) assert.equal(t.runEnded("ended"), undefined);
+  await t.close();
+  assert.equal(JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8")).runs, 50);
 });
 
 test("a receiver that fails or never answers costs the server nothing", async () => {

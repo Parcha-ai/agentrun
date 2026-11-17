@@ -4,11 +4,13 @@
 //
 // Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, and under --faux. The start that first could send prints one
 // notice and sends nothing at its start, so a person reads how to turn it off before anything leaves the machine.
-// Sending never delays a start, a run or a stop, and a send that fails is dropped without a word.
+// AGENTRUN_TELEMETRY=debug prints every event and sends none; it never stands in for that notice.
+// Sending never delays a start, a run or a stop, and a send that fails is dropped without a word. A run's end is counted
+// in memory and written behind it, one write at a time, so no request or run waits on the disk.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeDurableSync } from "./server-fs.js";
+import { writeDurableSync, writeWhole } from "./server-fs.js";
 
 /** Where events go: PostHog's capture route, behind this project's own name. */
 export const TELEMETRY_URL = "https://telemetry.agentrun.ai/i/v0/e/";
@@ -85,8 +87,8 @@ export interface Telemetry {
   notice?: string;
   /** A run reached its end here. `status` is the runner's (`ended` is a completed run). */
   runEnded(status: string): void;
-  /** Stops the heartbeat. Sends nothing. */
-  close(): void;
+  /** Stops the heartbeat and waits for the count's last write. Sends nothing. */
+  close(): Promise<void>;
 }
 
 export interface TelemetryOptions {
@@ -109,7 +111,7 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   const env = o.env ?? process.env;
   const key = o.key ?? TELEMETRY_KEY;
   const mode = telemetryMode(env, { ...(o.faux ? { faux: true } : {}), key });
-  const idle: Telemetry = { mode, runEnded: () => {}, close: () => {} };
+  const idle: Telemetry = { mode, runEnded: () => {}, close: () => Promise.resolve() };
   if (mode !== "on" && mode !== "debug") return idle;
 
   const file = join(o.data, TELEMETRY_FILE);
@@ -118,22 +120,37 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   const send = o.fetch ?? fetch;
   const state = readState(file);
   const version = o.version ?? ownVersion();
-  const keep = (): boolean => {
+  const text = (): string => `${JSON.stringify(state)}\n`;
+  // The start's one write, durable before anything is sent: the id, and the notice's time when this start prints it.
+  const keepNow = (): boolean => {
     try {
-      writeDurableSync(file, `${JSON.stringify(state)}\n`);
+      writeDurableSync(file, text());
       return true;
     } catch {
       return false;
     }
   };
+  // Every later write (a run's end) goes behind the caller: one at a time, the latest state each time, so ends that come
+  // together make one write and none waits on the disk. A write that fails is dropped; the next end writes again.
+  let stale = false;
+  let writing: Promise<void> | undefined;
+  const keepLater = (): void => {
+    stale = true;
+    writing ??= (async () => {
+      while (stale) {
+        stale = false;
+        await writeWhole(file, text()).catch(() => {});
+      }
+      writing = undefined;
+    })();
+  };
 
   // The start that first could send: the notice, kept before anything is sent. If it cannot be kept, the next start would
-  // print it again and still send nothing, so this one stays quiet too.
-  const first = state.noticed_at === undefined;
-  if (first) {
-    state.noticed_at = now().toISOString();
-    if (!keep()) return { ...idle, mode: "off_setting" };
-  }
+  // print it again and still send nothing, so this one stays quiet too. Debug sends nothing and prints no notice, so it
+  // never marks the notice as read: a start that can send after it still prints the notice and holds its first event.
+  const first = mode === "on" && state.noticed_at === undefined;
+  if (first) state.noticed_at = now().toISOString();
+  if (!keepNow()) return { ...idle, mode: "off_setting" };
 
   const emit = (event: TelemetryEventName): void => {
     const body: TelemetryEvent = {
@@ -156,14 +173,14 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
 
   return {
     mode,
-    ...(first && mode === "on" ? { notice: TELEMETRY_NOTICE } : {}),
+    ...(first ? { notice: TELEMETRY_NOTICE } : {}),
     runEnded(status) {
       state.runs += 1;
       const completed = status === "ended" && !state.first_run_sent;
       if (completed) state.first_run_sent = true;
-      keep();
+      keepLater();
       if (completed) emit("first_run_completed");
     },
-    close: () => clearInterval(beat),
+    close: () => (clearInterval(beat), writing ?? Promise.resolve()),
   };
 }
