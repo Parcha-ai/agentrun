@@ -1620,6 +1620,8 @@ export type ListLearningPromotionsResponse = {
       rows: number;
       disagreed: number;
     } | null;
+    audits_off: string | null;
+    not_auditable: number;
   }>;
 };
 

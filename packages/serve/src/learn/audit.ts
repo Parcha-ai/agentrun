@@ -5,8 +5,12 @@
 // newest rows of the serving revision (holdOf). The engine never reads a row's domain: only whether two answers say the
 // same (learn/promote.ts sameAnswer) and what each run cost.
 import { createHash } from "node:crypto";
+import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
 import type { Workspace } from "../workspace/index.js";
 import type { AuditLoop } from "../learning-setting.js";
+import type { McpPin } from "../mcp-gateway.js";
+import type { RunLaunch } from "../run-launch.js";
+import { pinAnnotations, toolClassOf, toolWord } from "./replay-calls.js";
 import { AUDITS_FILE, type FolderChange, type FolderRead, readLearning } from "./folder.js";
 import { type PromotionRecord, servingOf } from "./promote.js";
 
@@ -50,6 +54,31 @@ export const shadowRunId = (runId: string): string => {
 
 /** Whether `runId` is a shadow run's. */
 export const isShadowRun = (runId: string): boolean => runId.startsWith(SHADOW_PREFIX);
+
+/** The tools an agent's computer brings beside its grants (a browser's one tool, a desktop's or a phone's kernel tools). */
+const broughtBy = (computer: unknown): readonly string[] => {
+  const kind = (computer as { kind?: unknown } | null | undefined)?.kind;
+  return kind === "browser" ? ["browser"] : kind === "desktop" || kind === "phone" ? COMPUTER_TOOLS : [];
+};
+
+/** The first tool agent revision `revision` can call (its grants, and what its computer brings) that is not read-only by
+ *  the rule a check's replay skips a write by (learn/replay-calls.ts toolClassOf: an MCP tool by its pinned annotations,
+ *  readOnlyHint, a built-in by READ_TOOLS); undefined when every one only reads. An agent that can call one is never
+ *  audited: its shadow, a second run of the agent on the same input, could do that write again. */
+export function auditWriterOf(revision: { readonly body: unknown; readonly mcpPin: unknown } | undefined): string | undefined {
+  const body = revision?.body as { tools?: unknown; computer?: unknown } | undefined;
+  const granted = Array.isArray(body?.tools) ? body.tools.filter((tool): tool is string => typeof tool === "string") : [];
+  const annotations = pinAnnotations(revision?.mcpPin as McpPin | null | undefined);
+  return [...granted, ...broughtBy(body?.computer)].find((tool) => toolClassOf(tool, annotations) !== "read");
+}
+
+/** What the promotions read says of an agent never audited (auditWriterOf names `tool`). */
+export const auditsOffWords = (tool: string): string => `audits off: ${toolWord(tool)} can write`;
+
+/** Whether a served run's launch can be audited: started over the API (no trigger, no origin of its first message) with no
+ *  uploaded files. A triggered run's context (a GitHub event's checkout, the thread it answers on) is never rebuilt for a
+ *  shadow, which could answer there too: its served run is not auditable (its record's metrics.not_auditable). */
+export const auditableLaunch = (launch: Pick<RunLaunch, "trigger" | "inputOrigin" | "files">): boolean => !launch.trigger && !launch.inputOrigin && !launch.files?.length;
 
 const isRow = (value: unknown): value is AuditRow => {
   if (value === null || typeof value !== "object") return false;

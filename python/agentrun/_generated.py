@@ -2394,6 +2394,8 @@ class ListLearningPromotionsResponseServingItem(TypedDict):
     state: Literal["serving", "checking", "held", "stopped"]
     check: ListLearningPromotionsResponseServingItemCheck | None
     audit: ListLearningPromotionsResponseServingItemAudit | None
+    audits_off: str | None
+    not_auditable: int
 
 
 class ListLearningPromotionsResponseServingItemCheck(TypedDict):

@@ -191,7 +191,7 @@ describe("on the workflow card", () => {
   it("tells the tab when a replay starts (so stepping away and back finds its record), and reads the revisions again when it is decided", async () => {
     const client = Object.assign(fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ status: "done", decided: "hold", reason: "worse" })]), { learnedWorkflowRevisions: vi.fn(async () => data) });
     const onReplayed = vi.fn();
-    const host = mount(createElement(WorkflowReplay, { v2: client, agentId: "a", workflows: [{ name: "sorter", status: "active" }], promotions: [promo(1, "promote"), promo(2, "hold")], serving: [{ workflow: "sorter", digest: "1".repeat(16), replaying: null, state: "serving", check: null, audit: null }], onReplayed }));
+    const host = mount(createElement(WorkflowReplay, { v2: client, agentId: "a", workflows: [{ name: "sorter", status: "active" }], promotions: [promo(1, "promote"), promo(2, "hold")], serving: [{ workflow: "sorter", digest: "1".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0 }], onReplayed }));
     await flush();
     expect(client.learnedWorkflowRevisions).toHaveBeenCalledTimes(1);
     act(() => button(host)!.click());
@@ -202,7 +202,7 @@ describe("on the workflow card", () => {
   });
   it("a replay of an older revision keeps its decision on screen when the revisions are read again (the card stays on that revision)", async () => {
     const client = Object.assign(fake(async () => ({ replay: "rp_1", inputs: 5 }), [read({ digest: "1".repeat(16), status: "done", decided: "hold", reason: "worse" })]), { learnedWorkflowRevisions: vi.fn(async () => ({ ...data, revisions: [...data.revisions] })) });
-    const host = mount(createElement(WorkflowReplay, { v2: client, agentId: "a", workflows: [{ name: "sorter", status: "active" }], promotions: [promo(1, "hold"), promo(2, "promote")], serving: [{ workflow: "sorter", digest: "2".repeat(16), replaying: null, state: "serving", check: null, audit: null }] }));
+    const host = mount(createElement(WorkflowReplay, { v2: client, agentId: "a", workflows: [{ name: "sorter", status: "active" }], promotions: [promo(1, "hold"), promo(2, "promote")], serving: [{ workflow: "sorter", digest: "2".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0 }] }));
     await flush();
     act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
     act(() => button(host)!.click());

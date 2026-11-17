@@ -81,7 +81,7 @@ import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
-import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
+import { pinAnnotations, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { lastOwnRuns } from "../learn/compile.js";
 import { answersAlone, championOf, type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, clears, type Grade, gradesOf, PROMOTE_BAR, type PromotionRecord, sameAnswer, PROMOTIONS_KEPT, promotionOf, promotionsOf, recordPromotion, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN, type ReplayLaunch, type ReplayOutcomes, type ReplayRow, type ReplayScore, replayingOf, scoreOf, type SkippedTool, skippedToolsOf, thresholdsOf, withinBar } from "../learn/promote.js";
@@ -1306,12 +1306,6 @@ export async function replayCallsFor(store: Store, runId: string, launch: RunLau
   const entries = await runEntries(store, launch.replay.of, context).catch(() => []);
   const recorded = recordedCalls(isCliRecord(entries) ? piShaped(entries) : entries);
   const pin = (await store.mcp.pin(runId).catch(() => undefined))?.body as McpPin | undefined;
-  const annotations = (tool: string) => {
-    const named = /^mcp:([^/]+)\/(.+)$/.exec(tool);
-    const server = named && pin && Object.hasOwn(pin, named[1]!) ? pin[named[1]!] : undefined;
-    const listed = server?.tools.find((one) => one.name === named![2]) as { annotations?: Record<string, unknown> } | undefined;
-    // Listed with none: `{}`, so a tool its server left unannotated reads unmarked, never as one it does not list.
-    return listed ? (listed.annotations ?? {}) : undefined;
-  };
+  const annotations = pinAnnotations(pin);
   return replayCalls(recorded, (tool) => toolClassOf(tool, annotations));
 }

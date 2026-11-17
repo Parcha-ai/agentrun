@@ -90,11 +90,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
-import { gradeRow } from "./runner/audit.js";
-import { isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { gradeRow, notAuditableOf } from "./runner/audit.js";
+import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
 import { auditLoopOf } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -4043,10 +4043,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // (promotionsShown: a reason and a refit guard's label as well as each workflow's name). Beside what serves, each
         // one's state, its check's numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
         const records = await promotionsOf(store.settings, id);
-        const shownRead = promotionsShown(records, await learningShown(id));
+        const shown = await learningShown(id);
+        const shownRead = promotionsShown(records, shown);
         // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
-        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning));
-        return send(res, 200, { agent: id, promotions: shownRead.promotions, serving: shownRead.serving.map((one, i) => ({ ...one, ...lines[i]! })) });
+        const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop);
+        // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
+        // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
+        const writer = auditWriterOf(entry.revision ?? undefined);
+        const auditsOff = writer === undefined ? null : shown.text(auditsOffWords(writer));
+        const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
+          ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
+          not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
+        })));
+        return send(res, 200, { agent: id, promotions: shownRead.promotions, serving });
       }
       case "listLearningAudits": {
         await needAgent(id);

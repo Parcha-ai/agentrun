@@ -151,24 +151,28 @@ export const agentRun = (run: { readonly id: string; readonly state: string; rea
   return completedRun(run) && path !== "workflow" && path !== "replay";
 };
 
-/** The first page of the agent's ended runs lastOwnRuns reads; each page after it is OWN_PAGE_GROWTH times the one before,
- *  until it holds `n` of the agent's own runs or the agent has no more. */
+/** The first page of the agent's runs lastRunsOf reads; each page after it is OWN_PAGE_GROWTH times the one before,
+ *  until it holds `n` of the runs it keeps or the agent has no more. */
 const OWN_PAGE_MIN = 200;
 const OWN_PAGE_GROWTH = 4;
 
-/** The agent's last `n` completed runs of its own (agentRun: not one its learned workflow answered alone, not a replay
- *  nor a shadow audit;
- *  never `exceptRunId`, an archived run or an imported one), newest first, picked before anything else limits them: runs
- *  its workflow served since, however many, never push them out of the read (it reads more of the agent's ended runs
- *  until it has `n`, or there are no more). The one read of what compile_after counts and of a check's inputs. */
-export async function lastOwnRuns(store: Pick<Store, "runs">, agentId: string, n: number, exceptRunId?: string): Promise<RunRow[]> {
-  const own = (row: RunRow) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom;
+/** The agent's newest `n` runs that `keep` keeps (of those the store lists by `listed`: e.g. only ended, not archived),
+ *  newest first, picked before anything else limits them: runs it does not keep, however many, never push them out of the
+ *  read (it reads more of the agent's runs until it has `n`, or there are no more). */
+export async function lastRunsOf(store: Pick<Store, "runs">, agentId: string, n: number, keep: (row: RunRow) => boolean, listed: { readonly state?: "ended"; readonly archived?: false } = {}): Promise<RunRow[]> {
   for (let limit = Math.max(OWN_PAGE_MIN, 3 * n); ; limit *= OWN_PAGE_GROWTH) {
-    const listed = await store.runs.list({ agentId, state: "ended", archived: false, limit });
-    const found = listed.filter(own).slice(0, n);
-    if (found.length >= n || listed.length < limit) return found;
+    const page = await store.runs.list({ agentId, ...listed, limit });
+    const found = page.filter(keep).slice(0, n);
+    if (found.length >= n || page.length < limit) return found;
   }
 }
+
+/** The agent's last `n` completed runs of its own (agentRun: not one its learned workflow answered alone, not a replay
+ *  nor a shadow audit; never `exceptRunId`, an archived run or an imported one), newest first (lastRunsOf: runs its
+ *  workflow served since never push them out of the read). The one read of what compile_after counts and of a check's
+ *  inputs. */
+export const lastOwnRuns = (store: Pick<Store, "runs">, agentId: string, n: number, exceptRunId?: string): Promise<RunRow[]> =>
+  lastRunsOf(store, agentId, n, (row) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom, { state: "ended", archived: false });
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
  *  waiting for its owner's OK), none of its last COMPILE_QUIET_RUNS runs compiled, and it has `compileAfter` completed

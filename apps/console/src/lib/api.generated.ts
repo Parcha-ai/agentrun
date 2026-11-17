@@ -4069,6 +4069,8 @@ export interface operations {
           rows: number;
           disagreed: number;
         } | null;
+        audits_off: string | null;
+        not_auditable: number;
       }[];
     };
   };

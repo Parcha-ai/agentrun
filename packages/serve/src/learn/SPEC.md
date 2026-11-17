@@ -158,7 +158,13 @@ draft error, and it asks no recompile (a revision would have nothing to be check
 
 The shadow audit: a run a promoted revision serves first is audited at 1 in `learning.audit_every` (10), and at 1 in
 `learning.audit_every_later` (20) once that revision has served `learning.audit_later_after` (50) runs. The draw is
-sha256 of the run's id, so a claim taken again draws the same (`learn/audit.ts` auditDrawn). A drawn run starts its
+sha256 of the run's id, so a claim taken again draws the same (`learn/audit.ts` auditDrawn). The served count it reads
+pages past the shadows and the agent's own runs (`learn/compile.ts` lastRunsOf), never a fixed window of newest runs.
+Only a run started over the API is drawn: one a trigger started (its checkout, the thread it answers on) is never
+audited, counted `not_auditable` on the promotions read. And only an agent every tool of which only reads, by the rule a
+check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `readOnlyHint`, a built-in by READ_TOOLS, the
+computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
+(`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run starts its
 shadow run at its claim (`runner/audit.ts` startAudit): the same agent and revision on the same input with learning off
 (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit` naming the run it audits. The
 shadow is no row of the run list, GET /runs/{id} reads it with `audit_of`, and its cost is the served run's learning
@@ -167,7 +173,9 @@ shadow is no row of the run list, GET /runs/{id} reads it with `audit_of`, and i
 "shadow", agreed, served_cost, shadow_cost, at}`, `agreed` by `sameAnswer` (null when either answer is missing, never
 counted). An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the grade).
 The host alone writes the ledger, one commit a write with a `host:` subject and no trailer (no change a person or a run
-made), and keeps its newest 2,000 rows. The hold rule (`applyHold`) reads the serving revision's newest
+made), and keeps its newest 2,000 rows, each claim's batch oldest served run first. The hold is a function of the
+ledger: every such claim applies the rule again over the rows as they are, rows added or not, so a hold a crash lost
+after its rows were committed is made at the next claim. The hold rule (`applyHold`) reads the serving revision's newest
 `learning.hold_window` (10) rows with a verdict: `learning.hold_disagree` (3) disagreements or more hold it (source
 `audit`, the record's `audit` keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
 agent's answer and the workflow's). The agent takes the runs, and its next run it fits asks one recompile with those

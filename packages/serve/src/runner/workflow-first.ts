@@ -27,7 +27,8 @@
 import { createHash } from "node:crypto";
 import { type LearnedWorkflow, LEARNING_LABEL } from "../learning.js";
 import type { RunLaunch } from "../run-launch.js";
-import { COST_WINDOW, type RunPath } from "../learning-cost.js";
+import { COST_WINDOW, type RunPath, SERVED_PATHS } from "../learning-cost.js";
+import { auditableLaunch } from "../learn/audit.js";
 
 export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
@@ -285,10 +286,10 @@ export function servedOf(entries: readonly { readonly kind: string; readonly dat
 /** The run-record fields a learning run's metrics carry, from the run-end classifier's `classified` path
  *  (runPathOverStore): the path it took, the learned revision it ran on, the learned workflow it ran (served first, or
  *  called by its agent) and, for one served first, its digest and the promotion it served under (`workflow_promotion`,
- *  which its grade keeps); and from its root `entries`, each step guard's check of its learned workflows' calls
+ *  which its grade keeps), and `not_auditable` when a trigger started it (never audited); and from its root `entries`, each step guard's check of its learned workflows' calls
  *  (`guards`, learned-nodes.ts guardsOf) and each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second
  *  pass), when one ran. learning-cost reads path and workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; guards?: GuardRow[]; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> } {
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; not_auditable?: true; guards?: GuardRow[]; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> } {
   // A shadow run (runner/audit.ts): path `audit` and the run it audits, whatever it did: no learning, no money rule.
   if (launch.audit) return { path: "audit", audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } };
   if (!launch.learning) return {};
@@ -308,7 +309,9 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
     return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
   }
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...rows };
+  // A served run a trigger started (learn/audit.ts auditableLaunch) is never audited: counted on the promotions read.
+  const notAuditable = SERVED_PATHS.includes(path) && !auditableLaunch(launch);
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(notAuditable ? { not_auditable: true as const } : {}), ...rows };
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
