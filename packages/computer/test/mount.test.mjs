@@ -18,9 +18,16 @@ mkdirSync(dir);
 /** check's refusals for a mount, as fields and words. */
 const refusals = (mount, declared) => computer.checkMount(mount, declared);
 
-test("the workspace path in every computer is /workspace, and the mount kinds are bind and archil", () => {
+test("the workspace path in every computer is /workspace, and the mount kinds are bind, archil and sync", () => {
 	assert.equal(computer.WORKSPACE, "/workspace");
-	assert.deepEqual([...computer.MOUNT_KINDS], ["bind", "archil"]);
+	assert.deepEqual([...computer.MOUNT_KINDS], ["bind", "archil", "sync"]);
+});
+
+test("checkMount's sync rule: { kind: \"sync\" } alone, taken where declared; read back under the computer's claim epoch", () => {
+	assert.deepEqual(refusals({ kind: "sync" }, ["sync"]), []);
+	assert.deepEqual(refusals({ kind: "sync", folder: "x" }, ["sync"]), [{ field: "mount", message: "mount.folder is not a field of a sync mount" }]);
+	assert.match(refusals({ kind: "sync" }, ["archil"])[0].message, /does not take a mount of kind sync; it takes archil/);
+	assert.deepEqual(computer.readBackOf({ kind: "sync" }, 3), { kind: "sync", epoch: 3 });
 });
 
 test("checkMount: no mount is no refusal; a bind of an existing, canonical directory or an Archil folder is taken when declared", () => {
@@ -60,7 +67,7 @@ test("checkMount refuses what is not a mount, or a kind it does not know, in wor
 	for (const mount of [null, "bind", 1, [], { path: dir }, { kind: "nfs", path: dir }]) {
 		const found = refusals(mount, ["bind", "archil"]);
 		assert.deepEqual(found.map((r) => r.field), ["mount"], JSON.stringify(mount));
-		assert.match(found[0].message, /mount is \{ kind: "bind", path \} or \{ kind: "archil", disk, region, folder, token \}/);
+		assert.match(found[0].message, /mount is \{ kind: "bind", path \}, \{ kind: "archil", disk, region, folder, token \} or \{ kind: "sync" \}/);
 	}
 });
 

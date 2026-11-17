@@ -52,7 +52,8 @@ A computer's spec (`ComputerSpec`):
 - `network`: `none`, `open` or an allowlist;
 - `cpus`, `memoryMb`, `pids`, `labels`, `workdir`;
 - `user`: a uid, or `uid:gid`; unset is a non-root default, and root only when asked;
-- `mount`: the run's folder, mounted at `/workspace`, of a kind the provider declares;
+- `mount`: the run's folder at `/workspace`, of a kind the provider declares: `{ kind: "bind", path }`,
+  `{ kind: "archil", disk, region, folder, token }` or `{ kind: "sync" }`;
 - `gpu`, `browser`: GPUs and browser features, of what the provider declares;
 - `owner`: `{ agent, server?, idleTtlMs? }`, the agent a computer that keeps its state belongs to, so a later run of
   that agent finds it again and no other agent does.
@@ -105,7 +106,7 @@ it and expects the same id refused `exists`. Both are Full.
 | `isolation` | `container`, `gvisor`, `microvm`, `vm`, `machine` or `host` (processes of the provider's own machine, such as the local browser's). |
 | `release` | `delete`, and `stop` where a stopped computer is kept; `stopDeletes` where a stop ends in deletion. |
 | `user` | What `spec.user` may ask for beyond the non-root default: `root`, another `uid`. |
-| `mount` | The kinds of folder a computer can mount at `/workspace`. |
+| `mount` | The kinds of folder a computer can have at `/workspace`: `bind`, `archil`, and `sync` wherever the configuration has `files` and `exec` (the [synced folder](#the-synced-folder)). |
 | `vendorAgentPorts` | The TCP ports the vendor's own agent listens on inside the computer. A `child` daemon must declare them: `[]` where none listens on TCP (the agent is on a unix socket or a virtio device, or not in the computer). |
 | `gpu`, `browser` | The GPUs `spec.gpu` may ask for; a browser's features beyond the protocol. |
 | `persistence` | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer comes back running or boots again from its disk. Absent means neither: each computer lives for one run. A provider on the shared machine-host adapter never declares it today: delete is its only release. |
@@ -131,8 +132,8 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `keys` | The keys Settings takes for it: each a `name` (what Settings stores and shows, such as `DAYTONA_API_KEY`; never a value), the `create()` `option` it fills, and whether it is `required`. `[]` for none. |
 | `settings?` | Values that are not keys but fill a `create()` option (Modal's app): `name`, `option`, and a `default` used when the server names none. Settings has no field for one, so a value with no default that works for everyone (a server URL, a team, project or workspace id) is a key with `required: true`, secret or not. |
 | `metered` | The vendor bills by time. Prices are the vendor's page, not ours. |
-| `mounts` | The mount kinds its computers take (`bind`, `archil`), as its providers' `capabilities().mount` declare; `[]` for none. |
-| `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its hosted cloud). |
+| `mounts` | The mount kinds its computers take beside the synced folder (`bind`, `archil`); `[]` for none. `sync` is never listed: it is derived, for each configuration with `files` and `exec` on a provider that lists no `bind` and has no `unmounted.sync`, and `capabilities().mount` and `mountsOf` declare it. |
+| `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its hosted cloud; Orgo's `sync`). |
 | `mountsWith?` | Mount kinds its computers take only where the operator sets one of its keys, keyed by kind, each the name of an optional key; each kind is in `unmounted` too. A provider made with that key declares the kind in `capabilities().mount`; one made without it refuses it in the `unmounted` words. `mountsOf(descriptor, set)` gives the mounts for the keys set, which a server reads without loading the provider (Daytona's `archil`, with `DAYTONA_ARCHIL_EGRESS`: a self-hosted target's Archil egress relay). |
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
@@ -156,6 +157,29 @@ The conformance case `health.declared` holds `capabilities()` to the declaration
 
 **Status.** Next, the contract types move to a zero-dependency package, `@parcha/agentrun-computer-protocol`
 (**draft**), and this spec is generated from there.
+
+## The synced folder
+
+A `{ kind: "sync" }` mount is a plain `/workspace`, owned by the computer's user with mode 0700, with nothing mounted
+there. A child-daemon host's install makes it as root before init starts. On a machine that dials, the box image's
+`agentrun-dial` makes it. The computer takes no disk, region or token. The runner holds the run's folder, puts it in
+before the agent's tools run, and reads what changed back after each call that may change it. Every byte goes through
+the computer's own `files` and `exec` calls, so no FUSE is needed and a GPU host takes one too.
+
+- The read-back is `{ kind: "sync", epoch }`, from the computer's `agentrun.epoch` label. The label
+  `agentrun.mount = {"kind":"sync"}` (`SYNC_LABELS`) lets a kept computer be reattached as one. `list` reports the
+  label's record. `attach` and `create` read `/workspace` from inside (`readMount`): if something is mounted there,
+  it isn't a directory, or its owner isn't `/work`'s, the create fails in words and the machine is deleted.
+- `FolderSync` (`packages/computer/src/sync-folder.ts`) takes the delta against a `SyncSink` (put, mkdir, remove,
+  meta). It reads one paged `files.list` of the folder and compares it with the last listing's manifest. A new tree
+  comes in one `tar.pull`. A changed file of up to 512 KiB comes through `files.read`, and a larger one through
+  `tar.pull`; 8 pulls and 8 puts run at once. Deletes run only when every put landed, deepest first. Modes and links
+  come from the listing alone, never as bytes; a link is kept by its target as written, never followed. A path that is
+  no plain relative path (absolute, a `.` or `..` segment, a backslash, a NUL) fails the sync in words.
+- A file whose mtime is within 1 s of the newest in its listing is read again at the first sync 1 s later (git's
+  racy rule). Bytes that equal the ones last put are not put again. A write that leaves both the size and the mtime as
+  they were is not seen.
+- Over `SYNC_MAX_ENTRIES` (20,000) entries or `SYNC_MAX_BYTES` (2 GiB), a sync fails with code `limit`.
 
 ## prepareImage
 

@@ -93,7 +93,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.equal(new Set(providerIds).size, providerIds.length, "each id once");
 	for (const [index, descriptor] of DESCRIPTORS.entries()) {
 		const { id, label, keys, metered, mounts } = PROVIDERS[index];
-		assert.deepEqual({ id, label, keys, metered, mounts }, { id: descriptor.id, label: descriptor.label, keys: descriptor.keys, metered: descriptor.metered, mounts: descriptor.mounts }, id);
+		assert.deepEqual({ id, label, keys, metered, mounts }, { id: descriptor.id, label: descriptor.label, keys: descriptor.keys, metered: descriptor.metered, mounts: mountsOf(descriptor, () => false).mounts }, id);
 		assert.ok(label.length > 0, `${id} has a label`);
 		for (const key of keys) assert.match(key.name, /^[A-Z][A-Z0-9_]*$/, `${id}: ${key.name} is a setting's name`);
 	}
@@ -155,7 +155,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["morph", "orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "boxd"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["morph", "boxd"]) assert.deepEqual(mounts[id], ["sync"], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -242,9 +243,10 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],
 		[{ capabilities: [] }, /capabilities is not a list of one configuration or more/],
 		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
-		[{ unmounted: { nfs: "no NFS here" } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
-		[{ unmounted: { archil: " " } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
-		[{ unmounted: ["archil"] }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
+		[{ mounts: ["sync"] }, /mounts is not a list of mount kinds \(bind, archil\): sync is derived, never listed/],
+		[{ unmounted: { nfs: "no NFS here" } }, /unmounted maps mount kinds \(bind, archil, sync\) to why, in words/],
+		[{ unmounted: { archil: " " } }, /unmounted maps mount kinds \(bind, archil, sync\) to why, in words/],
+		[{ unmounted: ["archil"] }, /unmounted maps mount kinds \(bind, archil, sync\) to why, in words/],
 		[{ mounts: ["archil"], unmounted: { archil: "it hangs" } }, /unmounted names a mount kind that mounts declares/],
 		[{ unmounted: { archil: "it hangs" }, mountsWith: { archil: "ACME_RELAY" } }, /mountsWith maps mount kinds \(bind, archil\) to the name of one of its keys that is not required/],
 		[{ unmounted: { archil: "it hangs" }, mountsWith: { archil: "ACME_KEY" } }, /mountsWith maps mount kinds .* not required/],
@@ -351,16 +353,16 @@ test("mountsOf: a descriptor's mounts with the operator's keys, the kinds of mou
 	const daytona = DESCRIPTORS.find((one) => one.id === "daytona");
 	assert.deepEqual(daytona.mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
 	assert.deepEqual(daytona.keys.find((key) => key.name === "DAYTONA_ARCHIL_EGRESS"), { name: "DAYTONA_ARCHIL_EGRESS", option: "archilEgress", required: false });
-	assert.deepEqual(mountsOf(daytona, () => false), { mounts: [], unmounted: { archil: daytona.unmounted.archil } }, "hosted Daytona: no mount, and why");
+	assert.deepEqual(mountsOf(daytona, () => false), { mounts: ["sync"], unmounted: { archil: daytona.unmounted.archil } }, "hosted Daytona: the synced folder, and why no Archil");
 	assert.match(daytona.unmounted.archil, /Archil's client hangs on its sandboxes/);
-	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS"), { mounts: ["archil"], unmounted: {} }, "with an egress: the Archil mount");
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS"), { mounts: ["archil", "sync"], unmounted: {} }, "with an egress: the Archil mount too");
 	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_API_KEY"), mountsOf(daytona, () => false), "only the key mountsWith names turns it on");
 	// No other provider has a mount its keys turn on: each one's mounts are its descriptor's, whatever is set.
 	for (const one of DESCRIPTORS.filter((d) => d.id !== "daytona")) {
 		assert.equal(one.mountsWith, undefined, one.id);
-		assert.deepEqual(mountsOf(one, () => true).mounts, [...one.mounts], one.id);
+		assert.deepEqual(mountsOf(one, () => true).mounts, mountsOf(one, () => false).mounts, one.id);
 	}
 	// The registry's entry carries it, for a server to read without loading the provider.
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "daytona").mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
-	assert.deepEqual(mountsOf({ mounts: ["bind"], unmounted: { archil: "why" }, mountsWith: { archil: "K" } }, () => true), { mounts: ["bind", "archil"], unmounted: {} });
+	assert.deepEqual(mountsOf({ mounts: ["bind"], unmounted: { archil: "why" }, mountsWith: { archil: "K" }, capabilities: [] }, () => true), { mounts: ["bind", "archil"], unmounted: {} });
 });

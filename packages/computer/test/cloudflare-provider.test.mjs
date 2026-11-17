@@ -120,12 +120,12 @@ test("testConnection and prepareImage read /v1/health: a relay of another versio
 	assert.deepEqual(refused.error, { code: "unauthorized", message: "GET /v1/health answered 401: the bearer token is not this relay's RELAY_TOKEN" });
 });
 
-test("the provider dials: kind linux, a microVM, no exec, upload or mount; a server with no public address calls the relay for nothing", async () => {
+test("the provider dials: kind linux, a microVM, no exec or upload, a synced folder alone (agentrun-dial makes /workspace); a server with no public address calls the relay for nothing", async () => {
 	const relay = fakeRelay(() => undefined);
 	const made = provider(relay, { dial: { tokens: new MemoryMachineTokens(), hub: new AttachHub() } });
 	assert.deepEqual([made.host.facts.connect, made.host.exec, made.host.upload, made.host.extend], ["dial", undefined, undefined, undefined]);
 	const caps = made.capabilities();
-	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network, caps.gpu], ["linux", "microvm", [], ["none", "open", "allow"], undefined]);
+	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network, caps.gpu], ["linux", "microvm", ["sync"], ["none", "open", "allow"], undefined]);
 	const refused = await made.create({ image: BOX, lifetimeMs: 600_000, network: "none" }, { requestId: "cf-no-address" });
 	assert.equal(refused.error?.code, "refused");
 	assert.match(refused.error.message, /^Cloudflare machines dial this server, and it has no public https address/);

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,9 @@ const INSTALL = readFileSync(new URL("../box/install.sh", import.meta.url), "utf
 const DIAL = INSTALL.match(/^\tcat >"\$DIAL" <<'EOF'\n([^]*?\n)EOF\n/m)?.[1];
 /** A token of the minted shape, made here. */
 const TOKEN = `art_${randomBytes(32).toString("hex")}`;
-const INIT_ARGS = "--deadline 2026-11-16T12:00:00Z --user 2510:2510 --own-network --network allow:*.example.com";
+/** init's user is this one: agentrun-dial gives /workspace to it, which only root may do for another. */
+const USER = `${process.getuid()}:${process.getgid()}`;
+const INIT_ARGS = `--deadline 2026-11-16T12:00:00Z --user ${USER} --own-network --network allow:*.example.com`;
 
 /** A scratch box: agentrun-dial with its fixed paths moved into it, the fake daemon's bytes, and a server for them. */
 async function box(t) {
@@ -37,6 +39,7 @@ if (command === "init") {
 		HOME_DIR: ["/work", join(dir, "work")],
 		SOCKET_DIR: ["/run/agentrun", join(dir, "run", "agentrun")],
 		INIT_LOG: ["/run/agentrun-init.log", join(dir, "run", "agentrun-init.log")],
+		WORKSPACE: ["/workspace", join(dir, "workspace")],
 		OWNER: ["0:0", `${process.getuid()}:${process.getgid()}`],
 	};
 	let script = DIAL;
@@ -98,6 +101,8 @@ test("agentrun-dial fetches the daemon with the token, installs it, starts init 
 	const daemon = fixed.DAEMON[1];
 	assert.equal(statSync(daemon).mode & 0o777, 0o755);
 	assert.equal(statSync(fixed.SOCKET_DIR[1]).mode & 0o777, 0o700, "init's socket directory is root's alone");
+	const workspace = statSync(fixed.WORKSPACE[1]);
+	assert.ok(workspace.isDirectory() && (workspace.mode & 0o777) === 0o700 && `${workspace.uid}:${workspace.gid}` === USER, "/workspace is init's user's alone, for a synced folder");
 	assert.ok(!existsSync(`${daemon}.part`));
 	const init = calls.find((call) => call.command === "init");
 	assert.ok(init, `init started: ${JSON.stringify(calls)}`);
@@ -121,6 +126,19 @@ test("agentrun-dial refuses a daemon whose sha256 is not the one it was given, b
 	assert.match(stderr, /reads sha256 [0-9a-f]{64}, not 0{64}, so nothing runs/);
 	assert.deepEqual(calls, [], "neither init nor attach ran");
 	assert.ok(!existsSync(fixed.DAEMON[1]) && !existsSync(`${fixed.DAEMON[1]}.part`), "and no daemon is left in place");
+});
+
+test("agentrun-dial runs nothing where /workspace is a link (exit 6), or init's arguments name no --user (exit 2)", async (t) => {
+	const { dir, fixed, run } = await box(t);
+	symlinkSync(dir, fixed.WORKSPACE[1]);
+	const linked = await run();
+	assert.equal(linked.status, 6, linked.stderr);
+	assert.match(linked.stderr, /workspace was not made \d+:\d+'s/);
+	assert.deepEqual(linked.calls, []);
+	const userless = await run({ AGENTRUN_INIT_ARGS: "--deadline 2026-11-16T12:00:00Z --own-network" });
+	assert.equal(userless.status, 2, userless.stderr);
+	assert.match(userless.stderr, /names no --user/);
+	assert.deepEqual(userless.calls, []);
 });
 
 test("agentrun-dial without the env a dial create sets exits 2, naming what is missing", async (t) => {

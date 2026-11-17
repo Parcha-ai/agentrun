@@ -129,20 +129,20 @@ test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, ini
 		maxLifetimeMs: DAY_MS,
 		user: ["uid"],
 		release: ["delete"],
-		mount: ["archil"],
+		mount: ["archil", "sync"],
 		vendorAgentPorts: [],
 		gpu: {
 			types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"],
 			max: 8,
 			isolation: "gvisor",
 			preemptible: true,
-			mounts: [],
+			mounts: ["sync"],
 			unmounted: { why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true },
 			fence: "userns-netns",
 		},
 	});
 	assert.deepEqual(MODAL.capabilities[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
-	assert.deepEqual(provider.capabilities().mount, ["archil"]);
+	assert.deepEqual(provider.capabilities().mount, ["archil", "sync"]);
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend(): Modal's timeout cannot move");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -838,7 +838,7 @@ test("connect dial: init is agentrun-dial's child, no Archil mount (refused in w
 	const { provider, rec } = setup({ connect: "dial", dial: dialOf() });
 	const caps = provider.capabilities();
 	assert.equal(caps.daemon, "child");
-	assert.deepEqual(caps.mount, []);
+	assert.deepEqual(caps.mount, ["sync"], "a synced folder alone: agentrun-dial makes /workspace");
 	assert.equal(caps.gpu?.isolation, "gvisor");
 	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
 	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);

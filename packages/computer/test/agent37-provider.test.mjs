@@ -92,7 +92,7 @@ test("an Agent37 computer is kind linux with daemon child, network none, open an
 	for (const network of ["none", "open", { allow: ["example.com"] }]) assert.deepEqual(provider.check({ image: "agent37-base", lifetimeMs: 600_000, network }), [], JSON.stringify(network));
 	assert.equal(caps.networkReadBack, false);
 	assert.deepEqual(caps.vendorAgentPorts, [22022, 7681]);
-	assert.deepEqual(caps.mount, ["archil"]);
+	assert.deepEqual(caps.mount, ["archil", "sync"]);
 	assert.equal(caps.isolation, "vm");
 	assert.equal(restOnly({ type: "default" }).provider.capabilities().isolation, "gvisor");
 });
@@ -103,7 +103,7 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	assert.equal(desktop.kind, "desktop");
 	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
 	assert.equal(desktop.daemon, "child");
-	assert.deepEqual(desktop.mount, ["archil"]);
+	assert.deepEqual(desktop.mount, ["archil", "sync"]);
 	const entry = PROVIDERS.find((one) => one.id === "agent37");
 	const configuration = entry.capabilities.find((one) => one.kind === "desktop");
 	assert.deepEqual(configuration.options, { kind: "desktop" }, "serve builds the desktop with kind desktop");
