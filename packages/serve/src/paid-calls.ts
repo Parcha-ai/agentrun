@@ -140,6 +140,10 @@ export const GIVEN_BACK = "given back";
 /** Each paid request of this process on the run's one ledger, numbered within its call (one call may make several). */
 let paidSeq = 0;
 
+/** Whether the current work runs inside a call's ledger (bookedIn): a host tool call of the run's, or a workflow call
+ *  node's tool. A lost sandbox is started again only for one (computer-for-claim.ts lostAware), never for the run's end. */
+export const inToolCall = (): boolean => ledgers.getStore() !== undefined;
+
 /** The run's one ledger the current call books on (Ledger.paid), when it has one: the runner's. */
 export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
 

@@ -707,6 +707,15 @@ They apply to Docker computers only: a vendor's computer (Daytona, Modal, E2B, O
 size its provider makes it, and is never given them. A value the Docker provider refuses stops the server's start, in
 the provider's words.
 
+**A lost sandbox.** A run's sandbox can be lost mid-run: its vendor deleted it (from its own console or API), or no
+longer has it. The tool call that finds it lost fails in the provider's words. The run's next tool call starts a new
+sandbox under the same claim and runs there. In Mode 2 the new sandbox mounts the run's folder again with a new mount
+credential, and the lost one's credential is removed. The run's folder is kept; what was on the lost sandbox outside it
+(its processes, `/tmp`) is gone. The timeline says `Its computer was lost; started a new one (<name>).` A claim starts
+at most 2 new sandboxes. The loss after that fails the run with error code `computer_unavailable`, in the provider's
+words. A provider error that does not show the sandbox gone (a 5xx, a timeout, its read of the machine failing) starts
+nothing. A desktop, a phone, a paired computer and an agent's own computer are never started again this way.
+
 **A phone's apps.** A phone has its stock apps. To give every phone more, the operator names APK files on the machine
 that drives the phones (the server's, or its runner's) in that machine's environment, each pinned by its sha256:
 `PHONE_HARNESS_APKS=/srv/apks/wikipedia.apk@sha256:<64 hex digits>`, a comma list. Only the operator sets it: no agent
