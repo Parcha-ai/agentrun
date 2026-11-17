@@ -1,6 +1,5 @@
 // The runner's dispatch switch (harness-loops.ts resolveRunnerLoop) returns the inner loop a claimed run runs on: a
-// workflow revision on the workflow loop (whatever its harness), harness "learning" on the learning loop, pi on the
-// kernel's adapter loop, and anything else undefined (the dispatch fails it in words). Each case returns a loop factory
+// workflow revision on the workflow loop (whatever its harness), pi on the kernel's adapter loop, and anything else undefined (the dispatch fails it in words). Each case returns a loop factory
 // (a function) or undefined.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,11 +26,6 @@ test("a workflow revision resolves to the workflow loop, not undefined", async (
   await store.agents.create({ id: "wf", name: "wf" }, { id: "wf-rev", kind: "workflow", body: { workflow: "flow main {}" } });
   await store.runs.create({ id: "wf-run", agentId: "wf", revisionId: "wf-rev" });
   assert.equal(typeof (await resolveRunnerLoop(deps)("pi", LAUNCH, "wf-run")), "function", "a workflow revision runs on the workflow loop");
-});
-
-test("harness learning resolves to the learning loop", async (t) => {
-  const { deps } = await depsOn(t);
-  assert.equal(typeof (await resolveRunnerLoop(deps)("learning", LAUNCH, "any-run")), "function", "harness learning runs on the learning loop");
 });
 
 test("an agentic pi revision resolves to the adapter loop", async (t) => {

@@ -225,7 +225,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   };
 }
 
-/** The run's learning start (its given notes, its seed sha and its # Learned section), read from one place by learning's
+/** The run's learning start (its seed sha, its # Learned section and its learned workflows), read from one place by learning's
  *  routes and the runner; undefined when the run does not learn. */
 export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => launch.learning;
 
