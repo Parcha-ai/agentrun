@@ -434,6 +434,24 @@ the template's build and never sees a create's env, so E2B's create starts `agen
 with the env as that one process's ([README](README.md#e2b-on-dial)). Their conformance modules' `dialKit()` refuse, since
 a machine dials the server that minted its token: the Core run happens inside the public server's process.
 
+#### Worked example: Fly Machines
+
+[`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
+`create` posts the box image as `config.image`, `req.boot.env` as `config.env` and the labels as `config.metadata`, with
+`auto_destroy: true` and restart policy `"no"`: once init's deadline ends the daemon, the machine stops and Fly destroys
+it. `list` filters by `metadata.<key>=<value>`, `delete` passes `force=true`, and `extend` writes the deadline label
+alone, for the janitor. Each Fly fact has its doc link in the file, and the ones the docs leave open say **unverified**.
+
+Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
+in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+(`--exit` exits 0 on a pass, else 1):
+
+```sh
+COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
+  node packages/serve/scripts/dial-conformance.mjs --provider fly
+```
+
 ### Wire it up
 
 Your provider class hands the host to `HostedProvider`, which turns it into a whole `ComputerProvider`, the interface
