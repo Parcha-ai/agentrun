@@ -114,6 +114,21 @@ describe("AgentEditor, tools a person chose by hand", () => {
   };
   const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true, harnesses: ["pi"] }] };
 
+  it("keeps every tool on a module's harness the server offers them on, as on pi: none comes off and no card is disabled", async () => {
+    // The server lists a module's harness on each tool its runs get (serve's toolsView): pi's, on the general spec.
+    const onModule = (ids: string[]) => (ids.includes("pi") ? [...ids, "own"] : ids);
+    const withModule = { ...both, harnesses: [...both.harnesses, { id: "own", label: "Own", available: true }], tools: both.tools.map((t) => ({ ...t, harnesses: onModule(t.harnesses) })), mcpHarnesses: ["pi", "claude-agent", "codex", "opencode", "own"] };
+    const { host, click, checked, done } = await setup({ agent: null, caps: withModule, step: "tools" });
+    const picked = checked();
+    expect(picked).toEqual(["read", "write", "web_fetch", "ask_person"]);
+    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click(host.querySelector('input[type=radio][value="own"]'));
+    click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
+    expect(checked()).toEqual(picked);
+    expect([...host.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].filter((i) => i.disabled).map((i) => i.value)).toEqual([]);
+    done();
+  });
+
   it("keeps a hand-picked set when the harness changes, less what the new harness doesn't run, which a switch back ticks again", async () => {
     const { host, click, checked, done } = await setup({ agent: null, caps: both, step: "tools" });
     const fetchBox = host.querySelector<HTMLInputElement>('input[type=checkbox][value="web_fetch"]');

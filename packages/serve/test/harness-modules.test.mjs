@@ -124,3 +124,30 @@ test("a harness module's id is one the API carries (^[a-z][a-z0-9-]{0,39}$): one
   const { openapiDocument } = await import("../dist/openapi.js");
   assert.ok(JSON.stringify(openapiDocument(() => undefined)).includes(JSON.stringify(HARNESS_ID_PATTERN)), "the OpenAPI document's harness id pattern is the same one");
 });
+
+test("a module that names an id the runner or serve keeps for its own runs (learning, sdk, workflow, an SDK runtime's) refuses the start, naming the module and the id", async (t) => {
+  const [{ HARNESS_MODULES_ENV, harnessTable }, { RESERVED_HARNESS_IDS }, { LEARNING_HARNESS }, { SDK_BINDING }] = await Promise.all([
+    import("../dist/harness-table.js"), import("../dist/harness.js"), import("../dist/runner/learning-factory.js"), import("../dist/sdk/schema.js"),
+  ]);
+  // The names serve's own runs carry as a launch's harness or a run's harness in analytics: a learning run's (the runner's
+  // loop choice keys on it), an SDK run's, a workflow revision's, and each SDK runtime's.
+  for (const id of [LEARNING_HARNESS, "sdk", "workflow", ...SDK_BINDING.properties.runtime.enum]) assert.ok(RESERVED_HARNESS_IDS.includes(id), id);
+  const dir = await scratch(t);
+  for (const id of RESERVED_HARNESS_IDS) {
+    const path = ownModule(dir, id);
+    assert.throws(() => harnessTable({ [HARNESS_MODULES_ENV]: JSON.stringify([path]) }), (error) => error.message.includes(path) && error.message.includes(` ${id},`) && /serve's own/.test(error.message), id);
+  }
+});
+
+test("capabilities offer a module's harness every tool pi runs, the meta tools and MCP grants, so its tool choices stay; a built-in's offers do not change", async (t) => {
+  const dir = await scratch(t);
+  const { api } = await serve(t, { harnessModules: [ownModule(dir, "own")] });
+  const caps = (await api("GET", "/capabilities")).body;
+  const onPi = caps.tools.filter((tool) => tool.harnesses.includes("pi")).map((tool) => tool.name);
+  const onOwn = caps.tools.filter((tool) => tool.harnesses.includes("own")).map((tool) => tool.name);
+  assert.ok(onPi.includes("browser") && onPi.includes("read"), onPi.join(", "));
+  assert.deepEqual(onOwn, onPi, "a module's harness runs on the general spec, with pi's tools");
+  const onClaude = caps.tools.filter((tool) => tool.harnesses.includes("claude-agent")).map((tool) => tool.name);
+  assert.ok(onClaude.includes("read") && !onClaude.includes("browser"), "claude-agent keeps the host tools only");
+  assert.ok(caps.features.mcp_client.harnesses.includes("own"), "MCP grants run on it, as the save check takes them");
+});
