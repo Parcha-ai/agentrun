@@ -37,7 +37,9 @@ export type LearningChange = {
 };
 
 export type LearningCommitResult =
-  | { ok: true; main: string; commit: string; files: string[]; already?: true }
+  /** `refusedCorrection`: the correction the merge left out beside its draft, corrections.md at its cap on main by then
+   *  (another write filled it after the run's check), in the cap's words. */
+  | { ok: true; main: string; commit: string; files: string[]; already?: true; refusedCorrection?: Problem[] }
   | { ok: false; reason: "conflict"; problems: Problem[] }
   | { ok: false; reason: "refused"; problems: Problem[] }
   | { ok: false; reason: "unavailable"; error: string };
@@ -53,7 +55,7 @@ function blobOf(snapshot: Snapshot | undefined, path: string): string | undefine
   return undefined;
 }
 
-type Computed = LearningCommitResult | { pending: true };
+type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Problem[] };
 
 /** A write's failure as a result: the script's precondition (a file changed since the seed: a conflict), a write past
  *  what one exec carries, or the folder unavailable (retry later). */
@@ -65,19 +67,29 @@ function failure(error: unknown): LearningCommitResult {
 
 /** What a write landed, from writeLearning's answer: its new main and the paths it changed. */
 const landed = (done: { result: Computed; main?: string; snapshot?: Snapshot }): LearningCommitResult =>
-  "pending" in done.result ? { ok: true, main: done.main!, commit: done.main!, files: done.snapshot?.log[0]?.commit === done.main ? done.snapshot!.log[0]!.files : [] } : done.result;
+  "pending" in done.result
+    ? { ok: true, main: done.main!, commit: done.main!, files: done.snapshot?.log[0]?.commit === done.main ? done.snapshot!.log[0]!.files : [], ...(done.result.refusedCorrection ? { refusedCorrection: done.result.refusedCorrection } : {}) }
+    : done.result;
 
 /**
  * A run's merge on the folder's main, one exec of the learning script: its files (a held README with `status: pending`)
  * and its owner's correction appended to corrections.md. `ok` with the new main and the paths the commit changed;
  * `conflict` when a file is not on main as it was on the run's seed; `refused` when the correction holds what must never
- * be stored, or would take corrections.md past its cap (nothing written); `unavailable` when the workspace or the exec
- * failed. A merge whose run already merged here (this round) is `ok` with the commit that holds it, and writes nothing.
+ * be stored, or, with no draft beside it, would take corrections.md past its cap (nothing written); `unavailable` when
+ * the workspace or the exec failed. The draft and the correction are judged apart: a correction past the cap beside a
+ * draft (the file filled by another write after the run's check, correctionRefused) is left out alone, and the draft
+ * merges, `ok` with the cap's refusal as `refusedCorrection`. A merge whose run already merged here (this round) is `ok`
+ * with the commit that holds it, and writes nothing.
  */
 export async function learningCommit(ws: Workspace, change: LearningChange, opts: { retries?: number } = {}): Promise<LearningCommitResult> {
   try {
     const known = await readRunDiff(ws, runDiffKey(change.runId, change.round));
-    if (known) return { ok: true, main: (await readSnapshot(ws))?.main ?? known.merge, commit: known.merge, files: known.files.map((file) => file.path), already: true };
+    if (known) {
+      // Its merge left the correction out only at the cap.
+      const left = change.correction !== undefined && !known.files.some((file) => file.path === CORRECTIONS_FILE);
+      const refusedCorrection: Problem[] = left ? [{ rule: "too_large", path: CORRECTIONS_FILE, detail: `${CORRECTIONS_FILE} was at its cap of ${CORRECTIONS_CAP} bytes when the run's merge was written` }] : [];
+      return { ok: true, main: (await readSnapshot(ws))?.main ?? known.merge, commit: known.merge, files: known.files.map((file) => file.path), already: true, ...(refusedCorrection.length ? { refusedCorrection } : {}) };
+    }
     const line = change.correction === undefined ? undefined : correctionLine(change.correction);
     // The line alone first: what it holds is refused whatever the file around it holds.
     const own = line === undefined ? [] : correctionProblems(line, change.refuseValues);
@@ -90,13 +102,15 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
     });
     return landed(await writeLearning<Computed>(ws, async ({ snapshot, body }) => {
       const writes = [...drafts];
+      let refusedCorrection: Problem[] | undefined;
       if (line !== undefined) {
         const text = appended(await correctionsOf(snapshot, body), line);
         const full = capProblem(text);
-        if (full) return { result: { ok: false, reason: "refused", problems: [full] } };
-        writes.push({ path: CORRECTIONS_FILE, text });
+        if (full && !drafts.length) return { result: { ok: false, reason: "refused", problems: [full] } };
+        if (full) refusedCorrection = [full];
+        else writes.push({ path: CORRECTIONS_FILE, text });
       }
-      return { result: { pending: true }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}) } };
+      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}) } };
     }, opts.retries ?? 3));
   } catch (error) {
     return failure(error);

@@ -124,7 +124,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     correctionRefused: ({ agentId, text, refuse }) => withFolder(deps, agentId, (folder) => correctionRefused(folder.workspace, text, refuse)),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
-      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) =>compileAskOf(deps, { ...input, input: launch.input, seedWorkflows: start.workflows?.length ?? 0 }),
+      compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
       compileFailed: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => recordDraftFailed(deps, input),
     }),
     // The run's secrets, what the claim handed it, every secret the server keeps sealed, and the sign-in pointers it was
@@ -234,8 +234,9 @@ async function withFolder<T>(deps: Pick<LearningEndDeps, "learningFolder">, agen
  * A run's merge on the agent's learning folder, written by the runner directly (learn/commit.ts learningCommit, one
  * exec): its compiled draft's files and its owner's correction, committed by `change.runId` (its Run-Id trailer). A file
  * changed on main since the run's seed (or a revision's `bases` commit) is a conflict, never written over; a correction
- * that holds what must never be stored, or would take corrections.md past its cap, is refused. Any failure is logged by
- * its reason alone. The folder is always released.
+ * that holds what must never be stored, or would take corrections.md past its cap, is refused (past the cap beside a
+ * draft, it is left out alone and the draft merges). Any failure is logged by its reason alone. The folder is always
+ * released.
  */
 export async function commitDirect(deps: { readonly folder: () => LearningFolder; readonly log: (line: string) => void }, change: LearningChange): Promise<LearningCommitResult> {
   const folder = deps.folder();
@@ -250,7 +251,7 @@ export async function commitDirect(deps: { readonly folder: () => LearningFolder
 
 /** A merge's result as the hook reads it. */
 const committedOf = (done: LearningCommitResult): Committed =>
-  done.ok ? { ok: true, commit: done.commit } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [] } : { ok: false, reason: done.reason, problems: done.problems };
+  done.ok ? { ok: true, commit: done.commit, ...(done.refusedCorrection ? { refusedCorrection: done.refusedCorrection } : {}) } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [] } : { ok: false, reason: done.reason, problems: done.problems };
 
 /** What a run's owner said of it, in order, each a line for corrections.md: the grade's words its end closes (a feedback
  *  round, feedback-round.ts pendingFeedbackOf over its root `entries`), and each message a person sent in this round of
@@ -505,9 +506,10 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  runs, which the hold reads among many. Either way the traces of the agent's last COMPILE_TRACES completed runs before
  *  this one, the tools a call node may run (draftTools) with what each takes and gives, its decision providers, the
  *  run's input (`input`, its fields for the workflow's input schema), the agent's output schema when it has one (its
- *  final output's shape) and the DSL's language with this host's addendum. Undefined when it compiles nothing, or when
- *  the folder can't be read. */
-export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; seedWorkflows?: number }): Promise<CompileAsk | undefined> {
+ *  final output's shape) and the DSL's language with this host's addendum. An SDK run's compile, asked outside its
+ *  session, also carries the owner's standing corrections it was laid with (`corrections`, its # Learned section), as an
+ *  in-session compile reads them in its session. Undefined when it compiles nothing, or when the folder can't be read. */
+export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round?: number; input?: unknown; seedWorkflows?: number; corrections?: string }): Promise<CompileAsk | undefined> {
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
@@ -610,8 +612,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
   leftOut.input = object && holds(input.input);
   const fields = object && !leftOut.input ? { input: input.input as Record<string, unknown> } : {};
+  // An SDK compile is one request outside the run's session: it carries the corrections the session was laid with.
   const bridge = workflowAdapters !== undefined ? { workflowAdapters } : {};
-  const base = { ...bridge, reference: compileReference(dsl, { tools, judges, ...bridge }), traces, tools, described, judges, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
+  const corrections = workflowAdapters !== undefined && input.corrections?.trim() ? { corrections: input.corrections } : {};
+  const base = { ...bridge, ...corrections, reference: compileReference(dsl, { tools, judges, ...bridge }), traces, tools, described, judges, ...fields, ...(outputSchema !== undefined ? { outputSchema } : {}) };
   // A revision is of main's text as read here, whatever the run started from: that commit is its conflict base (`base`).
   const ask: CompileAsk = !held ? { mode: "new", ...base } : { mode: "revise", workflow: held.workflow, current: read.current!, ...(read.main ? { base: read.main } : {}), held, ...base };
   sayLeftOut();

@@ -17,6 +17,12 @@ test("SDK compiler contract describes only explicitly registered adapters and br
  const model = ask(["runNode"]).reference;assert.match(model, /runNode/);assert.match(model, /NO runJudge/);
  const judge = ask(["runJudge"]).reference;assert.match(judge, /NO runNode/);assert.doesNotMatch(judge, /NO runJudge/);
 });
+test("SDK compiler prompt carries the owner's standing corrections under This job, fenced, and none when there are none", () => {
+ const rule = "- Agency customers: report a release not ready until its agency sign-off is in.";
+ const job = compilePrompt({ ...ask(), corrections: `${rule}\n` }).split("## This job")[1].split("## Your answer")[0];
+ assert.match(job, /standing corrections/);assert.ok(job.includes(rule));assert.match(job, /begin [^\n]*: the corrections -----\n- Agency customers/);
+ for (const corrections of [undefined, "", "  \n"]) assert.doesNotMatch(compilePrompt({ ...ask(), ...(corrections !== undefined ? { corrections } : {}) }), /standing corrections/);
+});
 test("SDK compiler prompt keeps callback catalog and explicit execution", () => {
  const prompt = compilePrompt(ask());
  assert.match(prompt, /explicit.*bridge/i);assert.doesNotMatch(prompt, /on later runs it runs first|runs on your model/);

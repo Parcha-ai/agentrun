@@ -29,8 +29,11 @@ export type DraftCommit = {
   readonly bases?: Readonly<Record<string, string>>;
 };
 
-/** What a merge landed: the commit, or why it did not. */
-export type Committed = { readonly ok: true; readonly commit: string } | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
+/** What a merge landed: the commit (and the correction it left out beside its draft, learn/commit.ts
+ *  LearningCommitResult `refusedCorrection`), or why it did not. */
+export type Committed =
+  | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
+  | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
 
 /** What the step reads of the run and the host. */
 export interface ReflectDeps {
@@ -180,8 +183,12 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         const readme = draft?.files.find((file) => file.path.endsWith("/README.md"));
         const json = draft?.files.find((file) => file.path.endsWith("/workflow.json"));
         const workflows: LearnedFile[] = draft && json ? [{ file: json.path, name: draft.name, ...(readme && draft.held?.includes(readme.path) ? { pending: true as const } : {}) }] : [];
-        const problems = [...refusedCorrection, ...draftProblems];
-        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(taken !== undefined ? { corrections: 1 } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, taken !== undefined ? 1 : 0, problems) }));
+        // The draft and the correction are judged apart: one the merge left out (corrections.md filled during the compile)
+        // is reported as the check before the compile reports one.
+        const left = done.refusedCorrection?.length ? done.refusedCorrection : undefined;
+        const corrections = taken !== undefined && !left ? 1 : 0;
+        const problems = [...refusedCorrection, ...(left ?? []), ...draftProblems];
+        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
       }
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
