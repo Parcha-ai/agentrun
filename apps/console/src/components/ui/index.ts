@@ -14,4 +14,5 @@ export { Spinner } from "./spinner";
 export { Switch } from "./switch";
 export { type TabItem, tabPanelProps, Tabs } from "./tabs";
 export { Tip } from "./tip";
+export { pageTitleClass, pageToolbarClass } from "./toolbar";
 export { ToastProvider, type ToastInput, type ToastTone, useToast } from "./toast";

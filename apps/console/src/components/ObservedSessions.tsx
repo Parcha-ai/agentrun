@@ -3,6 +3,8 @@ import { Banner, Button, Chip } from "@/components/ui";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { observationHash, observedHarness, observedNumber, observedState, observedTone, type ObservationRead, type ObservedUsage, useObservations } from "@/lib/observations";
+import { pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 /** Native sessions share the existing pages, with their actual source and metadata limits visible. */
 export function ObservedSessions({ read, view = "table", query = "", days = 30 }: { read: ObservationRead; view?: "cards" | "table" | "summary"; query?: string; days?: 7 | 30 }) {
@@ -52,7 +54,7 @@ export function ObservedSessionPage({ v2, sessionId, go }: { v2: Client; session
   const read = useObservations(v2, { sessionId });
   const session = read.data?.sessions.find((s) => s.id === sessionId);
   return <section className="flex min-h-full flex-col" aria-label="Observed session detail">
-    <header className="flex min-h-12 flex-wrap items-center gap-2 border-b px-5 py-2"><Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go("#/agents")}><ArrowLeft aria-hidden /></Button><RadioTower className="size-4" aria-hidden /><strong className="min-w-0 flex-1 truncate text-body">{session?.display_name ?? "Observed session"}</strong><Button size="icon" aria-label="Refresh session" disabled={read.loading} onClick={read.refresh}><RefreshCw aria-hidden /></Button></header>
+    <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5")}><Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go("#/agents")}><ArrowLeft aria-hidden /></Button><RadioTower className="size-4" aria-hidden /><strong className="min-w-0 flex-1 truncate text-body">{session?.display_name ?? "Observed session"}</strong><Button size="icon" aria-label="Refresh session" disabled={read.loading} onClick={read.refresh}><RefreshCw aria-hidden /></Button></header>
     <main className="mx-auto w-full max-w-page space-y-6 p-5 md:p-8">
       {read.error && <Banner tone="error">Could not read this session: {read.error}</Banner>}
       {!session ? <p className="text-body text-muted-foreground">{read.loading ? "Loading observed session…" : read.data ? "This session was not found." : "Observed sessions are unavailable on this server."}</p> : <>
