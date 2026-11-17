@@ -365,3 +365,58 @@ describe("LiveRun, a take-over while the run is slow to read", () => {
     expect(panel()).toContain("Yours after the agent's step");
   });
 });
+
+// A recording starts with its computer's first frames, during a tool round, and is finished a few seconds after the run's
+// end: the page reads the run again on each tool result, and every few seconds while a recording is unfinished.
+describe("LiveRun, a run's screen recordings", () => {
+  const recording = (finished: boolean) => ({ path: "recordings/c1.mp4", computer: "c1", seconds: 12.5, bytes: 4096, finished });
+  const step = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+
+  it("reads the run again while a recording is unfinished, until it is; then no more", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    const v2 = {
+      // Ended, its recording unfinished for the first three reads (its encoder still letting go), then finished.
+      getRun: async () => ({ ...at("completed", false), recordings: [recording(++reads > 3)] }),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: async () => final("completed"),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive" })));
+    for (let i = 0; i < 10; i++) await step(0);
+    const first = reads;
+    for (let i = 0; i < 6; i++) await step(3_000);
+    expect(reads).toBeGreaterThan(first);
+    expect(reads).toBeGreaterThanOrEqual(4);
+    const done = reads;
+    for (let i = 0; i < 6; i++) await step(3_000);
+    expect(reads).toBe(done);
+  });
+
+  it("reads the run again on a tool result, so a recording that starts mid-run is listed", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    const waiting: ((p: TimelinePage) => void)[] = [];
+    const page = (rows: TimelinePage["rows"]) => ({ cost: null, run_id: "r1", status: "working", state: "working", rows, drop: [], reset: false, unchanged: false, final: false, has_more: false, next_after: rows.length }) as unknown as TimelinePage;
+    const v2 = {
+      getRun: async () => { reads++; return { ...at("working", false), recordings: [] }; },
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      getTimeline: () => new Promise<TimelinePage>((resolve) => { waiting.push(resolve); }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+    };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive" })));
+    const hand = async (p: TimelinePage) => {
+      for (let i = 0; i < 20 && !waiting.length; i++) await step(50);
+      waiting.shift()!(p);
+      for (let i = 0; i < 5; i++) await step(0);
+    };
+    await hand(page([]));
+    const before = reads;
+    await hand(page([{ id: "t1", seq: 1, kind: "tool_result", agent_label: null, summary: "Typed.", text: null, timestamp: "2026-10-30T06:00:04Z", created_at: "2026-10-30T06:00:04Z", tool_name: "computer_act", tool_use_id: "u1", tool_status: "ok", tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null }] as never));
+    expect(reads).toBe(before + 1);
+  });
+});

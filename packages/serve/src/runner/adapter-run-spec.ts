@@ -48,7 +48,7 @@ import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
-import { COMPUTER_ROOT, runFolder } from "../workspace/paths.js";
+import { COMPUTER_ROOT, recordingsFolder, runFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
@@ -67,6 +67,7 @@ import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid, toolFlowsFor } from "./promotion.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
+import { AUDIT_PARKED, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
@@ -202,6 +203,10 @@ export interface AdapterSpecDeps {
    *  mcpLoopback: a run's loopback request (an MCP server's, its authorization server's, a pin's listing, calendar_events') never goes to
    *  their ports, as the server's own requests never do. */
   readonly mcpOwn?: readonly string[];
+  /** More own addresses, read at each claim beside mcpOwn: a standalone runner's (runner/main.ts runnerLoop), the ones
+   *  the server kept in the store at its last start (mcp-private-hosts.ts serverOwn), so a server on any port stays
+   *  refused. Read only when mcpLoopback is set. */
+  readonly mcpOwnOf?: () => Promise<readonly string[]>;
   /** A template eval's fakes, by the agent a run is of (template-eval.ts, from its case: EvalFakes). Only the eval's own
    *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
    *  maps onto it. Absent, or undefined for a run: none. */
@@ -403,6 +408,8 @@ export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, dep
 
 async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
+  // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
+  const reach = await mcpReachOf(deps);
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
   // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
   // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
@@ -494,7 +501,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -511,8 +518,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer): a later
     // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park past its keep). The
-    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A
+    // recording of its screen (computer.record) goes in the run's recordings folder, beside its folder, said on its timeline.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -627,7 +635,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
-    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    // What its learning runs' grades and its audit's shadow took beside it, read by every gate with its own sessions
+    // (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
@@ -656,13 +665,16 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // chose them, scoped as the revision's own: each provider the run's gate does not deny, held by the run's one redactor,
   // onto the tools' environment alone. The model's route was built on the revision's keys above, so a decision key never
   // becomes its model's.
-  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  // A replay run lays only the workflow it replays (runner/promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, seedLaid?.workflows ?? []);
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts),
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest
   // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
+  // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey };
+  if (launch.learning && !launch.replay && !launch.audit) await settleAudits(audits);
   const promotion = claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   });
@@ -704,7 +716,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -783,8 +795,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the data directory, Mode 2 the
   // agent's folder on THIS claim's Archil disk (the proposal is checked against the seed on the disk, never this machine's
   // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
-  // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
-  const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
+  // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  // A run the promoted workflow served first starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
+  // withAudit): at its end, so the shadow's cap is what the run's own left.
+  const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -800,7 +814,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  });
+  }), { ...audits, launch });
 
   return {
     adapter,
@@ -826,6 +840,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
+    // An audit's shadow run waits on no one: where it would park (an approval, a raise of its cap, a person's answer) it
+    // ends at once, its row `parked` (runner/audit.ts).
+    ...(launch.audit ? { neverWaits: AUDIT_PARKED } : {}),
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),
@@ -1180,4 +1197,13 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // it passes spec.lifecycle. The decision providers come from the claim's secrets (claim-secrets.ts). Wired against that
   // seam when it lands; never a second journalSessions + runCap over the one journal (the double-book we closed).
   return tools;
+}
+
+/** What a claim's MCP servers and calendar_events may reach on loopback (mcpForClaim's and buildToolHost's `loopback` and
+ *  `own`): nothing unless mcpLoopback; else loopback, never at mcpOwn's ports nor mcpOwnOf's, read now. Read once per
+ *  claim. */
+export async function mcpReachOf(deps: Pick<AdapterSpecDeps, "mcpLoopback" | "mcpOwn" | "mcpOwnOf">): Promise<{ loopback?: true; own?: readonly string[] }> {
+  if (!deps.mcpLoopback) return {};
+  const own = [...(deps.mcpOwn ?? []), ...((await deps.mcpOwnOf?.()) ?? [])];
+  return { loopback: true, ...(own.length ? { own } : {}) };
 }

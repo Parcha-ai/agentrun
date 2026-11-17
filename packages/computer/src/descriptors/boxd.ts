@@ -1,4 +1,5 @@
-// boxd's descriptor: a boxd machine (a microVM) as a sandbox or a desktop. No mount yet.
+// boxd's descriptor: a boxd machine (a microVM) as a sandbox or a desktop, the desktop restored from a snapshot its
+// prepareImage() builds. No mount yet.
 import { defineProvider } from "../descriptor.js";
 import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
@@ -22,6 +23,9 @@ export const BOXD = defineProvider({
 		{ ...SANDBOX, options: { kind: "linux" } },
 		{ ...LINUX_DESKTOP, options: { kind: "desktop" } },
 	],
-	defaultImage: { sandbox: BOXD_DEFAULT_IMAGE, desktop: BOXD_DEFAULT_IMAGE },
+	// A sandbox starts from boxd's own image. A desktop has no default: it starts from the snapshot its prepareImage()
+	// builds once in the key's org (agentrun-desktop-<hash>), boxd's own image with a stock app added.
+	defaultImage: { sandbox: BOXD_DEFAULT_IMAGE },
+	prepareImage: true,
 	load: () => import("../boxd.js"),
 });

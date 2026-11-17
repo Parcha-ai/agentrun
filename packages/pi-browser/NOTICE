@@ -1,6 +1,8 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
 
+The boxd computer provider (packages/computer/src/boxd.ts) was contributed by Michiel Voortman.
+
 This package contains two pieces of Stagehand (https://github.com/browserbase/stagehand), both under its MIT license,
 whose text follows:
 

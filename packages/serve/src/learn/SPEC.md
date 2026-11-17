@@ -20,6 +20,7 @@ refund-policy-path.md             one note per file
 prefers-tables.md
 skills/find-policies/SKILL.md     a skill: how to do a job the agent does again
 workflows/find-policies/          a workflow draft: its workflow.json and its README.md, together
+audits.jsonl                      the audit ledger: a started line and a row per audit of a served run, host-written
 ```
 
 The folder is plain git with one branch, `main`; git is its history and its undo. The host is its only writer: no run
@@ -128,10 +129,84 @@ Which runs are asked: a run of an agent whose learning is `"notes"` is asked its
 an agent with `learning: true` (one that compiles workflows) is asked it only when its owner gave feedback on the run (a
 grade's words, or a message after its first); without it nothing is asked and $0 is spent looking back, and a compile
 turn that is due is asked alone. An SDK task carries no owner feedback, so its runs learn through the compile turn
-alone. The compile turn asks for the first workflow when the notes and runs say it is due, and
-for a revision of one only when its promotion record holds it (a replay under the bar, or graded runs under the agent's
-accuracy), once per hold. A hand-back, a stop by the money rule and a wrong grade of a served run ask for none: each is
-one sample, and the hold reads it among the workflow's others.
+alone. The compile turn asks for the first workflow once the agent has its definition's `learning.compile_after` completed
+runs of its own (20 by default; a run its learned workflow answered alone and a check's replay run are not counted), and
+for a revision of one only when its promotion record holds it, once per hold. A hand-back, a stop by the money rule and a
+wrong grade of a served run ask for none: each is one sample, and the hold reads it among the workflow's others. A job
+compiles once: while a passing draft waits on its grade nothing more is asked, and a turn whose drafts all fail their
+checks is the compile's attempt all the same, kept as a promotion record (a hold with nothing checked, `n` 0, its reason
+starting "its draft failed its checks" and naming them). A first compile's earns the one recompile, as a check's hold
+does; a recompile's stops (`check.stopped`).
+
+Promote once: a new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first
+run that lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each,
+at workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
+own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of the inputs it ran on, `alone` is the share
+it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no answer alone), and `agreement` the
+share of those that say what the agent said. A newer revision that comes while a check runs waits and records nothing;
+the claim after the running check is decided starts the newest. It is
+promoted when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
+(0.7). Under either bar it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on
+as data (each one's input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked
+the same way. Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or
+its owner acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that
+stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades. The
+inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
+Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
+failed input, never left out, in `n` and in `outcomes` alike (the record's `unstarted` counts the never created; every
+one: its replay's read is `failed`). A draft with nothing to check it on (none of those runs has an input it takes, or every
+input was skipped at a write, such as an MCP tool listed with no `readOnlyHint`) is never promoted: it stops
+(`check.stopped`, `n` 0) with a reason starting "nothing to check it on", which the loop read shows as the compile's
+draft error, and it asks no recompile (a revision would have nothing to be checked on either).
+
+The shadow audit: a run a promoted revision serves first is audited at 1 in `learning.audit_every` (10), and at 1 in
+`learning.audit_every_later` (20) once that revision has served `learning.audit_later_after` (50) runs. The draw is
+sha256 of the run's id, so a claim taken again draws the same (`learn/audit.ts` auditDrawn). The served count it reads
+pages past the shadows and the agent's own runs (`learn/compile.ts` lastRunsOf), never a fixed window of newest runs.
+Only a run started over the API is drawn: one a trigger started (its checkout, the thread it answers on) is never
+audited, counted `not_auditable` on the promotions read. And only an agent every tool of which only reads, by the rule a
+check's replay skips writes by (`auditWriterOf`: an MCP tool by its pinned `readOnlyHint`, a built-in by READ_TOOLS, the
+computer's tools among them): an agent that can call a write is never audited, and the promotions read says why
+(`audits_off`, "audits off: <tool> can write"), since a shadow would do that write a second time. A drawn run, at its
+end (`runner/audit.ts` withAudit, before the end commits, the workflow read from its journal), first appends a started
+line to `audits.jsonl` (`{source: "started", run, shadow_run, workflow, digest, promoted_at, turn, at}`, `turn` the id
+of the run's newest answer row then: the answer audited), then starts its shadow run (startAudit). A capped run's shadow is capped at what the served run's cap left: its cap now, less what it
+spent under it and the grade its end queues (`runner/learning-end.ts` auditRoomOf), so the two never spend past the
+served run's cap; the served run's later gates count the shadow beside it (besideOf: its cost once it ended, its cap
+until then). With less than a run's smallest cap left (`RUN_CAP_MIN_USD`, $0.01) or a spend not known, no shadow is
+started: the row `{..., shadow_run: null, agreed: null, skipped: "no allowance"}` is written instead. A shadow never
+waits on a person: where it would park (an approval its tool settings ask, a raise of its cap, a question) it ends failed
+at once in AUDIT_PARKED's words, the ask its park wrote withdrawn in that end's commit, its cost booked
+(`AdapterRunSpec.neverWaits`, the adapter loop's parkClaim; the gate is not bypassed: nothing it asks about runs, and no
+one is asked). A shadow ended once its cost passed its cap (the kernel's overCapEnd) is one too. Its row is
+`parked: true` with `agreed` null: neither agreed nor disagreed, never counted toward the hold. The shadow is the same agent and revision on the
+same input with learning off (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit`
+naming the run it audits; a shadow whose line could not be written is never created. The shadow is no row of the run
+list, GET /runs/{id} reads it with `audit_of`, and its cost is the served run's learning (its `cost.usd` and its learning
+cost in the cost series). While the shadow is queued or running the served run's all-in is unknown, never $0
+(`store-reads/learning.ts` shadowSpendOf): its `cost.usd`, `cost.all_in_usd` and learning cost read null, and a
+learning batch closes no row on it, nor saves its cost, until the shadow ends (`learning-batch.ts` Figures.unsettled). Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
+each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by `sameAnswer` of the
+shadow's answer and the served run's answer row `turn`, read from the run by that id (null when either answer is
+missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
+hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
+grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the
+promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
+shadow started or the grade was given. The host alone appends to the ledger, one commit a write with a `host:` subject
+and no trailer (no change a person or a run made), and keeps its newest 2,000 rows with their started lines and every
+open one, each claim's batch oldest served run first. GET .../learning/audits reads the rows. The hold is a function of
+the ledger: every such claim applies the rule again over the rows as they are, rows added or not, so a hold a crash lost
+after its rows were committed is made at the next claim. The hold rule (`applyHold`) reads the newest
+`learning.hold_window` (10) rows with a verdict of the serving revision's current promotion (so a revision its owner's
+replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (a hold
+record carrying `audit`, keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
+agent's answer and the workflow's, each text cut of the host's secrets whole before it is shortened to 1,200 characters,
+`learn/secrets.ts` excerptShown, as a check's are). The agent takes the runs, and its next run it fits asks one recompile with those
+disagreements as data; S3a's check decides it on its usual inputs plus the disagreeing ones. A second audit hold within
+`learning.stop_window` (100) served runs of the first stops it instead (`audit.stopped`, reason "stopped: the workflow
+disagreed with the agent twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
+still stops a workflow that costs more than the agent by hand.
 
 When a run ends, its end-of-run turn answers with the notes it would keep, one ` ```note <file>.md ` block each
 (`reflectPrompt`, `parseReflection`), and, only when the work repeats, one skill in a ` ````skill <name> ` block (four
@@ -252,7 +327,7 @@ Over a cap is refused, never cut.
   answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
   straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
   are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
-  reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
+  reads the answer a model step wrote, never a judge's field.
   Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
   `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
   `pages`), its body the step that answers, which reads the compact facts and its failed draft through its `state`
@@ -291,12 +366,8 @@ Over a cap is refused, never cut.
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
 
-Whether a note holds one case's data is not the checker's to judge. Before the grader, one Jev question per new note
-(`learn/general.ts`, on the Jev model and keys decision nodes use) asks whether it holds for the job's inputs other than
-the one it came from; a note rated below the bar (0.5, `AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`) is dropped there,
-its reason on the verdict and its cost the grade's. When Jev cannot run, the grader reads every note, the grade's
-entry keeps why (`unchecked`), the run's learning end says so, and the grade's cost is unknown (null). The grader's
-General question is then a gate: it answers `general` for every item, and one it says is not general is never kept.
+Whether a note holds one case's data is not the checker's to judge. The grader's
+General question is a gate: it answers `general` for every item, and one it says is not general is never kept.
 
 ## The grade
 

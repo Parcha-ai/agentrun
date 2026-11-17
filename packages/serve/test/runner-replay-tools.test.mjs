@@ -1,14 +1,14 @@
 // A replay run's tools (runner/promotion.ts, learn/replay-calls.ts, SPEC B4) through the runner, on a pi run of the faux
 // gateway and a fake MCP server whose every call needs a per_run credential:
-//   - a write step whose arguments match the graded run's recorded call is never sent: the recorded answer is used;
+//   - a write step whose arguments match the replayed run's recorded call is never sent: the recorded answer is used;
 //   - a read step runs live once a replay, then is cached (two steps of the same read, one call);
 //   - the replay run has the agent's credentials as a served run does: the per_run token the claimed run was handed,
 //     sealed for the replay alone; nothing of it is printed or logged;
 //   - a write whose arguments the recording does not have is never sent: that input is skipped (skipped_write), neither
-//     wrong nor failed, and a replay whose every input was skipped holds the revision in those words.
+//     wrong nor failed, and a check whose every input was skipped had nothing to check it on: it stops in those words.
 // The runner is a local install's (mcpLoopback): the fake MCP server listens on loopback.
-// The graded runs are real runs of the agent (no learning, so no workflow serves them): each calls the write itself, which
-// is what its journal records.
+// The agent's earlier runs are real runs of the agent (no learning, so no workflow serves them): each calls the write
+// itself, which is what its journal records, and each is an input of the revision's check.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +23,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { putGrade, promotionsOf } = await import("../dist/learn/promote.js");
+const { promotionsOf } = await import("../dist/learn/promote.js");
 const { seedOf } = await import("../dist/learning.js");
 
 const SEAL_KEY = Buffer.alloc(32, 9);
@@ -75,8 +75,8 @@ function captureLines(t) {
 }
 
 /** An agent granted the fake server's add and delete_thing (per_run: every call needs the token a run is handed), that
- *  learned `tidy`; `graded` real runs of it, each deleting a thing (`deletes` of the one its job names), graded right. */
-async function world(t, { graded = 5, deletes = (id) => id, tools = [ADD, DELETE] } = {}) {
+ *  learned `tidy`; `prior` real runs of it before, each deleting a thing (`deletes` of the one its job names). */
+async function world(t, { prior = 5, deletes = (id) => id, tools = [ADD, DELETE] } = {}) {
   const lines = captureLines(t);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-replay-tools-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -121,15 +121,14 @@ async function world(t, { graded = 5, deletes = (id) => id, tools = [ADD, DELETE
     await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(n, thing, learning ? (await seedOf(dir, "agent-1")).sha : undefined), sealed: handed(id) });
     return ended(id);
   };
-  // The graded runs: the agent alone (no learning laid), each deleting its thing live, graded right on its sum.
-  for (let i = 0; i < graded; i += 1) {
-    const row = await start(`graded-${i}`, i, `thing-${i}`, false);
+  // The agent's earlier runs: the agent alone (no learning laid), each deleting its thing live, then saying its sum.
+  for (let i = 0; i < prior; i += 1) {
+    const row = await start(`prior-${i}`, i, `thing-${i}`, false);
     assert.equal(row.state, "ended", JSON.stringify(row));
-    await putGrade(server.settings, "agent-1", { run: `graded-${i}`, correct: true, expected: { sum: String(i + i + 1) }, source: "eval", at: new Date().toISOString(), path: "agent" });
   }
   const calls = (tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool);
-  assert.equal(calls("delete_thing").length, graded, "each graded run deleted its thing once, live");
-  const replays = async () => (await server.runs.list({ agentId: "agent-1" })).filter((row) => !/^(run|graded)-/.test(row.id));
+  assert.equal(calls("delete_thing").length, prior, "each earlier run deleted its thing once, live");
+  const replays = async () => (await server.runs.list({ agentId: "agent-1" })).filter((row) => !/^(run|prior)-/.test(row.id));
   const replaysEnded = (n) => until(async () => {
     const all = await replays();
     return all.length === n && all.every((row) => FINAL.includes(row.state) && row.runner === null) && all;
@@ -137,33 +136,33 @@ async function world(t, { graded = 5, deletes = (id) => id, tools = [ADD, DELETE
   return { server, store, fake, gw, logs, lines, start, replays, replaysEnded, calls, seed };
 }
 
-test("a replay answers its write from the graded run's recording, never sending it; its read runs live once, then cached; its per_run credential is the claimed run's; nothing is printed", { timeout: 180_000 }, async (t) => {
+test("a replay answers its write from the replayed run's recording, never sending it; its read runs live once, then cached; its per_run credential is the claimed run's; nothing is printed", { timeout: 180_000 }, async (t) => {
   const { server, fake, logs, lines, start, replaysEnded, calls } = await world(t);
   // The replays start as run-1 is claimed: what the fake saw is counted from before it.
   const deletedBefore = calls("delete_thing").length;
   const addsBefore = calls("add").length;
   const first = await start("run-1", 7, "thing-7");
-  assert.equal(first.metrics?.path, "agent", `the agent takes the run while its workflow replays: ${JSON.stringify(first.metrics)}\n${logs.join("\n")}`);
+  assert.equal(first.metrics?.path, "agent", `the agent takes the run while its workflow is checked: ${JSON.stringify(first.metrics)}\n${logs.join("\n")}`);
   const runs = await replaysEnded(5);
   for (const row of runs) {
     assert.equal(row.state, "ended", JSON.stringify(row));
     assert.equal(row.metrics?.path, "replay");
     assert.equal(row.metrics?.replay?.outcome, "answered", `answered on its own input: ${JSON.stringify(row.metrics)}\n${logs.join("\n")}`);
   }
-  assert.equal(calls("delete_thing").length, deletedBefore + 1, "run-1's agent deleted its thing; no replay sent the write: each was answered from its graded run's recording");
+  assert.equal(calls("delete_thing").length, deletedBefore + 1, "run-1's agent deleted its thing; no replay sent the write: each was answered from its replayed run's recording");
   assert.equal(calls("add").length - addsBefore, 5, "each replay's read ran live once: its second step of the same read was the cache's");
   assert.ok(calls("add").every((entry) => entry.authorization), "every live read carried the per_run credential");
-  // Every replay answered right: promoted on the next run, which the workflow serves.
+  // Every replay said what the agent said: promoted on the next run, which the workflow serves.
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "workflow", JSON.stringify(second.metrics));
-  const decided = (await promotionsOf(server.settings, "agent-1")).filter((one) => one.source === "replay").at(-1);
-  assert.deepEqual({ decided: decided.decided, n: decided.replay.n, wf_acc: decided.replay.wf_acc, skipped_write: decided.replay.outcomes.skipped_write }, { decided: "promote", n: 5, wf_acc: 1, skipped_write: 0 }, JSON.stringify(decided));
+  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, agreed: decided.check.agreed, skipped_write: decided.check.outcomes.skipped_write }, { decided: "promote", n: 5, agreed: 5, skipped_write: 0 }, JSON.stringify(decided));
   const said = [...logs, ...lines, JSON.stringify(await promotionsOf(server.settings, "agent-1")), JSON.stringify(runs), JSON.stringify(fake.log)].join("\n");
   assert.equal(said.includes(TOKEN), false, "the credential is never printed, logged or recorded");
 });
 
 test("a write whose arguments the recording does not have is never sent: the input is skipped; every input skipped holds the revision in those words", { timeout: 180_000 }, async (t) => {
-  // The graded runs deleted other things than their inputs name: no recorded write matches what the workflow asks.
+  // The earlier runs deleted other things than their inputs name: no recorded write matches what the workflow asks.
   const { server, start, replaysEnded, calls, logs } = await world(t, { deletes: (id) => `${id}-old` });
   const deletedBefore = calls("delete_thing").length;
   await start("run-1", 7, "thing-7");
@@ -177,14 +176,14 @@ test("a write whose arguments the recording does not have is never sent: the inp
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.outcomes.skipped_write }, { decided: "hold", source: "replay", n: 0, skipped_write: 5 });
-  assert.match(decided.reason, /every one of its 5 graded inputs needs a write the recording doesn't have/);
-  assert.deepEqual(decided.replay.skipped_tools, [{ tool: "mcp:fake/delete_thing", inputs: 5, no_read_only_hint: false }], "a destructive tool: a write, never a missing hint");
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, stopped: decided.check.stopped }, { decided: "hold", n: 0, skipped_write: 5, stopped: true });
+  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because each needs a write the recording doesn't have (a check never runs a write). It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
+  assert.deepEqual(decided.check.skipped_tools, [{ tool: "mcp:fake/delete_thing", inputs: 5, no_read_only_hint: false }], "a destructive tool: a write, never a missing hint");
   assert.doesNotMatch(decided.reason, /readOnlyHint/);
 });
 
 test("an MCP tool its server lists with no annotations stops every input: held, and the reason names it and says readOnlyHint, never a data problem", { timeout: 180_000 }, async (t) => {
-  // The live smoke's case: a read tool listed without annotations. The graded runs never called it, so nothing recorded.
+  // The live smoke's case: a read tool listed without annotations. The earlier runs never called it, so nothing recorded.
   const { annotations: _none, ...bare } = ADD;
   const { server, start, replaysEnded, calls, logs } = await world(t, { tools: [bare, DELETE] });
   const addsBefore = calls("add").length;
@@ -198,6 +197,6 @@ test("an MCP tool its server lists with no annotations stops every input: held, 
   const second = await start("run-2", 8, "thing-8");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
   const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.replay.n, skipped_write: decided.replay.outcomes.skipped_write, skipped_tools: decided.replay.skipped_tools }, { decided: "hold", source: "replay", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }] });
-  assert.equal(decided.reason, "nothing was replayed on its 5 graded inputs: add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server");
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, skipped_write: decided.check.outcomes.skipped_write, skipped_tools: decided.check.skipped_tools, stopped: decided.check.stopped }, { decided: "hold", n: 0, skipped_write: 5, skipped_tools: [{ tool: "mcp:fake/add", inputs: 5, no_read_only_hint: true }], stopped: true });
+  assert.equal(decided.reason, "nothing to check it on: 5 inputs skipped because add has no readOnlyHint, so replay can't run it: if it only reads, mark it read-only in the MCP server. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
 });

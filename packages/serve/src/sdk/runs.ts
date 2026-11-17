@@ -9,6 +9,7 @@ import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
+import { learnsWorkflowsOf } from "../learning-setting.js";
 import { chooseWorkflows, type LearnedWorkflow, chooseSkills, learningFolderOf, readerOf, seedFrom, secretsShown } from "../learning.js";
 import { NATIVE_GRADE_INSTRUCTION_BYTES } from "../learn/grade.js";
 import { secretRedactor } from "../runner/redact.js";
@@ -236,7 +237,7 @@ export class SdkRuns {
       deps,
       entry,
       pinned.revision,
-      { ...revisionBody, ...(!workflow && revisionBody.learning === true ? { learning: "notes" } : {}) } as never,
+      { ...revisionBody, ...(!workflow && learnsWorkflowsOf(revisionBody.learning) ? { learning: "notes" } : {}) } as never,
       { content: cleanedInput },
     );
     if (learning) {

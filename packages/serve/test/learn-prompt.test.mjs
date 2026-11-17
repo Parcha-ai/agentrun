@@ -137,7 +137,6 @@ test("a run with decision providers is offered judge, pick and sift nodes by the
     const kinds = learnedHost({ tools: ["read"], judges: true }).nodeKinds;
     for (const kind of ["judge", "pick", "sift"]) assert.ok(kinds.includes(kind), kind);
     assert.ok(!kinds.includes("code"));
-    // No step guard, with Jev too: code checks and escalate steps hand a case back.
-    assert.match(compileReference(dsl, { tools: ["read"], judges: true, jev: draftDecisionProviders(decisions).includes("jev") }), /Author no step guard/);
+    assert.equal(compileReference(dsl, { tools: ["read"], judges: true }), dsl.authorContract({ host: learnedHost({ tools: ["read"], judges: true }) }));
   }
 });

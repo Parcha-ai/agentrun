@@ -39,13 +39,6 @@ test("SDK workflows reject model nodes without the backend adapter, including ne
   assert.deepEqual(draftProblems(dsl, JSON.stringify(judged), [], {}, {}, undefined, ["runNode", "runJudge"]), []);
 });
 
-test("SDK guards require an advertised backend capability while managed workflows keep their step guard", () => {
-  const guarded = { ...modelFlow, root: { ...modelFlow.root, guard: { signal: "jev", threshold: 0.9 } } };
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(guarded), [], {}, {}), []);
-  for (const workflow of [guarded, { ...modelFlow, root: { node: "workflow", label: "nested", workflow: guarded, input: {}, out: "Answer", as: "answer" } }]) {
-    assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(workflow), [], {}, {}, undefined, ["runNode", "runJudge"])), /requires guardStep/);
-  }
-});
 
 const toolFlow = { ...modelFlow, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } };
 test("SDK proposal checks refuse automatic tool retries, including nested workflows, while managed retries remain valid", () => {
@@ -234,7 +227,8 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
   const server = await serve(t, { faux: new URL("./fixtures/sdk-workflow-model.mjs", import.meta.url).pathname, gradeModel: "anthropic/claude-sonnet-4-5" });
   const { api, store, data } = server;
   const id = `workflow-${runtime}`;
-  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime }, learning: true, tools: [] } })).status, 201);
+  // Its definition compiles at 5 completed runs (learning.compile_after): run 4 is its fifth.
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime }, learning: { compile_after: 5 }, tools: [] } })).status, 201);
   const manifest = priced ? tool : { ...tool, price_usd: undefined };
   const start = (input, key, extra = {}) => api("POST", `/agents/${id}/sdk-runs`, { ...body, workflow_tools: [manifest], runtime, input, ...extra }, { "Idempotency-Key": key });
   let learned;

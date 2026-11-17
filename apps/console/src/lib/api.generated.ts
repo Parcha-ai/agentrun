@@ -335,6 +335,7 @@ export interface components {
       persistent?: boolean;
       surface?: "code" | "tools";
       exec?: boolean;
+      record?: boolean;
     };
     tool_settings?: {
       read?: {
@@ -438,7 +439,17 @@ export interface components {
       } | undefined;
     };
     approvals?: "ask" | "never";
-    learning?: true | false | "notes";
+    learning?: true | false | "notes" | {
+      compile_after?: number;
+      agree_min?: number;
+      alone_min?: number;
+      audit_every?: number;
+      audit_every_later?: number;
+      audit_later_after?: number;
+      hold_window?: number;
+      hold_disagree?: number;
+      stop_window?: number;
+    };
     checkout?: "pull_request" | "none";
   };
   Effort: "low" | "medium" | "high";
@@ -811,6 +822,13 @@ export interface components {
     labels?: Record<string, string>;
     approvals?: "ask" | "never";
     last_progress_at?: string | null;
+    recordings?: {
+      path: string;
+      computer: string;
+      seconds: number;
+      bytes: number;
+      finished: boolean;
+    }[];
     input?: Record<string, unknown> | null;
     file_ids?: string[];
     claim?: {
@@ -924,6 +942,7 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    audit_of?: string | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -2504,7 +2523,7 @@ export interface operations {
         n: number;
         run_id: string;
         started_at: string;
-        path: "agent" | "handed_back" | "workflow" | "replay";
+        path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         learned_revision: string | null;
         cost_usd: number | null;
@@ -2557,6 +2576,9 @@ export interface operations {
           workflow_pct: number;
           agent_pct: number;
           cleared: boolean;
+          agreed: number;
+          alone: number;
+          agree_min: number;
         } | null;
       };
     };
@@ -2565,6 +2587,7 @@ export interface operations {
     body: never;
     answer: {
       agent: string;
+      completed_runs: number;
       compiles: {
         run_id: string;
         round: number;
@@ -2579,25 +2602,6 @@ export interface operations {
         promoted: boolean | null;
         draft_errors: string[];
         withheld: boolean;
-      }[];
-      guards: {
-        workflow: string;
-        digest: string;
-        node: string;
-        signal: "self" | "jev" | "both";
-        threshold: number | null;
-        runs: number;
-        escalated: number;
-        right: number;
-        wrong: number;
-        grades_past: number;
-        replays: number;
-        points: {
-          run_id: string;
-          p: number | null;
-          escalated: boolean;
-          correct: boolean | null;
-        }[];
       }[];
     };
   };
@@ -2977,7 +2981,7 @@ export interface operations {
         correct: boolean;
         source: "feedback" | "eval";
         graded_at: string;
-        path: "agent" | "handed_back" | "workflow" | "replay";
+        path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         workflow_digest: string | null;
         feedback: "look_back" | null;
@@ -3386,7 +3390,7 @@ export interface operations {
       correct: boolean;
       source: "feedback" | "eval";
       graded_at: string;
-      path: "agent" | "handed_back" | "workflow" | "replay";
+      path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
       workflow: string | null;
       workflow_digest: string | null;
       feedback: "look_back" | null;
@@ -3802,6 +3806,27 @@ export interface operations {
       truncated: boolean;
     };
   };
+  listLearningAudits: {
+    body: never;
+    answer: {
+      agent: string;
+      audits: {
+        run: string;
+        shadow_run: string | null;
+        workflow: string;
+        digest: string;
+        promoted_at: string | null;
+        source: "shadow" | "grade";
+        agreed: boolean | null;
+        served_cost: number | null;
+        shadow_cost: number | null;
+        at: string;
+        turn?: string;
+        skipped?: "no allowance";
+        parked?: true;
+      }[];
+    };
+  };
   listLearningBatches: {
     body: never;
     answer: {
@@ -3937,53 +3962,78 @@ export interface operations {
         workflow: string;
         digest: string;
         at: string;
-        decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-        source: "replay" | "dry_run" | "refit" | "graded";
+        decided: "promote" | "hold" | "replaying";
         reason: string;
-        replay?: {
-          n: number;
-          agree: number;
-          agent_acc: number;
-          wf_acc: number;
-          delta: number;
-          handed_back: number;
+        check?: {
+          compile_after: number;
+          agree_min: number;
+          alone_min: number;
+          attempt: 1 | 2;
+          n?: number;
+          agreed?: number;
+          alone?: number;
           of?: string[];
           cost_usd?: number | null;
-          skipped_tools?: {
-            tool: string;
-            inputs: number;
-            no_read_only_hint: boolean;
-          }[];
           outcomes?: {
             answered: number;
             handed_back: number;
             failed: number;
             skipped_write: number;
           };
+          unstarted?: number;
+          skipped_tools?: {
+            tool: string;
+            inputs: number;
+            no_read_only_hint: boolean;
+          }[];
+          disagreements?: {
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+          }[];
+          stopped?: true;
         };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
-        refit?: {
-          from: string;
-          guards: {
-            node: string;
-            was: number | null;
-            threshold: number | null;
-            fit?: Record<string, unknown>;
-            escalate?: true;
-          }[];
-        };
-        checked?: number;
-        since?: number;
-        held_on?: string[];
         commit?: string;
-        skipped_by?: string;
+        audit?: {
+          window: number;
+          disagree: number;
+          rows: number;
+          disagreements: {
+            run: string;
+            served: string;
+            input: string;
+            agent: string | null;
+            draft: string | null;
+            graded?: true;
+          }[];
+          stopped?: true;
+        };
       }[];
       serving: {
         workflow: string;
         digest: string | null;
         replaying: string | null;
+        state: "serving" | "checking" | "held" | "stopped";
+        check: {
+          n: number;
+          agreed: number;
+          alone: number;
+          attempt: 1 | 2;
+        } | null;
+        audit: {
+          window: number;
+          disagree: number;
+          rows: number;
+          disagreed: number;
+        } | null;
+        audits_off: string | null;
+        not_auditable: number;
       }[];
     };
   };

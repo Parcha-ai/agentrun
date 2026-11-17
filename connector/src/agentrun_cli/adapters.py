@@ -141,6 +141,7 @@ def candidates(state, harness, rows, *, selections=None, diagnostic=None):
     candidates = []
     if not isinstance(rows, list):
         return candidates
+    selected = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -156,18 +157,17 @@ def candidates(state, harness, rows, *, selections=None, diagnostic=None):
                   (source["mode"] == "project" and project is not None and source["source_id"] == project))))
                 for source in selections):
             continue
-        try:
-            identity = state.identity(harness, native)
-            # Observation never needs to allocate a project choice: a selected session
-            # or harness still reports activity when its directory is new or that map
-            # is full. Only discovery returns project IDs offered for enrollment.
-            project = state.project(harness, cwd) if selections is None else project or "unknown"
-        except ValueError as error:
-            if str(error) != "candidate_limit":
-                raise
+        selected.append((row, native, cwd))
+    # Resolve the pass together: reparsing/copying the whole map for each known
+    # session made discovery and repeated observation quadratic in session count.
+    # Observation still allocates no project choices, even for a new directory.
+    identifiers = state.candidate_ids(harness, [(native, cwd) for _, native, cwd in selected], projects=selections is None)
+    for (row, native, cwd), resolved in zip(selected, identifiers):
+        if resolved is None:
             if diagnostic is not None:
                 diagnostic.update(status="partial", reason="candidate_limit")
             continue
+        identity, project = resolved
         if harness == "claude":
             status = row.get("status")
             status = status if isinstance(status, str) else None

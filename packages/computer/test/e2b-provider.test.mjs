@@ -32,7 +32,7 @@ const HOUR = 3_600_000;
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
-/** The public box template release.yml's box-e2b job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
+/** The public box template release.yml's box job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
 const BOX_TEMPLATE = `agentrun-oss/agentrun-archil-${createHash("sha256")
 	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
@@ -582,7 +582,7 @@ test("E2B's descriptor says it prepares its image and names no default image: ev
 		assert.equal(name in (await import("../dist/index.js")), false, name);
 	}
 	const { BOX_E2B_PUBLISHER, boxE2bTemplate } = await import("../dist/box-image.js");
-	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box-e2b job publishes from");
+	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box job publishes from");
 	assert.equal(boxE2bTemplate(), BOX_TEMPLATE);
 });
 
@@ -741,7 +741,7 @@ test("E2B's descriptor declares the connect setting, with no default of its own:
 test("the conformance module reads COMPUTER_E2B_CONNECT as connect, and its dialKit refuses in words: this process is no public server", () => {
 	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY, [ENV.connect]: "dial" }), { apiKey: KEY, connect: "dial" });
 	assert.equal(ENV.connect, "COMPUTER_E2B_CONNECT");
-	assert.throws(() => dialKit(), /an E2B machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process \(packages\/serve\/scripts\/dial-conformance\.mjs --provider e2b with COMPUTER_E2B_CONNECT=dial\)/);
+	assert.throws(() => dialKit(), /E2B's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider e2b with COMPUTER_E2B_CONNECT=dial inside a server the internet reaches at AGENTRUN_PUBLIC_URL/);
 });
 
 test("the conformance module's run image on dial is the box template, the one that holds agentrun-dial; a template named still wins", async () => {

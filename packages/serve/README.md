@@ -640,6 +640,10 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
+- **ffmpeg.** The image has an `ffmpeg` built for the screen recorder alone, which records an agent's screen where its
+  computer says `record: true` ([A video of each run](#computers)): one static binary of about 6 MB that reads PNG and
+  JPEG frames and writes H.264 in MP4, and nothing else. FFmpeg 9.0.2 with x264, so it is GPL, as Debian's ffmpeg is;
+  the licence files are in `/usr/local/share/doc/ffmpeg`.
 
 <a id="boxes"></a>
 
@@ -651,7 +655,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd` |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -686,8 +690,10 @@ whether this server offers it now, the tools it brings, and each provider with i
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
 the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
-`E2B_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`, `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, and
-`KERNEL_API_KEY`, and `BOXD_API_KEY` (with `BOXD_ORG` and `BOXD_REGION` optional); Docker takes none.
+`E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
+`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
+`BOXD_REGION` optional), `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
+`packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
 The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
@@ -741,6 +747,37 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+**A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
+screen during each of the agent's runs. Off by default; a desktop or a phone only (another kind is 422).
+
+- **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
+  any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
+  you would be fine to keep and share.
+- **What it records.** The screen while the run holds its computer: from the claim's attach until the computer's
+  release or the run's end. A parked run's recording pauses and goes on in a new file when the run resumes. At most 10
+  frames a second, 1280 pixels on the long side, no sound, H.264 in fragmented MP4, so a file cut short still plays.
+  Each frame is stamped with the time it came, so the video plays at the screen's own pace. The recorder watches the screen on a connection of its own, so it
+  records with no viewer open, and it never holds up the live view or the agent: a frame that comes while the encoder is
+  still busy replaces the one waiting.
+- **Where it goes.** `recordings/<computer>.mp4` in the run's folder on the machine that runs it
+  (`<data>/disk/agents/<agent>/runs/<run>/recordings`, beside the run's `work/` folder, never in it, so the agent can't
+  read or change it). It is kept with the run's files. A phone whose frames change from PNG to JPEG, and a resumed run,
+  go on in `<computer>-2.mp4` and so on.
+- **Reading it.** The run read (`GET /v2/runs/{run_id}`) lists them in `recordings`: each one's `path`, `computer`,
+  `seconds`, `bytes` and whether it is `finished` (false while it is still being written; every file is finished a few
+  seconds after the run ends, once its encoder has let go of it). A recording reaches the disk as it is made, a
+  fragment every 2 seconds or so. `GET /v2/runs/{run_id}/files/recordings/<computer>.mp4` serves one as `video/mp4`, read-only, to
+  whoever may read the run's other files, with byte ranges (`206`) so a `<video>` can seek, and `?download=1` for an
+  attachment. One still being written is served as it stands: it plays up to its last whole fragment. The console's
+  Screen tab says "Recording" while one is written and offers Export once it is finished. The server reads the folder
+  on its own machine, where the runner beside it recorded. A folder the agent makes named `recordings` at the root of
+  its `work/` is neither listed nor served: that path is its recordings. What the video can show is said above.
+- **Its caps.** 500 MB across a run's files, a resumed run's included, and 2 hours of recording from its start or the
+  run's resume, whichever comes first. At a cap the recording stops, and the run's timeline says so. So does an encoder that stops by itself (a crash, a full disk) or a screen that stops
+  answering. The run itself never fails because of its recording.
+- **It needs ffmpeg** on the server's `PATH` (the published image has it). A server without it refuses `record: true`
+  when the agent is saved, with 422 `not_allowed` naming the fix.
 
 #### A person's own computer
 
@@ -892,6 +929,13 @@ A desktop, a phone and a browser run in either mode. The run's folder is at
   write does not keep a file's mode (a `0755` file is `0644` after a write), and a symbolic link a command made is never
   followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
   with a link on the way.
+
+**The run's scratch.** `bash`'s `TMPDIR` is `.agentrun/tmp` in the run's folder, and a cut answer's full output is in
+`.agentrun/output/`. The run's end removes both before its end commit: through the computer when it mounts the folder,
+else through the folder itself. A computer that mounts the folder from Archil holds Archil's write delegation for it
+until its release, so Archil refuses the server's own deletes there until then; the computer's deletes sync to the disk
+before they answer. If that computer no longer answers, a Mode 2 run's scratch stays and the release logs why. A park
+that keeps the computer removes neither.
 
 **An agent with no setting.** With no `computer` and no `place`, the server decides at each run's start: in Mode 1, the
 Docker sandbox where this server's Docker answers, else no computer; in Mode 2, no computer. A workflow always runs with
@@ -1792,9 +1836,21 @@ every request to one) must be `https` and resolve to no private, loopback or lin
 refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
 by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
-and the sign-in, in words naming the variable, and a runner never reaches one; only the runner beside such a server does,
-and never at that server's own ports (where it listens, and its public address when that is on loopback), which the server
-tells it as it starts: an MCP server, a refresh's endpoint or a calendar there is refused unsent, as at a save.
+and the sign-in, in words naming the variable, and a runner never reaches one. The runner beside such a server reaches
+one, never at that server's own ports (where it listens, and its public address when that is on loopback), which the
+server tells it as it starts.
+
+A runner in its own process (`agentrun-serve runner`, in the server's container or in a service of its own) takes the
+variable from its own environment alone, never from the server, the store or the data directory. Started with
+`AGENTRUN_MCP_ALLOW_LOOPBACK=1`, its runs reach an MCP server on its own loopback: the machine (or container) that runner
+runs on, which is the server's only when they share one. So each such runner needs the variable and, at the MCP
+server's address, a server or forwarder on its own loopback. Without the variable it is refused, whatever the server
+says. Such a runner never reaches loopback at a server's own port: 7340 (where a server listens unless `--port` says
+otherwise), its own `AGENTRUN_PUBLIC_URL`'s port when that address is on loopback, and the addresses the server keeps in
+the store at each start (where it listens, whatever its port), read at each claim. Those addresses are all it reads of
+the server; it says on stderr at its start that it takes the variable. For any runner, an MCP server, a refresh's endpoint or a calendar at a refused port is refused unsent, as at a
+save.
+
 An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
 the server itself, and sending the shown URL back for a saved server keeps the saved one. A loopback MCP server is a development-only exception: its
 authorization server may name endpoints on the MCP server's own loopback host, exactly as its URL writes it (never
@@ -2404,7 +2460,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
-| `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
+| `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
 | `POST /files`, `PUT /files/{id}`, `GET /files`, `GET` and `DELETE /files/{id}` | [Uploads](#uploads): a file sent in one call (`POST /v2/files?path=...`, its bytes the body), or reserved and then sent (`PUT /v2/files/{id}`); the server's uploads listed, read and deleted. |
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that `from` and `to` (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
@@ -3149,13 +3205,7 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. A note must hold beyond the one input it came from: before the grader, one Jev question
-per new note (the Jev model and keys decision nodes use) asks whether it states a method, a source, a fact or a
-preference that holds for this job's other inputs, and a note rated below 0.5
-(`AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`, from 0 to 1) is dropped there, its reason on the verdict; its cost is
-the grade's. When Jev cannot run, the grader reads every note: the runner's log says why, the run's learning says the
-check could not run, and the grade's cost is unknown, never the grader's alone (a Jev request that failed may still
-have been charged). The grader answers General
+many notes the folder holds. The grader answers General
 for every item, and one it says is not general is never kept, whatever else it decides. No injection screen runs
 before it: a page classifier cannot see where a note came
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the

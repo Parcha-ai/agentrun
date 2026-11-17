@@ -20,6 +20,7 @@ import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
 import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
+import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 import type { RunFolder } from "./types.js";
 
@@ -129,14 +130,8 @@ export async function createProvider({ env = process.env, Sandbox, daemonPath, t
 	return create({ ...settingsFromEnv(env), ...(Sandbox ? { Sandbox } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(timeouts ? { timeouts } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
-/**
- * A dial machine (COMPUTER_E2B_CONNECT=dial) dials the server that minted its token, so its Core run happens inside the
- * public server's process (packages/serve/scripts/dial-conformance.mjs, which gives createProvider its dial), never from
- * this CLI, which has no public server: refused in words.
- */
-export function dialKit(): never {
-	throw new Error(`an E2B machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process (packages/serve/scripts/dial-conformance.mjs --provider e2b with ${E2B_ENV.connect}=dial)`);
-}
+/** A dial machine (COMPUTER_E2B_CONNECT=dial) runs its Core inside the public server's process: refused here (dial-only.ts). */
+export const dialKit = dialOnlyFromServer("e2b", "E2B", `${E2B_ENV.connect}=dial`);
 
 /**
  * A run folder for an Archil mount, and none for any other kind (an E2B computer takes no bind): a fresh folder on the

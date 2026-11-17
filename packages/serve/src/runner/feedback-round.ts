@@ -1,10 +1,7 @@
 // A grade's feedback round: what a run's grade (PUT /runs/{id}/grade, a person's feedback or an eval's label) asks of its
 // learning, and how the run's next end reads it. The run's path is who wrote its final answer, so a grade never makes
 // the agent answer the job again:
-//   - a run its learned workflow answered alone (path `workflow`), graded right or wrong: the grade is kept (the graded
-//     hold, replay and refit read it) and nothing else happens: no round, no turn, $0. One wrong answer is one sample;
-//     the graded hold reads it among the workflow's others, and a hold asks the workflow's revision (learning-end.ts
-//     compileAskOf);
+//   - a run its learned workflow answered alone (path `workflow`), graded right or wrong: the grade is kept and nothing else happens: no round, no turn, $0. One wrong answer is one sample;
 //   - a run the agent finished (path `agent` or `handed_back`) graded with words (`label`): a look-back round on them
 //     (#2579's later round, notes). The run opens again on it: the grade's words are on its record, the agent is asked no
 //     turn of the job's, and the run goes straight to its end-of-run turn, which reads the words. Its spend is learning

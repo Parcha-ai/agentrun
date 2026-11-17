@@ -178,6 +178,7 @@ __all__ = [
     "DefinitionInput",
     "DefinitionInputComputer",
     "DefinitionInputComputerGpu",
+    "DefinitionInputLearning",
     "DefinitionInputModelTiers",
     "DefinitionInputNative",
     "DefinitionInputNativeCapabilities",
@@ -210,6 +211,7 @@ __all__ = [
     "DefinitionInputToolSettingsWebFetch",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
+    "DefinitionLearning",
     "DefinitionModelTiers",
     "DefinitionNative",
     "DefinitionNativeCapabilities",
@@ -371,8 +373,6 @@ __all__ = [
     "GetLearningLoopResponse",
     "GetLearningLoopResponseCompilesItem",
     "GetLearningLoopResponseCompilesItemAttemptsItem",
-    "GetLearningLoopResponseGuardsItem",
-    "GetLearningLoopResponseGuardsItemPointsItem",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
@@ -564,6 +564,8 @@ __all__ = [
     "ListLearnedWorkflowRevisionsResponseRevisionsItem",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy1",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy2",
+    "ListLearningAuditsResponse",
+    "ListLearningAuditsResponseAuditsItem",
     "ListLearningBatchesResponse",
     "ListLearningBatchesResponseBatchesItem",
     "ListLearningBatchesResponseBatchesItemLessons",
@@ -583,12 +585,15 @@ __all__ = [
     "ListLearningNotesResponseItemsItemRuns",
     "ListLearningPromotionsResponse",
     "ListLearningPromotionsResponsePromotionsItem",
-    "ListLearningPromotionsResponsePromotionsItemRefit",
-    "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
-    "ListLearningPromotionsResponsePromotionsItemReplay",
-    "ListLearningPromotionsResponsePromotionsItemReplayOutcomes",
-    "ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem",
+    "ListLearningPromotionsResponsePromotionsItemAudit",
+    "ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheck",
+    "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
+    "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
+    "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
@@ -799,6 +804,7 @@ __all__ = [
     "RunPending6",
     "RunPlace1",
     "RunPlace2",
+    "RunRecordingsItem",
     "RunResult",
     "RunReview",
     "RunSdk",
@@ -1111,7 +1117,7 @@ class Definition(_DefinitionRequired, total=False):
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
+    learning: Literal[True, False, "notes"] | DefinitionLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1196,6 +1202,7 @@ class DefinitionComputer(_DefinitionComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionComputerGpu(TypedDict):
@@ -1321,6 +1328,18 @@ class DefinitionToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
 
 
 class Source(TypedDict):
@@ -1578,7 +1597,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
+    learning: Literal[True, False, "notes"] | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1660,6 +1679,7 @@ class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionInputComputerGpu(TypedDict):
@@ -1785,6 +1805,18 @@ class DefinitionInputToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionInputToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionInputLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -2085,8 +2117,8 @@ class GetAgentArchilResponseArchilDisk(TypedDict):
 
 class GetLearningLoopResponse(TypedDict):
     agent: str
+    completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
-    guards: list[GetLearningLoopResponseGuardsItem]
 
 
 class GetLearningLoopResponseCompilesItem(TypedDict):
@@ -2105,28 +2137,6 @@ class GetLearningLoopResponseCompilesItem(TypedDict):
 class GetLearningLoopResponseCompilesItemAttemptsItem(TypedDict):
     ok: bool
     errors: list[str]
-
-
-class GetLearningLoopResponseGuardsItem(TypedDict):
-    workflow: str
-    digest: str
-    node: str
-    signal: Literal["self", "jev", "both"]
-    threshold: float | None
-    runs: int
-    escalated: int
-    right: int
-    wrong: int
-    grades_past: int
-    replays: int
-    points: list[GetLearningLoopResponseGuardsItemPointsItem]
-
-
-class GetLearningLoopResponseGuardsItemPointsItem(TypedDict):
-    run_id: str
-    p: float | None
-    escalated: bool
-    correct: bool | None
 
 
 class GetNativeResponse(TypedDict):
@@ -2190,6 +2200,30 @@ class AgentList(TypedDict):
     next_cursor: str | None
 
 
+class ListLearningAuditsResponse(TypedDict):
+    agent: str
+    audits: list[ListLearningAuditsResponseAuditsItem]
+
+
+class _ListLearningAuditsResponseAuditsItemRequired(TypedDict):
+    run: str
+    shadow_run: str | None
+    workflow: str
+    digest: str
+    promoted_at: str | None
+    source: Literal["shadow", "grade"]
+    agreed: bool | None
+    served_cost: float | None
+    shadow_cost: float | None
+    at: str
+
+
+class ListLearningAuditsResponseAuditsItem(_ListLearningAuditsResponseAuditsItemRequired, total=False):
+    turn: str
+    skipped: Literal["no allowance"]
+    parked: Literal[True]
+
+
 class ListLearningPromotionsResponse(TypedDict):
     agent: str
     promotions: list[ListLearningPromotionsResponsePromotionsItem]
@@ -2200,71 +2234,110 @@ class _ListLearningPromotionsResponsePromotionsItemRequired(TypedDict):
     workflow: str
     digest: str
     at: str
-    decided: Literal["promote", "hold", "replaying", "queued", "skipped"]
-    source: Literal["replay", "dry_run", "refit", "graded"]
+    decided: Literal["promote", "hold", "replaying"]
     reason: str
 
 
 class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsResponsePromotionsItemRequired, total=False):
-    replay: ListLearningPromotionsResponsePromotionsItemReplay
+    check: ListLearningPromotionsResponsePromotionsItemCheck
     runs: list[str]
     inputs: list[str]
     replay_id: str
-    refit: ListLearningPromotionsResponsePromotionsItemRefit
-    checked: int
-    since: int
-    held_on: list[str]
     commit: str
-    skipped_by: str
+    audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
-class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
+class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
     n: int
-    agree: int
-    agent_acc: float
-    wf_acc: float
-    delta: float
-    handed_back: int
-
-
-class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
+    agreed: int
+    alone: int
     of: list[str]
     cost_usd: float | None
-    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
-    outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    stopped: Literal[True]
 
 
-class ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem(TypedDict):
-    tool: str
-    inputs: int
-    no_read_only_hint: bool
-
-
-class ListLearningPromotionsResponsePromotionsItemReplayOutcomes(TypedDict):
+class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
     answered: int
     handed_back: int
     failed: int
     skipped_write: int
 
 
-ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromotionsResponsePromotionsItemRefit", {"from": "str", "guards": "list[ListLearningPromotionsResponsePromotionsItemRefitGuardsItem]"})
+class ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
 
 
-class _ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired(TypedDict):
-    node: str
-    was: float | None
-    threshold: float | None
+class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
 
 
-class ListLearningPromotionsResponsePromotionsItemRefitGuardsItem(_ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired, total=False):
-    fit: dict[str, Any]
-    escalate: Literal[True]
+class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem]
+
+
+class ListLearningPromotionsResponsePromotionsItemAudit(_ListLearningPromotionsResponsePromotionsItemAuditRequired, total=False):
+    stopped: Literal[True]
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired(TypedDict):
+    run: str
+    served: str
+    input: str
+    agent: str | None
+    draft: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired, total=False):
+    graded: Literal[True]
 
 
 class ListLearningPromotionsResponseServingItem(TypedDict):
     workflow: str
     digest: str | None
     replaying: str | None
+    state: Literal["serving", "checking", "held", "stopped"]
+    check: ListLearningPromotionsResponseServingItemCheck | None
+    audit: ListLearningPromotionsResponseServingItemAudit | None
+    audits_off: str | None
+    not_auditable: int
+
+
+class ListLearningPromotionsResponseServingItemCheck(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemAudit(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreed: int
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -3289,7 +3362,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     n: int
     run_id: str
     started_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     learned_revision: str | None
     cost_usd: float | None
@@ -3358,6 +3431,9 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     workflow_pct: float
     agent_pct: float
     cleared: bool
+    agreed: int
+    alone: int
+    agree_min: float
 
 
 class ListLearningEvalsResponse(TypedDict):
@@ -5064,6 +5140,7 @@ class Run(_RunRequired, total=False):
     labels: dict[str, str]
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
+    recordings: list[RunRecordingsItem]
     input: dict[str, Any] | None
     file_ids: list[str]
     claim: RunClaim | None
@@ -5073,6 +5150,7 @@ class Run(_RunRequired, total=False):
     pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
+    audit_of: str | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5140,6 +5218,14 @@ class RunNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunRecordingsItem(TypedDict):
+    path: str
+    computer: str
+    seconds: float
+    bytes: int
+    finished: bool
 
 
 class RunClaim(TypedDict):
@@ -5347,7 +5433,7 @@ class _GradeRunResponseRequired(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["look_back"] | None
@@ -5608,7 +5694,7 @@ class GetRunLearningResponseObjectGraded(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["look_back"] | None
@@ -8880,6 +8966,7 @@ OPERATIONS: dict[str, Operation] = {
     "getLearningLoop": Operation(method="GET", path="/agents/{agent_id}/learning/loop", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getNative": Operation(method="GET", path="/agents/{agent_id}/native", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listLearningAudits": Operation(method="GET", path="/agents/{agent_id}/learning/audits", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9069,7 +9156,7 @@ class AgentsResource(Group):
         return self._call("getAgentArchil", (agent_id,), None, None, timeout=timeout)
 
     def get_learning_loop(self, agent_id: str, *, timeout: float | None = None) -> GetLearningLoopResponse:
-        """The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop)."""
+        """The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop)."""
         return self._call("getLearningLoop", (agent_id,), None, None, timeout=timeout)
 
     def get_native(self, agent_id: str, *, timeout: float | None = None) -> GetNativeResponse:
@@ -9079,6 +9166,10 @@ class AgentsResource(Group):
     def list(self, *, limit: int | None = None, cursor: str | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAgentsResponse:
         """List agents (GET /agents)."""
         return self._call("listAgents", (), None, {"limit": limit, "cursor": cursor, "archived": archived}, timeout=timeout)
+
+    def list_learning_audits(self, agent_id: str, *, timeout: float | None = None) -> ListLearningAuditsResponse:
+        """The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits)."""
+        return self._call("listLearningAudits", (agent_id,), None, None, timeout=timeout)
 
     def list_learning_promotions(self, agent_id: str, *, timeout: float | None = None) -> ListLearningPromotionsResponse:
         """Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions)."""

@@ -51,7 +51,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
+import { laidOf, notesReadOf, runLearningEnd, type RunLearning, shadowSpendOf, usedOnly, withNotes } from "./store-reads/learning.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -62,6 +62,7 @@ import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
 import { FINAL_STATES, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
+import type { RecordingView } from "./run-recordings.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -80,6 +81,10 @@ export interface ViewDeps {
   /** Each learned item's status on agent `agentId`'s learning folder's main (learning-routes.ts statusesOf): what a run held
    *  for its owner's OK reads as it stands there. None: as the merge wrote it. */
   readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
+  /** Run `runId`'s screen recordings (run-recordings.ts recordingsOf), the run ended at `endedAt` (null: it has not). Only
+   *  the reads that answer a run as a whole pass it (a run's own read, its archive): absent, the view has no `recordings`,
+   *  so a list, a poll or a status read opens no file. */
+  readonly recordings?: (agentId: string, runId: string, endedAt: number | null) => Promise<RecordingView[]>;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -442,6 +447,14 @@ function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0, laid.skills.length, laid.workflows.length), at };
 }
 
+/** A view's cost with its audit shadow run's (store-reads/learning.ts shadowSpendOf: unknown while it is queued or
+ *  running, 0 when none was started) added to `usd` (unknown once either is). */
+function withShadowCost(cost: Record<string, unknown>, shadow: number | null): Record<string, unknown> {
+  if (shadow === 0) return cost;
+  const usd = typeof cost.usd === "number" && shadow !== null ? Math.round((cost.usd + shadow) * 1e6) / 1e6 : null;
+  return { ...cost, usd };
+}
+
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
 function costOfView(run: StoreRun): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
@@ -576,7 +589,9 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     error,
     review,
     pending,
-    cost: costOfView(run),
+    cost: withShadowCost(costOfView(run), (await shadowSpendOf(store, runId)).usd),
+    // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
+    audit_of: launch?.audit?.of ?? null,
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
@@ -587,6 +602,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     labels: runRow.labels,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
     learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), settled),
+    // Its screen recordings (computer.record), from the files on this machine, where its read asks for them; none for a
+    // withheld run, whose files are refused. A run that left running with no end stamped (parked) ends now, each read: only
+    // a file's trailer finishes it there.
+    ...(deps.recordings ? { recordings: unshown ? [] : await deps.recordings(row.agent, row.id, ended ? (runRow.endedAt ?? Date.now()) : null) } : {}),
     poll_after_ms: settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };

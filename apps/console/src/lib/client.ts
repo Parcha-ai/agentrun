@@ -194,7 +194,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
     /** Starts a replay of one revision of a learned workflow on the server's default inputs (POST .../revisions/{digest}/replays):
-     *  the owner's session only; 409 replay_conflict, agent_not_runnable or fewer graded runs than a replay needs. */
+     *  the owner's session only; 409 replay_conflict, agent_not_runnable or too few inputs of the agent's own runs for a check. */
     startLearnedWorkflowReplay: (id: string, name: string, digest: string) => call<ReplayStarted>("POST", `${replays(id, name, digest)}`, { body: {} }),
     /** A replay as it stands, and decided once its runs ended (GET .../replays/{replay_id}). */
     learnedWorkflowReplay: (id: string, name: string, digest: string, replay: string) => call<ReplayRead>("GET", `${replays(id, name, digest)}/${encodeURIComponent(replay)}`),

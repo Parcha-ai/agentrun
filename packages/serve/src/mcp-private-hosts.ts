@@ -68,6 +68,24 @@ export async function privateOAuthHosts(store: { settings: Pick<Settings, "get">
   return hostsOf(await store.settings.get(MCP_PRIVATE_HOSTS_KEY));
 }
 
+/** The store.settings key a server keeps its own addresses under at each start (Serve.own: where it listens, and its
+ *  public address when that is on loopback): `{ own: string[] }`. Addresses alone, never its loopback opt-in, which each
+ *  process reads from its own environment: a runner in its own process with its own opt-in reads them so its runs never
+ *  reach that server's ports on loopback (runner/main.ts runnerLoop), whatever port the server was started on. */
+export const MCP_SERVER_OWN_KEY = "mcp.server_own";
+
+/** The server's start: its own addresses, replacing the last start's. */
+export async function saveServerOwn(store: { settings: Pick<Settings, "put"> }, own: readonly string[]): Promise<void> {
+  await store.settings.put(MCP_SERVER_OWN_KEY, { own: [...own] });
+}
+
+/** The addresses the server kept at its last start (saveServerOwn), read at each use; none before a server started. */
+export async function serverOwn(store: { settings: Pick<Settings, "get"> }): Promise<string[]> {
+  const value = await store.settings.get(MCP_SERVER_OWN_KEY);
+  if (typeof value !== "object" || value === null || !Array.isArray((value as { own?: unknown }).own)) return [];
+  return ((value as { own: unknown[] }).own).filter((one): one is string => typeof one === "string");
+}
+
 /** The list replaced with `hosts` (already checked: checkPrivateHosts). */
 export async function savePrivateOAuthHosts(store: { settings: Pick<Settings, "put"> }, hosts: readonly string[]): Promise<void> {
   await store.settings.put(MCP_PRIVATE_HOSTS_KEY, { hosts: [...hosts] });

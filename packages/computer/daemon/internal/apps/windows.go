@@ -221,7 +221,7 @@ func ownerByPid(byPid map[int]string, pid int) string {
 	return ""
 }
 
-// launchTree is one launch's processes: its launcher (root) and the guard it runs under (guard; 0 when the launcher ended
+// launchTree is one launch's processes: its launcher (root) and the guard it runs under (guard; 0 when the guard ended
 // before it was read). A launch's guard is a child subreaper that keeps what the launcher started (Orphans "keep"), so a
 // process the launcher started is still under it, and the launch's, once the launcher has ended.
 type launchTree struct {
@@ -230,12 +230,14 @@ type launchTree struct {
 	since uint64
 }
 
-// treeOf reads the launch's guard: the launcher's parent, while that is a child of this daemon's, as each guard is.
-func treeOf(root int) launchTree {
+// treeOf is the launch of launcher root under guard, the pid process.start forked it as. The guard is not read from
+// the launcher's parent in /proc: a launcher that ends at once, leaving a process that shows a dialog a moment later,
+// may be gone by then, and what it left would pass for nothing of the launch's (CI 11-16, the arm runner).
+func treeOf(root, guard int) launchTree {
 	t := launchTree{root: root}
-	if parent := parentOf(root); parent > 1 && parentOf(parent) == os.Getpid() {
-		if since, ok := proctree.Started(parent); ok {
-			t.guard, t.since = parent, since
+	if guard > 1 && parentOf(guard) == os.Getpid() {
+		if since, ok := proctree.Started(guard); ok {
+			t.guard, t.since = guard, since
 		}
 	}
 	return t

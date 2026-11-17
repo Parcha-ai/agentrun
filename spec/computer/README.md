@@ -65,9 +65,9 @@ Each choice below cost us something, and we say what.
 | Phone harness | Android phone | VM | open | – | – | – |
 | Browserbase, Kernel | browser (CDP, live view) | the vendor's | open | – | – | – |
 | Local Chrome | browser (CDP) | the host | open, allowlist | – | – | – |
-| boxd, in progress ([#2571](https://github.com/Parcha-ai/agentrun/pull/2571)) | sandbox, Linux desktop | – | none | – | – | – |
+| boxd | sandbox, Linux desktop | microVM | none | – | – | – |
 
-Every row but boxd is declared in `packages/computer/src/descriptors/`, and the conformance suite holds each provider to
+Every row is declared in `packages/computer/src/descriptors/`, and the conformance suite holds each provider to
 its declaration. A Mac or an Android phone of your own can also attach with its own driver
 ([`attach.md`](attach.md), draft).
 

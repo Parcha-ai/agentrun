@@ -1322,6 +1322,11 @@ class SqliteStore implements Store {
           `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
           agentId, limit,
         )).map(proposalOf),
+      grading: async (agentId) =>
+        (await db.all<ProposalRecord>(
+          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? AND learning_run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})) ORDER BY created_at DESC, run_id DESC, round DESC`,
+          agentId,
+        )).map(proposalOf),
       kept: async (agentId) => {
         const proposals = (await db.all<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY run_id, round`, agentId)).map(proposalOf);
         const learningRuns = (await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id IN (SELECT learning_run_id FROM learning_proposals WHERE agent_id = ? AND learning_run_id IS NOT NULL)`, agentId)).map(runOf);
