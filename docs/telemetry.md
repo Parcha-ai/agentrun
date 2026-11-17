@@ -72,9 +72,11 @@ The request reaches the receiver from the server's IP address, as any request do
 
 ## Where it goes
 
-Events go to `https://telemetry.agentrun.ai`, which forwards them to PostHog, the analytics service Parcha uses for
-these counts. Parcha, the company behind AgentRun, reads them as totals: servers running per week, new servers, how many
-are still running a month later, and versions in use.
+Events go to `https://telemetry.agentrun.ai`, which forwards them to PostHog, an analytics service. They land in a
+PostHog project that holds these counts and nothing else: it is separate from the projects behind Parcha's products and
+websites, so the counts are never joined with an account, a visit or a customer. Parcha, the company behind AgentRun,
+reads them as totals: servers running per week, new servers, how many are still running a month later, and versions in
+use.
 
 ## What it costs the server
 
