@@ -1847,6 +1847,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     if (changed) await keep();
   };
+  const idempotencySaid = (fields: Record<string, string>) => {
+    const line = logLine("idempotency", fields);
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
   const scrubSaid = ({ left }: { left?: string }) => {
     if (!left) return;
     const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
@@ -1858,7 +1863,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // start's scrub runs it before it serves).
     .sealMarked(async (id, source, updatedAt) => {
       const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
-      if (written) await cachedMasked(id, source);
+      // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
+      // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
+      if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
       return written;
     }, async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work, { vacuum: false })) : void (await work())))
     .catch((error: Error) => void (stopping.signal.aborted || process.stderr.write(`agentrun-serve: sealing the composio triggers' config by their events' schemas: ${error.message}\n`)));

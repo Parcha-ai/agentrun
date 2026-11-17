@@ -400,22 +400,25 @@ export class ComposioTriggers implements TriggerUpstream {
         const unseal = async () => {
           for (const name of fields) await this.deps.sealed.remove(configScope(holder.id, name)).catch(() => undefined);
         };
+        let written: boolean;
         try {
           for (const [i, name] of fields.entries()) await this.deps.sealed.set(configScope(holder.id, name), configFieldFor(values[i]!), values[i]!);
           // These fields alone masked: any other value is as the row keeps it (sealKept's). Written only while the row is
           // the one read here (its updatedAt): a PATCH since (an accept) is not undone, a delete since leaves no sealed row.
-          const written = await rewrite(holder.id, { ...holder.source, config: { ...config, ...Object.fromEntries(fields.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealedOf(holder.source), ...fields])] }, holder.updatedAt);
-          if (!written) {
-            await unseal();
-            this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: fields.join(","), error: "changed_meanwhile" });
-            continue;
-          }
-          this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: fields.join(",") });
-          done++;
+          written = await rewrite(holder.id, { ...holder.source, config: { ...config, ...Object.fromEntries(fields.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealedOf(holder.source), ...fields])] }, holder.updatedAt);
         } catch (error) {
           await unseal();
           this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: fields.join(","), error: told(error, values) });
+          continue;
         }
+        if (!written) {
+          await unseal();
+          this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: fields.join(","), error: "changed_meanwhile" });
+          continue;
+        }
+        // Written: the row is masked, so its sealed values are now the one copy and nothing after this undoes them.
+        this.deps.say({ condition: "composio_config_sealed", trigger: holder.id, fields: fields.join(",") });
+        done++;
       }
       return done;
     });
