@@ -317,6 +317,49 @@ export function folderSuite(backend, make) {
     assert.match(down.error, /the disk is gone/);
   });
 
+  test(`${backend}: learningCommit: two calls for one run and round racing (a reclaimed run) land its correction once; the second, past the diff check before the first committed, reads the first's diff`, async () => {
+    const { ws } = await make();
+    await learningInit(ws);
+    await commitChange(ws, await readSnapshot(ws), edited(UNITS));
+    // Both calls read the run's diff file (none yet) before either commits; then the first call's exec runs whole before
+    // the second's, which finds main moved and computes again on the main the first one made.
+    const KEY = `${DIFFS_DIR}/run-race.r2.json`;
+    let looked = 0;
+    let bothLooked;
+    const barrier = new Promise((resolve) => { bothLooked = resolve; });
+    let first;
+    const gated = wrap(ws, {
+      read: async (path, ...rest) => {
+        if (path === KEY && looked < 2) {
+          looked += 1;
+          if (looked === 2) bothLooked();
+          await barrier;
+        }
+        return ws.read(path, ...rest);
+      },
+      exec: async (argv, ...rest) => {
+        if (argv[2] !== "commit") return ws.exec(argv, ...rest);
+        if (!first) {
+          first = ws.exec(argv, ...rest);
+          return first;
+        }
+        await first.catch(() => {});
+        return ws.exec(argv, ...rest);
+      },
+    });
+    const change = { runId: "run-race", round: 2, reason: "the owner's correction", files: [], correction: "Name the page each figure came from." };
+    const [one, two] = await Promise.all([learningCommit(gated, change), learningCommit(gated, change)]);
+    assert.equal(looked, 2, "both calls passed the diff check before either committed");
+    assert.deepEqual([one.ok, two.ok], [true, true], JSON.stringify([one, two]));
+    assert.equal(text(await ws.read(CORRECTIONS)), `${UNITS}${SOURCES}`, "the correction landed once");
+    const diff = await readRunDiff(ws, "run-race.r2");
+    const [landed, read] = one.already ? [two, one] : [one, two];
+    assert.equal(diff.merge, landed.commit, "the round's diff is the merge that landed, never replaced");
+    assert.deepEqual(read, { ok: true, main: landed.main, commit: landed.commit, files: [CORRECTIONS], already: true }, "the second call reads the first's diff");
+    assert.equal((await readSnapshot(ws)).log.filter((change) => change.by.run === "run-race").length, 1, "one merge on main");
+    await matchesMain(ws);
+  });
+
   test(`${backend}: learningCommit maps the script's preconditions: a draft's file changed on main since the run's seed is a conflict; a write past what one exec carries is refused before any exec`, async () => {
     const { ws } = await make();
     const seeded = await learningCommit(ws, { runId: "run-s1", reason: "A draft.", files: draft("weekly-report") });

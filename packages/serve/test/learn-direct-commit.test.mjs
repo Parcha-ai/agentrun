@@ -170,14 +170,40 @@ const FULL = `${Array.from({ length: 44 }, (_, i) => `- Rule ${String(i).padStar
  *  correction would fill it. */
 async function fillCorrections(dir) {
   assert.ok(Buffer.byteLength(FULL) < 2048 && Buffer.byteLength(FULL) > 2000, `setup: ${Buffer.byteLength(FULL)} bytes`);
+  await mergeOn(dir, { runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: FULL }] });
+}
+
+/** `change` merged on agent-1's learning folder's main, as a run's merge (learningCommit); its result. */
+async function mergeOn(dir, change) {
   const folder = learningFolderOf(dir, "agent-1");
   try {
-    const done = await learningCommit(folder.workspace, { runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: FULL }] });
+    const done = await learningCommit(folder.workspace, change);
     assert.equal(done.ok, true, JSON.stringify(done));
+    return done;
   } finally {
     await folder.end();
   }
 }
+
+test("a run whose correction-only merge landed before a crash (its end never saved) records that merge at its recovered end, even with room left for one copy only, never a refusal", async (t) => {
+  const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
+  await seedOf(w.dir, "agent-1");
+  // 43 rules: room for the correction's line once, never twice.
+  const rules = `${FULL.split("\n").slice(0, 43).join("\n")}\n`;
+  const TEXT = "Name the page each figure came from.";
+  const line = `- ${TEXT}`;
+  assert.ok(Buffer.byteLength(rules) + Buffer.byteLength(line) <= 2048 && Buffer.byteLength(rules) + 2 * Buffer.byteLength(line) + 1 > 2048, "setup: one copy fits, two do not");
+  await mergeOn(w.dir, { runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: rules }] });
+  // The earlier claim's merge: run-1's correction on main, then the claim stopped before the run's end was saved.
+  const saved = await mergeOn(w.dir, { runId: "run-1", round: 1, reason: "Its owner's correction.", files: [], correction: TEXT });
+  await w.start({ feedback: TEXT, script: [{ say: "The job's answer." }, { say: "Noted." }] });
+  assert.equal(w.onMain("corrections.md"), `${rules}${line}`, "the line once");
+  const kept = await w.server.learning.proposal("run-1");
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.equal(kept.proposal.merged, saved.commit, "the merge the earlier claim made");
+  assert.equal(kept.proposal.corrections, 1);
+  assert.equal(kept.proposal.problems, undefined, JSON.stringify(kept.proposal));
+});
 
 test("feedback that would take corrections.md past its cap is refused with the cap's words; the file stays as it was", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });

@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createReflectHook } from "../dist/runner/reflect-hook.js";
 import { COMPILE_TIMEOUT_MS, compilePrompt } from "../dist/learn/compile.js";
 import { said, STOPPED } from "../dist/learning-words.js";
+import { runCostOf } from "../dist/learning-cost.js";
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
 /** The hooks' clock; a run's spend reads 0.01 throughout unless a test says otherwise. */
@@ -73,6 +74,28 @@ test("a run cut before its end-of-run step (a person's stop, or a fault) keeps i
   }
   const { hook, input } = hookWith({ facts: { learns: false } });
   assert.equal(await hook({ ...input("failed"), cut: "stopped" }), undefined, "a run that does not learn keeps nothing, cut or not");
+});
+
+test("a run stopped during its compile turn (an earlier claim asked it) keeps the job's saved figures and the compile's spend, known or null: its cost is the job's own, the rest is learning's", async () => {
+  // The first ask's figures, as the earlier claim kept them with its prompt.
+  const saved = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
+  for (const [cut, reason, detail, facts] of [
+    ["stopped", "cancelled", said.stopped(STOPPED.cancelled), {}],
+    ["stopped-looking", "cancelled", said.stopped(STOPPED.cancelledLooking), {}],
+    ["faulted", "crashed", said.stopped(STOPPED.crashed), {}],
+    [undefined, "cancelled", said.stopped(STOPPED.cancelled), { cancelled: true }],
+  ]) {
+    const { hook, input, calls } = hookWith({ compile: NEW, facts });
+    const end = kept(await hook({ ...input("failed"), ...(cut ? { cut } : {}), keptOf: (round) => (round === 1 ? saved : undefined) }));
+    assert.deepEqual(end, { state: "dropped", reason, detail, ...saved, look_back_usd: 0.008 }, String(cut));
+    assert.deepEqual(runCostOf(0.01, end), { cost_usd: 0.002, learning_usd: 0.008, total_usd: 0.01 }, `${cut}: the job's own cost, the compile's spend learning's`);
+    assert.deepEqual([calls.asked, calls.committed], [[], []], `${cut}: nothing asked or written`);
+  }
+  // The run's spend unknown now: the compile's spend is unknown, never 0, and the job is still its own.
+  const { hook, input } = hookWith({ compile: NEW, facts: { costUsd: null } });
+  const end = kept(await hook({ ...input("failed"), cut: "stopped", keptOf: () => saved }));
+  assert.deepEqual([end.job_cost_usd, end.look_back_usd], [0.002, null]);
+  assert.deepEqual(runCostOf(0.01, end), { cost_usd: 0.002, learning_usd: null, total_usd: null });
 });
 
 test("a cancelled run is dropped in the server's words; a run its cap stopped, or whose spend is unknown under a cap, asks no compile turn", async () => {

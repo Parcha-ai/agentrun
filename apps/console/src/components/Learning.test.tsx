@@ -257,6 +257,14 @@ describe("the corrections", () => {
     expect(t.host.querySelector('[data-testid="stage-corrections"]')!.textContent).toContain("4 corrections");
   });
 
+  it("a saved file of headings only is shown as it is, never None yet: every later run is given it", async () => {
+    const t = await open(agent(true), { learning: async () => view({ corrections: "# Always answer in Spanish\n" }) });
+    const section = t.host.querySelector('section[aria-label="Corrections"]')!;
+    expect(section.textContent).not.toContain("None yet");
+    expect(section.textContent).toContain("Every later run is given this text whole before it starts.");
+    expect(section.querySelector("h1")?.textContent).toBe("Always answer in Spanish");
+  });
+
   it("one correction is said as one: it, not them", async () => {
     const t = await open(agent(true), { learning: async () => view({ corrections: "# Learned\n\n- Only this one.\n" }) });
     expect(t.text()).toContain("1 correction. Every later run is given it whole before it starts.");
