@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { authMode, signInProblem, takeSetupCode } from "./auth";
+import { authMode, newCodeProblem, setupCodeRenewed, signInProblem, takeSetupCode } from "./auth";
+import { clock } from "./format";
 import { ClientError } from "./client";
 import fresh from "../fixtures/auth.session-new.json";
 import signedIn from "../fixtures/auth.session-signed-in.json";
@@ -41,7 +42,11 @@ describe("signInProblem", () => {
   });
   it("on setup: a refused code, from the link or typed, says what to do: the newest link in the server's log, or the token", () => {
     const refused = new ClientError(403, "forbidden", "that is not the setup code in the server's log");
-    expect(signInProblem(refused)).toBe("That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here.");
+    expect(signInProblem(refused)).toBe("That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here. A code works once and lasts 30 minutes: Get a new code prints a fresh one when it has run out.");
+  });
+  it("on setup: an expired or voided code says how long a code lasts and where the new one is", () => {
+    const expired = new ClientError(403, "forbidden", "that setup code expired, or five wrong tries voided it: a new one is in the server's log");
+    expect(signInProblem(expired)).toBe("That setup code expired (a code lasts 30 minutes) or was voided after too many wrong tries. The server printed a new one: use the newest “Set up this server:” line in its log (on Render, the Logs tab).");
   });
   it("on setup: a password the server refuses names why, and an owner already set says to sign in", () => {
     expect(signInProblem(err(short as never))).toBe((short.body.error as { fields?: { message: string }[] }).fields?.[0]?.message ?? short.body.error.message);
@@ -74,5 +79,23 @@ describe("authMode on a server with no accounts that answers its session read", 
   it("reads accounts: false as a 404 does: in when a protected read succeeds, else the token link", () => {
     expect(authMode({ status: 200, body: { accounts: false, secrets_writable: true } }, 200)).toBe("signed_in");
     expect(authMode({ status: 200, body: { accounts: false, secrets_writable: false } }, 401)).toBe("token_link");
+  });
+});
+
+// Get a new code (POST /v2/setup/code): the server prints a code only when none is good, and answers which and when it
+// runs out, never the code. The page says where the line is for this kind of server, and until what time it works.
+describe("setupCodeRenewed", () => {
+  const at = "2026-11-17T12:34:00.000Z";
+  it("a new code printed: where the line is, that it works once, and until when", () => {
+    expect(setupCodeRenewed("agents.example.test", { printed: true, expires_at: at })).toBe(`The server printed a new code: it is the newest “Set up this server:” line in the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab). It works once, until ${clock(at)}.`);
+    expect(setupCodeRenewed("agentrun-server-ab12.onrender.com", { printed: true, expires_at: at })).toBe(`The server printed a new code: it is the newest “Set up this server:” line in the service's Logs tab in the Render dashboard. It works once, until ${clock(at)}.`);
+  });
+  it("a code still good is kept: the newest line, good until when", () => {
+    expect(setupCodeRenewed("agents.example.test", { printed: false, expires_at: at })).toBe(`The current code is still good until ${clock(at)}, so no new one was printed: it is the newest “Set up this server:” line in the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab).`);
+  });
+  it("a refused ask says why in words: asked too often, an owner already set, or anything else as the server said it", () => {
+    expect(newCodeProblem(Object.assign(new ClientError(429, "rate_limited", "too many tries from this address; try again in 8 s"), { retryAfterMs: 7_200 }))).toBe("Too many tries. Try again in 8 seconds.");
+    expect(newCodeProblem(new ClientError(403, "forbidden", "this server has its owner: sign in"))).toBe("This server has its owner already: sign in.");
+    expect(newCodeProblem(new ClientError(500, "internal", "the store is closed"))).toBe("the store is closed");
   });
 });

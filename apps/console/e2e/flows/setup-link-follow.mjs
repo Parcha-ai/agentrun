@@ -6,7 +6,7 @@
 // newest link's code is the one sent, and it sets the password.
 import { check, PASSWORD, signedIn } from "../harness.mjs";
 
-const REFUSED = "That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here.";
+const REFUSED = "That setup code was refused: open the newest setup link in the server's log, or paste the server's token (AGENTRUN_TOKEN) here. A code works once and lasts 30 minutes: Get a new code prints a fresh one when it has run out.";
 
 /** The printed link's path and fragment, opened on the server's own address (the public URL here names no real host). */
 const onServer = (link, origin) => { const u = new URL(link); return `${origin}${u.pathname}${u.search}${u.hash}`; };

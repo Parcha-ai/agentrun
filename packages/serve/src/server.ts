@@ -2923,7 +2923,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+  /** POST /v2/setup, POST /v2/setup/code, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
    *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
    *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
@@ -2955,6 +2955,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
         if (body.import === true) void importAtSetup();
         return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      // A setup code to use, asked for with no credential (the person at the Setup code field, or whoever started the
+      // server for them): a new one goes to the log only when the last is expired or spent; one still good is kept, so
+      // no visitor voids a link someone holds. The answer says which and when it runs out, never the code. Counted with
+      // the address's sign-in tries, so it is asked a few times a quarter hour, then waits.
+      case "/setup/code": {
+        if (me.hasPassword()) throw new ApiError("forbidden", "this server has its owner: sign in");
+        const allowed = me.signIns.allow(clientOf(req));
+        if (!allowed.ok) {
+          const seconds = Math.ceil(allowed.retryAfterMs / 1000);
+          throw new ApiError("rate_limited", `too many tries from this address; try again in ${seconds} s`, { retry_after_ms: allowed.retryAfterMs }, { "retry-after": String(seconds) });
+        }
+        allowed.done(false);
+        const code = me.renewSetupCode();
+        if (!code) throw new ApiError("forbidden", "this server's setup takes no code: the first visit sets the password");
+        return send(res, 200, { printed: code.printed, expires_at: new Date(code.until).toISOString() });
       }
       case "/setup/import": {
         // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
@@ -4384,7 +4400,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
     if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
-    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);

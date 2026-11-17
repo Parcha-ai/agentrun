@@ -44,6 +44,33 @@ opens the same store. The container has no Docker socket, so its agents get file
 a Docker sandbox, use `compose.yaml` at the repository's root. Put a TLS proxy in front before you publish the port
 anywhere else.
 
+## The first visit's setup code
+
+A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
+password. The console says where to look and never shows the code. It is in one of these places:
+
+| Server | Where the code is |
+| --- | --- |
+| Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
+| Docker | `docker logs agentrun` (compose: `docker compose logs server`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
+| Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
+
+A code works once and lasts 30 minutes from the moment its line was printed. When it has run out, get a new one
+without restarting:
+
+- In the console, press **Get a new code** under the Setup code field. It says where the new line is and until when
+  it works.
+- Or, from anywhere that reaches the server, with no credential: `curl -sS -X POST <address>/v2/setup/code`.
+
+Either prints a new `Set up this server:` line in the log only when the last code is expired or spent, and answers
+`{"printed": true|false, "expires_at": "<time>"}`, never the code. A code that is still good is kept (`printed:
+false`), so nobody can void a link you hold; the answer is a 403 once the owner is set. A restart prints a new code
+too, as does a fifth wrong try.
+
+If someone else makes the first visit (you deployed the server for them), send them the place, or the newest setup
+link, in the same message as the console's address, and say in it that the link works once, when it expires, and that
+Get a new code replaces an expired one. The token does not expire: say where it is, never paste it into a chat.
+
 ## The image's two commands
 
 ```sh

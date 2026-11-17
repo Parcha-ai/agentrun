@@ -2,7 +2,7 @@ import { ChevronRight, KeyRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Field, fieldBoxClass, Input } from "@/components/ui/field";
-import type { AuthMode } from "@/lib/auth";
+import { setupCodePlaces, type AuthMode } from "@/lib/auth";
 import type { ImportOffer } from "@/lib/client";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +19,11 @@ export type SignInProps = {
   /** In setup, a server on this machine's offer to import its sessions (`GET /v2/setup/import`): the box shows with it,
    *  counting, counted, or its count unknown. */
   offer?: ImportOffer | null;
+  /** Asks the server to print a new setup code to its log when the last one has run out (it keeps one still good):
+   *  resolves with what to tell the person, where the line is and until when it works, or why it was refused. Never a code. */
+  onNewCode?: () => Promise<string>;
+  /** The address this page was opened at (the browser's, by default): it picks where the Setup code field says to look. */
+  host?: string;
 };
 
 // The password field for each mode: its label, and the autocomplete token a password manager reads.
@@ -35,7 +40,7 @@ const COPY = {
 
 /** The hosted console's sign-in card, over AgentRun Server's own: the owner's password (or its first setting), with the
  *  server's HttpOnly session cookie as the result. Nothing is kept in the page. */
-export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, problem: initialProblem = null, offer = null }: SignInProps) {
+export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, onNewCode, problem: initialProblem = null, offer = null, host = typeof window === "undefined" ? "" : window.location.hostname }: SignInProps) {
   const [password, setPassword] = useState("");
   // Never ticked for the owner: their own click asks for the import.
   const [importSessions, setImportSessions] = useState(false);
@@ -45,6 +50,15 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
   useEffect(() => { if (code !== null) setSetupCode(code); }, [code]);
   const [problem, setProblem] = useState<string | null>(initialProblem);
   const [busy, setBusy] = useState(false);
+  // What the server answered Get a new code, in words; and whether an ask is on its way.
+  const [renewed, setRenewed] = useState<string | null>(null);
+  const [renewing, setRenewing] = useState(false);
+  const newCode = async () => {
+    if (!onNewCode || renewing) return;
+    setRenewing(true);
+    const said = await onNewCode();
+    setRenewing(false); setRenewed(said);
+  };
   const setup = mode === "setup";
   // A count of none has nothing to offer; counting, or a count unknown, still does.
   const offered = setup && offer !== null && !("sessions" in offer && offer.sessions === 0);
@@ -67,9 +81,15 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, proble
         {mode !== "token_link" && (
           <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
             {asksCode && (
-              <Field label="Setup code" id="setup-code" hint="On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.">
+              <Field label="Setup code" id="setup-code" hint={setupCodePlaces(host).map((place, i) => <span key={i} className={cn("block leading-relaxed", i > 0 && "mt-1.5")}>{place}</span>)}>
                 <Input name="setup-code" value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="one-time-code" spellCheck={false} className="text-lead" />
               </Field>
+            )}
+            {asksCode && onNewCode && (
+              <div className="!mt-3">
+                <Button type="button" size="sm" disabled={renewing} aria-busy={renewing || undefined} onClick={() => void newCode()}>Get a new code</Button>
+                {renewed && <p className="mt-2 text-small leading-relaxed text-foreground" role="status">{renewed}</p>}
+              </div>
             )}
             <Field label={FIELD[mode].label} note={setup ? "12 characters or more." : undefined}>
               <span className={cn(fieldBoxClass, "flex items-center gap-3 bg-card px-3")}>
