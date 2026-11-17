@@ -359,6 +359,12 @@ __all__ = [
     "GetLearningBatchResponseRowsItem",
     "GetLearningBatchResponseRowsItemLearned",
     "GetLearningCostResponse",
+    "GetLearningCostResponseBill",
+    "GetLearningCostResponseBillBaseline",
+    "GetLearningCostResponseBillBreakEven",
+    "GetLearningCostResponseBillPointsItem",
+    "GetLearningCostResponseBillPromoted",
+    "GetLearningCostResponseBillRevisionsItem",
     "GetLearningCostResponseRunsItem",
     "GetLearningCostResponseSummary",
     "GetLearningCostResponseSummaryAfter",
@@ -2396,6 +2402,8 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
+    learning_usd: float | None
+    all_in_usd: float | None
     plan: CostPlan
 
 
@@ -3356,6 +3364,7 @@ class GetLearningCostResponse(TypedDict):
     unknown_path_runs: int
     workflows: list[GetLearningCostResponseWorkflowsItem]
     summary: GetLearningCostResponseSummary
+    bill: GetLearningCostResponseBill
 
 
 class GetLearningCostResponseRunsItem(TypedDict):
@@ -3434,6 +3443,52 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     agreed: int
     alone: int
     agree_min: float
+
+
+class GetLearningCostResponseBill(TypedDict):
+    baseline: GetLearningCostResponseBillBaseline | None
+    promoted: GetLearningCostResponseBillPromoted | None
+    points: list[GetLearningCostResponseBillPointsItem]
+    break_even: GetLearningCostResponseBillBreakEven | None
+    gap_usd: float | None
+    withheld: int
+    booked_usd: float
+    revisions: list[GetLearningCostResponseBillRevisionsItem]
+    unattributed_usd: float | None
+
+
+class GetLearningCostResponseBillBaseline(TypedDict):
+    runs: int
+    mean_usd: float
+
+
+class GetLearningCostResponseBillPromoted(TypedDict):
+    n: int
+    run_id: str
+    at: str
+
+
+class GetLearningCostResponseBillPointsItem(TypedDict):
+    n: int
+    run_id: str
+    actual_usd: float
+    agent_usd: float | None
+
+
+class GetLearningCostResponseBillBreakEven(TypedDict):
+    n: int
+    run_id: str
+
+
+class GetLearningCostResponseBillRevisionsItem(TypedDict):
+    workflow: str
+    digest: str
+    spend_usd: float | None
+    k: int
+    served: int
+    attributed_usd: float | None
+    unattributed_usd: float | None
+    state: Literal["checking", "serving", "stopped"]
 
 
 class ListLearningEvalsResponse(TypedDict):
@@ -5151,6 +5206,7 @@ class Run(_RunRequired, total=False):
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
     audit_of: str | None
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
 
 
 class _RunResultRequired(TypedDict):

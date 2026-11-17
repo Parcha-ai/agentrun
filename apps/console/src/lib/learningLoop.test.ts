@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compileAfterOf, compiledInto, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
+import { EMPTY_BILL } from "./learningBill.fixture";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
@@ -79,7 +80,7 @@ describe("notes and the story", () => {
     expect(compiledInto("---\nname: x\n---\ncompiled_into: sort-invoice")).toBeNull();
     expect(compiledInto("no front matter")).toBeNull();
   });
-  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: over.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...over }, workflows: [] });
+  const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: over.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...over }, workflows: [], bill: EMPTY_BILL });
   const base = { notes: 0, compiledNotes: 0, runs: 0, workflows: [], cost: null, promotions: [], serving: [], loop: null };
   it("champion/challenger: while a revision replays, or after its replay held it, the one promoted before keeps serving and the story says both", () => {
     const champion = record({});

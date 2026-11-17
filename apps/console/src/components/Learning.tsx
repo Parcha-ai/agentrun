@@ -7,6 +7,7 @@ import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { CostPerRun } from "@/components/CostPerRun";
+import { LearningBill } from "@/components/LearningBill";
 import { LearnFromCsv } from "@/components/LearnFromCsv";
 import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
@@ -247,6 +248,7 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
       {learnFromTasks}
       <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} execution={execution} />
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} promotions={promotions} serving={serving} />
       <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
       <NotKept runs={runs} />
     </div>
@@ -276,6 +278,7 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       {learnFromTasks}
       <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} execution={execution} />
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} promotions={promotions} serving={serving} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">

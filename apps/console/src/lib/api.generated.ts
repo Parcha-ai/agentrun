@@ -256,6 +256,8 @@ export interface components {
     so_far_usd?: number;
     unpriced?: number;
     upper_bound?: true;
+    learning_usd?: number | null;
+    all_in_usd?: number | null;
     plan?: {
       requests: number;
       tokens: number;
@@ -943,6 +945,7 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
+    path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -2576,6 +2579,41 @@ export interface operations {
           alone: number;
           agree_min: number;
         } | null;
+      };
+      bill: {
+        baseline: {
+          runs: number;
+          mean_usd: number;
+        } | null;
+        promoted: {
+          n: number;
+          run_id: string;
+          at: string;
+        } | null;
+        points: {
+          n: number;
+          run_id: string;
+          actual_usd: number;
+          agent_usd: number | null;
+        }[];
+        break_even: {
+          n: number;
+          run_id: string;
+        } | null;
+        gap_usd: number | null;
+        withheld: number;
+        booked_usd: number;
+        revisions: {
+          workflow: string;
+          digest: string;
+          spend_usd: number | null;
+          k: number;
+          served: number;
+          attributed_usd: number | null;
+          unattributed_usd: number | null;
+          state: "checking" | "serving" | "stopped";
+        }[];
+        unattributed_usd: number | null;
       };
     };
   };
