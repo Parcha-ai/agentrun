@@ -44,6 +44,48 @@ opens the same store. The container has no Docker socket, so its agents get file
 a Docker sandbox, use `compose.yaml` at the repository's root. Put a TLS proxy in front before you publish the port
 anywhere else.
 
+## One click: Render or Railway
+
+Each button deploys the published image as one service, the server with one runner beside it, and keeps its data on a
+disk at `/data`. The host generates the API token and the seal key. Neither host gives the service Docker, so its agents
+get file tools and `web_fetch` but no shell. Neither needs a model key.
+
+### Render
+
+One fixed-price Render instance, from [`render.yaml`](../render.yaml).
+
+It costs $25 a month for the 1 CPU / 2 GB instance and $2.50 for the 10 GB disk, at Render's prices when this was
+written. Render needs a card on the workspace.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun)
+
+Once you click, Render asks for a name and the optional model keys. Leave the keys blank. Render pulls the image and
+starts the service. When it's live, open its `onrender.com` address and paste `AGENTRUN_TOKEN` from the service's
+Environment tab as the setup code. Set your password, then Continue with ChatGPT or add a model key in the console.
+
+### Railway
+
+One Railway service billed by use, from [`railway/template.json`](railway/template.json).
+
+Railway bills the memory, CPU and volume the service uses. An idle server holds about 0.3 GB of memory, which is about
+$3 a month at $10 per GB-month. The volume is $0.15 per GB-month, and each run adds memory and CPU while it runs. The
+Hobby plan is $5 a month and includes $5 of usage. Use Hobby or above, because the trial's 0.5 GB volume can't hold
+Claude Code and Codex (about 1 GB, installed onto the volume on first use).
+
+The button goes on the line below once the template is published.
+
+<!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->
+<!-- [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=agentrun) -->
+
+Once you click, Railway shows the service's variables. The token and the seal key are already filled in, and the model
+keys are optional. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
+When the deploy is active, open that domain and paste `AGENTRUN_TOKEN` from the service's Variables tab as the setup
+code, or open the setup link in the deployment's Deploy Logs. Set your password, then Continue with ChatGPT or add a
+model key in the console.
+
+Railway mounts the volume as root. The service starts as root only to give the volume to the server's own user, then
+runs the server as that user. `railway/publish-and-walk.sh` publishes the template from `template.json` and walks it.
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -186,14 +228,10 @@ On a database you run yourself, the store's role needs no `CREATE` on the databa
 and given to it (`CREATE SCHEMA agentrun AUTHORIZATION <role>`, or the name in `AGENTRUN_STORE_SCHEMA`): the server
 migrates a schema its role owns.
 
-**Render.** `render.yaml` at the repository's root runs the image's default command: the server with one runner beside
-it, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
-`--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`. A first
-deploy needs no model key: leave Render's key fields blank, paste `AGENTRUN_TOKEN` from the service's Environment tab
-at the first visit to set your password, then Continue with ChatGPT (Settings → Model keys, or the first screen), then
-run your first agent. Or paste a key in Render's form, or add one in the console.
-render.yaml has Render generate AGENTRUN_SEAL_KEY once; keep it with the service. More runners on Render need the same
-value set on each worker.
+**More runners on Render.** `render.yaml` runs the image's default command: the server with one runner beside it, on a
+disk only that one service can mount. More runners on Render need the Postgres store: the server with `--no-runner`, and
+each runner a background worker from the same image with `runner --data /data --name <name>`. render.yaml has Render
+generate AGENTRUN_SEAL_KEY once; keep it with the service, and set the same value on each worker.
 
 ## Rotating the API token
 
@@ -247,3 +285,13 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
 - `walk/reclaim.sh`: a run of about 60 s whose runner is stopped in the middle, by SIGTERM and then by SIGKILL. Each time
   the other runner takes it over (read from `GET /v2/runs/{id}`'s `claim`), after a SIGKILL within the 30 s lease, and
   the run completes with each step done once.
+
+Two walk the Railway template:
+
+- `railway/local-walk.mjs`, which CI runs after the smoke walk: the template's service in Docker as Railway runs it (as
+  root, its start command in place of the entrypoint, on a fresh volume owned by root). The volume ends up the server's
+  user's, every process runs as that user, the first visit asks for the setup code, the token works as that code, and
+  the password survives a restart.
+- `railway/publish-and-walk.sh`, run by hand with a Railway token: the template deployed into a throwaway project, its
+  health, its first visit and its token as the setup code, then the project deleted. `--dry-run` prints the plan with
+  no token; `--check-api` validates every operation it sends against Railway's live API.

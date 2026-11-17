@@ -52,6 +52,16 @@ describe("SignIn's setup code field", () => {
     expect(lines.join(" ")).not.toContain("docker");
   });
 
+  it("at a Railway address (the Railway template's domain), leads with the token in the service's Variables tab", () => {
+    const lines = hint(mount("agentrun-production-ab12.up.railway.app"));
+    expect(lines).toEqual([
+      "This server is on Railway. In the Railway dashboard, open this service's Variables tab and paste the value of AGENTRUN_TOKEN here.",
+      "Or open the Deploy Logs of the service's latest deployment and find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.",
+      "A code works once and lasts 30 minutes. When it has run out, Get a new code below prints a fresh one in the Deploy Logs. AGENTRUN_TOKEN does not expire.",
+    ]);
+    expect(lines.join(" ")).not.toMatch(/docker|Render/);
+  });
+
   // A code past its 30 minutes: the person asks the server for another from the page, with no password typed and no
   // restart. The page shows what came back (where the line is), never a code.
   it("Get a new code asks once, without sending the form, and says what the server answered", async () => {
@@ -86,7 +96,8 @@ describe("SignIn's setup code field", () => {
     expect([...host.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Set password and continue"]);
   });
 
-  it("reads a name that only ends like Render's as any other server", () => {
+  it("reads a name that only ends like Render's or Railway's as any other server", () => {
     expect(hint(mount("notonrender.com"))[0]).toMatch(/^The server printed it in its log/);
+    expect(hint(mount("agents.railway.app"))[0]).toMatch(/^The server printed it in its log/);
   });
 });

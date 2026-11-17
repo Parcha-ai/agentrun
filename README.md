@@ -518,8 +518,9 @@ into the console.
 <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
 
 The button deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the published image (no
-build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a month for
-the instance and $2.50 for the disk, at Render's prices when this was written. Leave the model keys in Render's form
+build), and the token and seal key generated for you. Render gives the service no Docker, so its agents get file tools
+and `web_fetch` but no shell. It needs a card on your Render workspace: about $25 a month for the instance and $2.50
+for the disk, at Render's prices when this was written. Leave the model keys in Render's form
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration

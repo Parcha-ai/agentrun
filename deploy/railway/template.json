@@ -1,0 +1,67 @@
+{
+  "services": {
+    "agentrun": {
+      "name": "AgentRun",
+      "source": {
+        "image": "ghcr.io/parcha-ai/agentrun-server:beta"
+      },
+      "deploy": {
+        "startCommand": "/bin/sh -c \"chown 1000:1000 /data && chmod 700 /data && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node /opt/agentrun/packages/serve/launcher/agentrun-serve -- /usr/bin/tini -- node /opt/agentrun/packages/serve/dist/cli.js --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s\"",
+        "healthcheckPath": "/v2/health",
+        "healthcheckTimeout": 300,
+        "drainingSeconds": 35,
+        "requiredMountPath": "/data"
+      },
+      "variables": {
+        "PORT": {
+          "defaultValue": "7340",
+          "description": "The port the server listens on, which the service's domain and health check reach."
+        },
+        "RAILWAY_RUN_UID": {
+          "defaultValue": "0",
+          "description": "Starts the container as root so the start command can give the volume, which Railway mounts as root, to the server's own user. The server itself runs as that user (1000), never as root."
+        },
+        "AGENTRUN_TOKEN": {
+          "defaultValue": "${{secret(64, \"abcdef0123456789\")}}",
+          "description": "The API token, made once for this service. At the first visit, paste it as the setup code to set your password."
+        },
+        "AGENTRUN_SEAL_KEY": {
+          "defaultValue": "${{secret(43, \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/\")}}=",
+          "description": "The key saved model keys, tool keys and MCP credentials are sealed under (32 random bytes in base64), made once for this service. Keep it: without it they can't be opened."
+        },
+        "AGENTRUN_PUBLIC_URL": {
+          "defaultValue": "https://${{RAILWAY_PUBLIC_DOMAIN}}",
+          "description": "The address people open. Its first visit asks for a setup code."
+        },
+        "OPENROUTER_API_KEY": {
+          "defaultValue": "",
+          "isOptional": true,
+          "description": "Optional. Leave it blank and Continue with ChatGPT in the console, or add a key there. An OpenRouter key covers every model: give it a dollar cap and an expiration date."
+        },
+        "ANTHROPIC_API_KEY": {
+          "defaultValue": "",
+          "isOptional": true,
+          "description": "Optional. For Claude Agent runs; you can add it in the console instead."
+        },
+        "OPENAI_API_KEY": {
+          "defaultValue": "",
+          "isOptional": true,
+          "description": "Optional. Codex and pi agents also run on a ChatGPT plan through Continue with ChatGPT in the console."
+        }
+      },
+      "networking": {
+        "serviceDomains": {
+          "<hasDomain>": {
+            "port": 7340
+          }
+        },
+        "tcpProxies": {}
+      },
+      "volumeMounts": {
+        "agentrun": {
+          "mountPath": "/data"
+        }
+      }
+    }
+  }
+}
