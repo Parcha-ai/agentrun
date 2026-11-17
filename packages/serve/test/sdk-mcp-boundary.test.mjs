@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import { serve, client, follow } from "./support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { stranger } from "./fixtures/stranger.mjs";
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
   for (const registry of ["available", "unavailable", "missing"]) {
@@ -13,13 +14,16 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       t.after(() => fake.close());
       assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
       // What reached the unavailable endpoint, as the fake logs it: the HTTP method, the path and the JSON-RPC method.
-      const unavailableLog = [];
+      // A stranger's bare `GET /` (a Go client on the box probes each new loopback listener: it is what counted 4 for 2
+      // here) is kept apart in `strays`, as every fake does (fixtures/stranger.mjs), and never counted as the server's.
+      const unavailableLog = [], strays = [];
       if (registry === "missing") {
         assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 204);
       } else if (registry === "unavailable") {
         // Retain the registered URL and listing, but make its actual loopback endpoint unavailable.
         await fake.close();
         const unavailable = createServer((req, res) => {
+          if (stranger(req, res, { strays })) return;
           let body = "";
           req.on("data", (chunk) => (body += chunk));
           req.on("end", () => {
@@ -33,7 +37,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
         t.after(() => new Promise((resolve) => { unavailable.close(resolve); unavailable.closeAllConnections(); }));
       }
       const requests = () => fake.log.length + unavailableLog.length;
-      const seen = () => JSON.stringify({ fake: fake.log, unavailable: unavailableLog });
+      const seen = () => JSON.stringify({ fake: fake.log, unavailable: unavailableLog, strays });
       const baseline = requests(), id = `sdk-${runtime}-${registry}`;
       const created = await api("POST", "/agents", {
         definition: { id, name: id, instructions: "Keep backend callback ownership.", sdk: { runtime }, learning: false, tools: ["mcp:fake/add"] },

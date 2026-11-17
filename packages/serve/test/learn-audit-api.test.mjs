@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
+import { shadowRunId } from "../dist/learn/audit.js";
 import { seedOf } from "../dist/learning.js";
 import { git, resnap } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
@@ -41,11 +42,17 @@ const FLOW = {
 const TEXT = JSON.stringify(FLOW);
 const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 
+/** The runner's claims outlive every test here (each test's timeout is at most 300 s). With the default 30 s lease, a
+ *  store stalled on a loaded disk let a served run's claim run out mid-workflow; its re-claim found the learned_workflow
+ *  call cut, which is never run again but handed back (runner/adapter-loop.ts serveFirst), so the run read `handed_back`
+ *  and was never audited. No test here waits on a lease. */
+const LONG_LEASE = { leaseMs: 600_000, renewEveryMs: 10_000 };
+
 /** Agent `source` learning with `learning` (granted `tools`: none by default, so every tool it can call reads), the
  *  workflow landed on its learning folder's main and promoted by its check. */
 async function world(t, learning, tools = [], options = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
-  const server = await serve(t, { learning: "on", faux: PRICED, ...options });
+  const server = await serve(t, { learning: "on", faux: PRICED, runnerTiming: LONG_LEASE, ...options });
   const { api, data, baseUrl, store } = server;
   assert.equal((await api("POST", "/agents", agent("source", { learning, tools }))).status, 201);
   await seedOf(data, "source");
@@ -83,6 +90,31 @@ async function world(t, learning, tools = [], options = {}) {
   };
   return { ...server, doc, meets, run, shadowOf, main };
 }
+
+test("(h$) the money of (h) on runs the store holds: GET /runs/{id} of a served run its shadow audited reads cost.usd its own, its shadow's cost on learning_usd and the two on all_in_usd; the shadow reads audit_of the run, path audit, and carries none", async (t) => {
+  // No runner: the two runs are ended in the store as a runner ends them, so nothing here waits on a claim or a model.
+  const { api, store } = await serve(t, { learning: "on", runner: false });
+  assert.equal((await api("POST", "/agents", agent("source", { learning: { audit_every: 1 } }))).status, 201);
+  const revisionId = (await store.agents.get("source")).currentRevision;
+  const end = async (id, costUsd, body, metrics) => {
+    await store.runs.create({ id, agentId: "source", revisionId }, { body });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd, metrics });
+  };
+  const learns = { input: { content: "What is 1 plus 41?" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0, workflows: ["answer"] } };
+  await end("served-1", 0.04, learns, { path: "workflow", workflow: "answer", workflow_digest: DIGEST });
+  const shadowId = shadowRunId("served-1");
+  await end(shadowId, 0.12, { input: learns.input, title: "t", place: { mode: "runner" }, audit: { of: "served-1", workflow: "answer", digest: DIGEST } }, { path: "audit", audit: { of: "served-1", workflow: "answer", digest: DIGEST } });
+
+  const served = (await api("GET", "/runs/served-1")).body;
+  assert.equal(served.path, "workflow", JSON.stringify(served));
+  assert.deepEqual([served.cost.usd, served.cost.learning_usd, served.cost.all_in_usd], [0.04, 0.12, 0.16], `its own, its shadow's, all in: ${JSON.stringify(served.cost)}`);
+  assert.equal(served.audit_of, null, "a served run audits nothing");
+  const shadow = (await api("GET", `/runs/${shadowId}`)).body;
+  assert.equal(shadow.audit_of, "served-1", JSON.stringify(shadow));
+  assert.equal(shadow.path, "audit");
+  assert.deepEqual([shadow.cost.usd, shadow.cost.learning_usd, shadow.cost.all_in_usd], [0.12, 0, 0], `its spend is the served run's learning: ${JSON.stringify(shadow.cost)}`);
+});
 
 test("(h) served runs over v2 read like any run: the answer text, documented timeline kinds in the documented order, its path, cost.usd its own and the shadow's on learning_usd; the shadow is the audit of its run and no row of the list; the workflow's state, check numbers, audit line and rows are v2 reads", { timeout: 300_000 }, async (t) => {
   const { api, store, doc, meets, run, shadowOf } = await world(t, { audit_every: 1 });
