@@ -2,9 +2,10 @@ import { ChevronRight, KeyRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Field, fieldBoxClass, Input } from "@/components/ui/field";
-import { setupCodePlaces, type AuthMode } from "@/lib/auth";
+import type { AuthMode } from "@/lib/auth";
 import type { ImportOffer } from "@/lib/client";
 import { cn } from "@/lib/utils";
+import { setupCodePlaces } from "@/lib/auth";
 
 export type SignInProps = {
   mode: Exclude<AuthMode, "signed_in">;

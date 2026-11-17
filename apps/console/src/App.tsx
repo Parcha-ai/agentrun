@@ -294,20 +294,19 @@ export function App() {
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer}
-        onNewCode={async () => {
-          try { return setupCodeRenewed(window.location.hostname, await v2.setupCode()); }
-          catch (e) {
-            // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
-            if (e instanceof ClientError && e.status === 403) await readSession().catch(() => {});
-            return e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e);
-          }
-        }} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importSessions) => {
+      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importSessions) => {
         try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
           return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
+        }
+      }} onNewCode={async () => {
+        try { return setupCodeRenewed(window.location.hostname, await v2.setupCode()); }
+        catch (e) {
+          // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
+          if (e instanceof ClientError && e.status === 403) await readSession().catch(() => {});
+          return e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e);
         }
       }} />
     );
