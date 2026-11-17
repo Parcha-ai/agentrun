@@ -18,7 +18,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, sealRunLaunch } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
@@ -332,7 +332,7 @@ const askProvider = (provider, model) => ({
 /** A store with one queued judge run and a runner whose spec builds the decision providers from the run's SEALED keys
  *  (claim-secrets.ts + decisionProvidersIn), under --faux so the OpenRouter provider answers through the faux System One.
  *  `seal` are the provider keys to seal in the store; `capUsd` is omitted (uncapped) by default. */
-async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d1"), capUsd }) {
+async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d1"), capUsd, modelKey }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-sealed-"));
   const sealKey = randomBytes(32);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -346,10 +346,13 @@ async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d
   });
   for (const [name, value] of Object.entries(seal)) await putSealedKey(store, sealKey, name, value);
   await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: flow } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
+  // `modelKey`: the run's own model key (model_key), sealed in its launch for a gateway, as the server seals one.
+  const gateway = modelKey ? { AGENT_MODEL_BASE_URL: "https://gateway.example" } : {};
+  const sealed = modelKey ? { sealed: sealRunLaunch(sealKey, "run-1", { model: { key: modelKey, origin: gateway.AGENT_MODEL_BASE_URL } }) } : {};
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) }, ...sealed });
   // No decisionProvidersOf injected: the spec reads the run's keys from the store (sealKey). The decision keys are never in
   // this process's environment — only the faux-service pointers are, so a decision that runs got its key from the store.
-  const specOf = workflowSpecOf({ store, sealKey, env: { AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_OPENROUTER: FAUX_SYSTEM_ONE }, providerOf: idleModelProvider() });
+  const specOf = workflowSpecOf({ store, sealKey, env: { AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_OPENROUTER: FAUX_SYSTEM_ONE, ...gateway }, providerOf: idleModelProvider() });
   runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
   return { server };
 }
@@ -360,6 +363,12 @@ test("a workflow decision on the runner runs on the run's stored provider key (c
   const { server } = await sealedWorld(t, { seal: { OPENROUTER_API_KEY: `not-a-secret-${"stored"}` } });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the decision ran on the run's stored key and the run ended: ${JSON.stringify(row)}`);
+});
+
+test("a workflow run that brought its own model key still runs its decisions on the decision provider's stored key: a run's model key replaces model keys, never a decision provider's (red before: OPENROUTER_API_KEY was cleared with the model keys, and the decision failed)", async (t) => {
+  const { server } = await sealedWorld(t, { seal: { OPENROUTER_API_KEY: `not-a-secret-${"stored"}` }, modelKey: `not-a-secret-${"run-model-key"}-77` });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "ended", `the keyed run's decision ran on its stored OpenRouter key: ${JSON.stringify(row)}`);
 });
 
 /** A chain whose first decision names `provider`, the second Jev: the run's keys cover Jev but not `provider`. */

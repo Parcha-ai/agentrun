@@ -6,7 +6,7 @@
 // providers they name, read once the claim's seed lay chose them (learnedDecisionKeys). So a run that names no monid never gets the monid key, and two runs on
 // one runner never see each other's keys: each claim reads its own, into its own environment. (MCP credentials are the
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
-import { decisionKeysFor, providersNamed } from "../decisions.js";
+import { decisionKeysFor, JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV, providersNamed } from "../decisions.js";
 import type { LearnedWorkflow } from "../learning.js";
 import { GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -279,9 +279,14 @@ export function claimModelEnv(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv,
   return keyedAtClaim(runKey) ? withRunModelKey(env, runKey) : withRunModelKeyLater(withModelKeys(env, opened), runKey);
 }
 
+/** The decision providers' own keys (decisions.ts: Jev's TypeSafe key, OpenRouter's, Parallel's): some are also pi-ai
+ *  provider names, but a run's model key never replaces them, so withoutModelKeys keeps them. */
+const DECISION_KEY_NAMES: ReadonlySet<string> = new Set([JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV]);
+
 /** `toolEnv` with no model key in it, for a run that holds its own: a tool's environment never carries a model key the
- *  run's model routes do not send. */
+ *  run's model routes do not send. The decision providers' keys stay (DECISION_KEY_NAMES): a keyed workflow's judge,
+ *  pick, sift, route and ask nodes run on them as any run's do. */
 export function withoutModelKeys(toolEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  for (const name of MODEL_KEY_NAMES) delete toolEnv[name];
+  for (const name of MODEL_KEY_NAMES) if (!DECISION_KEY_NAMES.has(name)) delete toolEnv[name];
   return toolEnv;
 }

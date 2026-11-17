@@ -13,6 +13,10 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
+import { COMPUTER_CALL } from "../computer-channel.js";
+import { COMPUTER_HAND_BACK, COMPUTER_TAKE_OVER } from "../computer-commands.js";
+import { HELD_COMMANDS } from "../computer-held.js";
+import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
@@ -69,6 +73,10 @@ class EndNotWithdrawn extends Error {
 
 /** The first wait after a stopped end that withdraws a call is refused; each later one doubles (RunnerOptions). */
 export const END_RETRY_BACKOFF_MS = 5_000;
+/** The command rows a row that cannot be delivered yet does not hold back (runner.ts deliver), beside a stop and a cancel:
+ *  those that act on the run's computer for its owner, so a stop that kept the computer can still let it go. */
+const PASSES_A_BLOCKED_ROW: ReadonlySet<string> = new Set([...HELD_COMMANDS, COMPUTER_CALL, HAND_BACK, COMPUTER_TAKE_OVER, COMPUTER_HAND_BACK]);
+
 /** The longest wait between those tries: 5 min. */
 export const END_RETRY_CAP_MS = 300_000;
 /** The tries at that cap before the run ends stopped on its row alone (about an hour of retries in all; endRefused). */
@@ -175,6 +183,9 @@ export interface Runner {
 }
 
 interface Held {
+  /** The rows handed on past a blocked row (PASSES_A_BLOCKED_ROW), by id: the cursor stays before the blocked row, so a
+   *  later delivery reads them again and must not hand them on twice. */
+  passed: Set<number>;
   claim: Claim;
   loop: Loop;
   fence: { lost: boolean };
@@ -430,13 +441,34 @@ export function startRunner(options: RunnerOptions): Runner {
             if (!blocked) held.cursor = Math.max(held.cursor, row.id);
             continue;
           }
+          // A row handed on past a blocked row earlier (PASSES_A_BLOCKED_ROW) is never handed on again.
+          if (held.passed.has(row.id)) {
+            if (!blocked) held.cursor = Math.max(held.cursor, row.id);
+            continue;
+          }
           if (row.kind === "stop" || row.kind === "cancel") {
             if (!blocked) held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id, ...(row.kind === "cancel" ? { cancel: true as const } : {}) });
             // A stop that keeps the run's computer leaves the rows after it to be handed on (the loop head ends the rest).
             continue;
           }
-          if (blocked) continue;
+          // Past a blocked row, the commands that act on the run's computer for its owner go on too (a release, a start,
+          // a call, a take-over and a hand-back): a stop that kept the computer must still be able to let it go. Each is
+          // handed on once (held.passed), the cursor still before the blocked row; the message itself is never handed on.
+          if (blocked) {
+            if (!PASSES_A_BLOCKED_ROW.has(row.kind) || held.passed.has(row.id)) continue;
+            try {
+              const passed = await held.loop.command(row);
+              held.passed.add(row.id);
+              if ("refused" in passed) {
+                await store.take(held.claim, row.id, "refused", passed.refused);
+                emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: passed.refused });
+              }
+            } catch (error) {
+              if (isFenced(error) || held.sealed || killed) throw error;
+            }
+            continue;
+          }
           let outcome: Awaited<ReturnType<typeof held.loop.command>>;
           try {
             outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
@@ -755,7 +787,7 @@ export function startRunner(options: RunnerOptions): Runner {
       },
       redact,
     });
-    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
+    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {

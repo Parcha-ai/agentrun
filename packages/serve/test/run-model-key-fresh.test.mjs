@@ -163,3 +163,43 @@ test("a stop queued behind a message whose key cannot be read still reaches the 
   await new Promise((resolve) => setTimeout(resolve, 500));
   assert.equal(requests, 1, "the blocked message never ran a request");
 });
+
+test("a stop that keeps the run's computer, behind a message whose key cannot be read: the owner's computer commands still reach the loop, so the computer can be let go; the message is never handed on (red before: only stop and cancel passed the blocked row)", { timeout: 30_000 }, async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const seen = [];
+  let finish = () => {};
+  // A loop whose message cannot be taken (its key unreadable: adapter-loop.ts command throws), whose person's stop keeps
+  // the computer (keepsComputer), and which takes the owner's computer rows.
+  const createLoop = () => {
+    const ended = new Promise((resolve) => (finish = resolve));
+    return {
+      start: () => ended,
+      command: async (row) => {
+        seen.push(row.kind);
+        if (row.kind === "steer") throw new Error("the run's model key could not be read from its launch (injected)");
+        return { taken: true };
+      },
+      stop: async (reason) => {
+        seen.push(`stop:${reason.kind}`);
+        if (reason.kind !== "command") finish({ state: "failed", error: { code: "stopped", message: "stopped" } });
+      },
+      keepsComputer: (reason) => reason.kind === "command" && !reason.cancel,
+    };
+  };
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await until(async () => (await opened.server.runs.get("run-1")).runner !== null, "the run claimed");
+  await opened.server.command("run-1", { kind: "steer", body: { text: "and then?" } });
+  await until(() => seen.includes("steer"), "the message's delivery failed");
+  await opened.server.command("run-1", { kind: "stop", body: {} });
+  await opened.server.command("run-1", { kind: "computer_release", body: {} });
+  await until(() => seen.includes("computer_release"), "the owner's release reached the loop past the blocked message", 10_000);
+  assert.ok(seen.indexOf("stop:command") >= 0 && seen.indexOf("stop:command") < seen.indexOf("computer_release"), `the stop, then the release: ${JSON.stringify(seen)}`);
+  // Delivered again at each poll, the release is handed on once.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(seen.filter((kind) => kind === "computer_release").length, 1, `the release handed on once: ${JSON.stringify(seen)}`);
+  assert.ok(seen.filter((kind) => kind === "steer").length >= 2, "the message is tried again at each delivery, never taken");
+  const steer = (await opened.server.commands("run-1", 0)).find((command) => command.kind === "steer");
+  assert.equal(steer.takenAt, null, "the message stays untaken");
+});
