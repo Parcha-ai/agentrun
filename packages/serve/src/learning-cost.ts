@@ -249,15 +249,16 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
 }
 
 /** Each revision's spend split over its first `k` served runs (`served`: the runs a learned workflow served, oldest
- *  first, with the digest that served each), in micro-dollars: each carries spend/k, the first ones a micro-dollar more
- *  until the split is exact; a run past the k-th carries none of it. `shares`: what each served run carries, by run id
- *  (null when its revision's spend is unknown); what a revision's runs have not carried is its `unattributed_usd`, and
- *  `unattributed_usd` their sum (null once one is unknown). */
-export function amortize(revisions: readonly RevisionSpend[], served: readonly { run_id: string; digest: string }[]): { shares: Map<string, number | null>; revisions: RevisionShare[]; unattributed_usd: number | null } {
+ *  first, with the workflow and digest that served each: a revision is both, as two workflows of the same text share a
+ *  digest), in micro-dollars: each carries spend/k, the first ones a micro-dollar more until the split is exact; a run
+ *  past the k-th carries none of it. `shares`: what each served run carries, by run id (null when its revision's spend
+ *  is unknown); what a revision's runs have not carried is its `unattributed_usd`, and `unattributed_usd` their sum (null
+ *  once one is unknown). */
+export function amortize(revisions: readonly RevisionSpend[], served: readonly { run_id: string; workflow: string; digest: string }[]): { shares: Map<string, number | null>; revisions: RevisionShare[]; unattributed_usd: number | null } {
   const shares = new Map<string, number | null>();
   let rest: number | null = 0;
   const out = revisions.map((revision): RevisionShare => {
-    const runs = served.filter((one) => one.digest === revision.digest).slice(0, revision.k);
+    const runs = served.filter((one) => one.workflow === revision.workflow && one.digest === revision.digest).slice(0, revision.k);
     if (revision.spend_usd === null) {
       for (const run of runs) shares.set(run.run_id, null);
       rest = null;

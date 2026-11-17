@@ -65,7 +65,8 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
   const plotW = width - M.left - M.right;
   const first = points[0]?.n ?? 1, last = points.at(-1)?.n ?? 1;
   const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
-  const top = useMemo(() => niceTop(Math.max(...points.map((p) => Math.max(p.actual_usd, p.agent_usd ?? 0)))), [points]);
+  // A reduce, never a spread: a long history's every point as one call's arguments overflows the stack.
+  const top = useMemo(() => niceTop(points.reduce((max, p) => Math.max(max, p.actual_usd, p.agent_usd ?? 0), -Infinity)), [points]);
   const y = (v: number) => M.top + H - (v / top) * H;
   const path = (values: readonly (readonly [number, number])[]) => values.map(([n, v], i) => `${i ? "L" : "M"}${x(n).toFixed(1)},${y(v).toFixed(1)}`).join("");
   const actual = path(points.map((p) => [p.n, p.actual_usd] as const));

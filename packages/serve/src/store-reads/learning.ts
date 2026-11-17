@@ -331,8 +331,13 @@ function holdsOf(records: readonly PromotionRecord[], runs: readonly CostRun[]):
 }
 
 type LedgerRow = Pick<RunRecord, "id" | "metrics" | "startedAt" | "costUsd" | "costAtMostUsd">;
-const metricOf = (row: Pick<LedgerRow, "metrics">) => (row.metrics ?? {}) as { path?: unknown; workflow_digest?: unknown };
-const digestOfRow = (row: LedgerRow): string | undefined => (typeof metricOf(row).workflow_digest === "string" ? (metricOf(row).workflow_digest as string) : undefined);
+const metricOf = (row: Pick<LedgerRow, "metrics">) => (row.metrics ?? {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
+/** The revision a run ran (metrics.workflow and metrics.workflow_digest, workflow-first.ts pathMetrics), undefined when it
+ *  names none: two workflows of the same text share a digest, so a revision is never its digest alone. */
+const revisionOfRow = (row: LedgerRow): { workflow: string; digest: string } | undefined => {
+  const { workflow, workflow_digest: digest } = metricOf(row);
+  return typeof workflow === "string" && typeof digest === "string" ? { workflow, digest } : undefined;
+};
 const micro = (usd: number) => Math.round(usd * 1e6) / 1e6;
 
 /** A compile turn a run's look-back asked (runner/reflect-hook.ts), as its kept round says it: the revision it drafted
@@ -384,25 +389,30 @@ async function agentLedgerOf(records: RunRecords, promotions: readonly Promotion
 
 /** Each revision of the agent's learned workflows (one per workflow and digest its promotion records name, in the order
  *  they were first recorded) with its learning spend, and what its served runs carry of it (amortize), over `rows`: the
- *  agent's ended runs that do a job or check one (no shadow, no imported or archived run). A revision's spend is the
- *  compile turns that drafted it (`compiles` at its digest: a recompile drafts a revision of its own) and its check (the
- *  replay runs that ran it: metrics.path `replay` at its digest); unknown once a part's cost is (null, or only a bound).
- *  A compile whose drafts all failed drafted none: no revision carries it (the bill's unattributed does). It is spread
- *  over its first K served runs (`workflow` or `handed_back` at its digest), K its check's compile_after; `state` from
- *  its newest record. */
+ *  agent's ended runs that do a job or check one (no shadow, no imported or archived run). A revision is its workflow and
+ *  its digest, never the digest alone: two workflows of the same text share a digest, and each pays its own way. Its
+ *  spend is the compile turns that drafted it (`compiles` of its workflow at its digest: a recompile drafts a revision of
+ *  its own) and its check (the replay runs that ran it: metrics.path `replay` of its workflow at its digest); unknown
+ *  once a part's cost is (null, or only a bound). A compile whose drafts all failed drafted none: no revision carries it
+ *  (the bill's unattributed does). It is spread over its first K served runs (`workflow` or `handed_back` of its workflow
+ *  at its digest), K its check's compile_after; `state` from its newest record. */
 export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[], compiles: readonly CompileSpend[] = []): ReturnType<typeof amortize> {
   const ordered = [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const newest = new Map<string, PromotionRecord>();
   for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, record);
   const sum = (parts: readonly (number | null)[]) => (parts.some((one) => one === null) ? null : micro(parts.reduce<number>((total, one) => total + one!, 0)));
+  const ran = (row: LedgerRow, record: PromotionRecord) => { const at = revisionOfRow(row); return at?.workflow === record.workflow && at.digest === record.digest; };
   const revisions = [...newest.values()].map((record): RevisionSpend => {
-    const replays = ordered.filter((row) => metricOf(row).path === "replay" && digestOfRow(row) === record.digest);
+    const replays = ordered.filter((row) => metricOf(row).path === "replay" && ran(row, record));
     const check = sum(replays.map((row) => (typeof row.costAtMostUsd === "number" ? null : row.costUsd)));
-    const compile = sum(compiles.filter((one) => one.digest === record.digest).map((one) => one.usd));
+    const compile = sum(compiles.filter((one) => one.workflow === record.workflow && one.digest === record.digest).map((one) => one.usd));
     const state = record.decided === "replaying" ? "checking" : championOf(records, record.workflow)?.digest === record.digest ? "serving" : "stopped";
     return { workflow: record.workflow, digest: record.digest, compile_usd: compile, check_usd: check, spend_usd: sum([compile, check]), k: record.check?.compile_after ?? COMPILE_AFTER_DEFAULT, state };
   });
-  const served = ordered.flatMap((row) => (SERVED_PATHS.includes(metricOf(row).path as RunPath) && digestOfRow(row) ? [{ run_id: row.id, digest: digestOfRow(row)! }] : []));
+  const served = ordered.flatMap((row) => {
+    const at = revisionOfRow(row);
+    return SERVED_PATHS.includes(metricOf(row).path as RunPath) && at ? [{ run_id: row.id, ...at }] : [];
+  });
   return amortize(revisions, served);
 }
 
@@ -431,7 +441,7 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
   if (path === "replay" || path === "audit" || isShadowRun(run.id)) return { path, usd: cost.cost_usd, learning_usd: 0, all_in_usd: 0 };
   // Its share of its revision's compile and check: a served run's, over the agent's ledger.
   let shares: ReadonlyMap<string, number | null> = new Map();
-  if (path !== null && SERVED_PATHS.includes(path) && digestOfRow(run)) {
+  if (path !== null && SERVED_PATHS.includes(path) && revisionOfRow(run)) {
     const listed = (await store.runs.list({ agentId: run.agentId })).filter((one) => one.agentId === run.agentId);
     shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), await promotionsOf(store.settings, run.agentId), listed)).shares;
   }

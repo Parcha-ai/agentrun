@@ -80,7 +80,7 @@ test("amortize: a revision's spend over its first K served runs to the micro-dol
     { workflow: "answer", digest: B, spend_usd: 0.5, k: 4, state: "stopped" },
     { workflow: "other", digest: "c".repeat(16), spend_usd: 0.1, k: 3, state: "serving" },
   ];
-  const served = [["run-06", A], ["run-07", A], ["run-08", A], ["run-09", A], ["run-10", B], ["run-11", "c".repeat(16)], ["run-12", "c".repeat(16)], ["run-13", "c".repeat(16)]].map(([run_id, digest]) => ({ run_id, digest }));
+  const served = [["run-06", A], ["run-07", A], ["run-08", A], ["run-09", A], ["run-10", B], ["run-11", "c".repeat(16)], ["run-12", "c".repeat(16)], ["run-13", "c".repeat(16)]].map(([run_id, digest]) => ({ run_id, workflow: digest === "c".repeat(16) ? "other" : "answer", digest }));
   const out = amortize(revisions, served);
   assert.deepEqual([...out.shares], [["run-06", 0.2], ["run-07", 0.2], ["run-08", 0.2], ["run-10", 0.125], ["run-11", 0.033334], ["run-12", 0.033333], ["run-13", 0.033333]], "paid after K: run-09 carries none");
   assert.deepEqual(out.revisions.map((one) => [one.digest, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[A, 3, 0.6, 0, "serving"], [B, 1, 0.125, 0.375, "stopped"], ["c".repeat(16), 3, 0.1, 0, "serving"]]);

@@ -10,15 +10,17 @@ import type { AuditRow, Bill, Serving } from "@/lib/v2";
 const runsWord = (n: number) => `${n} ${n === 1 ? "run" : "runs"}`;
 const dollars = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
 
-/** The bill's headline and the run its break-even marker stands on (null: none yet, or nothing promoted). */
+/** The bill's headline and the run its break-even marker stands on (null: none yet, or nothing promoted). The booked
+ *  total is the server's `booked_usd`, never the last point's: spend booked after it (a replay after a job of unknown
+ *  cost) is in it. */
 export function billWords(bill: Bill): { headline: string; marker: number | null } {
   const last = bill.points.at(-1);
   const withheld = bill.withheld ? ` · ${runsWord(bill.withheld)} of unknown cost on neither line` : "";
   if (!last) return { headline: `No run with a known cost yet${withheld}`, marker: null };
-  if (!bill.promoted) return { headline: `No learned workflow serves yet: the bill is the agent's own, ${dollars(last.actual_usd)} over ${runsWord(bill.points.length)}${withheld}`, marker: null };
+  if (!bill.promoted) return { headline: `No learned workflow serves yet: the bill is the agent's own, ${dollars(bill.booked_usd)} over ${runsWord(bill.points.length)}${withheld}`, marker: null };
   if (bill.break_even) {
     const all = last.agent_usd === null ? "" : `, ${dollars(last.agent_usd)} had the agent done all of it`;
-    return { headline: `Break-even at run ${bill.break_even.n}: ${dollars(last.actual_usd)} booked over ${runsWord(bill.points.length)}${all}${withheld}`, marker: bill.break_even.n };
+    return { headline: `Break-even at run ${bill.break_even.n}: ${dollars(bill.booked_usd)} booked over ${runsWord(bill.points.length)}${all}${withheld}`, marker: bill.break_even.n };
   }
   const gap = bill.gap_usd === null ? "" : `: ${dollars(bill.gap_usd)} over the agent for all of it at run ${last.n}`;
   return { headline: `Not yet${gap}${withheld}`, marker: null };
