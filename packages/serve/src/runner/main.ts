@@ -29,7 +29,7 @@ import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, 
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { claimViewOpener } from "../computer-live.js";
-import { runnerLiveOf } from "../live-reach.js";
+import { LOOPBACK as LIVE_LOOPBACK, runnerLiveOf } from "../live-reach.js";
 import { LOOPBACK } from "../mcp-oauth.js";
 import { serverOwn } from "../mcp-private-hosts.js";
 import { MCP_ALLOW_LOOPBACK_ENV } from "../mcp-servers-store.js";
@@ -198,7 +198,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
  *  another process's. */
 export function runnerLoopback(env: NodeJS.ProcessEnv): { readonly own: readonly string[] } | undefined {
   if (env[MCP_ALLOW_LOOPBACK_ENV] !== "1") return undefined;
-  const own = [`http://127.0.0.1:${DEFAULT_PORT}`];
+  const own = [`http://${LIVE_LOOPBACK}:${DEFAULT_PORT}`];
   const pub = URL.parse(env.AGENTRUN_PUBLIC_URL ?? "");
   if (pub && LOOPBACK.test(pub.hostname)) own.push(pub.origin);
   return { own };
