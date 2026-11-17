@@ -2,7 +2,8 @@
 // teacher's label once it ended (PUT /runs/{id}/grade's logic: keepGrade), as the loop proof feeds
 // labels back. The run's path is who wrote its final answer, and feedback is learning spend:
 //   - a run its learned workflow answered alone, graded right or wrong: the grade is kept, nothing more: no reopen, no
-//     request, no compile ask, path `workflow`, learning $0 (one wrong answer is one sample; a hold asks the revision);
+//     request, no compile ask, path `workflow`, learning $0 (one wrong answer is one sample; a hold asks the revision),
+//     but for one drawn for an audit, whose learning cost is its shadow run's;
 //   - a run the agent finished, graded with a label: a look-back round on it, no turn of the job's, and the cost per run
 //     counts every round's look-back (agentCostOverStore: the job is its first round's, all after it learning). Its
 //     first round, with no feedback yet, was not looked back on.
@@ -23,6 +24,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { gradesOf, markGradeRound, putGrade, recordPromotion } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+const { auditDrawn, shadowRunId } = await import("../dist/learn/audit.js");
 const { keepGrade, feedbackStatus, feedbackRoundOf } = await import("../dist/runner/feedback-round.js");
 const { McpClaimRefused } = await import("../dist/runner/mcp-claim.js");
 const { runLearningOverStore } = await import("../dist/store-reads/learning.js");
@@ -140,12 +142,14 @@ async function world(t, { wrong = new Set(), calls = new Set(), outputSchema, re
 
 test("a 20-run labelled stream: served runs, right or wrong, cost $0 learning and stay workflow; the wrong one's grade is kept and asks nothing; every round's look-back is counted", { timeout: 300_000 }, async (t) => {
   const WRONG = 9;
-  const { server, gw, start, grade } = await world(t, { wrong: new Set([WRONG]) });
+  const { server, gw, start, ended, grade } = await world(t, { wrong: new Set([WRONG]) });
   const agentRequests = () => gw.requests.filter((request) => !isNode(request));
   const rows = new Map();
   for (let n = 1; n <= 20; n++) {
     const id = `run-${n}`;
     const first = await start(id, n, { byHand: n <= 3 });
+    // A served run drawn for an audit starts a shadow run of the agent: it ends before the grade's requests are counted.
+    if (n > 3 && auditDrawn(id, 10)) await ended(shadowRunId(id));
     const servedRight = first.metrics?.path === "workflow" && n !== WRONG;
     const before = agentRequests().length;
     const result = n === WRONG ? (await viewOverStore(server, id, VIEW_DEPS)).result : undefined;
@@ -175,15 +179,26 @@ test("a 20-run labelled stream: served runs, right or wrong, cost $0 learning an
   assert.ok(wrong.result?.final_answer, `the served run had an answer: ${JSON.stringify(wrong.result)}`);
   assert.deepEqual((await viewOverStore(server, `run-${WRONG}`, VIEW_DEPS)).result, wrong.result, "the grade left the run's result as it was");
 
-  // The cost per run: served runs, right or wrong, at $0 learning; a run by hand counts its label's look-back, and its
-  // first round, with no feedback, was not looked back on.
+  // The cost per run: served runs, right or wrong, at $0 learning, but for one drawn for an audit (learn/audit.ts
+  // auditDrawn, 1 in the definition's audit_every 10): its shadow run, the agent on the same input, is its learning cost.
+  // A run by hand counts its label's look-back, and its first round, with no feedback, was not looked back on.
+  const audited = [...rows.values()].filter(({ n }) => n > 3 && auditDrawn(`run-${n}`, 10)).map(({ n }) => `run-${n}`);
+  assert.ok(audited.length > 0, "the stream's ids draw at least one audit");
   const { runs, summary } = await agentCostOverStore(server, "agent-1");
-  assert.equal(runs.length, 20);
+  assert.equal(runs.length, 20, "a shadow run is no run of the agent's cost list");
   const byId = new Map(runs.map((run) => [run.run_id, run]));
   for (const [id, { n }] of rows) {
     const run = byId.get(id);
     if (n <= 3) continue;
-    assert.deepEqual([run.path, run.learning_usd], ["workflow", 0], `run ${n}: ${JSON.stringify(run)}`);
+    if (!audited.includes(id)) {
+      assert.deepEqual([run.path, run.learning_usd], ["workflow", 0], `run ${n}: ${JSON.stringify(run)}`);
+      assert.equal(await server.runs.get(shadowRunId(id)), undefined, `run ${n} was not drawn: no shadow`);
+      continue;
+    }
+    const shadow = await server.runs.get(shadowRunId(id));
+    assert.ok(shadow?.costUsd > 0, `run ${n}'s shadow ran: ${JSON.stringify(shadow)}`);
+    assert.equal(run.path, "workflow", `run ${n}: ${JSON.stringify(run)}`);
+    near(run.learning_usd, shadow.costUsd, `run ${n}'s learning cost is its audit's shadow`);
   }
   for (let n = 1; n <= 3; n++) {
     const id = `run-${n}`;
