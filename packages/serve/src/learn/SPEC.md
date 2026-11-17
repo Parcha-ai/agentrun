@@ -287,7 +287,9 @@ Over a cap is refused, never cut.
 One commit on `main` per round by the learning script (`learning.sh`, one exec through the folder's Workspace:
 `folder.ts` `writeLearning`): the passing draft's files added or changed (a held one with `status: pending`) and the
 owner's correction appended to `corrections.md`. Its message is `learning: <run id>: merged`, the reason, and a
-`Run-Id: <run id>` trailer; a run a trailer on `main` already names is merged, never twice. A draft file that is not on
+`Run-Id: <run id>` trailer. A round merges once: the script creates `refs/agentrun/runs/<run>` (`<run>.r<n>` for a
+later round) in the same ref transaction as `main`'s compare and swap, so a second merge of it, however it raced the
+first (a reclaimed run's two claims), writes nothing and reads the first's. A draft file that is not on
 main as it was on the run's seed (or the commit a revision read it at) is a conflict, never written over. `main` moves
 only from the commit the change was made on (the script's compare and swap; a lost race writes nothing and the change
 is computed again), and the same exec writes the run's diff (`.agentrun/diffs/<run>.json`) and, last, the folder's
