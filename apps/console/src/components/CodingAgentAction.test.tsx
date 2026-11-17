@@ -123,6 +123,18 @@ describe("CodingAgentAction", () => {
     expect(button("Copy prompt")).toBeTruthy();
   });
 
+  it("takes a Button's height, so it stands level with the button beside it", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const group = (size?: "sm" | "md" | "lg") => {
+      act(() => root!.render(createElement(CodingAgentAction, { label: "Use your agent", prompt, ...(size ? { size } : {}) })));
+      return host.querySelector<HTMLElement>('[role="group"]')!.className.split(" ").filter((c) => /^h-control-/.test(c));
+    };
+    expect(group()).toEqual(["h-control-sm"]);
+    expect(group("md")).toEqual(["h-control-md"]);
+    expect(group("lg")).toEqual(["h-control-lg"]);
+  });
+
   it("supports keyboard selection, escape, and outside dismissal", async () => {
     mount();
     const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Import agents"]')!;
