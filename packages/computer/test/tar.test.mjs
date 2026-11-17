@@ -93,3 +93,38 @@ test("a header whose checksum is wrong, and an archive cut inside an entry, are 
 	}, /the archive ends inside a\/big\.bin/);
 	assert.deepEqual(untar(Buffer.alloc(0)), [], "no bytes, no entries");
 });
+
+/** A ustar header of `name` whose size field is `size` as written, with flag `flag`, its checksum right. */
+const header = (name, size, flag = "0") => {
+	const block = Buffer.alloc(512);
+	block.write(name, 0, "utf8");
+	block.write("0000644\0", 100, "ascii");
+	block.write(size, 124, "ascii");
+	block.write(flag, 156, "ascii");
+	block.write("ustar\u000000", 257, "ascii");
+	block.fill(0x20, 148, 156);
+	let sum = 0;
+	for (const byte of block) sum += byte;
+	block.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+	return block;
+};
+const padded = (body) => Buffer.concat([body, Buffer.alloc((512 - (body.length % 512)) % 512)]);
+
+test("a size that is no count of bytes, in a header or a pax record, is refused in words, never read forever", () => {
+	for (const size of ["-1000", "zz", "7".repeat(11)]) {
+		const archive = Buffer.concat([header("x.txt", size), Buffer.alloc(1024)]);
+		if (size === "7".repeat(11)) {
+			assert.throws(() => untar(archive), /the archive ends inside x\.txt/, "a size past the bytes is an archive cut short");
+			continue;
+		}
+		assert.throws(() => untar(archive), /^Error: the archive has a header whose size is no count of bytes \("x\.txt"\)$/, size);
+	}
+	for (const size of ["-5", "1e3", "x"]) {
+		const record = (length) => `${length} size=${size}\n`;
+		let line = record(0);
+		line = record(line.length + String(line.length).length - 1);
+		const body = Buffer.from(line);
+		const archive = Buffer.concat([header("PaxHeaders/x.txt", body.length.toString(8), "x"), padded(body), header("x.txt", "2"), padded(Buffer.from("hi")), Buffer.alloc(1024)]);
+		assert.throws(() => untar(archive), new RegExp(`^Error: the archive has a pax size that is no count of bytes \\("${size}"\\)$`), size);
+	}
+});

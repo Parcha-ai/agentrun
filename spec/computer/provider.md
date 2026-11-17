@@ -173,13 +173,16 @@ the computer's own `files` and `exec` calls, so no FUSE is needed and a GPU host
 - `FolderSync` (`packages/computer/src/sync-folder.ts`) takes the delta against a `SyncSink` (put, mkdir, remove,
   meta). It reads one paged `files.list` of the folder and compares it with the last listing's manifest. A new tree
   comes in one `tar.pull`. A changed file of up to 512 KiB comes through `files.read`, and a larger one through
-  `tar.pull`; 8 pulls and 8 puts run at once. Deletes run only when every put landed, deepest first. Modes and links
+  `tar.pull`; 8 pulls and 8 puts run at once. Deletes run only when every put landed, deepest first; a directory the computer's user can't read keeps what
+  the sink holds under it, since a listing can't see inside it. A path whose old entry the sink did not remove gets
+  nothing new until a later sync removes it. Modes and links
   come from the listing alone, never as bytes; a link is kept by its target as written, never followed. A path that is
   no plain relative path (absolute, a `.` or `..` segment, a backslash, a NUL) fails the sync in words.
 - A file whose mtime is within 1 s of the newest in its listing is read again at the first sync 1 s later (git's
   racy rule). Bytes that equal the ones last put are not put again. A write that leaves both the size and the mtime as
   they were is not seen.
-- Over `SYNC_MAX_ENTRIES` (20,000) entries or `SYNC_MAX_BYTES` (2 GiB), a sync fails with code `limit`.
+- Over `SYNC_MAX_ENTRIES` (20,000) entries or `SYNC_MAX_BYTES` (2 GiB), a sync fails with code `limit`. The entry cap
+  is checked as each page arrives, so no listing past it is held.
 
 ## prepareImage
 

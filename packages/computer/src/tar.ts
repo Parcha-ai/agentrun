@@ -75,6 +75,8 @@ const text = (block: Buffer, at: number, length: number) => {
 	return raw.subarray(0, end < 0 ? raw.length : end).toString("utf8");
 };
 const number = (block: Buffer, at: number, length: number) => Number.parseInt(text(block, at, length).trim() || "0", 8);
+/** A size an entry can have: a whole number of bytes, 0 or more (a negative or unreadable one would never be consumed). */
+const sized = (size: number) => Number.isSafeInteger(size) && size >= 0;
 
 /** Reads pax records: "<len> key=value\n" each. */
 function pax(body: Buffer): Record<string, string> {
@@ -137,6 +139,7 @@ export class TarReader {
 			if (sum !== number(head, 148, 8)) throw new Error(`the archive has a header whose checksum is not its bytes' (${JSON.stringify(text(head, 0, 100))})`);
 			const flag = text(head, 156, 1) || "0";
 			const size = flag === "x" || flag === "g" || flag === "L" || flag === "K" ? number(head, 124, 12) : (this.#next.size ?? number(head, 124, 12));
+			if (!sized(size)) throw new Error(`the archive has a header whose size is no count of bytes (${JSON.stringify(text(head, 0, 100))})`);
 			const whole = this.#peek(BLOCK + size + ((BLOCK - (size % BLOCK)) % BLOCK));
 			if (whole === undefined) return entries;
 			const body = Buffer.from(whole.subarray(BLOCK, BLOCK + size));
@@ -150,7 +153,8 @@ export class TarReader {
 	#entry(block: Buffer, flag: string, body: Buffer): TarEntry | undefined {
 		if (flag === "x") {
 			const records = pax(body);
-			const size = records.size === undefined ? this.#next.size : Number.parseInt(records.size, 10);
+			const size = records.size === undefined ? this.#next.size : /^\d+$/.test(records.size) ? Number(records.size) : Number.NaN;
+			if (size !== undefined && !sized(size)) throw new Error(`the archive has a pax size that is no count of bytes (${JSON.stringify(records.size)})`);
 			this.#next = { path: records.path ?? this.#next.path, linkpath: records.linkpath ?? this.#next.linkpath, ...(size === undefined ? {} : { size }) };
 			return undefined;
 		}

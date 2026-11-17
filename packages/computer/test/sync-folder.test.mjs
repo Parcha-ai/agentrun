@@ -111,6 +111,114 @@ test("a truncated listing is paged: the next page asked for at the count read so
 	]);
 });
 
+/**
+ * A computer scripted by state: `state.entries` is the folder (a whole listing of /workspace), `state.unreadable` the
+ * directories a files.list of their own refuses, as computerd does where it can't read one (its walk keeps the
+ * directory, without what it holds); each file's bytes are "A", and a tar.pull is refused while `state.noTar`.
+ */
+const scripted = (state) => ({
+	async call(method, params) {
+		if (method === "files.list" && params.path === "/workspace") return { ok: true, value: { entries: state.entries, truncated: false } };
+		if (method === "files.list") {
+			if (state.unreadable?.includes(params.path)) return { ok: false, error: { code: "refused", message: `open ${params.path}: permission denied` } };
+			return { ok: true, value: { entries: state.entries.filter((entry) => entry.path.startsWith(`${params.path}/`)), truncated: false } };
+		}
+		if (method === "files.read") return { ok: true, value: { data: Buffer.from("A").toString("base64"), size: 1, eof: true } };
+		if (method === "tar.pull.begin" && state.noTar) return { ok: false, error: { code: "unreachable", message: "the computer is away" } };
+		return { ok: false, error: { code: "unsupported", message: method } };
+	},
+	close() {},
+});
+const dir = (path, mode = 0o755) => ({ path: `/workspace/${path}`, type: "dir", size: 4096, mode, mtimeMs: 1 });
+const link = (path, target) => ({ path: `/workspace/${path}`, type: "symlink", size: target.length, mode: 0o777, mtimeMs: 1, target });
+/** The sink, whose calls named in `refusing` (a set of "method path") are refused until taken out of it. */
+const refusingSink = (refusing) => {
+	const sink = fakeSink();
+	for (const method of ["put", "mkdir", "remove"]) {
+		const real = sink[method];
+		sink[method] = async (path, ...rest) => (refusing.has(`${method} ${path}`) ? { ok: false, error: { code: "unreachable", message: "the store is down" } } : real(path, ...rest));
+	}
+	return sink;
+};
+
+test("a directory the computer's user can't read keeps what the sink holds under it: nothing is deleted, its modes and links stay, and an emptied one still empties", async () => {
+	const state = { entries: [dir("d"), file("d/a"), link("d/l", "a"), dir("e"), file("e/b")] };
+	const sink = fakeSink();
+	const sync = new FolderSync(scripted(state), sink);
+	assert.deepEqual(await sync.baseline(), { ok: true, value: undefined });
+	// chmod 000 d: files.list keeps d, without what it holds, and a files.list of d alone is refused. rm e/b: e is empty.
+	state.entries = [dir("d", 0), dir("e")];
+	state.unreadable = ["/workspace/d"];
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 1, removed: 1, meta: true } });
+	assert.deepEqual(sink.calls, [
+		["mkdir", "e"],
+		["remove", "e/b", "file"],
+		["meta", { modes: { d: 0 }, links: { "d/l": "a" } }],
+	]);
+	// Readable again, as it was: nothing to write.
+	sink.calls.length = 0;
+	state.entries = [dir("d"), file("d/a"), link("d/l", "a"), dir("e")];
+	state.unreadable = [];
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 0, meta: true } });
+	assert.deepEqual(sink.calls, [["meta", { modes: {}, links: { "d/l": "a" } }]]);
+});
+
+test("a path whose old entry the sink did not remove keeps it: the next sync removes it again before it writes the new one", async () => {
+	const state = { entries: [file("l")] };
+	const refusing = new Set(["remove l"]);
+	const sink = refusingSink(refusing);
+	const sync = new FolderSync(scripted(state), sink);
+	assert.deepEqual(await sync.baseline(), { ok: true, value: undefined });
+	state.entries = [link("l", "x")];
+	assert.deepEqual(await sync.sync(), { ok: false, error: { code: "unreachable", message: "1 of the folder's changes did not land, and are sent again at the next sync: l: the store is down" } });
+	assert.deepEqual(sink.calls, []);
+	refusing.clear();
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 1, meta: true } });
+	assert.deepEqual(sink.calls, [
+		["remove", "l", "file"],
+		["meta", { modes: {}, links: { l: "x" } }],
+	]);
+});
+
+test("a new directory none of whose files landed is new again: emptied since, the next sync makes it", async () => {
+	const state = { entries: [] };
+	const sink = fakeSink();
+	const sync = new FolderSync(scripted(state), sink);
+	assert.deepEqual(await sync.baseline(), { ok: true, value: undefined });
+	state.entries = [dir("d"), file("d/f")];
+	state.noTar = true;
+	assert.deepEqual(await sync.sync(), { ok: false, error: { code: "unreachable", message: "1 of the folder's changes did not land, and are sent again at the next sync: d/: the computer is away" } });
+	state.entries = [dir("d")];
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 1, removed: 0, meta: false } });
+	assert.deepEqual(sink.calls, [["mkdir", "d"]]);
+});
+
+test("a listing past the entry cap fails as its pages come, never held whole", async () => {
+	const page = { entries: Array.from({ length: 1000 }, (_, i) => file(`f${i}`)), truncated: true };
+	const client = listing(() => page);
+	const sync = new FolderSync(client, fakeSink());
+	assert.deepEqual(await sync.baseline(), { ok: false, error: { code: "limit", message: `the run's folder holds more than ${SYNC_MAX_ENTRIES} entries, the most a synced folder holds` } });
+	assert.ok(client.calls.length <= SYNC_MAX_ENTRIES / 1000 + 3, `${client.calls.length} pages asked for`);
+});
+
+test("a link or a mode of a path named __proto__ is kept like any other", async () => {
+	for (const [entry, json] of [
+		[link("__proto__", "t"), '{"modes":{},"links":{"__proto__":"t"}}'],
+		[{ ...file("__proto__"), mode: 0o600 }, '{"modes":{"__proto__":384},"links":{}}'],
+	]) {
+		const state = { entries: [] };
+		const sink = fakeSink();
+		const sync = new FolderSync(scripted(state), sink);
+		assert.deepEqual(await sync.baseline(), { ok: true, value: undefined });
+		state.entries = [entry];
+		assert.equal((await sync.sync()).ok, true);
+		assert.deepEqual(
+			sink.calls.filter(([method]) => method === "meta").map(([, meta]) => JSON.stringify(meta)),
+			[json],
+		);
+	}
+});
+
 test("a sink that fails a put: the sync fails in words, deletes and meta wait, and the next sync sends it again", async () => {
 	let entries = [file("a")];
 	const client = {

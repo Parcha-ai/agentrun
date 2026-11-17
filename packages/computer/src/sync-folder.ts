@@ -6,7 +6,8 @@
 // Known miss: a write that leaves a file's size and mtime both as they were (`touch -d`, `cp -p` onto a file of the same
 // size) is not seen. A same-size rewrite within the same millisecond is, by the racy rule (git's): a file whose mtime is
 // within 1 s of the newest in its listing is pulled again at the first sync at least 1 s later. Bytes read that are the
-// ones last put there (that re-read, a touch) are not put again.
+// ones last put there (that re-read, a touch) are not put again. A directory the computer's user can't read keeps what
+// the sink holds under it until it reads again: files.list lists one without what it holds.
 import { createHash } from "node:crypto";
 import { pullTarStream, readFile } from "./files.js";
 import { WORKSPACE } from "./mount.js";
@@ -22,6 +23,7 @@ export const SYNC_MAX_BYTES = 2 * 1024 ** 3;
 const IN_FLIGHT = 8;
 /** A file whose mtime is within this of the newest in its listing may be rewritten unseen in the same millisecond. */
 const RACY_MS = 1000;
+const TOO_MANY = `the run's folder holds more than ${SYNC_MAX_ENTRIES} entries, the most a synced folder holds`;
 const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
 
@@ -119,15 +121,15 @@ class Slots {
 	}
 }
 
-/** The folder's modes and links, from a listing. */
-function metaOf(listing: ReadonlyMap<string, FileEntry>): FolderMeta {
-	const modes: Record<string, number> = {};
-	const links: Record<string, string> = {};
+/** The folder's modes and links, from a listing; built by fromEntries, so a path such as `__proto__` is a key like any. */
+function metaOf(listing: ReadonlyMap<string, Pick<FileEntry, "type" | "mode" | "target">>): FolderMeta {
+	const modes: [string, number][] = [];
+	const links: [string, string][] = [];
 	for (const [path, entry] of [...listing].sort(([a], [b]) => (a < b ? -1 : 1))) {
-		if (entry.type === "symlink") links[path] = entry.target ?? "";
-		else if (entry.mode !== (entry.type === "dir" ? DIR_MODE : FILE_MODE)) modes[path] = entry.mode;
+		if (entry.type === "symlink") links.push([path, entry.target ?? ""]);
+		else if (entry.mode !== (entry.type === "dir" ? DIR_MODE : FILE_MODE)) modes.push([path, entry.mode]);
 	}
-	return { modes, links };
+	return { modes: Object.fromEntries(modes), links: Object.fromEntries(links) };
 }
 
 const knownOf = (entry: FileEntry, settled: boolean): Known => ({
@@ -193,26 +195,40 @@ export class FolderSync {
 		const failures: { code: ComputerErrorCode; words: string }[] = [];
 		const failed = (code: ComputerErrorCode, words: string) => failures.push({ code, words });
 
+		// A directory listed with nothing under it where the manifest holds something may be one its user can't read:
+		// files.list keeps such a directory but not what it holds. What the manifest holds under one is kept as it is.
+		const parents = (entries: Iterable<[string, { type: string }]>) => new Set([...entries].filter(([, entry]) => entry.type !== "symlink").map(([path]) => parentOf(path)));
+		const [holdsNow, heldBefore] = [parents(listing), parents(manifest)];
+		const unreadable = await this.#unreadable(
+			[...listing].filter(([path, entry]) => entry.type === "dir" && heldBefore.has(path) && !holdsNow.has(path)).map(([path]) => path),
+			signal,
+		);
+		const kept = (path: string) => unreadable.some((dir) => under(path, dir));
+
 		// What changed: a type that differs is removed first, with what the manifest holds under it.
 		const retyped = [...listing].filter(([path, entry]) => manifest.has(path) && manifest.get(path)?.type !== entry.type).map(([path]) => path);
-		const early = [...manifest.keys()].filter((path) => retyped.some((changed) => path === changed || under(path, changed))).sort(deepestFirst);
-		const newDirs = new Set([...listing].filter(([path, entry]) => entry.type === "dir" && manifest.get(path)?.type !== "dir").map(([path]) => path));
+		const early = new Set([...manifest.keys()].filter((path) => retyped.some((changed) => path === changed || under(path, changed))));
+		const removed = [...manifest.keys()].filter((path) => !listing.has(path) && !early.has(path) && !kept(path)).sort(deepestFirst);
+		for (const path of [...early].sort(deepestFirst)) {
+			const known = manifest.get(path) as Known;
+			if (known.type === "symlink") manifest.delete(path);
+			else await this.#remove(path, known.type, counts, failed);
+		}
+		// A path whose old entry is still there keeps it in the manifest, and nothing is written there or under it, so the
+		// next sync removes it again first.
+		const stuck = retyped.filter((path) => manifest.has(path));
+		const open = (path: string) => !stuck.some((dir) => path === dir || under(path, dir));
+
+		const newDirs = new Set([...listing].filter(([path, entry]) => entry.type === "dir" && manifest.get(path)?.type !== "dir" && open(path)).map(([path]) => path));
 		const due = (path: string) => manifest.get(path)?.settled === false && at - (this.#racy.get(path) ?? Number.POSITIVE_INFINITY) >= RACY_MS;
 		const files = [...listing].filter(([path, entry]) => {
-			if (entry.type !== "file") return false;
+			if (entry.type !== "file" || !open(path)) return false;
 			const known = manifest.get(path);
 			return known?.type !== "file" || known.size !== entry.size || known.mtimeMs !== entry.mtimeMs || due(path);
 		});
 		// A new directory whose parent is no new one is pulled whole, as one tar, where it holds a file.
 		const trees = [...newDirs].filter((dir) => !newDirs.has(parentOf(dir)) && files.some(([path]) => under(path, dir)));
 		const inTree = (path: string) => trees.some((dir) => under(path, dir));
-		const removed = [...manifest.keys()].filter((path) => !listing.has(path) && !early.includes(path)).sort(deepestFirst);
-
-		for (const path of early) {
-			const known = manifest.get(path) as Known;
-			if (known.type === "symlink") manifest.delete(path);
-			else await this.#remove(path, known.type, counts, failed);
-		}
 
 		// The puts, IN_FLIGHT pulls at once and IN_FLIGHT puts at once; each advances its entry once it answered.
 		const pulls = new Slots(IN_FLIGHT);
@@ -245,23 +261,33 @@ export class FolderSync {
 		await Promise.all(tasks);
 
 		// Directories and links carry no bytes. An empty directory is recorded (new, or emptied since: a file or directory
-		// under it in the manifest and none in the listing); a new one advances once recorded, or at once where a file or
-		// directory under it records it. A file of a new tree that did not land is read on its own at the next sync.
-		const parents = (entries: Iterable<[string, { type: string }]>) => new Set([...entries].filter(([, entry]) => entry.type !== "symlink").map(([path]) => parentOf(path)));
-		const [holdsNow, heldBefore] = [parents(listing), parents(manifest)];
-		for (const [path, entry] of listing) {
-			if (entry.type === "symlink") manifest.set(path, knownOf(entry, true));
-			if (entry.type !== "dir") continue;
+		// under it in the manifest and none in the listing). A new one advances once something records it: its own mkdir,
+		// or a file or directory under it that advanced (deepest first, so a directory's are known before it). A file of a
+		// new tree that did not land is read on its own at the next sync, and its directory is new again until then.
+		const ancestors = (path: string) => {
+			const all: string[] = [];
+			for (let dir = parentOf(path); dir !== ""; dir = parentOf(dir)) all.push(dir);
+			return all;
+		};
+		const recorded = new Set([...manifest].filter(([, known]) => known.type !== "symlink").flatMap(([path]) => ancestors(path)));
+		for (const [path, entry] of listing) if (entry.type === "symlink" && open(path)) manifest.set(path, knownOf(entry, true));
+		const dirs = [...listing].filter(([path, entry]) => entry.type === "dir" && open(path) && !unreadable.includes(path)).sort(([a], [b]) => deepestFirst(a, b));
+		for (const [path, entry] of dirs) {
 			const isNew = newDirs.has(path);
+			let made = false;
 			if (!holdsNow.has(path) && (isNew || heldBefore.has(path))) {
-				const made = await this.#sink.mkdir(path).catch((error: unknown) => fail("refused", error instanceof Error ? error.message : String(error)));
-				if (!made.ok) {
-					failed(made.error.code, `${path}/: ${made.error.message}`);
+				const wrote = await this.#sink.mkdir(path).catch((error: unknown) => fail("refused", error instanceof Error ? error.message : String(error)));
+				if (!wrote.ok) {
+					failed(wrote.error.code, `${path}/: ${wrote.error.message}`);
 					continue;
 				}
 				counts.mkdir++;
+				made = true;
 			}
-			if (isNew) manifest.set(path, knownOf(entry, true));
+			if (isNew && (made || recorded.has(path))) {
+				manifest.set(path, knownOf(entry, true));
+				for (const dir of [path, ...ancestors(path)]) recorded.add(dir);
+			}
 		}
 
 		// Deletes, once every put landed: a moved file is never missing from both places.
@@ -274,7 +300,7 @@ export class FolderSync {
 		}
 
 		// The modes and links last, once everything else landed, where they differ from the last written.
-		const meta = metaOf(listing);
+		const meta = metaOf(new Map<string, Pick<FileEntry, "type" | "mode" | "target">>([...listing, ...[...manifest].filter(([path]) => kept(path))]));
 		const json = JSON.stringify(meta);
 		if (failures.length === 0 && json !== this.#meta) {
 			const wrote = await this.#sink.meta(meta).catch((error: unknown) => fail("refused", error instanceof Error ? error.message : String(error)));
@@ -306,6 +332,22 @@ export class FolderSync {
 		}
 		counts.removed++;
 		this.#manifest.delete(path);
+	}
+
+	/** Of `dirs`, the ones a files.list of their own refuses: unreadable, so what the listing left out of them is unknown. */
+	async #unreadable(dirs: readonly string[], signal?: AbortSignal): Promise<string[]> {
+		const slots = new Slots(IN_FLIGHT);
+		const listed = await Promise.all(
+			dirs.map((dir) =>
+				slots.run(() =>
+					this.#client.call("files.list", { path: `${this.#root}/${dir}`, depth: 1, offset: 0 }, signal ? { signal } : {}).then(
+						(page) => page.ok,
+						() => false,
+					),
+				),
+			),
+		);
+		return dirs.filter((_, index) => !listed[index]);
 	}
 
 	/** One changed file: files.read up to MAX_CHUNK_BYTES, a tar.pull of it above that. */
@@ -371,7 +413,7 @@ export class FolderSync {
 		const queue = [this.#root];
 		for (let dir = queue.shift(); dir !== undefined; dir = queue.shift()) {
 			const base = dir === this.#root ? 0 : depthOf(dir.slice(this.#root.length + 1));
-			const pages = await this.#pages(dir, signal);
+			const pages = await this.#pages(dir, SYNC_MAX_ENTRIES - listing.size, signal);
 			if (!pages.ok) return pages;
 			for (const entry of pages.value) {
 				if (!entry.path.startsWith(`${this.#root}/`)) return fail("refused", `files.list of ${dir} gave ${JSON.stringify(entry.path)}, which is not in ${this.#root}`);
@@ -382,7 +424,6 @@ export class FolderSync {
 				listing.set(path, entry);
 				if (entry.type === "file") bytes += entry.size;
 				if (entry.type === "dir" && depthOf(path) - base === MAX_LIST_DEPTH) queue.push(entry.path);
-				if (listing.size > SYNC_MAX_ENTRIES) return fail("limit", `the run's folder holds more than ${SYNC_MAX_ENTRIES} entries, the most a synced folder holds`);
 			}
 		}
 		if (bytes > SYNC_MAX_BYTES) return fail("limit", `the run's folder holds ${bytes} bytes, more than ${SYNC_MAX_BYTES}, the most a synced folder holds`);
@@ -392,9 +433,10 @@ export class FolderSync {
 	/**
 	 * Every entry files.list gives below dir, MAX_LIST_DEPTH deep. Past a truncated page, the next is asked for while the
 	 * one before is in flight, at the last page's count (the daemon may cut a page short of MAX_LIST_ENTRIES by bytes):
-	 * one asked for where the count read so far is not is dropped, and asked for again there.
+	 * one asked for where the count read so far is not is dropped, and asked for again there. More than `room` entries
+	 * (what the folder's cap leaves) fails at once, kind limit, so no listing past the cap is held.
 	 */
-	async #pages(dir: string, signal?: AbortSignal): Promise<Result<FileEntry[]>> {
+	async #pages(dir: string, room: number, signal?: AbortSignal): Promise<Result<FileEntry[]>> {
 		const entries: FileEntry[] = [];
 		const ask = (offset: number) => this.#client.call("files.list", { path: dir, depth: MAX_LIST_DEPTH, offset }, signal ? { signal } : {});
 		let current = ask(0);
@@ -403,20 +445,25 @@ export class FolderSync {
 			await next?.page.catch(() => undefined);
 			next = undefined;
 		};
-		for (let pages = 1; ; pages++) {
+		for (;;) {
 			const page = await current;
 			if (!page.ok) {
 				await drop();
 				return fail(page.error.code, `files.list of ${dir} at ${entries.length}: ${page.error.message}`);
 			}
 			entries.push(...page.value.entries);
+			if (entries.length > room) {
+				await drop();
+				return fail("limit", TOO_MANY);
+			}
 			if (!page.value.truncated) {
 				await drop();
 				return ok(entries);
 			}
-			if (page.value.entries.length === 0 || pages > SYNC_MAX_ENTRIES) {
+			// Each truncated page holds an entry at least, so the room bounds how many pages there are.
+			if (page.value.entries.length === 0) {
 				await drop();
-				return fail("refused", `files.list of ${dir} at ${entries.length} gave a truncated page with no entries, or no last page`);
+				return fail("refused", `files.list of ${dir} at ${entries.length} gave a truncated page with no entries`);
 			}
 			if (next !== undefined && next.offset === entries.length) current = next.page;
 			else {
