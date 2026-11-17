@@ -10,8 +10,9 @@ import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { builtinHarness } from "./harness-table.js";
 
 /** The port a server listens on unless --port says otherwise (cli.ts), and the one a standalone runner's loopback reads
- *  never go to (runner/main.ts runnerLoopback). */
-export const DEFAULT_PORT = 7340;
+ *  never go to (runner/main.ts runnerLoopback); and the free disk under the data directory below which health fails,
+ *  unless the server says otherwise. Both live in listen-first.ts, which the CLI loads before the rest of the server. */
+export { DEFAULT_PORT, MIN_FREE_MIB } from "./listen-first.js";
 
 const MiB = 2 ** 20;
 /** Memory the server keeps for itself, before any run, in MiB. Measured with the runs' (harness-table.ts): the server's anon
@@ -20,8 +21,6 @@ const MiB = 2 ** 20;
  *  with the pinned binaries' sha256 checked a chunk at a time: a start that reads the codex binary (294 MB) and the
  *  claude-agent CLI (230 MB) whole sat at 341 to 348 MB on a host of 1 GB or less. */
 export const SERVER_MIB = 128;
-/** Free disk under the data directory below which health fails, unless the server says otherwise. */
-export const MIN_FREE_MIB = 64;
 
 /** The memory this server may use: its container's limit when it has one (cgroup), else the machine's. */
 export function hostMemory(): number {

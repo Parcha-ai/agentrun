@@ -23,11 +23,12 @@ const within = (promise, ms) => {
   return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
 };
 
-/** agentrun-serve's CLI, started with `args` in a fresh home, its load of dist/server.js held until `release` exists. */
-function cli(t, args, { release = "" } = {}) {
+/** agentrun-serve's CLI, started with `args` in a fresh home (on `data`, else a store in that home), its load of
+ *  dist/server.js held until `release` exists. */
+function cli(t, args, { release = "", data } = {}) {
   const home = mkdtempSync(join(tmpdir(), "serve-listen-first-"));
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
-  const child = spawn(process.execPath, ["--import", HOLD, CLI, "--data", join(home, "agents"), "--faux", FAUX, ...args], {
+  const child = spawn(process.execPath, ["--import", HOLD, CLI, "--data", data ?? join(home, "agents"), "--faux", FAUX, ...args], {
     env: { ...clean, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), AGENTRUN_BOXES: "none", AGENTRUN_LOG: "quiet", AGENTRUN_TEST_RELEASE: release },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -47,14 +48,32 @@ function cli(t, args, { release = "" } = {}) {
   return { child, exited, home, out: () => out, err: () => err };
 }
 
-test("the CLI binds and prints Starting <url>/ before the server loads; until it is ready, health says warming, the API answers 503 and a browser gets a page that reloads; then the same port serves", { timeout: 180_000 }, async (t) => {
+test("the CLI binds and prints Starting <url>/ before the server loads; once it has loaded, its banner names the same port", { timeout: 180_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "serve-listen-first-release-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const release = join(dir, "release");
   const server = cli(t, ["--port", "0"], { release });
   const starting = await printed(server.child, /^Starting http:\/\/127\.0\.0\.1:\d+\/ /m);
   const url = /^Starting (http:\/\/127\.0\.0\.1:\d+)\/ /m.exec(starting)[1];
-  // The server's load is still held: no banner, and every answer is the warming one.
+  // The server's load is still held (its hooks hold the CLI's thread too, so nothing is asked of it here): no banner.
+  assert.doesNotMatch(server.out(), /^(Open |AGENTRUN_BASE_URL=)/m, server.out());
+  writeFileSync(release, "");
+  await printed(server.child, /^Open /m);
+  assert.equal(/^AGENTRUN_BASE_URL=(\S+)\/v2$/m.exec(server.out())?.[1], url, server.out());
+  assert.ok(server.out().indexOf("Starting ") < server.out().indexOf("Open "), "Starting comes first");
+});
+
+test("until the server is ready, it answers warming: health says so, the API answers 503 unavailable and a browser gets a page that reloads; then the same port serves", { timeout: 240_000 }, async (t) => {
+  // A second server on a data directory another holds waits for it (a restart that starts the new one first), listening:
+  // the warming answers, for as long as the first holds the store.
+  const dir = mkdtempSync(join(tmpdir(), "serve-listen-first-data-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const first = cli(t, ["--port", "0"], { data });
+  await printed(first.child, /^Open /m);
+  const server = cli(t, ["--port", "0"], { data });
+  const starting = await printed(server.child, /^Starting http:\/\/127\.0\.0\.1:\d+\/ /m);
+  const url = /^Starting (http:\/\/127\.0\.0\.1:\d+)\/ /m.exec(starting)[1];
   assert.doesNotMatch(server.out(), /^(Open |AGENTRUN_BASE_URL=)/m, server.out());
 
   const health = await fetch(`${url}/v2/health`);
@@ -81,8 +100,9 @@ test("the CLI binds and prints Starting <url>/ before the server loads; until it
   assert.match(html, /<meta http-equiv="refresh" content="2">/);
   assert.match(html, /AgentRun is starting/);
 
-  // Released: the server loads, takes the socket over and prints its banner on the same port.
-  writeFileSync(release, "");
+  // The first server stops: this one takes the store and the socket over, and prints its banner on the same port.
+  first.child.kill("SIGTERM");
+  await first.exited;
   const banner = await printed(server.child, /^Open /m);
   assert.equal(/^AGENTRUN_BASE_URL=(\S+)\/v2$/m.exec(server.out())?.[1], url, banner);
   const ready = await fetch(`${url}/v2/health`);

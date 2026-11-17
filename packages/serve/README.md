@@ -37,6 +37,7 @@ Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin
 It prints where it listens and, at the start that made it, the token:
 
 ```
+Starting http://127.0.0.1:7340/ (warming: health says so and the API answers 503 until the server is ready)
 agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentrun/agents)
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
@@ -44,6 +45,13 @@ Open http://127.0.0.1:7340/
 Boxes: docker (on by default; set AGENTRUN_BOXES to change).
 Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
+
+The `Starting` line comes as soon as the port is bound, before the server loads the rest of itself; the lines after it
+come once it is ready, and `Open ` still means ready. In between, `GET /v2/health` answers `503` with `status: "warming"`,
+the API answers `503 unavailable` (retryable, with a `Retry-After`), and a browser gets a page that reloads itself. On a
+cold, slow disk, loading the server's modules holds the process for most of that time: a request sent then is answered
+once they have loaded. A port already taken at the start is left to the start's own listen, which waits for a server it
+replaces, as it always has, and prints no `Starting` line.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
 `Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
@@ -301,7 +309,8 @@ A data directory serves one AgentRun Server at a time: a second server on the sa
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
 when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
 and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
-`disk: "cannot_check"` when the free space cannot be read) otherwise.
+`disk: "cannot_check"` when the free space cannot be read) otherwise. While the server is still starting it answers `503`
+with `status: "warming"` and `store: "opening"`.
 It names no path, size or version. One route serves as both liveness and readiness: any answer says the server is up,
 and a 200 says it can work, and the platforms here take one path.
 

@@ -10,17 +10,17 @@ import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
-import { startedWith } from "./adapters.js";
 import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
-import { canOpen } from "./host.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
-import { DEFAULT_PORT, fauxEnvOf, type Serve, type ServeOptions, startServe } from "./server.js";
-import { besideRunnerOptions, besideStopping, runnerBeside } from "./runner/beside.js";
+import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
+// The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
+// on a slow disk that load is most of a start. Nothing above loads more than a few files.
+import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.js";
 
 // A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
 // command, the server and the runner alike.
@@ -360,6 +360,18 @@ try {
   process.exit(2);
 }
 const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
+// The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
+// the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
+// which waits for a server it replaces, as it always has: no early line then. The banner's "Open " line still means ready.
+let early: Awaited<ReturnType<typeof listenFirst>>;
+try {
+  early = await listenFirst({ host: values.listen ?? DEFAULT_HOST, port, data, env: process.env });
+} catch (error) {
+  console.error(`agentrun-serve: ${(error as Error).message}`);
+  process.exit(1);
+}
+if (early) console.log(`Starting ${publicUrl ?? urlOf(early, values.listen ?? DEFAULT_HOST)}/ (warming: health says so and the API answers 503 until the server is ready)`);
+const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
@@ -373,7 +385,7 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
-    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
+    data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
@@ -393,7 +405,7 @@ try {
 // `agentrun runner --data DIR` processes on the same data directory instead. The runner holds what the server's flags say
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
-let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
+let runnerProc: Awaited<ReturnType<typeof import("./runner/beside.js").runnerBeside>> | undefined;
 const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {
