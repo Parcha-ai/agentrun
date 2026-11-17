@@ -184,7 +184,7 @@ curl -sS -X POST "$CONSOLE_ADDRESS/v2/setup/code"
 
 It answers `{"printed": true|false, "expires_at": "<time>"}` and never the code. `printed: true`: the server wrote a
 new line to its log; read it and send that link. `printed: false`: the last code is still good until `expires_at`, and
-is the newest line. A 403 means the owner is already set (they sign in) or the server takes no code. A server from an
+is the newest line. A 403 means the owner is already set (they sign in), is being set at that moment, or the server takes no code. A server from an
 older release answers 404: restart it, which prints a new code. Wait until they confirm the password is set.
 
 For a new instance that needs this checkout's remote feature, follow the matching server skill's source-build
