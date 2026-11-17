@@ -869,6 +869,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // written there, after the tool call it was sent during, never when it was only queued.
           const carried = [...placed.map((p) => p.id), ...(how.covers ?? [])];
           if (carried.length) void store.whenUser(uuid).then(() => ctx.live({ type: 'message_taken', ids: carried }));
+          // On a login, the request this message makes is admitted before the CLI has it (loginBooking).
+          await booking?.sending();
           outstanding.add(uuid);
           input.push({
             type: 'user',
@@ -1031,8 +1033,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // A drive that ends unstopped (the CLI exited mid-turn, a Restart): its spend records and the mirror lines still in the coalesce
         // window reach the log before the rebuilt drive reads it (bounded: a failing journal has halted the drive anyway).
         if (!ctx.signal.aborted) await Promise.race([Promise.allSettled([store.flush(), journal.flush()]), new Promise((r) => setTimeout(r, 2000).unref())]);
-        // On a login, a response the drive's end cut off is booked as it stands (bounded the same way).
-        if (booking) await Promise.race([booking.settle(), new Promise((r) => setTimeout(r, 2000).unref())]);
+        // On a login, a response the drive's end cut off is booked as it stands, and an admission no request took is closed
+        // (bounded the same way).
+        if (booking) await Promise.race([booking.settle(true), new Promise((r) => setTimeout(r, 2000).unref())]);
         // Nothing the model started outlives the drive: the session's processes in the VM are killed (the VM and the Drive stay).
         if (held) await held.close().catch(() => {});
         if (configDir) await rm(configDir, { recursive: true, force: true }).catch(() => {});

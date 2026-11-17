@@ -110,6 +110,38 @@ test('each response the CLI streams is booked from its events, billed to the pla
   assert.deepEqual(halted.map((e) => e.message), ['turn_limit']);
 });
 
+test('on a login a request is admitted before the CLI can send it: with its message, and after a response that stops for tools; a refusal there halts first', async () => {
+  const ev = (event) => ({ type: 'stream_event', parent_tool_use_id: null, event });
+  const asked = [];
+  const booked = [];
+  const halted = [];
+  // The second admission is the turn limit.
+  const models = { beforeRequest: async () => { asked.push(1); if (asked.length > 1) throw new Error('turn_limit'); return { turn: asked.length }; }, afterRequest: async (usage, ticket, ended) => { booked.push({ ticket, ended }); } };
+  const book = loginBooking(models, 'm', (e) => halted.push(e));
+  await book.sending();
+  assert.equal(asked.length, 1, 'admitted with its message, before any response');
+  book.observe(ev({ type: 'message_start', message: { usage: { input_tokens: 5 } } }));
+  assert.equal(asked.length, 1, 'the response took the admission its message had');
+  book.observe(ev({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } }));
+  book.observe(ev({ type: 'message_stop' }));
+  await new Promise((r) => setImmediate(r));
+  // The CLI will send the tools' results straight back: that request is refused, and the drive halted, before it starts.
+  assert.equal(asked.length, 2);
+  assert.deepEqual(halted.map((e) => e.message), ['turn_limit']);
+  await book.settle(true);
+  assert.deepEqual(booked, [{ ticket: { turn: 1 }, ended: { end: 'answered', usd: null } }]);
+
+  // A message whose request never left: its admission is closed as never sent when the drive ends.
+  const closed = [];
+  const idle = loginBooking({ beforeRequest: async () => ({ turn: 1 }), afterRequest: async (usage, ticket, ended) => { closed.push({ usage, ended }); } }, 'm', (e) => halted.push(e));
+  await idle.sending();
+  await idle.settle();
+  assert.deepEqual(closed, [], 'a turn\'s end keeps it for the next request');
+  await idle.settle(true);
+  assert.deepEqual(closed, [{ usage: { input: 0, output: 0, usd: null, billing: 'plan' }, ended: { end: 'nothing', label: 'never_left' } }]);
+  await assert.rejects(loginBooking({ beforeRequest: async () => { throw new Error('turn_limit'); }, afterRequest: async () => {} }, 'm', () => {}).sending(), /turn_limit/);
+});
+
 test('a session on a login starts its CLI with no model URL, key or token, a config dir apart from the login, and no host port', async () => {
   const login = sealedLogin();
   const seen = [];

@@ -32,7 +32,7 @@ async function fakeCli(t) {
   writeFileSync(
     cli,
     `#!/bin/sh
-printf '{"argv":"%s","home":"%s","config":"%s","secure":"%s","profiles":"%s","key":"%s","token":"%s","base":"%s","oauth":"%s"}\\n' "$*" "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_SECURESTORAGE_CONFIG_DIR" "$ANTHROPIC_CONFIG_DIR" "\${ANTHROPIC_API_KEY:+set}" "\${ANTHROPIC_AUTH_TOKEN:+set}" "\${ANTHROPIC_BASE_URL:+set}" "\${CLAUDE_CODE_OAUTH_TOKEN:+set}" >> '${record}'
+printf '{"argv":"%s","home":"%s","display":"%s","config":"%s","secure":"%s","profiles":"%s","key":"%s","token":"%s","base":"%s","oauth":"%s"}\\n' "$*" "$HOME" "$DISPLAY" "$CLAUDE_CONFIG_DIR" "$CLAUDE_SECURESTORAGE_CONFIG_DIR" "$ANTHROPIC_CONFIG_DIR" "\${ANTHROPIC_API_KEY:+set}" "\${ANTHROPIC_AUTH_TOKEN:+set}" "\${ANTHROPIC_BASE_URL:+set}" "\${CLAUDE_CODE_OAUTH_TOKEN:+set}" >> '${record}'
 if [ "$1 $2" = "auth status" ]; then cat '${answer}'; fi
 `,
     { mode: 0o755 },
@@ -58,7 +58,7 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
   // No pinned CLI here (claude-agent installs on first use), so the server asks the `claude` on PATH: the fake. A Claude
   // token a person may set in their own server env is never passed on.
   const fake = await fakeCli(t);
-  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, CLAUDE_CODE_OAUTH_TOKEN: "not-a-secret-oauth" }, MODEL_VARS);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, CLAUDE_CODE_OAUTH_TOKEN: "not-a-secret", DISPLAY: ":42" }, MODEL_VARS);
   const { api, data } = await serve(t, { faux: undefined, harnesses: false });
   const login = join(data, "claude-login");
 
@@ -100,15 +100,18 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
   assert.equal(started.status, 200, JSON.stringify(started.body));
   await until(() => fake.calls().some((call) => call.argv === "auth login --claudeai"), "the CLI's sign-in started");
 
-  // Every call the server made was the CLI's status or its sign-in, at the login's place, under a home of its own, with no
-  // key, token or endpoint of ours.
+  // Every call the server made was the CLI's status or its sign-in, at the login's place, with no key, token or endpoint
+  // of ours. A status check runs under a home of its own; the sign-in gets the person's home and desktop, so the CLI can
+  // open their browser.
   const calls = fake.calls();
   assert.ok(calls.length >= 4, JSON.stringify(calls));
   for (const call of calls.filter((call) => call.argv.startsWith("auth "))) {
     assert.ok(["auth status --json", "auth login --claudeai"].includes(call.argv), call.argv);
     assert.equal(call.secure, login);
     assert.equal(call.profiles, join(login, "anthropic"));
-    assert.notEqual(call.home, process.env.HOME);
+    const signIn = call.argv === "auth login --claudeai";
+    assert.equal(call.home === process.env.HOME, signIn, JSON.stringify(call));
+    assert.equal(call.display, signIn ? ":42" : "", JSON.stringify(call));
     assert.deepEqual([call.key, call.token, call.base, call.oauth], ["", "", "", ""], JSON.stringify(call));
   }
   // Nothing opened the credentials file: no reader holds the FIFO now, and every request above answered.
@@ -122,7 +125,7 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
 });
 
 test("a run on a signed-out login is refused in words, asked of the pinned CLI, never sent on a key", { timeout: 180_000 }, async (t) => {
-  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret-key" }, MODEL_VARS);
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret" }, MODEL_VARS);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out", "the pinned CLI says AgentRun's own login directory holds no login");
   assert.equal((await api("POST", "/agents", agent("planned", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }))).status, 201);
@@ -150,17 +153,17 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name and claude-agen
   assert.equal((await offerOf(api)).available, false, "no key: claude-agent runs nothing, the saved turn-on read by no one");
 
   // A key: claude-agent runs on it.
-  const env = withClaudeLogin({ ANTHROPIC_API_KEY: "not-a-secret-key", [CLAUDE_LOGIN_ENV]: "off" }, { dir: "/nowhere", profiles: "/nowhere/anthropic" });
+  const env = withClaudeLogin({ ANTHROPIC_API_KEY: "not-a-secret", [CLAUDE_LOGIN_ENV]: "off" }, { dir: "/nowhere", profiles: "/nowhere/anthropic" });
   const provider = providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent");
   assert.equal(provider.login, undefined);
-  assert.equal(await provider.credential(), "not-a-secret-key");
-  assert.equal(hostModel(env, "default", "claude-agent"), hostModel({ ANTHROPIC_API_KEY: "not-a-secret-key" }, "default", "claude-agent"));
+  assert.equal(await provider.credential(), "not-a-secret");
+  assert.equal(hostModel(env, "default", "claude-agent"), hostModel({ ANTHROPIC_API_KEY: "not-a-secret" }, "default", "claude-agent"));
   assert.equal(await loginForRun({ get: async () => ({ v: 1, place: "agentrun", host: "any", only_me: true }) }, "/data", env, "claude-agent"), undefined);
 });
 
 test("Claude Code's login on this machine on: claude-agent's Anthropic models go on it with no key and no port; other harnesses and named gateway or OpenRouter models keep their keys", () => {
   const at = { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" };
-  const env = withClaudeLogin({ ANTHROPIC_API_KEY: "not-a-secret-key", OPENROUTER_API_KEY: "not-a-secret-or" }, at);
+  const env = withClaudeLogin({ ANTHROPIC_API_KEY: "not-a-secret", OPENROUTER_API_KEY: "not-a-secret" }, at);
   const onLogin = providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent");
   assert.deepEqual(onLogin.login, at);
   assert.equal(onLogin.billing, "plan");

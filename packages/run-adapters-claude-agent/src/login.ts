@@ -118,22 +118,41 @@ type StreamUsage = { input_tokens?: unknown; output_tokens?: unknown; cache_read
 const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
 
 /** How a session on a login books its requests: no proxy sees them, so each response the CLI streams is booked from its
- *  own events, billed to the plan, at no price here. Admitted at its `message_start` (a refusal, a turn limit say, stops
- *  the drive: `halt`) and booked at its `message_stop`; one the turn's end leaves open is booked as it stands. */
+ *  own events, billed to the plan, at no price here. No proxy can hold a request back either, so a request is admitted
+ *  before the CLI can send it: when a message goes to the CLI (`sending`), and when a response stops for its tool calls,
+ *  whose results the CLI sends straight back. A refusal there (a turn limit, say) halts the drive while the CLI has yet to
+ *  send. A response with no admission ahead of it (one the CLI sent on its own) is admitted at its `message_start`. Each
+ *  is booked at its `message_stop`; one the turn's end leaves open is booked as it stands, and an admission no request
+ *  took is closed as never sent when the drive ends (`settle(true)`). */
 export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterRequest">, model: string, halt: (error: Error) => void) {
-  let open: { ticket: Promise<unknown>; usage: Omit<ModelUsage, "usd"> } | undefined;
+  type Ticket = Parameters<ModelPort["afterRequest"]>[1];
+  let open: { ticket: Promise<unknown>; usage: Omit<ModelUsage, "usd">; tools: boolean } | undefined;
+  let ahead: Promise<unknown> | undefined;
   let booked: Promise<void> = Promise.resolve();
+  const refused = Symbol("refused");
+  const stopped = (error: unknown) => halt(error instanceof Error ? error : new Error(String(error)));
+  const admit = (): Promise<unknown> => {
+    const ticket = (async () => models.beforeRequest({ model }))();
+    ticket.catch(stopped);
+    return ticket;
+  };
+  const admitAhead = () => {
+    ahead ??= admit();
+  };
+  const after = (ticket: Promise<unknown>, usage: ModelUsage, ended: Parameters<ModelPort["afterRequest"]>[2]) => {
+    booked = booked.then(async () => {
+      const taken = await ticket.catch(() => refused);
+      // Refused at its admission: nothing to book (the drive is halted already).
+      if (taken === refused) return;
+      await models.afterRequest(usage, taken as Ticket, ended);
+    }).catch(stopped);
+  };
   const book = () => {
     const entry = open;
     open = undefined;
     if (!entry) return;
-    booked = booked.then(async () => {
-      const refused = Symbol("refused");
-      const ticket = await entry.ticket.catch(() => refused);
-      // Refused at its admission: nothing to book (the drive is halted already).
-      if (ticket === refused) return;
-      await models.afterRequest({ ...entry.usage, usd: null, billing: "plan" }, ticket as Parameters<ModelPort["afterRequest"]>[1], { end: "answered", usd: null });
-    }).catch((error: unknown) => halt(error instanceof Error ? error : new Error(String(error))));
+    after(entry.ticket, { ...entry.usage, usd: null, billing: "plan" }, { end: "answered", usd: null });
+    if (entry.tools) admitAhead();
   };
   const take = (usage: Omit<ModelUsage, "usd">, given: StreamUsage | undefined) => {
     const input = count(given?.input_tokens);
@@ -143,25 +162,37 @@ export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterReq
     return { ...usage, ...(input === undefined ? {} : { input }), ...(output === undefined ? {} : { output }), ...(cacheRead === undefined ? {} : { cacheRead }), ...(cacheWrite === undefined ? {} : { cacheWrite }) };
   };
   return {
+    /** A message is about to go to the CLI: admit the request it will make, and settle when it is admitted (a refusal
+     *  rejects, the drive halted already), so the message goes only once its request may. */
+    async sending(): Promise<void> {
+      admitAhead();
+      await ahead;
+    },
     /** One message of the SDK's stream. */
     observe(message: unknown): void {
-      const m = message as { type?: string; event?: { type?: string; message?: { usage?: StreamUsage }; usage?: StreamUsage } };
+      const m = message as { type?: string; event?: { type?: string; message?: { usage?: StreamUsage }; usage?: StreamUsage; delta?: { stop_reason?: unknown } } };
       if (m?.type !== "stream_event" || !m.event) return;
       const event = m.event;
       if (event.type === "message_start") {
         book();
-        const ticket = (async () => models.beforeRequest({ model }))();
-        ticket.catch((error: unknown) => halt(error instanceof Error ? error : new Error(String(error))));
-        open = { ticket, usage: take({ input: 0, output: 0, billing: "plan" }, event.message?.usage) };
+        const ticket = ahead ?? admit();
+        ahead = undefined;
+        open = { ticket, usage: take({ input: 0, output: 0, billing: "plan" }, event.message?.usage), tools: false };
       } else if (event.type === "message_delta" && open) {
         open.usage = take(open.usage, event.usage);
+        if (event.delta?.stop_reason === "tool_use") open.tools = true;
       } else if (event.type === "message_stop") {
         book();
       }
     },
-    /** Book what is open and wait for every booking to be written. */
-    async settle(): Promise<void> {
+    /** Book what is open and wait for every booking to be written. `ended`: the drive is over, so an admission no request
+     *  took is closed as never sent. */
+    async settle(ended = false): Promise<void> {
       book();
+      if (ended && ahead) {
+        after(ahead, { input: 0, output: 0, usd: null, billing: "plan" }, { end: "nothing", label: "never_left" });
+        ahead = undefined;
+      }
       await booked;
     },
   };

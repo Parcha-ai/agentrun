@@ -223,7 +223,8 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
   if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
   const cli = loginCli(await deps.pinned(), deps.env);
   if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
-  (await deps.claude()).startClaudeLogin(cli, loginAt(setting.place, deps.data, deps.env), pathOf(deps.env));
+  // The person's home and desktop, so the CLI can open their browser.
+  (await deps.claude()).startClaudeLogin(cli, loginAt(setting.place, deps.data, deps.env), { ...pathOf(deps.env), ...(deps.env.HOME ? { home: deps.env.HOME } : {}), display: deps.env });
   return claudeLoginView(deps);
 }
 
