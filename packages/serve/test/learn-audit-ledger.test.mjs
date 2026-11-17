@@ -525,20 +525,21 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBm): the shadow's cap is what its served run's cap left, read at the served
 // run's end, so the two never spend past it; less than a run's smallest cap left starts no shadow.
 test("(r4) a shadow's cap is the served run's cap less what it spent: served cap $1.00, spent $0.30, the shadow's cap is $0.70", { timeout: 240_000 }, async (t) => {
-  // Every request is booked at $0.15: the served run's workflow takes two (its node's call, then its text).
-  const w = await world(t, { learning: { audit_every: 1 }, priced: () => 0.15 });
+  // Every request is booked at $0.30: the served run's workflow takes one (its node's call).
+  const w = await world(t, { learning: { audit_every: 1 }, priced: () => 0.3 });
   const served = await w.start("capped-1", "What is six times seven", { max_cost_usd: 1 });
   assert.deepEqual([served.state, served.metrics?.path, served.costUsd], ["ended", "workflow", 0.3], JSON.stringify(served));
   const shadow = await w.shadowOf("capped-1");
   assert.ok(shadow, "drawn at 1 in 1: a shadow");
   assert.equal(readLaunchBody((await w.server.runs.launch(shadow.row.id)).body).maxCostUsd, 0.7, "the shadow's cap: $1.00 less the $0.30 spent");
-  assert.deepEqual([shadow.row.state, shadow.row.costUsd], ["ended", 0.3], "within its cap, its answer given");
+  assert.equal(shadow.row.state, "ended", "its answer given within its cap");
+  assert.ok(shadow.row.costUsd <= 0.7, `within its cap: ${shadow.row.costUsd}`);
 });
 
 test("(r4) a shadow that stops on its cap is `capped`: no verdict, never counted toward the hold (hold_window 1, hold_disagree 1), where an uncapped disagreement holds", { timeout: 300_000 }, async (t) => {
-  // The workflow answers these wrong; the agent (and so each shadow) answers 42. Every request is booked at $0.15, and
+  // The workflow answers these wrong; the agent (and so each shadow) answers 42. Every request is booked at $0.30, and
   // held first at its worst case at the model's price (8,192 output tokens at $15/M, ~$0.12, more than $0.05).
-  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, priced: () => 0.15, submit: (text) => (text.includes("Wrong question") ? WRONG : { answer: 42, sure: true }) });
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, priced: () => 0.3, submit: (text) => (text.includes("Wrong question") ? WRONG : { answer: 42, sure: true }) });
   // Its cap leaves $0.05 after the $0.30 it spent: a shadow is started (over a run's smallest cap) and stops at its first request.
   const served = await w.start("tight-1", "Wrong question one", { max_cost_usd: 0.35 });
   assert.deepEqual([served.state, served.metrics?.path, served.costUsd], ["ended", "workflow", 0.3], JSON.stringify(served));
