@@ -116,7 +116,7 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * do not parse every transcript on every page. The requested page still fully parses and checks each candidate's
  * id, project and child status under its approved file stamp. Preview counts candidates, not guaranteed exports.
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
-async function remoteHistoryMetadata(file: string, source: 'claude-code'|'codex'): Promise<{id:string;cwd:string;child:boolean}|undefined> {
+async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
   const handle = await open(file, 'r');
   let id:string|undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
@@ -126,6 +126,8 @@ async function remoteHistoryMetadata(file: string, source: 'claude-code'|'codex'
       if(!row || typeof row!=='object' || Array.isArray(row))return;
       if(source==='claude-code'){
         id??=str(row.sessionId);cwd??=str(row.cwd);child ||= row.isSidechain===true;
+      }else if(source==='pi'){
+        if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
       }else if(row.type==='session_meta'){
         const payload=row.payload;
         if(!payload || typeof payload!=='object' || Array.isArray(payload))return;
@@ -399,6 +401,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   // import's run then goes by the id as kept.
   const idOf = keptId([env, stored ?? {}], own);
   const skipped: Skipped[] = [];
+  // Each file left out here, with the project folder its read gave, if it was read that far: what `only` goes by.
+  const leftFrom = new Map<Skipped, { source: Source; cwd?: string }>();
+  const leave = (entry: Skipped, source: Source, cwd?: string) => void (skipped.push(entry), leftFrom.set(entry, { source, cwd }));
   const seen = store ? await filesIn(store) : new Map<string, SourceFile & { run: string }>();
   let already = 0;
   const held: string[] = [];
@@ -420,19 +425,15 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       if (now - stats.mtimeMs < LIVE_MS) {
-        skipped.push({
-          what: file,
-          why: "written in the last 10 minutes: it may still be running",
-          kind: "live",
-        });
+        leave({ what: file, why: "written in the last 10 minutes: it may still be running", kind: "live" }, source);
         continue;
       }
       if (stats.size > MAX_SESSION_BYTES) {
-        skipped.push({ what: file, why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" });
+        leave({ what: file, why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
-      const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
+      const session = await readSession(file, source, { turns: false }).catch((error: unknown) => leave(unread(file, error), source));
       if (!session) continue;
       session.id = await idOf(session.id, scan);
       if (session.parent) session.parent = await idOf(session.parent, scan);
@@ -443,28 +444,23 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       if (!session.cwd) {
-        skipped.push({ what: file, why: "no project directory in it", kind: "no-project" });
+        leave({ what: file, why: "no project directory in it", kind: "no-project" }, source);
         continue;
       }
       if (!all && session.users === 0 && !session.child) {
-        skipped.push({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` });
+        leave({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` }, source, session.cwd);
         continue;
       }
       const cwd = session.cwd;
       if (!all) {
         // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
         if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
-          skipped.push({
-            what: file,
-            why: `its project ${cwd} is a temp directory`,
-            kind: "temp",
-            session: `${source}:${session.id}`,
-          });
+          leave({ what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${session.id}` }, source, cwd);
           continue;
         }
         const there = await lstat(cwd).catch(() => null);
         if (!there?.isDirectory() && !deleted) {
-          skipped.push({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` });
+          leave({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` }, source, cwd);
           continue;
         }
       }
@@ -491,6 +487,17 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   ownRuns(projects, rank);
   // The owner's choice, once each session has its one project: a project not chosen is no part of the plan.
   const chosen = only === undefined ? undefined : new Set(only);
+  // What is left out is said of the projects chosen alone, each file by the folder it names: as its read gave it, or,
+  // for a file left out unread (still written, over the cap, unreadable), as its first records say. A file that names
+  // no folder is no chosen project's.
+  if (chosen) {
+    const ofChosen: Skipped[] = [];
+    for (const entry of skipped) {
+      const { source, cwd = (await remoteHistoryMetadata(entry.what, source).catch(() => undefined))?.cwd } = leftFrom.get(entry)!;
+      if (cwd !== undefined && chosen.has(agentIdOf(cwd))) ofChosen.push(entry);
+    }
+    skipped.splice(0, skipped.length, ...ofChosen);
+  }
   const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
@@ -687,9 +694,9 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
 }
 
 /** A run's subagents, theirs, and so on down, each file once, read with the import's `seen`: those beside each of its
- *  files (Claude Code's), and those naming its thread (Codex's, whichever of its files they ran under). Each within the cap
- *  and readable; another is passed over. All of them are held at once, so their sizes are taken from `budget` (what the
- *  run's own files left of MAX_RUN_BYTES) before each is read: RunTooLarge once it is spent. */
+ *  files (Claude Code's), and those naming its thread (Codex's, whichever of its files they ran under). One gone or
+ *  unreadable is passed over. All of them are held at once, so their sizes are taken from `budget` (what the run's own
+ *  files left of MAX_RUN_BYTES) before each is read: RunTooLarge once it is spent, as one file over the cap alone spends it. */
 async function readChildren(plan: Plan, session: Session, parts: readonly Session[], seen: Set<string>, budget: Budget): Promise<Session[]> {
   const out: Session[] = [];
   const visited = new Set<string>();
@@ -698,8 +705,9 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
       if (visited.has(file)) continue;
       visited.add(file);
       const stats = await stat(file).catch(() => null);
-      if (!stats || stats.size > MAX_SESSION_BYTES) continue;
+      if (!stats) continue;
       // Every subagent read is held with the run: one more than the run's cap holds ends the read, and the run is left out.
+      // No subagent is passed over for its size: the run would be kept without its usage.
       if (!fits(budget, stats.size)) throw new RunTooLarge();
       const child = await readSession(file, session.source, { seen }).catch(() => undefined);
       if (!child) continue;

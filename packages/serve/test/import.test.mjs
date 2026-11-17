@@ -6,14 +6,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { agentIdOf, candidatesOf, importCommand, MAX_RUN_BYTES, planImport, runImport } from "../dist/import.js";
+import { agentIdOf, candidatesOf, importCommand, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -1926,6 +1926,43 @@ test("an import of the projects chosen plans, reads and writes those alone", asy
   assert.deepEqual((await store.agents.list()).map((a) => a.name), ["field-notes"], "no agent of a project not chosen");
   assert.equal((await rowsOf(store)).length, 1);
   assert.deepEqual((await planImport(options(h, { only: [] }))).projects, [], "a choice of none plans none");
+});
+
+test("an import of the projects chosen says what it left out of those projects, and of no other", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const kinds = async (only) => (await planImport(options(h, only ? { only } : {}))).skipped.map((s) => s.kind).sort();
+  assert.deepEqual(await kinds(), ["gone", "live", "temp"], "with no choice, every file left out");
+  // The session still being written is field-notes' (pi's): it was never read, and is told by the folder its file names.
+  assert.deepEqual(await kinds([agentIdOf(h.notes)]), ["live"], "the chosen project's own, and not the gone or the temp project's");
+  assert.deepEqual(await kinds([agentIdOf(h.tests)]), [], "a project with nothing left out says none");
+  assert.deepEqual(await kinds([agentIdOf(join(h.at, "code", "gone"))]), ["gone"], "a chosen project that is gone says so");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const chosen = options(h, { only: [agentIdOf(h.tests)] });
+  const report = await runImport(store, await planImport(chosen), chosen);
+  assert.deepEqual([report.agents.map((a) => [a.name, a.runs]), report.skipped], [[["test-runner", 1]], []], "as the console counts them: one run, none left out");
+});
+
+test("a session with one subagent file over the cap is left out whole and said, never imported without that subagent", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [big, small] = [join(at, "code", "big"), join(at, "code", "small")];
+  for (const dir of [big, small]) mkdirSync(dir, { recursive: true });
+  claudeSession(at, big, 1);
+  claudeSession(at, small, 2);
+  // One subagent's file alone over the cap: a hole of that length, which no read may touch.
+  truncateSync(claudeSubagent(at, big, 1, 1), MAX_SESSION_BYTES + 1);
+  const h = { at, temp: join(root, "tmp") };
+  const dry = await planImport(options(h, { measure: true }));
+  assert.deepEqual(dry.skipped.map((s) => [s.kind, s.session]), [["large", `claude-code:${sessionId(1)}`]], "the dry run leaves the same session out");
+  assert.deepEqual(dry.found.map((f) => f.agent), [agentIdOf(small)]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, await planImport(options(h)), options(h));
+  assert.deepEqual(report.skipped.map((s) => [s.kind, s.session]), [["large", `claude-code:${sessionId(1)}`]], "counted among those left out");
+  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 0], ["small", 1]]);
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(2)], "no run of it without its subagent's usage");
 });
 
 test("a session whose subagents are over the run's cap together is left out whole and said, and the rest of a large history imports", { timeout: 300_000 }, async (t) => {
