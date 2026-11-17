@@ -11,7 +11,7 @@ import { mkdtemp } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
-import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, LOGIN_SIGNED_OUT, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
@@ -197,6 +197,11 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   // The carrier is no variable: a spawn's environment never has it, a spread keeps it.
   assert.deepEqual(Object.keys(env).sort(), ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
   assert.deepEqual(providerFor("anthropic-messages", { ...env }, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, at);
+  // A revision's checks at a sandbox place read env without the login, so they ask for a key before the run is queued;
+  // a runner place's keep it, and the server's own env is left as it was.
+  assert.equal(providerFor("anthropic-messages", envAtPlace(env, { mode: "sandbox", box: "e2b" }), { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, undefined);
+  assert.equal(envAtPlace(env, { mode: "runner" }), env);
+  assert.deepEqual(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, at);
 });
 
 test("one owner: refused in one line where more than one person can start runs, and a saved turn-on dropped there at the start", { timeout: 120_000 }, async (t) => {

@@ -84,6 +84,13 @@ export function withClaudeLogin<T extends object>(env: T, login: ClaudeAgentLogi
   return env;
 }
 
+/** `env` as a run at `place` reads it: a runner place keeps the login; any other place (a sandbox) gets a copy without it,
+ *  so a revision's checks there ask for a key, as its run will. */
+export function envAtPlace<T extends object>(env: T, place: { readonly mode: string } | undefined): T {
+  if (place?.mode === "runner" || (env as Record<symbol, unknown>)[LOGIN] === undefined) return env;
+  return withClaudeLogin({ ...env }, undefined);
+}
+
 /** The login `env` carries, unless the switch is off. */
 export function claudeLoginOf(env: NodeJS.ProcessEnv): ClaudeAgentLogin | undefined {
   if (claudeLoginOff(env)) return undefined;
