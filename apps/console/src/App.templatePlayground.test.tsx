@@ -102,6 +102,8 @@ describe("template requests in the API playground", () => {
     await act(async () => configure.click()); await settle();
     expect(location.hash).toBe("#/playground?operation=apply-template&template=review-kit");
     expect(host.querySelector('a[href="#/playground?operation=apply-template"]')).not.toBeNull();
+    // The operation picker keeps one width: it holds every operation's words, not the picked one's alone.
+    expect(picker(host, "API operation")!.querySelectorAll("[data-picker-sizer]").length).toBe(5);
     await pick(picker(host, "API operation")!, "create-agent"); await settle();
     expect(location.hash).toBe("#/playground?operation=create-agent");
     await pick(picker(host, "API operation")!, "apply-template"); await settle();
