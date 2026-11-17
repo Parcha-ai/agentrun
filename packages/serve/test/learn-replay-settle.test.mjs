@@ -195,7 +195,8 @@ test("a replay interrupted before its first run existed: a GET never starts its 
   assert.deepEqual([failed.status, failed.decided], ["failed", "hold"], JSON.stringify(failed));
   assert.match(failed.reason, /none of its 5 check runs started by the check's deadline/);
   assert.equal(failed.inputs, 5);
-  assert.deepEqual(failed.outcomes, { answered: 0, handed_back: 0, failed: 0, skipped_write: 0 });
+  // A check's outcomes add up to its n: each run never created by the deadline is a failed input (#3061).
+  assert.deepEqual(failed.outcomes, { answered: 0, handed_back: 0, failed: 5, skipped_write: 0 });
   assert.equal(promotionOf(await v.records(), "answer", DIGEST)?.decided, "hold", "held: its owner may replay it again");
 });
 

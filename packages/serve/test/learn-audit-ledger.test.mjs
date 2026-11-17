@@ -98,7 +98,7 @@ const FINAL = ["ended", "failed", "stopped"];
 /** An agent of `learning` with `prior` runs of its own ("Question 0" …), the learned workflow `answer` landed and promoted
  *  by its check (S3a's record, at the landed commit), and a runner claiming every run from its stored launch. The
  *  workflow's node submits `submit(requestText)` ({answer: 42, sure: true} by default); the agent answers AGENT_SAYS; a
- *  compile ask is answered with BROKEN_DRAFT. */
+ *  first compile ask is answered with BROKEN_DRAFT, and a revision ask is refused. */
 async function world(t, { learning, prior = 0, submit, paused = false, env = {}, priced } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-ledger-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -106,6 +106,9 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : anyCompileAsk(body) ? BROKEN_DRAFT : AGENT_SAYS),
+    // A revision ask is refused, as learn-promote-once's landsRevision: a test lands any revision itself, and a recompile
+    // whose drafts failed would be recorded as its stop (runner/learning-end.ts recordDraftFailed, S3b).
+    refuse: ({ body }) => (compileAskOf(body).startsWith("One more turn: revise") ? { message: "the test lands any revision itself" } : undefined),
   });
   let runner;
   t.after(async () => {
