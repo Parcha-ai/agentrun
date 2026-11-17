@@ -104,6 +104,27 @@ const maskedConfig = (config: Json, secrets: readonly ConfigSecret[]): Json => {
   return copy;
 };
 
+/** `sent`, a PATCH's config, with SEALED_MASK put back at each place `shown` (the config as answered) holds a field named
+ *  in `sealed` (sealed_config: a top-level name, or a JSON Pointer read as configSecrets writes it, pointerOf) and `sent`
+ *  leaves it out under an object it sends: a sealed value left out is kept. A copy: `sent` is not changed. */
+export const sealedKept = (sent: Json, shown: unknown, sealed: readonly string[]): Json => {
+  const names = new Set(sealed);
+  const places: string[][] = [];
+  const walk = (node: unknown, path: string[]): void => {
+    if (path.length && names.has(path.length === 1 ? path[0]! : pointerOf(path))) places.push(path);
+    else if (Array.isArray(node)) node.forEach((item, i) => walk(item, [...path, String(i)]));
+    else if (isObject(node)) for (const [key, item] of Object.entries(node)) walk(item, [...path, key]);
+  };
+  walk(shown, []);
+  const copy = structuredClone(sent);
+  for (const path of places) {
+    let node: unknown = copy;
+    for (const key of path.slice(0, -1)) node = isObject(node) ? node[key] : undefined;
+    if (isObject(node) && node[path.at(-1)!] === undefined) node[path.at(-1)!] = SEALED_MASK;
+  }
+  return copy;
+};
+
 /** `source` as every answer sends it: each credential in its config (configSecrets, at any depth) as SEALED_MASK, and
  *  named in sealed_config, whether it is sealed yet or still kept in the clear (a trigger saved before this rule, until
  *  the next start seals it: composio-triggers.ts sealKept). */

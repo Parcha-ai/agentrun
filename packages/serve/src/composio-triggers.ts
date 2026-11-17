@@ -26,7 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
-import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedSchemaFields, shownSource } from "./trigger-composio.js";
+import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealedConfigFields, sealedKept, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -167,8 +167,8 @@ export class ComposioTriggers implements TriggerUpstream {
     const shown = shownSource(was);
     const sealed = sealedOf(shown);
     const sent = given.config;
-    const top = isObject(shown.config) ? shown.config : {};
-    const config = isObject(sent) && sealed.length ? { ...sent, ...Object.fromEntries(sealed.filter((name) => Object.hasOwn(top, name) && sent[name] === undefined).map((name) => [name, SEALED_MASK])) } : sent;
+    // At its own place: a top-level name, or a nested one's JSON Pointer (a trigger an earlier server kept).
+    const config = isObject(sent) && sealed.length ? sealedKept(sent, shown.config, sealed) : sent;
     if (!same(config, shown.config)) throw invalid([{ field: "source.config", reason: "not_allowed", message: fixed }]);
     if (given[MOVE_FIELD] !== undefined) throw invalid([{ field: `source.${MOVE_FIELD}`, reason: "not_allowed", message: `${MOVE_FIELD} is a create's alone.` }]);
     const { [SEALED_FIELD]: _given, ...rest } = given;
