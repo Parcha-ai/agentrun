@@ -417,6 +417,38 @@ final class UiTest {
 		eq(o.entries.get(0), o.entries.get(1).parent);
 	}
 
+	static void testAClickableListIsAContainerNotARow() {
+		// Clock's cities list is clickable as well as scrollable (a phone-showpiece take saw it as one row named
+		// "6:26 PM", its cities hidden): a list keeps its rows, each named from its own texts.
+		FakeNode cities = FakeNode.of("androidx.recyclerview.widget.RecyclerView").at(0, 0, 360, 500).id("com.android.deskclock:id/cities").tappable();
+		cities.scrollable = true;
+		FakeNode local = FakeNode.of("android.widget.LinearLayout").at(0, 0, 360, 100);
+		local.add(FakeNode.of("android.widget.TextView").at(0, 0, 360, 100).text("6:26 PM"));
+		FakeNode tokyo = FakeNode.of("android.widget.FrameLayout").at(0, 100, 360, 200).tappable();
+		tokyo.add(FakeNode.of("android.widget.TextView").at(0, 100, 200, 200).text("Tokyo"), FakeNode.of("android.widget.TextView").at(200, 100, 360, 200).text("10:26 AM"));
+		FakeNode paris = FakeNode.of("android.widget.FrameLayout").at(0, 200, 360, 300).tappable();
+		paris.add(FakeNode.of("android.widget.TextView").at(0, 200, 200, 300).text("Paris"), FakeNode.of("android.widget.TextView").at(200, 200, 360, 300).text("3:26 AM"));
+		cities.add(local, tokyo, paris);
+		Outline o = Outline.of(cities, false);
+		Outline.Entry list = o.entries.get(0);
+		eq("scrollarea", list.role);
+		eq(null, list.name);
+		eq(null, list.desc);
+		Outline.Entry clock = null;
+		Outline.Entry first = null;
+		Outline.Entry second = null;
+		for (Outline.Entry e : o.entries) {
+			if ("6:26 PM".equals(e.name)) clock = e;
+			if ("Tokyo".equals(e.name)) first = e;
+			if ("Paris".equals(e.name)) second = e;
+		}
+		yes(clock != null && first != null && second != null, "the list's rows are listed");
+		eq("10:26 AM", first.desc);
+		eq("3:26 AM", second.desc);
+		eq(list, first.parent);
+		eq(list, second.parent);
+	}
+
 	static void testARowHalfShownIsCutToTheWindow() throws Exception {
 		Check.Phone phone = new Check.Phone();
 		// Security & privacy's row is pixels 2300 to 2500 of a 2400-pixel window: half of it shows.
