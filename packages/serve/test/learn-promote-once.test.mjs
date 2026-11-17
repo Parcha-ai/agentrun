@@ -16,6 +16,7 @@
 //   and a check's promotion never queues a rival, never refits on its served runs' grades, never replays again.
 // The agent's earlier runs are real runs of the store (its list, launches and journals), on a pi run of the faux gateway.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,12 +29,13 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { putGrade, promotionsOf, recordPromotion } = await import("../dist/learn/promote.js");
+const { putGrade, promotionsOf, promotionsShown, recordPromotion } = await import("../dist/learn/promote.js");
+const { WORKFLOW_NAME } = await import("../dist/learn/skills.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
-const { seedOf } = await import("../dist/learning.js");
+const { secretsShown, seedOf } = await import("../dist/learning.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const MODEL = "claude-sonnet-5-5";
@@ -63,7 +65,7 @@ const DIGEST_2 = workflowDigest({ workflow: JSON.stringify(answerFlow(REVISED)) 
 
 /** A compile answer whose draft fails its dry run (its answer's state is never written): the compile's failure is on a
  *  promotion record, and no draft ever lands from the faux model. */
-const BROKEN_DRAFT = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify({ ...FIRST, root: { node: "chain", steps: [{ ...FIRST.root.steps[0], as: "other" }] } })}\n\`\`\`\``;
+const brokenDraft = (name = "answer") => `\`\`\`\`workflow ${name}\n---\ndescription: Answers a question as a number; use when asked\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify({ ...FIRST, name, root: { node: "chain", steps: [{ ...FIRST.root.steps[0], as: "other" }] } })}\n\`\`\`\``;
 
 const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
 const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
@@ -87,16 +89,17 @@ const until = async (done, what, ms = 60_000) => {
 /** An agent of `learning` whose `prior` earlier runs (questions "Question 0" … , oldest first) ended on its own path
  *  before `flows` landed in its learning folder (none: nothing lands), a runner claiming every run from its stored
  *  launch. The agent answers AGENT_SAYS; the workflow's node submits `submit(requestText)` ({answer: 42, sure: true}
- *  by default); a compile ask is answered with BROKEN_DRAFT. `landsRevision`: the revision ask is refused instead (its
- *  turn ends before it answers: no draft of it failed its checks), for a test that lands the revision itself, as a
- *  graded recompile merges it. */
-async function world(t, { learning, prior = 0, flows = [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }], submit, landsRevision = false } = {}) {
+ *  by default); a compile ask is answered with brokenDraft(draftName). `landsRevision`: the revision ask is refused
+ *  instead (its turn ends before it answers: no draft of it failed its checks), for a test that lands the revision
+ *  itself, as a graded recompile merges it. `env`: the runner's environment (a secret-named value in it is one the run
+ *  refuses). */
+async function world(t, { learning, prior = 0, flows = [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }], submit, landsRevision = false, env = {}, draftName } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-promote-once-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
-    text: ({ body }) => (offers(body, "submit") ? "submitted" : compileAskOf(body) ? BROKEN_DRAFT : AGENT_SAYS),
+    text: ({ body }) => (offers(body, "submit") ? "submitted" : compileAskOf(body) ? brokenDraft(draftName) : AGENT_SAYS),
     refuse: ({ body }) => (landsRevision && compileAskOf(body).startsWith("One more turn: revise") ? { message: "the test lands this revision itself" } : undefined),
   });
   let runner;
@@ -111,7 +114,7 @@ async function world(t, { learning, prior = 0, flows = [{ name: "answer", descri
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
-  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
@@ -182,6 +185,26 @@ test("(a, e) compile_after 5 on the definition: runs 1-4 compile nothing, run 5 
   assert.deepEqual(records.map(({ workflow, decided, check }) => [workflow, decided, check?.attempt, check?.n, check?.stopped ?? false]), [["answer", "hold", 1, 0, false], ["answer", "hold", 2, 0, true]], JSON.stringify(records));
   for (const { reason } of records) assert.match(reason, /^its draft failed its checks: .+/, reason);
   assert.notEqual(records[0].digest, records[1].digest, "each compile's failure is its own record");
+});
+
+// Review on #3064 (PRRT_kwDOUmdVMs64Qed-): a failed draft's name and errors are the model's words, cut of the run's own
+// refuse values before its promotion record is saved or logged; the promotions read cuts only the server's secrets. A
+// per-run credential that passes WORKFLOW_NAME (lowercase), named as the draft, reaches none of them.
+test("a compile whose failed draft is named after a per-run credential: the credential is not in its promotion record, the promotions read or the log", { timeout: 180_000 }, async (t) => {
+  const credential = ["run", "pass", randomBytes(8).toString("hex")].join("-");
+  assert.match(credential, WORKFLOW_NAME, "a name the compile turn takes");
+  const w = await world(t, { learning: { compile_after: 1 }, flows: [], env: { WIDGET_TOKEN: credential }, draftName: credential });
+  const row = await w.start("run-1", "Question 1");
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.equal(w.asks.get("run-1").length > 0, true, "the first completed run is asked its compile");
+  const records = await promotionsOf(w.server.settings, "agent-1");
+  assert.deepEqual(records.map(({ decided, check }) => [decided, check?.attempt, check?.n]), [["hold", 1, 0]], JSON.stringify(records));
+  assert.match(records[0].reason, /^its draft failed its checks: .+/, records[0].reason);
+  assert.ok(w.logs.some((line) => line.includes("failed its checks (attempt 1)")), w.logs.join("\n"));
+  const read = promotionsShown(records, secretsShown([]));
+  for (const [where, text] of [["the saved record", JSON.stringify(records)], ["the promotions read", JSON.stringify(read)], ["the log", w.logs.join("\n")]]) {
+    assert.equal(text.includes(credential), false, `${where} holds the run's credential: ${text.slice(0, 2_000)}`);
+  }
 });
 
 test("(a) learning true: the default compile_after is 20, not an earlier count of notes or runs", { timeout: 180_000 }, async (t) => {
