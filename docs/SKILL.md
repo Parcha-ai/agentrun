@@ -20,9 +20,9 @@ Before asking anything, run this. It only reads, and prints the names of the sig
 ```sh
 uname -s
 for name in CLAUDE_CODE_REMOTE CODESPACES GITPOD_WORKSPACE_ID SSH_CONNECTION DISPLAY WAYLAND_DISPLAY; do
-  [ -n "$(printenv "$name")" ] && echo "set: $name"
+  if [ -n "$(printenv "$name")" ]; then echo "set: $name"; fi
 done
-{ [ -f /.dockerenv ] || [ -f /run/.containerenv ]; } && echo "in a container"
+if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then echo "in a container"; fi
 ```
 
 Read it like this:
