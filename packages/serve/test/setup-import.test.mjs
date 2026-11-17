@@ -13,6 +13,7 @@ import { test } from "node:test";
 import { MessageChannel } from "node:worker_threads";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { agentIdOf } from "../dist/import.js";
 import { listRuns } from "../dist/store-reads/runs.js";
 import { answerStoreCall, importStoreProxy } from "../dist/import-proxy.js";
 import { StoreBusy, StoreConstraint } from "../dist/store/index.js";
@@ -60,6 +61,26 @@ const runsOf = async (data) => {
   }
 };
 const agentsIn = async (data) => (await agentsOf(data)).length;
+/** The offer's counts, apart from the projects it names to choose from (their own test). */
+const counts = (offer) => ({ projects: offer?.projects, sessions: offer?.sessions });
+/** The offer once the count has ended. */
+async function offerOf(server) {
+  const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
+  let found = await read();
+  for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
+  return found;
+}
+/** A machine with two projects: acme-site (a Claude Code session and a Codex one) and billing-api (one Claude Code session). */
+async function twoProjects(t) {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const [site, billing] = [join(home, "code", "acme-site"), join(home, "code", "billing-api")];
+  for (const dir of [site, billing]) mkdirSync(dir, { recursive: true });
+  claudeSession(home, site, 1);
+  codexSession(home, site, 2);
+  claudeSession(home, billing, 3);
+  return { site, billing, sessionsHome: { home, temp: join(root, "tmp") } };
+}
 
 test("before its owner is set, a server on this machine says at once that it can import (202 while it counts), then how many projects and sessions", { timeout: 60_000 }, async (t) => {
   const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
@@ -69,7 +90,7 @@ test("before its owner is set, a server on this machine says at once that it can
   assert.deepEqual([first.status, first.json], [202, { counting: true }], "the first read starts the count and does not wait for it");
   let found = first;
   for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
-  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }]);
+  assert.deepEqual([found.status, counts(found.json)], [200, { projects: 1, sessions: 2 }]);
 });
 
 test("a first start with countSessions counts before any read: the page's first read has the numbers", { timeout: 60_000 }, async (t) => {
@@ -77,7 +98,7 @@ test("a first start with countSessions counts before any read: the page's first 
   // Long enough for a worker to count two sessions on a busy machine, with no read to start it.
   await sleep(8_000);
   const found = await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
-  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }]);
+  assert.deepEqual([found.status, counts(found.json)], [200, { projects: 1, sessions: 2 }]);
 });
 
 test("setting the password without the box imports nothing", async (t) => {
@@ -333,7 +354,7 @@ test.skip("under its launcher (node started from a string), setup counts this ma
   const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   let found = await read();
   for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
-  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 3 }], err);
+  assert.deepEqual([found.status, counts(found.json)], [200, { projects: 1, sessions: 3 }], err);
   const made = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: `http://127.0.0.1:${port}` }, body: { password: PASSWORD, import: true } });
   assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
@@ -375,7 +396,7 @@ process.on("SIGTERM", () => void serve.close().then(() => process.exit(0)));
   const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   let found = await read();
   for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
-  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }], err);
+  assert.deepEqual([found.status, counts(found.json)], [200, { projects: 1, sessions: 2 }], err);
   const made = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin: `http://127.0.0.1:${port}` }, body: { password: PASSWORD, import: true } });
   assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
@@ -433,7 +454,7 @@ test("setup's count of a big home reads none of its sessions for keys: it answer
   const read = () => call(port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   let found = await read();
   for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
-  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 1 }], `the count read no subagent's file: ${err}`);
+  assert.deepEqual([found.status, counts(found.json)], [200, { projects: 1, sessions: 1 }], `the count read no subagent's file: ${err}`);
   const stopped = Date.now();
   if (alive) process.kill(-child.pid, "SIGTERM");
   // Unreferenced: the bound holds no exited test's process open.
@@ -653,7 +674,7 @@ test("setup counts sessions as the import takes them: a thread resumed in a seco
   const read = () => call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } });
   let found = await read();
   for (const deadline = Date.now() + 30_000; found.status === 202 && Date.now() < deadline; ) (await sleep(100), (found = await read()));
-  assert.deepEqual([found.status, found.json], [200, { projects: 1, sessions: 2 }], "the Claude Code session and the thread, not its two files");
+  assert.deepEqual([found.status, counts(found.json)], [200, { projects: 1, sessions: 2 }], "the Claude Code session and the thread, not its two files");
 });
 
 test("a setup with the box ticked that cannot keep the owner's yes sets no owner: it fails whole, and a retry sets the owner and imports", { timeout: 60_000 }, async (t) => {
@@ -697,4 +718,96 @@ test("an import at setup stopped part way and gone on with at the next start say
   const state = async () => (await call(second.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(signedIn) } })).json;
   for (const deadline = Date.now() + 60_000; (await state())?.state !== "done" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 60, skipped: 0 }, "every session, the first start's part included");
+});
+
+test("the offer names each project to choose from, and a setup that names one imports that project alone", { timeout: 60_000 }, async (t) => {
+  const { site, billing, sessionsHome } = await twoProjects(t);
+  const server = await serve(t, { accounts: true, openSetup: true, sessionsHome });
+  const found = await offerOf(server);
+  assert.deepEqual(counts(found.json), { projects: 2, sessions: 3 });
+  const byName = Object.fromEntries(found.json.candidates.map((c) => [c.name, c]));
+  assert.deepEqual(found.json.candidates.map((c) => c.name).sort(), ["acme-site", "billing-api"]);
+  assert.deepEqual({ ...byName["acme-site"], last_active: null }, { id: agentIdOf(site), name: "acme-site", path: site, sessions: 2, sources: ["claude-code", "codex"], last_active: null });
+  assert.deepEqual({ ...byName["billing-api"], last_active: null }, { id: agentIdOf(billing), name: "billing-api", path: billing, sessions: 1, sources: ["claude-code"], last_active: null });
+  for (const candidate of found.json.candidates) assert.ok(Number.isFinite(Date.parse(candidate.last_active)), `when its latest session ended: ${candidate.last_active}`);
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: [agentIdOf(billing)] } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true, importing: true }], made.text);
+  const state = async () => (await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
+  for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
+  assert.deepEqual(await state(), { state: "done", agents: 1, runs: 1, skipped: 0 });
+  assert.deepEqual((await agentsOf(server.data)).map((a) => a.name), ["billing-api"], "nothing of the project not chosen");
+  assert.equal((await runsOf(server.data)).length, 1);
+});
+
+test("a setup's import names project ids only, and a choice of none imports nothing", async (t) => {
+  for (const [named, why] of [[["../acme-site"], "a path"], [[7], "a number"], [{ projects: [] }, "an object"], ["all", "a word"], [Array.from({ length: 501 }, (_, i) => `imp-${String(i).padStart(32, "0")}`), "more than the offer names"]]) {
+    const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
+    const refused = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: named } });
+    assert.equal(refused.status, 422, `${why}: ${refused.text}`);
+    assert.equal(refused.json.error.fields[0].field, "import");
+    assert.equal((await call(server.port, { path: "/v2/auth/session", headers: page(server) })).json.password_set, false, "no owner was set");
+  }
+  const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: [] } });
+  assert.deepEqual([made.status, made.json], [201, { signed_in: true }], made.text);
+  await sleep(500);
+  assert.equal(existsSync(join(server.data, ".import-at-setup")), false, "no yes was kept");
+  assert.equal(await agentsIn(server.data), 0);
+});
+
+test("the owner's choice outlives a stop: the next start imports the projects chosen, and no other", { timeout: 60_000 }, async (t) => {
+  const { billing, sessionsHome } = await twoProjects(t);
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  // As a server stopped before its import began leaves it.
+  writeFileSync(join(data, ".import-at-setup"), JSON.stringify({ projects: [agentIdOf(billing)] }), { mode: 0o600 });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+  t.after(() => server.close());
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal(existsSync(join(data, ".import-at-setup")), false, "cleared once the import ended");
+  assert.deepEqual((await agentsOf(data)).map((a) => a.name), ["billing-api"]);
+});
+
+test("an import that three starts began and none ended is given up: the next start does not take it up, and says so to the owner", { timeout: 60_000 }, async (t) => {
+  const { sessionsHome } = await machine(t);
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  // As three starts leave it when the server ended during each one's import: each counted before its worker ran.
+  writeFileSync(join(data, ".import-at-setup"), JSON.stringify({ starts: 3 }), { mode: 0o600 });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+  t.after(() => server.close());
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal(existsSync(join(data, ".import-at-setup")), false, "the yes is dropped");
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD } });
+  assert.equal(made.status, 201, made.text);
+  assert.deepEqual((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json, { state: "failed" });
+  assert.equal(await agentsIn(data), 0, "nothing was imported");
+});
+
+test("a kept choice that cannot be read is never taken for every project: nothing is imported, and the owner is told it failed", { timeout: 120_000 }, async (t) => {
+  for (const kept of ["{not json", JSON.stringify({ projects: "every" }), JSON.stringify({ projects: [1] }), "[]"]) {
+    const { sessionsHome } = await machine(t);
+    const data = join(await scratch(t), "agents");
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, ".import-at-setup"), kept, { mode: 0o600 });
+    const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+    t.after(() => server.close());
+    for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+    assert.equal(existsSync(join(data, ".import-at-setup")), false, `${kept}: the yes is dropped`);
+    const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD } });
+    assert.equal(made.status, 201, made.text);
+    assert.deepEqual((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json, { state: "failed" }, kept);
+    assert.equal(await agentsIn(data), 0, `${kept}: nothing was imported`);
+  }
+});
+
+test("a start that begins the import is counted until it ends: two earlier starts that did not end it leave one more try, which imports", { timeout: 60_000 }, async (t) => {
+  const { sessionsHome } = await machine(t);
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, ".import-at-setup"), JSON.stringify({ starts: 2 }), { mode: 0o600 });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+  t.after(() => server.close());
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal((await runsOf(data)).length, 2, "the third start's import ran");
 });

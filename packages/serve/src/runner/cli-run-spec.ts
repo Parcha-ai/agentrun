@@ -664,7 +664,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
   // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
   // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
-  // A run the promoted workflow served first starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
+  // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
   const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
@@ -682,7 +682,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  }), { ...audits, launch });
+  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
 
   return {
     adapter,
