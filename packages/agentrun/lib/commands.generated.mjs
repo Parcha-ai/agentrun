@@ -2308,6 +2308,12 @@ export const COMMANDS = [
         "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
       },
       {
+        "name": "model_key",
+        "type": "string",
+        "required": false,
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run look-back). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
+      },
+      {
         "name": "workflow_first",
         "type": "boolean",
         "required": false,
@@ -2661,6 +2667,12 @@ export const COMMANDS = [
         "type": "string",
         "required": true,
         "description": "At most `limits.max_message_chars`. Not only whitespace."
+      },
+      {
+        "name": "model_key",
+        "type": "string",
+        "required": false,
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run look-back). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written."
       }
     ],
     "hasBody": true,
@@ -2830,6 +2842,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
+      },
+      {
+        "name": "model_key",
+        "type": "string",
+        "required": false,
+        "description": "The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run look-back). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call."
       },
       {
         "name": "workflow_first",

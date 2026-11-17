@@ -11,7 +11,7 @@
 // (learning-end.ts: heard, never "nothing new"; adapter-loop.ts askEndOfRun: feedbackAsk before the prompt).
 import { type Grade, markGradeRound, putGrade } from "../learn/promote.js";
 import type { RunPath } from "../learning-cost.js";
-import { readLaunchBody } from "../run-launch.js";
+import { readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { type Command, RunFinal, type Store } from "../store/store.js";
 import { KINDS } from "./journal-kinds.js";
 import { commandRequest } from "./loop.js";
@@ -90,7 +90,7 @@ export interface OpenedRound {
  *  agent (closed history: a grade of it starts no paid work), and one the store opens again (an agentic run that answered
  *  or that a person stopped). Null when the grade asks for nothing more, or the run can't be opened again (the grade is
  *  kept either way). */
-export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, grade: Grade, label: string | undefined): Promise<OpenedRound | null> {
+export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, grade: Grade, label: string | undefined, canTurn: (launch: RunLaunch) => boolean = () => true): Promise<OpenedRound | null> {
   const words = label?.trim() ? label.trim() : undefined;
   const round = feedbackRoundOf(grade, words);
   if (!round || !words) return null;
@@ -102,6 +102,9 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   if (launch?.native || launch?.sdk) return null;
   const learning = launch?.learning;
   if (!learning || learning.use) return null;
+  // The round is a turn of the run with no caller's model key (a grade hands none): where the server holds no key for the
+  // run's route (`canTurn` false), the grade is kept and the run is not opened again, never left to fail with no key.
+  if (launch && !canTurn(launch)) return null;
   const feedback = { round, correct: grade.correct };
   try {
     const steer = await store.runs.reopen(grade.run, { kind: "steer", body: { text: words, feedback } });
@@ -116,8 +119,8 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
  *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round and its steer. The grade is
  *  kept first, so the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't
  *  be opened again) leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
-export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined): Promise<Grade> {
+export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
   const kept = await putGrade(store.settings, agentId, { ...grade, feedback: null });
-  const opened = await openFeedbackRound(store, kept, label);
+  const opened = await openFeedbackRound(store, kept, label, canTurn);
   return opened ? markGradeRound(store.settings, agentId, kept, opened) : kept;
 }

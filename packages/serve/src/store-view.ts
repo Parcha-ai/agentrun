@@ -13,6 +13,7 @@ import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
+import { COMPUTER_UNAVAILABLE_CODE, lostEndMessage } from "./computer-lost.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
@@ -145,12 +146,15 @@ export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
 /** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). A run
  *  its cap ended once its cost passed it (the kernel's overCapEnd) is code spend_cap_reached, its message the words after
  *  the code, as main served it; a provider's content-filter stop is `moderated`, in words a person can act on
- *  (content-filter.ts); every other failure is run_failed. */
+ *  (content-filter.ts); a run whose sandbox was lost more times than its claim starts new ones (computer-lost.ts lostEnd)
+ *  is computer_unavailable, its message the words after the code; every other failure is run_failed. */
 const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
   // A run that reached its limit of requests on free models (the kernel cap's freeCeilingEnd) ends as its cap ends one: code
   // spend_cap_reached, its message the words after the code.
   const over = overCapMessage(summary) ?? freeCeilingMessage(summary);
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
+  const lost = lostEndMessage(summary);
+  if (lost !== undefined) return { code: COMPUTER_UNAVAILABLE_CODE, message: lost, retryable: false };
   if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
   return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
 };

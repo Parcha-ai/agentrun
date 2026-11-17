@@ -90,6 +90,9 @@ export interface LearningEndDeps {
   readonly decisionProviders?: () => Promise<{ readonly providers: Readonly<Record<string, unknown>>; readonly default: string } | undefined>;
   /** The runner's log: what the compile turn left out for holding a secret, by name and count, never a value. */
   readonly log?: (line: string) => void;
+  /** Why model spend beside the run is skipped (claim-secrets.ts claimSpendOff): its learning run's grade, which runs after
+   *  the run's turn ended, is not queued then, in these words. Absent: it is queued. */
+  readonly spendOff?: (what: string) => string | undefined;
 }
 
 /** The end-of-run step for a run launched with `launch`: undefined when its launch records no learning start (a run that
@@ -101,8 +104,12 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const env = deps.env ?? process.env;
   // The grade model the server named at the run's start (its learning start's), none: the agent's own grades it.
   const gradeModel = start.gradeModel;
+  // The learning run's grade runs after the run's turn ended: never on a run's own key (erased with that end), and never
+  // on none.
+  const gradeOff = deps.spendOff ? () => deps.spendOff?.("The learning run's grade") : undefined;
   const hookFor = (runId: string, round: number, before: ReflectDeps["before"]) => createReflectHook({
     round,
+    ...(gradeOff ? { gradeOff } : {}),
     ...(before ? { before } : {}),
     // reflectSkip's facts: a run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be
     // kept within it. The cap is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests

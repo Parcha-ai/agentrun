@@ -13,6 +13,10 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, endedReason } from "./commands.js";
+import { COMPUTER_CALL } from "../computer-channel.js";
+import { COMPUTER_HAND_BACK, COMPUTER_TAKE_OVER } from "../computer-commands.js";
+import { HELD_COMMANDS } from "../computer-held.js";
+import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
@@ -69,6 +73,10 @@ class EndNotWithdrawn extends Error {
 
 /** The first wait after a stopped end that withdraws a call is refused; each later one doubles (RunnerOptions). */
 export const END_RETRY_BACKOFF_MS = 5_000;
+/** The command rows a row that cannot be delivered yet does not hold back (runner.ts deliver), beside a stop and a cancel:
+ *  those that act on the run's computer for its owner, so a stop that kept the computer can still let it go. */
+const PASSES_A_BLOCKED_ROW: ReadonlySet<string> = new Set([...HELD_COMMANDS, COMPUTER_CALL, HAND_BACK, COMPUTER_TAKE_OVER, COMPUTER_HAND_BACK]);
+
 /** The longest wait between those tries: 5 min. */
 export const END_RETRY_CAP_MS = 300_000;
 /** The tries at that cap before the run ends stopped on its row alone (about an hour of retries in all; endRefused). */
@@ -175,6 +183,9 @@ export interface Runner {
 }
 
 interface Held {
+  /** The rows handed on past a blocked row (PASSES_A_BLOCKED_ROW), by id: the cursor stays before the blocked row, so a
+   *  later delivery reads them again and must not hand them on twice. */
+  passed: Set<number>;
   claim: Claim;
   loop: Loop;
   fence: { lost: boolean };
@@ -415,6 +426,11 @@ export function startRunner(options: RunnerOptions): Runner {
     delivery = (async () => {
       try {
         const rows = given ?? (await store.commands(held.claim.runId, held.cursor));
+        // A row whose delivery threw (its loop could not take it yet: a message whose model key cannot be read, adapter-
+        // loop.ts command) blocks the rows after it, which wait in order behind it, but a stop or a cancel: those still
+        // reach the loop, so a run is never kept turning and spending behind a row it cannot take. The cursor stays before
+        // the blocked row, which the next poll delivers again; the error is said once the rows are read.
+        let blocked: { error: unknown } | undefined;
         for (const row of rows) {
           if (held.stopping || held.ending || held.fence.lost || killed) break;
           // A row another delivery handed on since the runner's read is not handed on again.
@@ -422,16 +438,47 @@ export function startRunner(options: RunnerOptions): Runner {
           // The cursor moves past a row only once its delivery went through (handed to the loop, and any refusal written):
           // a delivery that throws leaves the row for the next poll, never skipped for the rest of the claim.
           if (row.takenAt !== null) {
-            held.cursor = Math.max(held.cursor, row.id);
+            if (!blocked) held.cursor = Math.max(held.cursor, row.id);
+            continue;
+          }
+          // A row handed on past a blocked row earlier (PASSES_A_BLOCKED_ROW) is never handed on again.
+          if (held.passed.has(row.id)) {
+            if (!blocked) held.cursor = Math.max(held.cursor, row.id);
             continue;
           }
           if (row.kind === "stop" || row.kind === "cancel") {
-            held.cursor = Math.max(held.cursor, row.id);
+            if (!blocked) held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id, ...(row.kind === "cancel" ? { cancel: true as const } : {}) });
             // A stop that keeps the run's computer leaves the rows after it to be handed on (the loop head ends the rest).
             continue;
           }
-          const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
+          // Past a blocked row, the commands that act on the run's computer for its owner go on too (a release, a start,
+          // a call, a take-over and a hand-back): a stop that kept the computer must still be able to let it go. Each is
+          // handed on once (held.passed), the cursor still before the blocked row; the message itself is never handed on.
+          if (blocked) {
+            if (!PASSES_A_BLOCKED_ROW.has(row.kind) || held.passed.has(row.id)) continue;
+            try {
+              const passed = await held.loop.command(row);
+              // Marked handed on only once its answer is kept: a refusal whose write fails is asked of the loop again at the
+              // next delivery, so its caller hears it once the store answers, never a silence.
+              if ("refused" in passed) {
+                await store.take(held.claim, row.id, "refused", passed.refused);
+                emit({ type: "refused", runId: held.claim.runId, commandId: row.id, reason: passed.refused });
+              }
+              held.passed.add(row.id);
+            } catch (error) {
+              if (isFenced(error) || held.sealed || killed) throw error;
+            }
+            continue;
+          }
+          let outcome: Awaited<ReturnType<typeof held.loop.command>>;
+          try {
+            outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
+          } catch (error) {
+            if (isFenced(error) || held.sealed || killed) throw error;
+            blocked = { error };
+            continue;
+          }
           if (held.sealed || killed) return;
           // `taken`: the loop's commit took it. `later`: left untaken for the run's next claim. Only a refusal is written here.
           if ("refused" in outcome) {
@@ -440,6 +487,7 @@ export function startRunner(options: RunnerOptions): Runner {
           }
           held.cursor = Math.max(held.cursor, row.id);
         }
+        if (blocked) throw blocked.error;
       } catch (error) {
         if (held.sealed || killed) return;
         if (isFenced(error)) loseClaim(held, "fenced");
@@ -741,7 +789,7 @@ export function startRunner(options: RunnerOptions): Runner {
       },
       redact,
     });
-    const held: Held = { claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
+    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {

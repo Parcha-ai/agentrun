@@ -37,7 +37,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
 import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { claimSecrets, withModelKeys } from "./claim-secrets.js";
+import { claimModelEnv, claimModelKey, claimSecrets, holdRunKey, keyedAtClaim, withoutModelKeys } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
 import { capModelOf, PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
@@ -242,7 +242,13 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
     // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
     // Settings → Model keys runs the next run with no restart).
-    const providerOf = deps.providerOf ?? routeProviderOf(withModelKeys(deps.env ?? process.env, claimedEnv));
+    // A run with its own model key (model_key, sealed in its launch): every model node carries that key alone, and no model
+    // key is on the env its decisions and call nodes run under. A workflow run takes no message, so its key is the one
+    // its start handed, for the run's life.
+    const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env ?? process.env }, claim.runId);
+    if (keyedAtClaim(runKey)) withoutModelKeys(claimedEnv);
+    if (runKey && run?.redact) holdRunKey(heldRedactor(run.redact), runKey);
+    const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, claimedEnv, runKey));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
     // catalog the Harness takes points at them), their hooks deferred to the booking wired at harnessReady.

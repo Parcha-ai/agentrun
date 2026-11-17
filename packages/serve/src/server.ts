@@ -79,6 +79,7 @@ import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
+import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
@@ -89,7 +90,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -1584,6 +1585,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const entry = await needAgent(agentId);
       if (entry.agent.archivedAt) return { learns: false, why: "it is archived." };
       if (learning === "off") return { learns: false, why: "this server's learning is off (--learning)." };
+      // A batch starts runs and sends their follow-ups with no caller's model key: none to spend on a server with none.
+      const off = noServerKeyFor(env, "Learning from a CSV");
+      if (off) return { learns: false, why: off };
       if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
       return { learns: true };
     },
@@ -1892,6 +1896,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return changed;
   }
+  /** The records answering trigger `id`'s create once the trigger is gone (deleted, or not read): no trigger is left to
+   *  say which of its fields are sealed, so every field of each answer's config is masked in the map (not saved: the
+   *  caller saves). A replay of a deleted trigger's create needs none of its values. */
+  function maskCachedGone(id: string): string[] {
+    const changed: string[] = [];
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const names = Object.keys(body.source.config);
+      if (names.every((name) => (body.source as { config: Record<string, unknown> }).config[name] === SEALED_MASK)) continue;
+      const config = Object.fromEntries(names.map((name) => [name, SEALED_MASK]));
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: names } } } });
+      changed.push(slot);
+    }
+    return changed;
+  }
   const idempotencySaid = (fields: Record<string, string>) => {
     const line = logLine("idempotency", fields);
     if (log) log(line);
@@ -1906,8 +1926,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   schemaSealed = composioTriggers
     // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
     // start's scrub runs it before it serves).
-    .sealMarked(async (id, source, updatedAt) => {
-      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
+    .sealMarked(async (id, source, updatedAt, read) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? { ifSource: read } : { ifUpdatedAt: updatedAt, ifSource: read })) !== undefined;
       // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
       // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
       if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
@@ -1928,7 +1948,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     for (const id of answered) {
       const row = await sealing.triggers.get(id).catch(() => undefined);
-      if (row && isObject(row.source)) for (const slot of maskCached(id, row.source as Record<string, unknown>)) scrubbed.add(slot);
+      // A trigger gone (deleted before this start, by a server that did not mask its answers at the delete) or not read:
+      // every field of its cached answers is masked, as no trigger is left to say which are sealed.
+      const slots = row && isObject(row.source) ? maskCached(id, row.source as Record<string, unknown>) : row ? [] : maskCachedGone(id);
+      for (const slot of slots) scrubbed.add(slot);
     }
     for (const [slot, v] of idempotency) {
       const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
@@ -2722,34 +2745,82 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  at the public URL or the server's own address. */
   const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
-  /** A run body's `mcp_auth` taken out of it, before anything else reads the body: the credentials a run's caller hands
-   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). They never reach the run's saved body, its
-   *  timeline, an idempotency fingerprint (a retry with a fresh credential replays its first answer) or a log: only the
-   *  seal `sealer` makes, which seals them for the run's id into its launch row (store/seal.ts sealRunMcpAuth), bound to
-   *  each server's origin then. The request calls `sealer` only for new work, inside its idempotent work: there each
-   *  entry must name a saved per_run server, else 422, nothing written. A retry its key already answered replays that
-   *  answer even when the server has since changed or gone, since it does no new work. */
-  function handedMcpAuth(body: Json): { body: Json; sealer: () => Promise<((runId: string) => Uint8Array) | undefined> } {
-    if (body.mcp_auth === undefined) return { body, sealer: async () => undefined };
-    const { mcp_auth, ...rest } = body;
-    const sealer = async () => {
+  /** A run body's launch secrets taken out of it, before anything else reads the body: `mcp_auth`, the credentials a run's
+   *  caller hands its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf), and `model_key`, the run's own model
+   *  key (run-model-key.ts), such as a LiteLLM virtual key minted for it. They never reach the run's saved body, its
+   *  timeline, an idempotency fingerprint (a retry with a fresh credential or key replays its first answer) or a log: only
+   *  the seal made of them, sealed for the run's id into its launch row (store/seal.ts sealRunLaunch), each MCP credential
+   *  bound to its server's origin then and the model key to the gateway's (AGENT_MODEL_BASE_URL). `handed` is called only
+   *  for new work, inside the request's idempotent work: there each mcp_auth entry must name a saved per_run server, and
+   *  the model key must be text, else 422, nothing written. A retry its key already answered replays that answer even
+   *  when the server has since changed or gone, since it does no new work. */
+  function handedLaunchSecrets(body: Json): { body: Json; handed: () => Promise<{ mcp?: RunMcpAuth; model?: string }> } {
+    if (body.mcp_auth === undefined && body.model_key === undefined) return { body, handed: async () => ({}) };
+    const { mcp_auth, model_key, ...rest } = body;
+    const handed = async () => {
       const issues: InputIssue[] = [];
-      const handed = mcpAuthOf(mcp_auth, issues);
+      const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
-      for (const [server, headers] of Object.entries(handed ?? {})) {
+      for (const [server, headers] of Object.entries(mcp ?? {})) {
         const row = await getMcpServer(store, server);
         if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
         else auth[server] = { headers, origin: new URL(row.url).origin };
       }
+      const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
       if (issues.length) throw invalid(issues);
-      return (runId: string) => sealRunMcpAuth(sealKey, runId, auth);
+      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}) };
     };
-    return { body: rest, sealer };
+    return { body: rest, handed };
+  }
+
+  /** The 422 for a model key where the run's model never takes it (run-model-key.ts modelKeyMisfit), at `model_key`. */
+  const misfit = (why: string) => invalid([{ field: "model_key", reason: "not_an_option", message: why }]);
+
+  /** A start's launch seal of `handed` (handedLaunchSecrets), made once the start prepared the run's launch: a model key
+   *  where the run's model never takes it is refused (modelKeyMisfit), and a start that hands other secrets but no key
+   *  is refused where the server holds no key for the run's route (serverKeyMissing). Undefined when nothing is handed:
+   *  the start's own check (runs-over-store keyedOrRefused) refuses that one where it has no key to spend. */
+  function startSeal(handed: { mcp?: RunMcpAuth; model?: string }): StartOptions["sealed"] {
+    if (handed.mcp === undefined && handed.model === undefined) return undefined;
+    return (runId, launch, kind) => {
+      const target = { kind, model: launch.model, native: Boolean(launch.native) };
+      if (handed.model !== undefined) {
+        const why = modelKeyMisfit(env, target);
+        if (why) throw misfit(why);
+      } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false);
+      const origin = runModelOrigin(env);
+      return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}) });
+    };
+  }
+
+  /** A message's launch secrets for run `run` (its kind and launch as stored): what it hands replaces that part of the
+   *  run's, inside the write that takes the message (store LaunchSealed: a function of what the launch holds then), and a
+   *  part it does not hand is kept as the run holds it (none after its turn's end erased it). A model key is refused
+   *  where the run's model never takes it. One is required where the server holds no key for the run's route and the
+   *  run holds none when the message is written (its last turn ended): 422 model_key_required from inside that write,
+   *  which then writes nothing, so a turn never starts with no key to spend. */
+  async function messageSeal(run: { id: string; kind: string }, handed: { mcp?: RunMcpAuth; model?: string }): Promise<LaunchSealed | undefined> {
+    const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+    const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
+    if (handed.model !== undefined) {
+      const why = modelKeyMisfit(env, target);
+      if (why) throw misfit(why);
+    }
+    const needsKey = handed.model === undefined && serverKeyMissing(env, target);
+    if (handed.mcp === undefined && handed.model === undefined && !needsKey) return undefined;
+    const origin = runModelOrigin(env);
+    return (current) => {
+      const held = current === null ? {} : (openRunLaunch(sealKey, run.id, current) ?? {});
+      const mcp = handed.mcp ?? held.mcp;
+      const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
+      if (!model && needsKey) throw modelKeyRequired(true);
+      return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}) });
+    };
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
-    const { body, sealer } = handedMcpAuth(await bodyOf(req));
+    const { body, handed } = handedLaunchSecrets(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -2758,7 +2829,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = await sealer();
+      const seal = startSeal(await handed());
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
@@ -2771,7 +2842,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
-    const { body, sealer } = handedMcpAuth(await bodyOf(req));
+    const { body, handed } = handedLaunchSecrets(await bodyOf(req));
     if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine; an inline definition cannot create one.");
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
@@ -2811,7 +2882,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = await sealer();
+      const seal = startSeal(await handed());
       const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
@@ -3722,16 +3793,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
-        const { body, sealer } = handedMcpAuth(await bodyOf(req));
+        const { body, handed } = handedLaunchSecrets(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const seal = await sealer();
+          const seal = await messageSeal(run, await handed());
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          // Its mcp_auth replaces the run's handed credentials in the steer's own write, so the turn it starts uses them.
-          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal(run.id) } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
+          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -3800,7 +3871,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow_promotion === "number" ? { promotion: m.workflow_promotion } : {}),
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
-        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
+        // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
+        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
         // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
         // reads it with the shadows'. A row not written now is logged, never the grade refused.
         const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
@@ -4408,6 +4480,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw new ApiError("bad_request", `inputs is "held" (the runs the revision was last checked on, the default) or a whole number from 1 to ${COMPILE_AFTER_MAX}: that many of the agent's newest completed runs.`);
         }
         const [, , name, digest] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
+        // Its replay runs are started by no caller, with no model key: none to spend on a server that holds none.
+        const keyless = noServerKeyFor(env, "An owner's replay");
+        if (keyless) throw new ApiError("not_continuable", keyless);
         const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
         return send(res, 202, started, { location: `/v2/agents/${encodeURIComponent(id)}/learning/workflows/${encodeURIComponent(name!)}/revisions/${encodeURIComponent(digest!)}/replays/${started.replay}` });
       }
@@ -4521,6 +4596,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteTrigger": {
         // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
         const said = await triggers.remove(id);
+        // Its cached create answers are masked now and saved, so no later start has to find the trigger to mask them. A
+        // failed save is said by a code; the map is masked already, so a replay is too.
+        if (maskCachedGone(id).length) await keep().catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
         if (said) return send(res, 200, { deleted: true, ...(said as Record<string, unknown>) });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }

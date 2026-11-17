@@ -57,6 +57,9 @@ export type AuditDeps = {
   readonly log: (line: string) => void;
   readonly sealKey?: Buffer;
   readonly now?: () => number;
+  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a shadow is a run the runner
+   *  starts with no caller's key. Absent: it runs. */
+  readonly spendOff?: (what: string) => string | undefined;
 };
 
 /** The words a second hold within stop_window leaves on its record: what the owner reads. */
@@ -139,6 +142,10 @@ async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readon
 export async function startAudit(deps: AuditDeps & { readonly runId: string; readonly launch: RunLaunch; readonly room?: () => Promise<number | null> }, serve: Pick<WorkflowFirst, "name" | "digest" | "replay"> | undefined): Promise<void> {
   const { store, agentId, runId, launch, log } = deps;
   if (!serve || serve.replay || launch.replay || launch.audit || !launch.learning || !auditableLaunch(launch)) return;
+  // A shadow is a run of its own the runner starts, on no caller's key: skipped where the served run brought its own key
+  // or the server holds none (claimSpendOff).
+  const off = deps.spendOff?.("A shadow audit");
+  if (off) return void log(`workflow-first: ${off}`);
   try {
     // Read after the claim pinned the revision's MCP tools (mcp-claim.ts pinFirst): the pin a revision saved without one
     // takes at its first run is what its tools are classed by.
