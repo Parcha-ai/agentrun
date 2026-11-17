@@ -10,6 +10,7 @@ import { GITHUB_API, GITHUB_FIELDS, GITHUB_SCOPE, githubCall, githubTargetOf, mi
 import type { TriggerSettings } from "../store/index.js";
 import { isObject } from "../validate.js";
 import type { GithubAppAccess } from "./mcp-github.js";
+import { held } from "./held.js";
 
 /** The access, with the API base its mint goes to: GitHub's own, or a test runner's fake. */
 export type GithubAppAccessAt = GithubAppAccess & { readonly api: string };
@@ -48,7 +49,8 @@ export async function githubAppAccess(
   firstInput: unknown,
   { api = GITHUB_API, now = Date.now, fromGitHub = false, hold, repo }: { api?: string; now?: () => number; fromGitHub?: boolean; hold?: (values: string[]) => void; repo?: string } = {},
 ): Promise<GithubAppAccessAt | undefined> {
-  if (!sealKey) return undefined;
+  // A run's own process holds no seal key: its runner's access for the claim's own launch, which mints there (held.ts).
+  if (!sealKey) return held()?.githubAppAccess();
   const app = await appOf(store, sealKey);
   if (!app) return undefined;
   // `repo`: the launch's (run-launch.ts repo), which the server checked against the agent's binding at the start: a run a

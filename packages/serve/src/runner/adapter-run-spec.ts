@@ -55,7 +55,8 @@ import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
-import { catalogSessionNames, type ClaimMcp, mcpForClaim } from "./mcp-run.js";
+import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
+import { heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
 import { agentEntriesOf } from "./loop.js";
@@ -71,7 +72,7 @@ import { AUDIT_PARKED, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
-import { archilClaim, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
+import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
@@ -155,8 +156,9 @@ export interface AdapterSpecDeps {
   readonly journal: (claim: Claim) => Journal;
   /** The one store: `runs` and `agents` for the run's revision, and the live-viewer seam for the browser tool. */
   readonly store: Store & LiveViewerStore;
-  /** The key the store's live-viewer tokens are sealed under (store/seal.ts). */
-  readonly sealKey: Buffer;
+  /** The key the store's sealed values are opened under (store/seal.ts): the runner's. Undefined in a run's own process
+   *  (run-child.ts), which never holds it: what a claim opens with it is asked of the runner there (held.ts). */
+  readonly sealKey: Buffer | undefined;
   /** The run's model route (model-route.ts routeOf), the one route the pi adapter and the cap read, on a wire of `wires`
    *  (the caller's; pi speaks both of main's, PI_WIRES). */
   readonly routeOf: (model: string | PinnedModel | undefined, env: NodeJS.ProcessEnv, tier?: Tier, wires?: readonly Wire[], upstream?: typeof fetch, redact?: (text: string) => string) => Promise<ModelRoute>;
@@ -420,7 +422,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
   // A run handed a browser sign-in this runner can't read back (its seal does not open here, or nothing of it is kept):
   // what it said could repeat a pointer nothing can cut, so it ends failed at its claim, in main's words (runs.ts).
-  if (!(await handedSignInReadsBack(deps.store, deps.sealKey, runRow))) throw new ClaimRefused(UNREADABLE_SIGN_IN);
+  if (!(await (deps.sealKey ? handedSignInReadsBack(deps.store, deps.sealKey, runRow) : heldOrThrow("a handed sign-in's read-back").signInReadsBack()))) throw new ClaimRefused(UNREADABLE_SIGN_IN);
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
@@ -442,7 +444,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
     // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
     // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one.
-    : await archilClaim({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    : await archilWhereHeld({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go.
   holds.hold({ archil });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
@@ -501,7 +503,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
+  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -805,7 +807,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // What the run must never learn beside the runner's secrets: the keys its claim handed it, every secret the server
     // keeps sealed (storeSecrets: the run's redactor holds the same list), and its sign-in's pointers, read back from the
     // store's sign-ins under the seal key (learning-run.ts refused, on the runner).
-    signIns: signInReads(deps.store, deps.sealKey),
+    signIns: deps.sealKey ? signInReads(deps.store, deps.sealKey) : heldSignInReads(),
     handed: runnerSecrets(toolEnv),
     stored: () => storeSecrets(deps.store, deps.sealKey, deps.data),
     log,
@@ -1041,13 +1043,14 @@ export async function learnedWorkflowHostTool(opts: {
  *  each a named todo, added as their seams land. */
 /** The run's live-viewer writers over the store (browser-live.ts): a session's hand-over written sealed, and gone. Its
  *  viewer token, minted in the run, is held by `cut`, the run's one redactor, as it is handed over, before it is written. */
-export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer, claim: Claim, cut: HeldRedact): { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> } {
+export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefined, claim: Claim, cut: HeldRedact): { put(handover: LiveHandover): Promise<boolean>; drop(tag?: string): Promise<void> } {
   return {
     put: (handover) => {
       cut.hold([handover.token]);
-      return putLiveViewer(store, sealKey, claim, handover);
+      // A run's own process holds no seal key: its runner seals the hand-over under the claim (held.ts).
+      return sealKey ? putLiveViewer(store, sealKey, claim, handover) : heldOrThrow("a browser viewer's hand-over").liveViewerPut(handover);
     },
-    drop: (tag) => dropLiveViewer(store, claim, tag),
+    drop: (tag) => (sealKey ? dropLiveViewer(store, claim, tag) : heldOrThrow("a browser viewer's drop").liveViewerDrop(tag)),
   };
 }
 
@@ -1086,7 +1089,8 @@ export function buildToolHost(opts: {
   readonly env: NodeJS.ProcessEnv;
   readonly run: AdapterRun;
   readonly store: Store & LiveViewerStore;
-  readonly sealKey: Buffer;
+  /** The runner's seal key; none in a run's own process, whose sealed reads its runner makes (held.ts). */
+  readonly sealKey: Buffer | undefined;
   readonly life: ReturnType<typeof hostLifecycle>;
   readonly redact: HeldRedact;
   /** The run's launch (its trigger and origin) and its agent's own tool settings, as the email tools read them. */
@@ -1099,7 +1103,8 @@ export function buildToolHost(opts: {
   /** That server's own addresses (AdapterSpecDeps.mcpOwn): never the ports calendar_events reads on loopback. */
   readonly own?: readonly string[];
 }): ToolHost {
-  const liveAt = runnerLiveOf(opts.env, opts.sealKey);
+  // A run's own process holds no seal key, so no live reach of another host: its browser's viewer answers on the server's.
+  const liveAt = opts.sealKey ? runnerLiveOf(opts.env, opts.sealKey) : undefined;
   const { root, claim, run, life } = opts;
   const { web, now, email } = opts.fakes ?? {};
   return {
@@ -1121,7 +1126,7 @@ export function buildToolHost(opts: {
     ...(run.rowSummaryOn ? { rowSummaryOn: run.rowSummaryOn } : {}),
     store: opts.store,
     claim,
-    sealKey: opts.sealKey,
+    ...(opts.sealKey ? { sealKey: opts.sealKey } : {}),
     // The run's one ledger, as the adapter loop made it over the run's sessions and handed it on the AdapterRun: the
     // browser holds and settles its calls here (host.ledger.paid), never on this process's own spend, and a refusal at the
     // cap parks the run (pause). browserListed reads it to fail closed.

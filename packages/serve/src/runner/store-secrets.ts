@@ -108,8 +108,11 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
 }
 
 /** Every secret the server keeps sealed that `sealKey` opens: the store's (one read across its planes) and, where the runner
- *  shares the server's data directory `data`, what it keeps beside the store. */
-export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer, data?: string, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): Promise<string[]> {
+ *  shares the server's data directory `data`, what it keeps beside the store. With no key (a run's own process, which
+ *  never holds the server's secrets, so has none of them to write), none: its runner cuts what crosses to it from what
+ *  the runner holds (run-child-host.ts). */
+export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer | undefined, data?: string, adapters: readonly TriggerAdapter[] = TRIGGER_ADAPTERS): Promise<string[]> {
+  if (!sealKey) return [];
   const listed: string[] = [];
   const whole: string[] = [];
   for (const row of await store.sealedSecrets.all()) {
@@ -132,6 +135,6 @@ export async function storeSecrets(store: StoreSecretsStore, sealKey: Buffer, da
 
 /** The server's sealed secrets (storeSecrets) held by `redact`, the run's one redactor, before any of the run's text is
  *  written. */
-export async function holdStored(redact: HeldRedact, store: StoreSecretsStore, sealKey: Buffer, data?: string): Promise<void> {
+export async function holdStored(redact: HeldRedact, store: StoreSecretsStore, sealKey: Buffer | undefined, data?: string): Promise<void> {
   redact.hold(await storeSecrets(store, sealKey, data));
 }

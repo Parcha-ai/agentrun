@@ -17,6 +17,7 @@ import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.j
 import type { SealedKeys } from "../store/store.js";
 import { handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
+import { held } from "./held.js";
 
 /** Every server secret a run might be handed (runs.ts RUN_SECRETS is the tool and model keys; the decision keys go beside
  *  them). Read from the store into a working environment, then scoped to the run below. */
@@ -114,6 +115,9 @@ export async function learnedDecisionKeys(deps: ClaimSecretsDeps, workflows: rea
  *  providers on them, host-side, never handed to the run. A fresh object per call. */
 export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readonly string[]): Promise<Record<string, string>> {
   if (!providers.length) return {};
+  // A run's own process holds no seal key: its runner reads them (held.ts).
+  const at = deps.sealKey ? undefined : held();
+  if (at) return at.decisionKeys(providers);
   return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false });
 }
 
@@ -123,6 +127,12 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
  *  model's. For the tiers' routes alone, through withModelKeys (never enumerable), never onto a tool's environment. */
 export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[]): Promise<NodeJS.ProcessEnv> {
   if (!tiers.length) return {};
+  // A run's own process holds no seal key: its runner reads them, the plan's reader with them (held.ts).
+  const at = deps.sealKey ? undefined : held();
+  if (at) {
+    const given = await at.tierModelKeys(tiers);
+    return given.plan ? withPlan({ ...given.keys }, given.plan) : { ...given.keys };
+  }
   const working = await workingEnv(deps);
   const out: NodeJS.ProcessEnv = {};
   for (const name of modelKeys(working, undefined, tiers)) if (working[name] !== undefined) out[name] = working[name];
@@ -167,7 +177,9 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
 /** Every model key the server holds, for a model route with no revision to scope it by (a learning run's grade): each
  *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. */
 export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
-  const out: NodeJS.ProcessEnv = {};
+  // A run's own process holds no seal key: what its runner hands a claim whose routes read them (held.ts savedModelKeys).
+  const at = deps.sealKey ? undefined : held();
+  const out: NodeJS.ProcessEnv = at ? { ...(await at.savedModelKeys()) } : {};
   for (const name of MODEL_KEY_NAMES) {
     const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
     if (value !== undefined) out[name] = value;

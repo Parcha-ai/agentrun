@@ -25,6 +25,7 @@ import {
 } from "../workspace/index.js";
 import { INDEX_FILE, type LearnedNote, NOTE_FILE, parseNoteFile } from "./notes.js";
 import { learnedFront, learnedName, learnedStatus, retiredFrom, SKILLS_DIR, WORKFLOWS_DIR } from "./skills.js";
+import { held, heldLearningFolder } from "../runner/held.js";
 
 /** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never a note's, never seeded. */
 export const HOST_DIR = ".agentrun";
@@ -458,8 +459,14 @@ export type LearningFolder = OneLearningWorkspace;
 /** Agent `place.agentId`'s learning folder as a Workspace: the one learningWorkspace, or the test's stand-in. */
 export function learningWorkspace(place: LearningPlace): LearningFolder {
   if (folderTestHooks.workspace) return folderTestHooks.workspace(place);
+  // A run's own process never opens a learning folder itself: its runner does, the claim's agent's (held.ts).
+  if (held()) return heldLearningFolder();
   return oneLearningWorkspace(place);
 }
+
+/** What a learning folder's script run is, as a runner checks one a run's process asks of it (run-child-host.ts): its
+ *  argv, the script's own environment, its deadline. */
+export const LEARNING_SCRIPT = { file: (): string => SCRIPT_FILE, env: (): Record<string, string> => scriptEnv(), timeoutMs: (): number => SCRIPT_TIMEOUT_MS, ensure: (ws: Workspace): Promise<void> => ensureScript(ws) };
 
 /** A learning folder this server cannot read or write: a link in it (`link`, its words naming it), or a backend that
  *  cannot answer. Fails closed: nothing learned is read, nothing is written. */

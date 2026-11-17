@@ -66,6 +66,7 @@ import { excerptShown } from "../learn/secrets.js";
 import { dslRefusalOf } from "../learn/skills.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
+import { held } from "./held.js";
 
 /** A replay run still not ended this long after its replay started counts as failed (no evidence), and is cancelled once
  *  the replay is decided without it. */
@@ -618,7 +619,7 @@ function replayLaunchOf(deps: PromotionDeps): ReplayLaunch {
     ...(launch.learning ? { learning: launch.learning } : {}),
     ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
   };
-  return { revision: deps.revisionId, body: launchBody(base), ...(deps.sealKey && deps.runId ? { handed_from: deps.runId } : {}) };
+  return { revision: deps.revisionId, body: launchBody(base), ...((deps.sealKey || held()) && deps.runId ? { handed_from: deps.runId } : {}) };
 }
 
 /** Whether `was`, a digest's newest record now, is still the replay `record` reserved: replaying, under the same replay
@@ -653,7 +654,9 @@ async function cancelUnended(deps: PromotionDeps, record: PromotionRecord): Prom
  *  logged. */
 async function handedTo(deps: PromotionDeps, launch: ReplayLaunch, id: string): Promise<Uint8Array | undefined> {
   const from = launch.handed_from;
-  if (!deps.sealKey || !from) return undefined;
+  if (!from) return undefined;
+  // A run's own process holds no seal key: its runner seals them again, from its own run alone (held.ts handOn).
+  if (!deps.sealKey) return held()?.handOn(from, id);
   const sealed = await deps.store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
   const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, from, sealed);
   return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;

@@ -97,7 +97,9 @@ function processes() {
   return out;
 }
 
-/** What each descriptor of `pid` points at, and what any pipe of it has unread (read without blocking). */
+/** What each descriptor of `pid` points at, and what any pipe of it has unread (read without blocking). A pipe whose two
+ *  ends `pid` holds both is its event loop's own (a wake-up, or libuv's signal lock once it has a child to reap): no other
+ *  process writes it, and a read takes the byte the loop waits on, which leaves the process blocked for good. */
 function descriptors(pid) {
   const out = [];
   let fds = [];
@@ -106,15 +108,20 @@ function descriptors(pid) {
   } catch {
     return out;
   }
+  const targets = new Map();
   for (const fd of fds) {
-    let target;
     try {
-      target = readlinkSync(`/proc/${pid}/fd/${fd}`);
-    } catch {
-      continue;
-    }
+      targets.set(fd, readlinkSync(`/proc/${pid}/fd/${fd}`));
+    } catch {}
+  }
+  // A descriptor's access mode is the low two bits of its octal flags: 0 read, 1 write.
+  const writes = (fd) => (Number.parseInt(/^flags:\s+([0-7]+)/m.exec(read(`/proc/${pid}/fdinfo/${fd}`)?.toString() ?? "")?.[1] ?? "0", 8) & 3) === 1;
+  const pipes = [...targets].filter(([, target]) => target.startsWith("pipe:"));
+  const written = new Set(pipes.filter(([fd]) => writes(fd)).map(([, target]) => target));
+  const own = new Set(pipes.filter(([fd, target]) => !writes(fd) && written.has(target)).map(([, target]) => target));
+  for (const [fd, target] of targets) {
     let unread = Buffer.alloc(0);
-    if (target.startsWith("pipe:") || target.endsWith(" (deleted)")) {
+    if ((target.startsWith("pipe:") && !own.has(target)) || target.endsWith(" (deleted)")) {
       try {
         const own = openSync(`/proc/${pid}/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
         const chunks = [];
@@ -237,9 +244,9 @@ function noSecretAnywhere(root, ...canaries) {
 }
 
 // The launcher's custody: the secrets reach the server over a pipe, so none is in the environment or command line of any
-// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, in the
-// same process (a run's own process is gone: custody of a run's keys is custody-runner-e2e.test.mjs), so a run going while the
-// processes are read is read too.
+// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, and a run
+// going is a process of its own under it (its keys come over a descriptor, never its environment: run-custody.test.mjs), so
+// the run's process is read too while the processes are read.
 test("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, a run going included", { timeout: 120_000 }, async (t) => {
   const { canary, secrets } = canaries();
   // Without the store URL, which names a Postgres store (its own case, below).
