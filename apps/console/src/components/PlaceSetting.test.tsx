@@ -31,11 +31,14 @@ describe("PlaceSetting", () => {
     expect(radio("box", "docker")).toBeNull();
   });
 
-  it("opens an agent that names no place where the server runs it: default_place, or the runner for the browser, which runs only there", () => {
+  it("opens an agent that names no place where the server runs it: default_place with a shell tool, the runner with none or with the browser, which runs only there", () => {
     const docker: Places = { ...PLACES, defaultPlace: { mode: "sandbox", box: "docker" } };
-    const boxed = mount({ places: docker });
+    const boxed = mount({ places: docker, picked: ["read", "bash"] });
     expect(boxed.radio("place", "sandbox")!.checked).toBe(true);
     expect(boxed.radio("box", "docker")!.checked).toBe(true);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const plain = mount({ places: docker });
+    expect(plain.radio("place", "runner")!.checked).toBe(true);
     act(() => root?.unmount()); document.body.innerHTML = "";
     const browsing = mount({ places: docker, picked: ["read", "browser"] });
     expect(browsing.radio("place", "runner")!.checked).toBe(true);

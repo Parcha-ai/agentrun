@@ -8,7 +8,7 @@
 // each its own run. This is the one way Composio's events start runs: a webhook trigger takes no composio signature.
 // A config can hold a credential (HubSpot's deal-stage event takes {app_id, developer_api_key}). Composio's trigger
 // schemas mark no field secret (their `config` is a plain JSON schema: type, title, description, required), so a field is
-// sealed by its name (sealedConfigFields): kept in this source's sealed settings, the trigger keeping SEALED_MASK in its
+// sealed by its name (sealedConfigFields), or as an address carrying a credential (credentialUrl): kept in this source's sealed settings, the trigger keeping SEALED_MASK in its
 // place and the field named in `sealed_config`, so no answer, row or log holds it (composio-triggers.ts).
 import { ACCEPT_SCHEMA, acceptOf, acceptRefusal, type Rule } from "./trigger-accept.js";
 import { closedSchema, type Source, type TriggerAdapter, unknownSourceFields } from "./trigger-adapter.js";
@@ -49,28 +49,51 @@ const wordsOf = (name: string): string[] => name.replace(/([a-z0-9])([A-Z])/g, "
 /** A word of a name read as its singular: a trailing s dropped (tokens, secrets, keys), from a word of two letters or more. */
 const singular = (word: string): string => (word.length > 1 && word.endsWith("s") ? word.slice(0, -1) : word);
 /** A word that names a credential wherever it stands in a name, read as its singular (credentials, tokens). */
-const SECRET_WORDS = new Set(["secret", "password", "passwd", "passphrase", "passcode", "pwd", "pat", "token", "credential", "apikey", "hapikey", "jwt", "dsn", "authorization", "bearer", "cookie"]);
+const SECRET_WORDS = new Set(["secret", "password", "passwd", "passphrase", "passcode", "pwd", "pat", "token", "credential", "apikey", "hapikey", "jwt", "dsn", "sig", "authorization", "bearer", "cookie"]);
+/** A word that, beside a credential's word, makes the name a count or size of it (max_tokens, token_count, tokens_used,
+ *  tokens_per_minute, password_min_length): no credential. */
+const COUNT_WORDS = new Set(["max", "min", "num", "number", "count", "limit", "total", "used", "usage", "budget", "remaining", "per", "length", "size", "quota"]);
 /** Two words that name a credential together, the one after the other (connection_string); neither does alone. */
 const SECRET_PAIRS: readonly (readonly [string, string])[] = [["connection", "string"]];
 
 /** Whether config field `name` is named like a credential. Each word is read as its singular (a trailing s dropped), and
  *  the name is a credential's when a word is secret, password, passwd, passphrase, passcode, pwd, pat, token, credential,
- *  apikey, hapikey, jwt, dsn, authorization, bearer or cookie; when it has connection then string; or when its last word
- *  is key (api_key, api_keys, developer_api_key, private_key; key_id and keyword are not). Conservative: a field so named
- *  that holds no secret is sealed all the same (max_tokens, token_count). */
+ *  apikey, hapikey, jwt, dsn, sig, authorization, bearer or cookie; when it has connection then string; or when its last
+ *  word is key (api_key, api_keys, developer_api_key, private_key; key_id and keyword are not). A credential's word with a
+ *  count's word (COUNT_WORDS) just before or after it names a count, not a credential (max_tokens, token_count; a
+ *  budget_api_key is still a key). Conservative otherwise: a field so named that holds no secret is sealed all the same. */
 export const secretConfigName = (name: string): boolean => {
   const words = wordsOf(name).map(singular);
-  return words.some((word) => SECRET_WORDS.has(word)) || words.at(-1) === "key" || SECRET_PAIRS.some(([first, then]) => words.some((word, i) => word === first && words[i + 1] === then));
+  const counted = (i: number) => COUNT_WORDS.has(words[i - 1] ?? "") || COUNT_WORDS.has(words[i + 1] ?? "");
+  return words.some((word, i) => SECRET_WORDS.has(word) && !counted(i)) || (words.at(-1) === "key" && !counted(words.length - 1)) || SECRET_PAIRS.some(([first, then]) => words.some((word, i) => word === first && words[i + 1] === then));
+};
+
+/** An address in any scheme with an authority (scheme://...): its authority, path, query and fragment, split by hand so a
+ *  form a URL parser refuses (mongodb://h1:1,h2:2/db) is read too. */
+const ADDRESS = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)[^?#]*(\?[^#]*)?(#.*)?$/is;
+/** Whether query or fragment `part` (with its leading ? or #) has a parameter with a value named like a credential. */
+const credentialParam = (part: string | undefined): boolean => part !== undefined && [...new URLSearchParams(part.slice(1))].some(([name, given]) => given !== "" && secretConfigName(name));
+
+/** Whether `value` is an address, in any scheme (https, postgres, redis, amqp, mongodb+srv...), that carries a
+ *  credential: a user part (user:pass@, :pass@, or a token alone as in https://TOKEN@host: any userinfo), or a query or
+ *  fragment parameter with a value whose name is a credential's (secretConfigName: ?token=, ?api_key=, #access_token=).
+ *  Such a value is sealed whole, whatever its field's name. Conservative: a user name with no secret (ssh://git@host)
+ *  is sealed too. */
+export const credentialUrl = (value: string): boolean => {
+  const parts = ADDRESS.exec(value);
+  if (!parts) return false;
+  return parts[1]!.includes("@") || credentialParam(parts[2]) || credentialParam(parts[3]);
 };
 
 /** Whether `value` is one a credential's field seals: a string, not empty, or a number (its decimal text is what is
  *  sealed; the config keeps its type wherever the value goes). A switch, null, an object or an array is not. */
 export const sealableValue = (value: unknown): value is string | number => (typeof value === "string" && value !== "") || (typeof value === "number" && Number.isFinite(value));
 
-/** The fields of `config` sealed at a save by their names: each named like a credential (secretConfigName) whose value is
- *  sealable (sealableValue). A create adds those its event's schema marks (sealedSchemaFields). */
+/** The fields of `config` sealed at a save without its schema: each named like a credential (secretConfigName) whose value
+ *  is sealable (sealableValue), and each whose value is an address carrying a credential (credentialUrl). A create adds
+ *  those its event's schema marks (sealedSchemaFields). */
 export const sealedConfigFields = (config: unknown): string[] =>
-  isObject(config) ? Object.entries(config).filter(([name, value]) => sealableValue(value) && secretConfigName(name)).map(([name]) => name) : [];
+  isObject(config) ? Object.entries(config).filter(([name, value]) => (sealableValue(value) && secretConfigName(name)) || (typeof value === "string" && credentialUrl(value))).map(([name]) => name) : [];
 
 /** The JSON Schema types a credential's value may have. */
 const SEALABLE_TYPES = ["string", "number", "integer"];
@@ -95,13 +118,13 @@ const pointerOf = (path: readonly string[]) => `/${path.map((key) => key.replace
 
 /** Every credential `config` holds in the clear, at any depth: a sealable value (sealableValue: a string, not empty, or a
  *  number), not SEALED_MASK, whose field is named like a credential (secretConfigName), or that is anywhere inside an
- *  object or array so named. A create takes one
+ *  object or array so named; and every string that is an address carrying a credential (credentialUrl), wherever it is. A create takes one
  *  at the top level alone (composio-triggers.ts make); a trigger an earlier server kept may hold one deeper. */
 export const configSecrets = (config: unknown): ConfigSecret[] => {
   const found: ConfigSecret[] = [];
   const walk = (node: unknown, path: string[], named: boolean): void => {
     if (typeof node === "string" || typeof node === "number") {
-      if (named && sealableValue(node) && node !== SEALED_MASK) found.push({ name: path.length === 1 ? path[0]! : pointerOf(path), path, value: node });
+      if ((named || (typeof node === "string" && credentialUrl(node))) && sealableValue(node) && node !== SEALED_MASK) found.push({ name: path.length === 1 ? path[0]! : pointerOf(path), path, value: node });
     } else if (Array.isArray(node)) node.forEach((item, i) => walk(item, [...path, String(i)], named));
     else if (isObject(node)) for (const [key, item] of Object.entries(node)) walk(item, [...path, key], named || secretConfigName(key));
   };
@@ -201,7 +224,7 @@ export const composio: TriggerAdapter = {
         kind: { const: "composio" },
         server: { type: "string", pattern: MCP_SERVER_NAME.source, description: "A saved Composio MCP server (Settings → MCP servers): its key makes the instance, for the account it is connected as." },
         event: { type: "string", pattern: COMPOSIO_EVENT.source, description: "One of the server's toolkit's events, Composio's trigger slug (GET /settings/mcp-servers/{name}/composio/events)." },
-        config: { type: "object", description: `The event's config, as its schema in the events list says (GitHub's new-issue event: {owner, repo}). A field named like a credential (a word of its name, read as its singular, is secret, password, passwd, passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, authorization, bearer or cookie; it has connection then string; or its last word is key: developer_api_key, api_keys), or one the event's schema marks with format: password or writeOnly, holding a string or a number, is sealed at the save: Composio gets it, and every answer has "${SEALED_MASK}" in its place, the field named in ${SEALED_FIELD}. One below the config's top level is refused 422. A PATCH that leaves it out or sends "${SEALED_MASK}" keeps it; another value is a change to the config, refused as any is.` },
+        config: { type: "object", description: `The event's config, as its schema in the events list says (GitHub's new-issue event: {owner, repo}). A field named like a credential (a word of its name, read as its singular, is secret, password, passwd, passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, sig, authorization, bearer or cookie, unless a count word (max, min, num, number, count, limit, total, used, usage, budget, remaining, per, length, size, quota) is right beside it: max_tokens and token_count are counts; it has connection then string; or its last word is key: developer_api_key, api_keys), or one the event's schema marks with format: password or writeOnly, holding a string or a number, is sealed at the save, as is any http(s) address with a password in its user part or a query parameter so named with a value: Composio gets it, and every answer has "${SEALED_MASK}" in its place, the field named in ${SEALED_FIELD}. One below the config's top level is refused 422. A PATCH that leaves it out or sends "${SEALED_MASK}" keeps it; another value is a change to the config, refused as any is.` },
       },
       {
         accept: { ...ACCEPT_SCHEMA, description: "Optional: which of the event's deliveries fire it. A rule's `event` is the trigger's own, `where` pointers read the delivery, its event's data under `/data` (`/data/title`). None: every delivery for its instance fires." },

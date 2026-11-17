@@ -2192,9 +2192,9 @@ export interface operations {
   getHealth: {
     body: never;
     answer: {
-      status: "ok" | "failing";
+      status: "ok" | "failing" | "warming";
       checks: {
-        store: "ok" | "does_not_open";
+        store: "ok" | "does_not_open" | "opening";
         disk: "ok" | "below_floor" | "cannot_check";
       };
     };

@@ -7,11 +7,12 @@
 // of that provider (computer-setting.ts computerOfPlace), which the run's claim starts: Docker, Daytona or Modal. A harness's own tools in the box, when they come, are an option of sandbox, never a third
 // mode.
 //
-// The box is a new agent's default machine: an agentic definition that names no place is saved, at its create, with the
-// Docker box as its place wherever this server has docker, and with bash when it names no tools
-// (newAgentPlace). A revision that names no place resolves the same way at each run (defaultPlaceOf): this server's
-// default_place, so where docker is there now it runs in the Docker box, and the runner where it is not. A workflow, and a
-// revision with a tool the box refuses, run on the runner.
+// The box is a new agent's default machine for a shell: an agentic definition that names no place and no tools is saved,
+// at its create, with the Docker box as its place wherever this server has docker, and with bash (newAgentPlace). One that
+// names its tools gets the box only when one of them needs a shell; else it keeps no place and runs on the runner, with
+// no container to wait for. A revision that names no place resolves the same way at each run (defaultPlaceOf): with a
+// shell tool, this server's default_place, so where docker is there now it runs in the Docker box, and the runner where it
+// is not. A workflow, a revision whose tools need no shell, and one with a tool the box refuses run on the runner.
 import { BOX_IDS, BOXES_ENV, type BoxId, type BoxOffer } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
 
@@ -44,10 +45,13 @@ export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } |
 }
 
 /** The place a revision that names none resolves to, at its create and at each run alike: this server's default place
- *  (newAgentPlace) for an agentic revision; the runner for a workflow, which is never given a box, and for one that names
- *  a tool the box refuses (`refused`: the browser, runner-only for now). */
-export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], refused: (tool: string) => boolean): Place {
-  if (kind === "workflow" || tools.some((tool) => typeof tool === "string" && refused(tool))) return { mode: "runner" };
+ *  (newAgentPlace) for an agentic revision with a tool that runs only in a box (`flags`, tools.ts: bash and the
+ *  background tools); the runner for a workflow, which is never given a box, for one whose tools need no shell (none, or
+ *  only read and write: a container would only hold up its start), and for one that names a tool the box refuses (the
+ *  browser, runner-only for now). */
+export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: (tool: string) => { readonly sandboxOnly?: true; readonly runnerOnly?: true } | undefined): Place {
+  const named = tools.flatMap((tool) => (typeof tool === "string" ? [flags(tool)] : []));
+  if (kind === "workflow" || named.some((tool) => tool?.runnerOnly) || !named.some((tool) => tool?.sandboxOnly)) return { mode: "runner" };
   const fresh = newAgentPlace(registry);
   return "place" in fresh ? fresh.place : { mode: "runner" };
 }

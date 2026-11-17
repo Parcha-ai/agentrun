@@ -113,10 +113,10 @@ start a new agent from a template.
    a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
    kept for next time.
 
-Rather have your coding agent do it? For the published quickstart, tell it:
-`Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
-For this development checkout, point it to [the matching onboarding skill](docs/SKILL.md), which guides either
-starting a new agent or bringing an existing one. The public website's skill is released separately.
+Rather have your coding agent do it? Tell it `Read https://agentrun.ai/SKILL.md and set up AgentRun for me`.
+That page is [the setup skill](docs/SKILL.md) in this repository: it asks where AgentRun should run (this computer,
+your own always-on machine, Railway, Render or AgentRun Cloud) before it installs anything. It brings in a Claude Code
+or Codex job you already schedule as the first run, or creates and runs a first agent with you.
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>

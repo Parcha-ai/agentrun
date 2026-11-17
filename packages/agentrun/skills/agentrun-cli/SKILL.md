@@ -145,8 +145,10 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, unarchive, wait
 - `agentrun sdk-runs`: complete, events, get, start
 - `agentrun server`: capabilities, health, mcp, openapi
+- `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
 - `agentrun skill`: install
 - `agentrun stats`: Counts and cost over every agent and run
+- `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
 - `agentrun template`: apply, delete, eval, import, install, list, validate
 - `agentrun tool-keys`: list
 - `agentrun tool-settings`: get, save

@@ -5781,12 +5781,12 @@ class CapabilitiesSecrets(TypedDict):
 
 
 class GetHealthResponse(TypedDict):
-    status: Literal["ok", "failing"]
+    status: Literal["ok", "failing", "warming"]
     checks: GetHealthResponseChecks
 
 
 class GetHealthResponseChecks(TypedDict):
-    store: Literal["ok", "does_not_open"]
+    store: Literal["ok", "does_not_open", "opening"]
     disk: Literal["ok", "below_floor", "cannot_check"]
 
 

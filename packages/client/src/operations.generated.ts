@@ -3430,9 +3430,9 @@ export type GetCapabilitiesResponse = Capabilities;
 
 /** Whether this server can serve (GET /health). */
 export type GetHealthResponse = {
-  status: "ok" | "failing";
+  status: "ok" | "failing" | "warming";
   checks: {
-    store: "ok" | "does_not_open";
+    store: "ok" | "does_not_open" | "opening";
     disk: "ok" | "below_floor" | "cannot_check";
   };
 };
