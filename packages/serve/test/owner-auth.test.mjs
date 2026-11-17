@@ -117,6 +117,60 @@ test("at a public address a setup with no code is refused and never counts again
   assert.equal((await setup(server, { password: PASSWORD, code })).status, 201, "the code from the log, after six tries with none");
 });
 
+const newCode = (server, headers = {}) => call(server.port, { method: "POST", path: "/v2/setup/code", headers });
+
+test("asking for a setup code with no credential keeps one that is still good: nothing is printed, the answer says when it runs out and never the code, and the code still sets the password", async (t) => {
+  const server = await serve(t, { accounts: true });
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  let asked;
+  const printed = await printedCodes(async () => { asked = await newCode(server); });
+  assert.equal(asked.status, 200, asked.text);
+  assert.deepEqual(Object.keys(asked.json).sort(), ["expires_at", "printed"]);
+  assert.equal(asked.json.printed, false);
+  const left = Date.parse(asked.json.expires_at) - Date.now();
+  assert.ok(left > 29 * 60_000 && left <= 30 * 60_000, `the code runs out 30 minutes after it was printed: ${left} ms left`);
+  assert.deepEqual(printed, [], "a visitor's ask never voids the code someone holds");
+  assert.ok(!asked.text.includes(code), "the answer never holds the code");
+  assert.equal((await setup(server, { password: PASSWORD, code })).status, 201, "the code from the start still sets the password");
+});
+
+test("asking for a setup code once the last one expired prints a new one, with no restart and no password: the answer never holds it, the old one is refused and the new one sets the password", async (t) => {
+  const server = await serve(t, { accounts: true });
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  t.after(() => mock.timers.reset());
+  mock.timers.tick(31 * 60_000);
+  let asked, again;
+  const printed = await printedCodes(async () => { asked = await newCode(server); again = await newCode(server); });
+  assert.equal(asked.status, 200, asked.text);
+  assert.equal(asked.json.printed, true);
+  assert.equal(Date.parse(asked.json.expires_at) - Date.now(), 30 * 60_000, "the new code has its own 30 minutes");
+  assert.equal(printed.length, 1, "one new line in the log, and none for the second ask");
+  assert.notEqual(printed[0], code);
+  assert.deepEqual(again.json, { printed: false, expires_at: asked.json.expires_at }, "the second ask keeps the new code");
+  for (const held of [code, printed[0]]) assert.ok(!asked.text.includes(held) && !again.text.includes(held), "no answer holds a code");
+  assert.equal((await setup(server, { password: PASSWORD, code })).status, 403, "the expired code is refused");
+  assert.equal((await setup(server, { password: PASSWORD, code: printed[0] })).status, 201, "the new code sets the password");
+});
+
+test("asking for a setup code is refused once the owner is set and on an open setup, printing nothing; asking often is not refused, and prints nothing while a code is good", async (t) => {
+  const coded = await serve(t, { accounts: true });
+  assert.equal((await setup(coded, { password: PASSWORD, code: new URL(coded.setupUrl).hash.slice("#code=".length) })).status, 201);
+  const open = await serve(t, { accounts: true, openSetup: true });
+  const printed = await printedCodes(async () => {
+    const owned = await newCode(coded);
+    assert.equal(owned.status, 403, owned.text);
+    assert.match(owned.json.error.message, /has its owner/);
+    const none = await newCode(open);
+    assert.equal(none.status, 403, none.text);
+    assert.match(none.json.error.message, /takes no code/);
+  });
+  assert.deepEqual(printed, []);
+  const busy = await serve(t, { accounts: true });
+  const asked = await printedCodes(async () => { for (let i = 0; i < 12; i++) assert.equal((await newCode(busy)).status, 200); });
+  assert.deepEqual(asked, [], "twelve asks print nothing while the start's code is good");
+});
+
 test("the server's API token in the code field stands in for the setup code; a wrong token counts as a wrong code", async (t) => {
   const server = await serve(t, { accounts: true });
   assert.equal((await setup(server, { password: PASSWORD, code: server.token })).status, 201, "the token as the code");
@@ -259,6 +313,17 @@ test("signing out signs out this browser only: its session is revoked on the ser
   assert.equal((await agents(server, other)).status, 200, "another browser's session stays");
   assert.deepEqual((await call(server.port, { path: "/v2/auth/session", headers: { cookie: other } })).json, { accounts: true, password_set: true, signed_in: true, secrets_writable: true });
   assert.equal((await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server) }, body: {} })).status, 401, "a browser with no session has none to end");
+});
+
+test("asking for a setup code while the password is being set prints none: the spent code needs no successor", async (t) => {
+  const lines = [];
+  const me = new Owner(await scratch(t), false, (line) => lines.push(line));
+  me.attach("http://127.0.0.1:1");
+  const code = new URL(me.setupLink()).hash.slice("#code=".length);
+  const setting = me.setFirst(PASSWORD, code, false);
+  assert.equal(me.renewSetupCode(), null, "asked between the code being spent and the password being written");
+  assert.equal(await setting, "ok");
+  assert.equal(lines.length, 1, "only the first code was ever printed");
 });
 
 test("a revoked session is kept only until it would have ended: its record goes with its expiry, and the owner file stays small", async (t) => {
