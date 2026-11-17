@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { binsOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
+import { binsOf, compileAfterOf, compiledInto, guardFor, guardsOfText, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
@@ -109,7 +109,7 @@ describe("guards and p", () => {
     ] } });
     const guards = guardsOfText(nested);
     expect(guards.map((g) => [g.label, g.node, g.path])).toEqual([["check", "vendor/check", "/root/steps/0/workflow/root/steps/0"], ["check", "check", "/root/steps/1"]]);
-    const loop = { agent: "a", compiles: [], guards: [
+    const loop = { agent: "a", completed_runs: 0, compiles: [], guards: [
       { workflow: "sort-invoice", digest: "a".repeat(16), node: "vendor/check", signal: "self", threshold: 0.6, runs: 4, escalated: 1, right: 2, wrong: 0, grades_past: 0, replays: 0, points: [] },
     ] } as unknown as LearningLoop;
     expect(guardFor(loop, "sort-invoice", "a".repeat(16), guards[0]!.node)?.runs).toBe(4);
@@ -156,14 +156,19 @@ describe("notes and the story", () => {
   it("with nothing yet, says what happens next at each stage", () => {
     const stages = storyOf(base);
     expect(stages.map((s) => [s.key, s.state])).toEqual([["notes", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
-    expect(stages[1]!.detail).toBe("0 of 3 notes, 0 of 5 runs: a workflow compiles at 3 notes or 5 runs");
+    expect(stages[1]!.detail).toBe("0 of 20 completed runs: a workflow compiles at 20, then is checked once on those runs' inputs against the agent's own answers");
+  });
+  it("the compile stage counts to the definition's compile_after: notes alone never bring it closer", () => {
+    const stages = storyOf({ ...base, notes: 7, runs: 3, compileAfter: compileAfterOf({ compile_after: 5 }) });
+    expect([stages[1]!.state, stages[1]!.detail]).toEqual(["now", "3 of 5 completed runs: a workflow compiles at 5, then is checked once on those runs' inputs against the agent's own answers"]);
+    expect([compileAfterOf(true), compileAfterOf({ agree_min: 0.9 }), compileAfterOf("notes")]).toEqual([20, 20, 20]);
   });
   // Review on #2654: an agent with learning "notes" keeps notes and never compiles (the runner skips the compile turn),
   // so its story promises no workflow, no takeover and no cheaper runs.
   it("a notes-only agent's story keeps to notes: no compile, takeover or cheaper runs promised", () => {
     const stages = storyOf({ ...base, notes: 4, runs: 9, mode: "notes" });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([["notes", "4 notes", "done"], ["compiled", "Notes only", "later"]]);
-    expect(stages[1]!.detail).toBe("this agent learns notes only: no workflow compiles from them. Full learning compiles one at 3 notes or 5 runs");
+    expect(stages[1]!.detail).toBe("this agent learns notes only: no workflow compiles from them. Full learning compiles one at 20 completed runs");
     expect(stages.some((s) => /compiles at/.test(s.detail) && s.key !== "compiled")).toBe(false);
   });
   it("a champion the money rule stopped: the takeover stage says it no longer runs first", () => {
@@ -176,7 +181,7 @@ describe("notes and the story", () => {
   });
   it("once it took over and got cheaper, tells it whole, with where it is unsure", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
-    const loop = { agent: "a", compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
+    const loop = { agent: "a", completed_runs: 0, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }],
       guards: [{ workflow: "sort-invoice", digest: "a".repeat(16), node: "classify", signal: "jev", threshold: 0.7, runs: 3, escalated: 1, right: 0, wrong: 0, grades_past: 0, replays: 0, points: [] }] } as LearningLoop;
     const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({ replay: REPLAY })],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });

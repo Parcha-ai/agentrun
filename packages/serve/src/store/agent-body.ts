@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import type { NativeBinding } from "../native/types.js";
 import { nativeBindingOf } from "../native/binding.js";
+import { type LearningSetting, learningSettingIssue, learningSettingOf } from "../learning-setting.js";
 
 /** A revision's body the store refuses: its content is not one the store keeps. The server maps it to an input refusal. */
 export class AgentBodyInvalid extends Error {
@@ -51,8 +52,8 @@ export type RevisionPlace = { mode: string; box?: string };
 /** A revision's computer (computer-setting.ts): its kind and the provider that serves it, ids its host knows, and a
  *  sandbox's GPUs, a type its provider names and how many; `place` is its v2 view. `image`: one the provider offers for
  *  the kind, absent for its default. A desktop's or a phone's surface and exec: how the agent drives it, and whether it
- *  may run programs on it. */
-export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number }; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean };
+ *  may run programs on it, and whether each run records a video of its screen. */
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number }; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean; record?: boolean };
 /** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
@@ -64,13 +65,13 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  priced by usage (held at monid's estimate). Stamped by the save (server.ts saveable), never shown in a definition. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
 export type SdkBinding = { runtime: "claude-agent-sdk" | "codex-sdk" };
-export type AgenticBody = { sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
+export type AgenticBody = { sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** The input a revision's body is built from (the control plane's, in the store's own shape). `toolSettings` is already
  *  checked and canonical (agents-store.ts via tool-plane's one copy); this validator keeps it as given. */
 export type RevisionBodyInput =
-  | { kind: "agentic"; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: boolean | "notes"; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
+  | { kind: "agentic"; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: unknown; computer?: unknown; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" }
   | { kind: "workflow"; workflow: unknown; skills?: Record<string, string>; tools?: string[]; harness?: string; place?: unknown; computer?: unknown; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
 /** A place as a body keeps it: `{mode, box?}`, nothing else. */
@@ -84,24 +85,24 @@ function placeOf(place: unknown): RevisionPlace {
 const GPU_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The keys a body's computer keeps. */
-const COMPUTER_KEYS: ReadonlySet<string> = new Set(["kind", "provider", "image", "gpu", "persistent", "surface", "exec"]);
+const COMPUTER_KEYS: ReadonlySet<string> = new Set(["kind", "provider", "image", "gpu", "persistent", "surface", "exec", "record"]);
 
-/** A computer as a body keeps it: `{kind, provider?, image?, gpu?, persistent?, surface?, exec?}`, nothing else: kind
- *  and provider ids, image a name with no spaces around it, gpu `{type, count}`, a GPU type name and a whole count from
- *  1, persistent and exec booleans, and surface code or tools. */
+/** A computer as a body keeps it: `{kind, provider?, image?, gpu?, persistent?, surface?, exec?, record?}`, nothing
+ *  else: kind and provider ids, image a name with no spaces around it, gpu `{type, count}`, a GPU type name and a whole
+ *  count from 1, persistent, exec and record booleans, and surface code or tools. */
 function computerOf(computer: unknown): RevisionComputer {
   const image = isObject(computer) ? computer.image : undefined;
   const named = (value: unknown) => typeof value === "string" && value !== "" && value === value.trim();
   const flag = (value: unknown) => value === undefined || typeof value === "boolean";
   const surface = isObject(computer) ? computer.surface : undefined;
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || !flag(computer.persistent) || !flag(computer.exec) || (surface !== undefined && surface !== "code" && surface !== "tools") || Object.keys(computer).some((key) => !COMPUTER_KEYS.has(key))) invalid("the computer is not {kind, provider?, image?, gpu?, persistent?, surface?, exec?}, kind and provider each an id (lowercase letters, digits and dashes), image a name, persistent a boolean, surface code or tools, exec a boolean");
-  const ok = computer as { kind: string; provider?: string; image?: string; gpu?: unknown; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean };
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || !flag(computer.persistent) || !flag(computer.exec) || !flag(computer.record) || (surface !== undefined && surface !== "code" && surface !== "tools") || Object.keys(computer).some((key) => !COMPUTER_KEYS.has(key))) invalid("the computer is not {kind, provider?, image?, gpu?, persistent?, surface?, exec?, record?}, kind and provider each an id (lowercase letters, digits and dashes), image a name, persistent a boolean, surface code or tools, exec a boolean, record a boolean");
+  const ok = computer as { kind: string; provider?: string; image?: string; gpu?: unknown; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean; record?: boolean };
   const gpu = ok.gpu;
   if (gpu !== undefined && (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count") || typeof gpu.type !== "string" || !GPU_TYPE.test(gpu.type) || !Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1)) {
     invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
   }
   const kept = gpu as { type: string; count: number } | undefined;
-  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}), ...(ok.persistent !== undefined ? { persistent: ok.persistent } : {}), ...(ok.surface !== undefined ? { surface: ok.surface } : {}), ...(ok.exec !== undefined ? { exec: ok.exec } : {}) };
+  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}), ...(ok.persistent !== undefined ? { persistent: ok.persistent } : {}), ...(ok.surface !== undefined ? { surface: ok.surface } : {}), ...(ok.exec !== undefined ? { exec: ok.exec } : {}), ...(ok.record !== undefined ? { record: ok.record } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any
@@ -147,7 +148,10 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
-    if (input.learning !== undefined && typeof input.learning !== "boolean" && input.learning !== "notes") invalid("learning is not true, false or \"notes\"");
+    if (input.learning !== undefined) {
+      const wrong = learningSettingIssue(input.learning);
+      if (wrong) invalid(wrong);
+    }
     if (input.inputSchema !== undefined && !isObject(input.inputSchema)) invalid("the inputSchema is not a JSON object");
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
     if (input.checkout !== undefined && input.checkout !== "pull_request") invalid("the checkout is not pull_request");
@@ -165,7 +169,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
       ...(input.thinking !== undefined ? { thinking: input.thinking } : {}),
       ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}),
       ...host,
-      ...(input.learning !== undefined ? { learning: input.learning } : {}),
+      ...(input.learning !== undefined ? { learning: learningSettingOf(input.learning) } : {}),
       // The JSON Schema each run's input meets (definition.input_schema), checked at every start (validate.ts inputSchemaOf).
       ...(input.inputSchema !== undefined ? { inputSchema: structuredClone(input.inputSchema) } : {}),
       // The JSON Schema its final answer's structured part meets (definition.output_schema): a completed run's result.output.

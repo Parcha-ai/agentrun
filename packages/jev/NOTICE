@@ -1,2 +1,4 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
+
+The boxd computer provider (packages/computer/src/boxd.ts) was contributed by Michiel Voortman.

@@ -209,7 +209,9 @@ public final class Outline {
 			String value = valueOf(node);
 			String desc = null;
 			boolean acts = actionable(node);
-			if (acts && name == null && (node.clickable() || node.longClickable() || node.checkable()) && !node.editable()) {
+			// A list is never a row: one that is clickable too (Clock's cities) keeps its rows listed, scrollable or not
+			// (a list whose rows fit is not scrollable).
+			if (acts && name == null && (node.clickable() || node.longClickable() || node.checkable()) && !node.editable() && !scroller(node)) {
 				List<String> texts = new ArrayList<>();
 				childTexts(node, texts, 0);
 				if (!texts.isEmpty()) {
@@ -343,12 +345,22 @@ public final class Outline {
 		return dollar >= 0 ? simple.substring(dollar + 1) : simple;
 	}
 
+	/** The classes that scroll their children, whether or not they can scroll now. */
+	static final Set<String> SCROLLERS = new HashSet<>(Arrays.asList(
+			"ScrollView", "HorizontalScrollView", "NestedScrollView", "RecyclerView", "ListView", "GridView", "ViewPager", "ViewPager2"));
+
+	/** A scroll area: one by its class, or any node that scrolls now. */
+	static boolean scroller(AxNode n) {
+		return n.scrollable() || SCROLLERS.contains(simpleName(n));
+	}
+
 	/** The element's ARIA role (protocol.ts UI_ROLES), from its class and what it does. */
 	static String roleOf(AxNode n, String name, boolean inSearch) {
 		if (n.editable()) {
 			String id = n.viewId() == null ? "" : n.viewId().toLowerCase(Locale.ROOT);
 			return inSearch || id.contains("search") ? "searchbox" : "textbox";
 		}
+		if (SCROLLERS.contains(simpleName(n))) return "scrollarea";
 		switch (simpleName(n)) {
 			case "Button":
 			case "ImageButton":
@@ -379,15 +391,6 @@ public final class Outline {
 				return "combobox";
 			case "ProgressBar":
 				return "progressbar";
-			case "ScrollView":
-			case "HorizontalScrollView":
-			case "NestedScrollView":
-			case "RecyclerView":
-			case "ListView":
-			case "GridView":
-			case "ViewPager":
-			case "ViewPager2":
-				return "scrollarea";
 			case "TabWidget":
 			case "TabView":
 				return "tab";

@@ -39,7 +39,7 @@ import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { placeRunInputs } from "../uploads.js";
-import { runFolder, scratchFolder } from "../workspace/paths.js";
+import { recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
@@ -49,7 +49,7 @@ import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { hadComputer } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
@@ -253,6 +253,8 @@ export function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: C
 
 async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
+  // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
+  const reach = await mcpReachOf(deps);
   // The spec's log lines carry error text (a release, a computer, a workspace's end): cut of every secret the runner's env
   // holds.
   const cut = heldRedactor(secretRedactor(runnerSecrets(deps.env)));
@@ -336,7 +338,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -403,8 +405,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // whose computer is a browser is refused in words at its claim, before anything is made.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer), as the pi
-    // spec asks it. The computer a park kept, attached again, brings its mount credential with it (inheritMount).
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // spec asks it. The computer a park kept, attached again, brings its mount credential with it (inheritMount). Its
+    // screen's recording (computer.record) goes in the run's recordings folder, as the pi spec's does.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held, computer.made);
@@ -608,7 +611,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
     if (webNames.length) {
       life = hostLifecycle();
-      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
+      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach });
       gate.askedOn(host);
       webTools = await webHostTools(host, granted, ctx);
     }

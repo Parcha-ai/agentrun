@@ -34,8 +34,9 @@ export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace }
 /** An agent's computer setting. `image`: the one of the provider's configurations it selects; absent, the default. A
  *  sandbox's may ask for GPUs. `persistent`: the agent keeps its own computer between runs (agent-computer.ts). A
  *  desktop's or a phone's `surface` and `exec` go to the run's tools on the RunComputer (run-tools.ts); `exec: false`
- *  also mounts no folder in it and gives the run no shell. */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean };
+ *  also mounts no folder in it and gives the run no shell. A desktop's or a phone's `record`: the claim records its
+ *  screen (computer-for-claim.ts, computer-record.ts). */
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean; readonly record?: boolean };
 
 /** Whether a computer (or its setting) takes its agent's programs away: `exec: false`. Only a desktop or a phone takes
  *  `exec` (computer-setting.ts refuses it on any other kind at save), so a computer without programs is one of those. */

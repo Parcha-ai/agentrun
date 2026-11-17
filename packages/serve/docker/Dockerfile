@@ -87,6 +87,44 @@ RUN install -d /opt/adb \
       && /opt/adb/adb version | grep -q '^Version 35\.0\.2-'; \
     fi
 
+# ffmpeg, which records an agent's screen where its computer says record: true (src/computer-record.ts), built with only
+# what the recorder's arguments use: PNG and JPEG frames piped in (image2pipe), scaled, padded and turned into yuv420p,
+# H.264 by x264 into fragmented MP4, one static binary of about 6 MB in place of Debian's ffmpeg (about 158 MiB with its
+# libraries). FFmpeg 9.0.2, x264 0.165.3223 (Debian's source tarball of it, from snapshot.debian.org) and zlib 1.4 (PNG's
+# inflate), each pinned by sha256. Built on the build machine's own architecture for the image's, a cross compiler for
+# the other one, so the arm64 image never compiles under emulation. x264 makes the binary GPL, as Debian's ffmpeg was:
+# their licence files go beside it, in /usr/local/share/doc/ffmpeg.
+FROM --platform=$BUILDPLATFORM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS ffmpeg
+ARG BUILDARCH
+ARG TARGETARCH
+ADD --checksum=sha256:8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz /tmp/ffmpeg.tar.xz
+ADD --checksum=sha256:de68ca43d0c6e09baeb86a38ed5cde86b0a84a21d6babcc569804201dc9df133 https://snapshot.debian.org/archive/debian/20261101T000000Z/pool/main/x/x264/x264_0.165.3223%2Bgit20250910.0480cb0.orig.tar.xz /tmp/x264.tar.xz
+ADD --checksum=sha256:4f11c512053d7bab8d9e9b89bde3575add3e4c50a383b42ef6cb837035fc5a7c https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.xz /tmp/zlib.tar.xz
+RUN case "$TARGETARCH" in amd64) t=x86_64-linux-gnu a=x86_64 ;; arm64) t=aarch64-linux-gnu a=aarch64 ;; *) echo "no ffmpeg for $TARGETARCH" >&2; exit 1 ;; esac \
+ && cross="" && if [ "$BUILDARCH" != "$TARGETARCH" ]; then cross="gcc-$(echo "$t" | tr _ -) libc6-dev-$TARGETARCH-cross"; fi \
+ && apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gcc libc6-dev make nasm pkgconf xz-utils $cross >/dev/null \
+ && rm -rf /var/lib/apt/lists/* \
+ && j="$(nproc)" && p=/opt/ff && install -d /tmp/z /tmp/x /tmp/f \
+ && tar -xJf /tmp/zlib.tar.xz -C /tmp/z --strip-components=1 && cd /tmp/z \
+ && CHOST="$t" ./configure --static --prefix="$p" >/dev/null && make -j"$j" install >/dev/null \
+ && tar -xJf /tmp/x264.tar.xz -C /tmp/x --strip-components=1 && cd /tmp/x \
+ && ./configure --host="$t" --cross-prefix="$t-" --prefix="$p" --enable-static --disable-cli --bit-depth=8 --chroma-format=420 \
+      --disable-opencl --disable-avs --disable-swscale --disable-lavf --disable-ffms --disable-gpac --disable-lsmash >/dev/null \
+ && make -j"$j" install-lib-static >/dev/null \
+ && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/f --strip-components=1 && cd /tmp/f \
+ && PKG_CONFIG_LIBDIR="$p/lib/pkgconfig" ./configure --enable-cross-compile --arch="$a" --target-os=linux --cross-prefix="$t-" \
+      --pkg-config=pkg-config --pkg-config-flags=--static --extra-cflags="-I$p/include" --extra-ldflags="-L$p/lib -static" \
+      --disable-everything --disable-autodetect --disable-doc --disable-debug --disable-network --disable-programs --enable-ffmpeg \
+      --disable-avdevice --disable-swresample --enable-gpl --enable-libx264 --enable-zlib \
+      --enable-protocol=pipe,file --enable-demuxer=image2pipe --enable-parser=png,mjpeg --enable-decoder=png,mjpeg \
+      --enable-filter=scale,pad,format --enable-encoder=libx264 --enable-muxer=mp4 >/dev/null \
+ && make -j"$j" ffmpeg >/dev/null \
+ && install -d /opt/ffmpeg/bin /opt/ffmpeg/share/doc/ffmpeg \
+ && "$t-strip" -o /opt/ffmpeg/bin/ffmpeg ffmpeg \
+ && cp LICENSE.md COPYING.GPLv2 /opt/ffmpeg/share/doc/ffmpeg/ \
+ && cp /tmp/x/COPYING /opt/ffmpeg/share/doc/ffmpeg/COPYING.x264 && cp /tmp/z/LICENSE /opt/ffmpeg/share/doc/ffmpeg/LICENSE.zlib
+
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 COPY --from=node /opt/node/ /usr/local/
 # The node user (1000:1000) the official node image has, which the server runs as and /data belongs to.
@@ -118,6 +156,10 @@ RUN ln -s /opt/agentrun/packages/serve/launcher/agentrun-serve /usr/local/bin/ag
 # The phone provider's adb on PATH, on amd64 (the adb stage); the arm64 image has none.
 COPY --from=adb /opt/adb/ /usr/local/bin/
 RUN [ "$(dpkg --print-architecture)" != amd64 ] || [ "$(command -v adb)" = /usr/local/bin/adb ]
+# The recorder's ffmpeg on PATH, with its licence files (the ffmpeg stage). The build fails unless the recorder, run on it,
+# turns PNG frames and then JPEG frames into H.264 files (docker/ffmpeg-check.mjs).
+COPY --from=ffmpeg /opt/ffmpeg/ /usr/local/
+RUN [ "$(command -v ffmpeg)" = /usr/local/bin/ffmpeg ] && node /opt/agentrun/packages/serve/docker/ffmpeg-check.mjs
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production

@@ -219,6 +219,21 @@ test("the switch: kept on a revision when a definition sets it, true or false, a
   assert.deepEqual(flow.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "not_allowed"]]);
 });
 
+test("learning as an object is on with the loop's numbers set (compile_after, agree_min, alone_min), kept in one order; a bad number or key is a 422 naming the field", async (t) => {
+  const { api } = await serve(t);
+  const created = await api("POST", "/agents", agent("loop", { learning: { alone_min: 0.5, compile_after: 5, agree_min: 0.9 } }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(Object.entries(created.body.definition.learning), [["compile_after", 5], ["agree_min", 0.9], ["alone_min", 0.5]]);
+  const some = (await api("POST", "/agents", agent("some", { learning: { compile_after: 1 } }))).body;
+  assert.deepEqual(some.definition.learning, { compile_after: 1 }, "a number left out stays out: its default stands in at the run");
+  assert.deepEqual((await api("POST", "/agents", agent("none", { learning: {} }))).body.definition.learning, {}, "an empty object is on with every default");
+  for (const learning of [{ compile_after: 0 }, { compile_after: 2.5 }, { compile_after: 201 }, { compile_after: "5" }, { agree_min: 1.1 }, { agree_min: -0.1 }, { alone_min: "0.7" }, { alone_min: null }, { notes: true }, [], null]) {
+    const wrong = await api("POST", "/agents", agent(`wrong-${Math.random().toString(36).slice(2, 8)}`, { learning }));
+    assert.equal(wrong.status, 422, JSON.stringify(learning));
+    assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]], JSON.stringify(learning));
+  }
+});
+
 test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {
   const { store } = await storeOn(t);
   const edit = (definition) => checkDefinitionBody({ definition: { name: "x", ...definition } }, { creating: false });

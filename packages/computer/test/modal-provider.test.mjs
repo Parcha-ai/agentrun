@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 
 const modal = await import("../dist/modal.js");
@@ -506,6 +506,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 		tokenSecret: "COMPUTER_MODAL_TOKEN_SECRET",
 		app: "COMPUTER_MODAL_APP",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
+		connect: "COMPUTER_MODAL_CONNECT",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 	assert.equal(modal.modalCommands, undefined, "the scripts are the adapter's");
@@ -804,4 +805,64 @@ test("the loopback block: no agent port declared, open and a list taken through 
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, []);
 	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
+});
+
+/** A dial provider's server in tests: http on 127.0.0.1, which a dial provider takes in tests alone, its tokens and hub. */
+const dialOf = () => ({ url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) });
+
+test("connect dial: the sandbox's command is agentrun-dial with the boot env as env (a Modal Secret), its network on, and the provider has no exec", async () => {
+	const dial = dialOf();
+	const { provider, rec } = setup({ connect: "dial", dial });
+	assert.equal(provider.host.facts.connect, "dial");
+	assert.equal(provider.host.exec, undefined, "no exec");
+	assert.equal(provider.host.upload, undefined, "no upload");
+	const result = await create(provider);
+	assert.equal(result.error?.code, "invalid", "a create Modal refused made nothing");
+	const params = rec.params();
+	assert.deepEqual(params.command, ["/usr/local/bin/agentrun-dial"]);
+	assert.deepEqual(Object.keys(params.env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
+	assert.equal(params.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
+	assert.match(params.env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/);
+	assert.equal(params.blockNetwork, undefined, "its root reaches the server; its tools' network none is init's");
+	assert.equal(params.runtime, "vm");
+	assert.equal(dial.tokens.check(params.env.AGENTRUN_ATTACH_TOKEN), undefined, "a create Modal refused has its token revoked");
+	// Exec stays the default: the entrypoint as the command, and no env.
+	const plain = setup();
+	await create(plain.provider);
+	assert.equal(plain.rec.params().env, undefined);
+	assert.ok(plain.rec.params().command[2].startsWith(`${ENTRYPOINT_MARK}\n`));
+	assert.equal(typeof plain.provider.host.exec, "function");
+});
+
+test("connect dial: init is agentrun-dial's child, no Archil mount (refused in words), GPUs still offered; no value but exec or dial", () => {
+	const { provider, rec } = setup({ connect: "dial", dial: dialOf() });
+	const caps = provider.capabilities();
+	assert.equal(caps.daemon, "child");
+	assert.deepEqual(caps.mount, []);
+	assert.equal(caps.gpu?.isolation, "gvisor");
+	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
+	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);
+	assert.match(refusals[0].message, /Modal's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.throws(() => setup({ connect: "ssh" }), /connect is how Modal reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
+	assert.deepEqual(MODAL.settings, [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	]);
+	assert.deepEqual(rec.calls, []);
+});
+
+test("the conformance module reads COMPUTER_MODAL_CONNECT as connect, and its dialKit refuses in words: this process is no public server", async () => {
+	const { MODAL_ENV, settingsFromEnv, dialKit } = await import("../dist/conformance/modal.js");
+	const env = { [MODAL_ENV.tokenId]: "ak-fake-test-key", [MODAL_ENV.tokenSecret]: "as-not-a-secret", [MODAL_ENV.app]: APP, [MODAL_ENV.connect]: "dial" };
+	assert.equal(MODAL_ENV.connect, "COMPUTER_MODAL_CONNECT");
+	assert.equal(settingsFromEnv(env).connect, "dial");
+	assert.throws(() => dialKit(), /Modal's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider modal with COMPUTER_MODAL_CONNECT=dial inside a server the internet reaches at AGENTRUN_PUBLIC_URL/);
+});
+
+test("the conformance module's run image on dial is the box image, the one that holds agentrun-dial; on exec, the CLI's debian:bookworm-slim", async () => {
+	const { MODAL_ENV, conformanceImage } = await import("../dist/conformance/modal.js");
+	const { boxImageRef } = await import("../dist/box-image.js");
+	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "dial" } }), boxImageRef());
+	assert.equal(conformanceImage({ env: {} }), "debian:bookworm-slim");
+	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "exec" } }), "debian:bookworm-slim");
 });

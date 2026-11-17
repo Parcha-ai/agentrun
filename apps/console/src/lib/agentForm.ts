@@ -8,10 +8,14 @@ import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn, and what (an agentic revision's; absent is off): true, notes, skills and
- *  learned workflows; "notes", notes and skills alone. */
+ *  learned workflows; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min); "notes",
+ *  notes and skills alone. */
+export type LearningSetting = boolean | "notes" | { compile_after?: number; agree_min?: number; alone_min?: number };
+/** Whether a definition's `learning` is on: true, "notes" or an object of the loop's numbers. */
+export const learningOn = (learning: unknown): boolean => learning === true || learning === "notes" || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
-export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: boolean | "notes"; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
+export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: LearningSetting; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = { field: string; reason: string; message: string };
@@ -102,7 +106,7 @@ export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: boolean | "notes"; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
   if (isStarter(f.harness)) {
     return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
   }

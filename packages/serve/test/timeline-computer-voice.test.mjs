@@ -147,6 +147,13 @@ test("an app whose id is not its name reads by the name a person knows: firefox-
   assert.equal(labelOf("computer_observe", { app: "firefox-esr" }), "Looked at Firefox");
 });
 
+test("a phone's stock apps and the Wikipedia app read by the names on their icons: Clock, Contacts, Files, Wikipedia", () => {
+  for (const [app, name] of [["com.android.deskclock", "Clock"], ["com.android.contacts", "Contacts"], ["com.android.documentsui", "Files"], ["org.wikipedia", "Wikipedia"]]) {
+    assert.equal(callWords({ method: "apps.launch", started_at: at, app, ok: true, ms: 9 }), `Opened ${name}`);
+    assert.equal(labelOf("computer_observe", { app }), `Looked at ${name}`);
+  }
+});
+
 test("a look on a computer with no ui group names every call it made, as its call list does: the app opened, the screenshot, the apps listed", () => {
   const front = (app) => `screen 1280×800 px · ${app} in front · this computer has no ui group: no elements; act at points of this image`;
   const record = (method, app) => ({ method, started_at: at, ok: true, ms: 9, ...(app ? { app } : {}) });

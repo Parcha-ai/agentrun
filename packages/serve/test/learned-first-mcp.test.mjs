@@ -13,6 +13,7 @@ import { agent, follow, retried, serve as serveOf, withEnv } from "./support.mjs
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { git, resnap } from "./learn-support.mjs";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"learned-first-mcp-0123"}`;
@@ -44,6 +45,8 @@ test("served first, a learned workflow's MCP node runs once through the run's MC
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, "adder");
+  // Served first only once its check promoted it: the agent has no run to check it on here.
+  await promoteChecked(server.store.settings, "adder", [{ name: "add-two", workflow: ADD_FLOW }]);
   const started = await retried(api)("POST", "/agents/adder/runs", { input: { content: "Add two and three", a: 2, b: 3 }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;

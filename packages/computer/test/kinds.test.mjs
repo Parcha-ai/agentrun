@@ -28,6 +28,8 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { MorphProvider } from "../dist/morph.js";
+import { BoxdProvider } from "../dist/boxd.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -101,7 +103,12 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
 	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }]));
-	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
+	assert.deepEqual(extra.modal.settings, [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	]);
+	// How E2B's and Modal's machines are reached: the provider's exec unless a server's settings say dial.
+	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
 	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
@@ -109,6 +116,10 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.modal.prepareImage, extra.modal.local], [true, undefined]);
 	// E2B starts its sandboxes and desktops from the box image's public template; its computers are remote.
 	assert.deepEqual([extra.e2b.prepareImage, extra.e2b.local], [true, undefined]);
+	// boxd builds its desktop snapshot in the key's org before the first create; its computers are remote.
+	assert.deepEqual([extra.boxd.prepareImage, extra.boxd.local], [true, undefined]);
+	// Morph starts its instances from the box image as a snapshot it builds in the key's account; its computers are remote.
+	assert.deepEqual([extra.morph.prepareImage, extra.morph.local], [true, undefined]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
 	// other provider declares one.
 	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
@@ -119,16 +130,22 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
+	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
+	// Cloudflare's containers start from the box image its relay was deployed FROM, which the relay's health names.
+	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
+	// Fly Machines start from the box image's registry tag, which Fly pulls at each create.
+	assert.deepEqual([extra.fly.prepareImage, extra.fly.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
-		if (id !== "modal") assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (id !== "modal" && id !== "e2b") assert.equal(fields.settings, undefined, id);
+		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.
@@ -138,7 +155,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["morph", "orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "boxd"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -160,11 +177,14 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		modal: undefined,
 		e2b: undefined,
 		agent37: undefined,
+		morph: undefined,
 		orgo: { desktop: orgo.ORGO_BASE_IMAGE },
 		"phone-harness": { phone: phone.PHONE_IMAGE },
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
+		// A desktop has none: it starts from the snapshot prepareImage() builds.
+		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -174,9 +194,10 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		[daytona.DAYTONA_DEFAULT_SNAPSHOT, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
 		["default", "agent37-base", "linux", "android", "chromium"],
 	);
-	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal and E2B have none: each
+	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
+	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal, E2B and Morph have none: each
 	// prepares the box image (prepareImage).
-	for (const id of ["docker", "agent37", "modal", "e2b"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
+	for (const id of ["docker", "agent37", "modal", "e2b", "morph"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -264,7 +285,12 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
-/** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
+/** boxd's SDK slice: a client whose every machines call fails the test. */
+const BOXD_SDK = class {
+	machines = { ...Object.fromEntries(["create", "get", "list", "delete", "streamExec", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, () => assert.fail(`machines.${name} was called`)])), files: { upload: () => assert.fail("machines.files.upload was called") } };
+	snapshots = Object.fromEntries(["create", "get"].map((name) => [name, () => assert.fail(`snapshots.${name} was called`)]));
+};
+/** ssh2's Client slice for Agent37 and Morph, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
 		constructor() {
@@ -299,6 +325,8 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	morph: [() => new MorphProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
+	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 

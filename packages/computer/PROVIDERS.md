@@ -60,7 +60,7 @@ it by them alone:
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | Daytona, [`src/daytona.ts`](src/daytona.ts): a session command, its log WebSocket, and its input call, which takes whole lines; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
 | The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
-| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill` |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill`. Morph, [`src/morph.ts`](src/morph.ts): the same SshExec over plain TCP to the vendor's gateway, as the instance id with the instance's own key, read over REST; never an account key in the username, since an unpinned gateway would read it |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` kills by the pid the shared wrapper reports |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
@@ -185,6 +185,9 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `descriptors/<vendor>.ts`, your descriptor: id, label, key and the kinds of computer you offer.
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
+
+A worked example from outside the core team: [`boxd.ts`](src/boxd.ts), a janitor-lifetime host over a vendor SDK, with
+its descriptor, conformance module and fake-SDK tests (`test/boxd-provider.test.mjs`).
 
 ### The eleven members
 
@@ -418,6 +421,35 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
+- **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
+  (`src/cloudflare.ts`; deploy and remove it as `relays/cloudflare/README.md` says).
+
+A provider that can do both takes one option, `connect: "exec" | "dial"`, read once in its constructor, which picks
+its host's facts: on `dial` the host declares `connect: "dial"` and has no `exec` or `upload`, and create boots the
+machine with `req.boot.env`. Its descriptor declares the option as a setting with no default (`e2bConnect`,
+`modalConnect`), so exec holds unless the server's settings say dial. E2B and Modal do this. Modal's create gives
+the sandbox `agentrun-dial` as its command and the env as `env`. E2B can't: a template's start command runs once at
+the template's build and never sees a create's env, so E2B's create starts `agentrun-dial` itself through envd, once,
+with the env as that one process's ([README](README.md#e2b-on-dial)). Their conformance modules' `dialKit()` refuse, since
+a machine dials the server that minted its token: the Core run happens inside the public server's process.
+
+#### Worked example: Fly Machines
+
+[`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
+`create` posts the box image as `config.image`, `req.boot.env` as `config.env` and the labels as `config.metadata`, with
+`auto_destroy: true` and restart policy `"no"`: once init's deadline ends the daemon, the machine stops and Fly destroys
+it. `list` filters by `metadata.<key>=<value>`, `delete` passes `force=true`, and `extend` writes the deadline label
+alone, for the janitor. Each Fly fact has its doc link in the file, and the ones the docs leave open say **unverified**.
+
+Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
+in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+(`--exit` exits 0 on a pass, else 1):
+
+```sh
+COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
+  node packages/serve/scripts/dial-conformance.mjs --provider fly
+```
 
 ### Wire it up
 

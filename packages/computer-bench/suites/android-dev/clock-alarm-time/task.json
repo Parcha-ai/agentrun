@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.alarm-time",
-  "version": 2,
+  "version": 3,
   "title": "Read the time of a labelled alarm in Clock",
   "split": "dev",
   "tags": ["clock", "info", "answer"],
@@ -74,6 +74,7 @@
     }
   ],
   "oracle": [
+    { "method": "ui.act", "why": "Wait for Clock's window: am start -W can return before it reaches the accessibility tree.", "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "The alarm list shows the alarm's row, named by its time (with Clock's hair space, U+200A, before AM or PM) and its label: the answer is on screen. The answer check still wants it in words.", "params": { "steps": [], "expect": { "text": "{{t.shown}} {{lab.say}} {{nonce}}", "timeoutMs": 8000 } } }
   ]
 }
