@@ -428,7 +428,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places));
+                    // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
+                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, [...(f.tools ?? []), t.name], caps.places));
                     const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
                     // (cut to one line); the reason in full is its title, and in Details.
