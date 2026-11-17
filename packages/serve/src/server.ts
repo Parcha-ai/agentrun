@@ -44,7 +44,7 @@ import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type Mo
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
-import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
+import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
@@ -126,13 +126,13 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
-import { type ComposioDropped, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
-import { privateHostsRoute } from "./mcp-private-hosts.js";
+import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
-import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
+import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
@@ -189,7 +189,7 @@ export const CONTRACT = "agentrun.v2/0";
 /** A process's flags for a worker of it: without --input-type and the code string given with -e, --eval, -p or --print. */
 const workerArgs = (args: readonly string[]): string[] =>
   args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
-export const DEFAULT_PORT = 7340;
+export { DEFAULT_PORT };
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
 /** A run's live viewer, under the run's path (browser-live.ts): its run id, the family's address (`computer`, one for every
@@ -432,7 +432,8 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   dial: HostedDial;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
-   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+   *  it is this process's finding, never a store's, so another runner on a shared store never inherits it. A runner in
+   *  its own process takes its own operator's opt-in from its own environment (runner/main.ts runnerLoopback). */
   localInstall: boolean;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
@@ -2078,7 +2079,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const named = mcpToolOf(tool);
         if (!named || !mcpMeta.has(named.server)) return [];
         const pinned = Object.hasOwn(pin, named.server) && pin[named.server]!.tools.some((one) => one.name === named.tool);
-        return pinned ? [] : [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: save the agent again to pin it.`, tool }];
+        if (pinned) return [];
+        // Its first run could not pin it (mcp-pin-first.ts) because this server refuses its server's address: a loopback
+        // one on a server whose operator never said it is a local install. Saving again is refused the same way, so the
+        // words say the cause, as the save's refusal does (mcp-servers-store.ts reached).
+        const at = URL.parse(mcpMeta.get(named.server)!.url)?.hostname ?? "";
+        const why = options.mcpLoopback !== true && LOOPBACK.test(at) ? `its server ${named.server} can't be listed here to pin it: ${loopbackWords(at)}` : "save the agent again to pin it.";
+        return [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: ${why}`, tool }];
       });
       if (unpinned.length) throw new ApiError("agent_not_runnable", unpinned.map((one) => one.message).join(" "), { fields: unpinned.map(({ tool: _tool, ...issue }) => issue), details: { unbound: unpinned.map((one) => one.tool), missing: {} } });
     }
@@ -4462,6 +4469,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listens: a hosted container listens on loopback behind its proxy too.
   const localInstall = options.mcpLoopback === true;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
+  // Its own addresses, kept in the store for a runner in its own process whose own opt-in lets it reach loopback: its runs
+  // never reach this server's ports there either (mcp-private-hosts.ts saveServerOwn). It listens already: a write that
+  // fails stops the start and lets go of the port, as the start's other stops let go of the store and the locks.
+  await saveServerOwn(store, mcpServers.own).catch(async (error: unknown) => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+    throw error;
+  });
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
