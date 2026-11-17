@@ -118,8 +118,8 @@ on the first visit; **The setup code** below says where to find it.
 <!-- RAILWAY: the template's deploy button replaces these steps once it is published. -->
 The person deploys it from their own Railway account, in their browser: a new service from the image
 `ghcr.io/parcha-ai/agentrun-server:beta`, a volume mounted at `/data`, a public domain, and the variables
-`PORT=7340`, `AGENTRUN_PUBLIC_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}` and `AGENTRUN_SEAL_KEY` set to a random value
-they generate there and keep. Walk them through it; never create the service yourself with a Railway CLI. Its agents
+`PORT=7340` and `AGENTRUN_PUBLIC_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`. Leave `AGENTRUN_SEAL_KEY` unset: the server
+makes its own key on the volume at its first start and keeps it with the data. Walk them through it; never create the service yourself with a Railway CLI. Its agents
 get file tools and `web_fetch`, no shell.
 
 ### Render
@@ -171,8 +171,9 @@ capabilities again and confirm `models.ready`.
 
 ## 5. Create the first agent and run it
 
-Check `npx --yes @parcha/agentrun@0.4 agents list` first and reuse a `release-notes` agent if there is one. Otherwise,
-with the person's OK, create a small agent with no tools:
+Check `npx --yes @parcha/agentrun@0.4 agents list` first. If a `release-notes` agent is there, read it with
+`agents get release-notes` and reuse it only when it is this one, with no tools; describe what it actually has.
+Otherwise, with the person's OK, create a small agent with no tools:
 
 ```sh
 npx --yes @parcha/agentrun@0.4 agents create --body '{"definition":{"id":"release-notes","name":"Release notes","harness":"pi","max_cost_usd":0.25,"instructions":"Write concise release notes from the changes you are given. Group them under Added, Changed and Fixed. Do not invent changes."}}'
@@ -182,7 +183,7 @@ Tell them what it runs on: the model (`models.default` in the capabilities, and 
 a key) and the cap, $0.25 for the run. Ask "Start the first run?" and wait. On their OK:
 
 ```sh
-npx --yes @parcha/agentrun@0.4 runs start release-notes --wait --timeout 300 --body '{"input":{"content":"Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings."}}'
+npx --yes @parcha/agentrun@0.4 runs start release-notes --wait --timeout 300 --max-cost-usd 0.25 --body '{"input":{"content":"Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings."}}'
 ```
 
 It prints the run once it ends: its `status`, `result.final_answer`, `cost.usd` and `console_url`, the run's page in the
@@ -201,8 +202,9 @@ Report what is ready and what actually ran: the console address, the link to the
 folder (`~/.agentrun` on this computer) and the server version (`server.version` in the capabilities). If a step is
 still pending (the model, the first run), say so. Then offer two next steps, each a choice of its own:
 
-- **Learning:** the agent learns from its runs. Open its **Learning** tab, run a useful task again, and look at the
-  notes and skills it proposes after checking and grading. Reflection and grading add model usage. Risky proposals
+- **Learning:** the agent can learn from its runs. A new agent starts with learning off. When they choose it, they turn
+  it on in the agent's **Learning** tab, run a useful task again, and look at the notes and skills it proposes after
+  checking and grading. Reflection and grading add model usage. Risky proposals
   wait for the owner's review.
 - **Bring agents they already run:** step 7.
 
