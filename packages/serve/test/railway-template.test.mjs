@@ -40,7 +40,9 @@ test("the start command is the image's own entrypoint and command, as the image'
   const [sh, c, script, ...rest] = startArgv(service.deploy.startCommand);
   assert.deepEqual([sh, c, rest], ["/bin/sh", "-c", []]);
   const mount = Object.values(service.volumeMounts)[0].mountPath;
-  assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
+  // Railway's volume is a disk with a lost+found (root's, mode 700): it is given to the server's user too, so an image
+  // whose server can't look into it (released before the store's scan let it be) starts.
+  assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && { [ ! -d ${mount}/lost+found ] || chown 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
   // Railway mounts a volume as root: the container starts as root (RAILWAY_RUN_UID=0) only for the chown above.
   assert.equal(renderValue(service.variables.RAILWAY_RUN_UID.defaultValue, { domain: "x" }), "0");
   assert.ok(cmd.includes(mount) && cmd[cmd.indexOf("--data") + 1] === mount, "the server's data directory is the volume");
