@@ -45,7 +45,7 @@ const until = async (done, what, ms = 30_000) => {
   for (;;) {
     const value = await done();
     if (value) return value;
-    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
+    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${typeof what === "function" ? what() : what}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 };
@@ -345,8 +345,16 @@ test("a CLI run whose runner died mid-claim: the dead claim's folder is swept an
   assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
   assert.ok(row.epoch > dead.epoch, `the run was claimed again after the dead claim (epoch ${dead.epoch} → ${row.epoch})`);
   const scratch = scratchFolder(dir, "agent-1", RUN);
-  const left = () => (existsSync(scratch) ? readdirSync(scratch, { recursive: true }).join(", ") : "nothing");
-  await until(() => !existsSync(scratch), `the run's scratch folder swept at its end; left: ${left()}`, 10_000);
+  // What is left, read only if the wait fails: the folder is being removed while the wait starts, so a read then can
+  // meet a directory already gone (ENOENT), and what it saw then is not what was left at the end.
+  const left = () => {
+    try {
+      return existsSync(scratch) ? readdirSync(scratch, { recursive: true }).join(", ") : "nothing";
+    } catch (error) {
+      return `nothing it could read (${error.code})`;
+    }
+  };
+  await until(() => !existsSync(scratch), () => `the run's scratch folder swept at its end; left: ${left()}`, 10_000);
 });
 
 // A claim's start sweeps what earlier claims of its run left (a killed runner's): its own folder and another run's stay.

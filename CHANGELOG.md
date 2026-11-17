@@ -66,7 +66,7 @@ AgentRun is an open-source platform that supercharges your agents. It adds self-
 
 **Tests and release:**
 
-- The browser recording test asserts no wall-clock length (#3093), and a fake bin matches names by link, so the runner image's dangling `grub-ntldr-img` no longer breaks CI (#3102).
+- The browser recording test asserts no wall-clock length (#3093), and a fake bin matches names by link, so the runner image's dangling `grub-ntldr-img` no longer breaks CI (#3102); the runner's scratch-sweep test reads what is left only when its wait fails (#3114).
 - Releases publish their own notes: the release workflow checks that the tag is newer than what is out and is the version at the tag, requires every check `main` requires on the tagged commit, publishes the GitHub release from the version's `CHANGELOG.md` section, posts it to Slack, and opens the website's import pull request (#3108).
 - The changelog's beta.43 section now lists the shadow audit of serving workflows (#3061), which shipped in beta.43.
 - Server and workspace 0.1.0-beta.44, launcher 0.4.12 pinned to it, Python client 0.3.12.
