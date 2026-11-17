@@ -42,7 +42,7 @@ import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
@@ -148,6 +148,7 @@ import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -330,6 +331,9 @@ export type ServeOptions = {
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
    *  stand-ins for the harnesses. */
   harnessTable?: string;
+  /** The owner's harness modules (harness-table.ts HARNESS_MODULES_ENV): packages or paths, each exporting a
+   *  HarnessTableModule whose entries add harnesses of their own, for this server and its runs. Never a built-in one. */
+  harnessModules?: readonly string[];
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
@@ -413,10 +417,12 @@ export type ServeOptions = {
  *  harness's, which scripts the harnesses with or without it. */
 const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxMountinfo", FAUX_MOUNTINFO_ENV]] as const;
 
-/** The test switches a run's process gets, each module path resolved: empty outside tests. A test's in-process runner
- *  takes the same (test/support.mjs startInProcessRunner). */
+/** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
+ *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
+ *  startInProcessRunner). */
 export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {};
+  // The owner's harness modules too (not a test switch): a run's process reads the same table as the server.
+  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -822,7 +828,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     runtimes: ["runner"],
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
-    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
+    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes, boxAllowOf(env)),
     models,
@@ -882,8 +888,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  (tool-keys-store.ts), never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
-       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...HARNESSES] },
+       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
+       *  grant (runnable.ts takes one on any), a module's among them. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -943,6 +950,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
+  // So is the harness modules list, from `harnessModules` alone (an operator names them with --harness-module or
+  // AGENTRUN_SERVE_HARNESS_MODULES, which the CLI reads into the option).
+  delete process.env[HARNESS_MODULES_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
@@ -1031,7 +1041,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
+  // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
+  // the start, in words, before anything else opens.
+  // The harness ids a definition may name here: the table's, the built-in ones and those the modules add.
+  const harnesses = harnessIds(base);
   // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
   // owner lock holds the store to this server (the data root's own lock follows), and it refuses a data directory an
   // earlier version wrote, in words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
@@ -1114,6 +1128,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
   const stopping = new AbortController();
+  /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
+  let schemaSealed: Promise<unknown> = Promise.resolve();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -1843,20 +1859,79 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       else process.stderr.write(`agentrun-serve: ${line}\n`);
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Then, not waited on: a trigger kept with a value in the clear in a field only its event's schema marks, sealed once
+  // the schemas are read from Composio (composio-triggers.ts sealMarked). Drained by stop before the store closes.
+  /** Trigger `id`'s create answer kept under an Idempotency-Key, its fields `source` now seals (sealed_config) masked: the
+   *  after-start seal by the events' schemas finds fields the name rule (shownTrigger, at the start's rewrite of the
+   *  records) does not, and a replay must not hand one back. The file is written again when one changed. */
+  const cachedMasked = async (id: string, source: Record<string, unknown>) => {
+    if (maskCached(id, source).length) await keep();
+  };
+  /** The records kept under an Idempotency-Key (their slots) that answered trigger `id`'s create with a field `source`
+   *  keeps sealed still in the clear, each masked in the map now (not saved: the caller saves). */
+  function maskCached(id: string, source: Record<string, unknown>): string[] {
+    const fields = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as unknown[]).filter((name): name is string => typeof name === "string") : [];
+    const changed: string[] = [];
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const config: Record<string, unknown> = { ...body.source.config };
+      const hit = fields.filter((name) => Object.hasOwn(config, name) && config[name] !== SEALED_MASK);
+      if (!hit.length) continue;
+      for (const name of hit) config[name] = SEALED_MASK;
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: fields } } } });
+      changed.push(slot);
+    }
+    return changed;
+  }
+  const idempotencySaid = (fields: Record<string, string>) => {
+    const line = logLine("idempotency", fields);
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  const scrubSaid = ({ left }: { left?: string }) => {
+    if (!left) return;
+    const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  schemaSealed = composioTriggers
+    // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
+    // start's scrub runs it before it serves).
+    .sealMarked(async (id, source, updatedAt) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
+      // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
+      // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
+      if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
+      return written;
+    }, async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work, { vacuum: false })) : void (await work())))
+    .catch((error: Error) => void (stopping.signal.aborted || process.stderr.write(`agentrun-serve: sealing the composio triggers' config by their events' schemas: ${error.message}\n`)));
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
   {
-    let scrubbed = 0;
+    // Each record rewritten, counted once whichever of the two passes below rewrote it.
+    const scrubbed = new Set<string>();
+    // Each cached create answer checked against its trigger as stored, whatever its field's name: a field sealed since
+    // (by its event's schema, whose save of this file failed before a restart) is masked before the first request.
+    const answered = new Set<string>();
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (slot.startsWith("/triggers\n") && isObject(body) && typeof body.id === "string") answered.add(body.id);
+    }
+    for (const id of answered) {
+      const row = await sealing.triggers.get(id).catch(() => undefined);
+      if (row && isObject(row.source)) for (const slot of maskCached(id, row.source as Record<string, unknown>)) scrubbed.add(slot);
+    }
     for (const [slot, v] of idempotency) {
       const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
       const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
       if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
       idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
-      scrubbed++;
+      scrubbed.add(slot);
     }
-    if (scrubbed || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
-    if (scrubbed) {
-      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed });
+    if (scrubbed.size || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    if (scrubbed.size) {
+      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed.size });
       if (log) log(line);
       else process.stderr.write(`agentrun-serve: ${line}\n`);
     }
@@ -2243,7 +2318,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
-  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, (tool) => toolOf(tool)?.runnerOnly === true);
+  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, toolOf);
 
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
@@ -2323,7 +2398,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     if (sdkOf(body)) return { warnings: [], stamp: {} };
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
-    const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
+    const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
+    const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
     if (install) {
       void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }
@@ -2368,18 +2444,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
-   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
-   *  tool the box refuses (browser) keeps the runner. */
+   *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
+   *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
+   *  (browser), keeps the runner. */
   async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
-    const definition = checkDefinitionBody(body);
+    const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const entry = await agents.create(definition, async (revision) => {
       const saved = await saveable(revision);
       warnings = saved.warnings;
       return saved.stamp;
-    }, "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, template);
+    }, place.mode === "sandbox" ? { place, tools: NEW_AGENT_TOOLS } : undefined, template);
     return { entry, warnings };
   }
 
@@ -2693,12 +2770,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       ...externalIssues(external),
       ...(pinned !== undefined ? [{ field: "revision", reason: "not_allowed", message: "An inline run pins no revision: it runs the revision of its external version.", fix: "Remove revision." }] : []),
       ...runBodyIssues(run),
-      ...definitionBodyIssues(given),
+      ...definitionBodyIssues(given, { harnesses }),
       // The agent's id is this server's, one per external reference, and its version is the reference's.
       ...(["id", "version"] as const).flatMap((key) => (isObject(definition) && definition[key] !== undefined ? [{ field: `definition.${key}`, reason: "not_allowed", message: `An inline agent's ${key} is its external reference's: the definition names none.`, fix: `Remove definition.${key}.` }] : [])),
     ];
     if (issues.length) throw invalid(issues);
-    const checked = checkDefinitionBody(given);
+    const checked = checkDefinitionBody(given, { harnesses });
     const made = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
     // A version's first run is its save: refused where POST /agents refuses the definition (one this host can never run),
     // its MCP tools pinned as a save pins them (a server down keeps the agent's current pin when this version grants nothing
@@ -3185,14 +3262,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const bodies = new WeakMap<IncomingMessage, Json>();
   /** The check of a whole body a route makes before anything else, by operation, for the body sent: what a suggested
    *  value must pass. PUT .../definition's contract body (the definition itself) has none here. */
-  const definitionCheck = (creating: boolean) => (body: unknown) => definitionBodyIssues(isObject(body) ? body : {}, { creating });
+  const definitionCheck = (creating: boolean) => (body: unknown) => definitionBodyIssues(isObject(body) ? body : {}, { creating, harnesses });
   const BODY_CHECKS: Record<string, (sent: Json) => ((body: unknown) => readonly InputIssue[]) | undefined> = {
     createAgent: () => definitionCheck(true),
     updateDefinition: (sent) => ("definition" in sent ? definitionCheck(false) : undefined),
     // POST /runs' agent, given inline, is POST /agents' body inside its own: checked as that one is.
     createInlineRun: () => (body: unknown) => {
       const { definition, skills, note } = isObject(body) ? body : {};
-      return definitionBodyIssues({ definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) });
+      return definitionBodyIssues({ definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) }, { harnesses });
     },
   };
 
@@ -3525,7 +3602,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           warnings = saved.warnings;
           return saved.stamp;
         };
-        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false, harnesses }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         reconcileComputer(id);
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
@@ -4897,6 +4974,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
+    await schemaSealed;
     await installStopped;
     await observationStopped;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

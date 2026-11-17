@@ -49,6 +49,7 @@ __all__ = [
     "Capabilities",
     "CapabilitiesHarnessesItem",
     "CapabilitiesHarnessesItemFreeModelsItem",
+    "CapabilitiesHarnessesItemPromises",
     "CapabilitiesHome",
     "CapabilitiesLearning",
     "CapabilitiesLinks",
@@ -1126,7 +1127,7 @@ class Definition(_DefinitionRequired, total=False):
     model: str
     model_tiers: DefinitionModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    harness: str
     place: DefinitionPlace1 | DefinitionPlace2
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
@@ -1606,7 +1607,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     model: str
     model_tiers: DefinitionInputModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    harness: str
     place: DefinitionInputPlace1 | DefinitionInputPlace2
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
@@ -6503,7 +6504,9 @@ class CapabilitiesPlacesDefaultPlace2(TypedDict):
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
-    id: Literal["pi", "claude-agent", "codex", "opencode"]
+    id: str
+    label: str
+    promises: CapabilitiesHarnessesItemPromises
     available: bool
     free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
@@ -6519,6 +6522,12 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     installs: Literal["on_first_use"]
 
 
+class CapabilitiesHarnessesItemPromises(TypedDict):
+    resume: Literal["exact", "load", "restart"]
+    tool_gate: Literal["every_call", "permission", "config"]
+    billing: Literal["proxy", "plan"]
+
+
 class CapabilitiesHarnessesItemFreeModelsItem(TypedDict):
     id: str
     context_window: int
@@ -6530,7 +6539,7 @@ class _CapabilitiesToolsItemRequired(TypedDict):
     nodes: bool
     calls: bool
     available: bool
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     permission: Literal["allow", "ask", "deny"]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]

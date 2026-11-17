@@ -23,20 +23,25 @@ describe("places", () => {
   // and the server's places not read yet, unknown.
   it("says where an agent's revision runs: its own place, else the server's default for it", () => {
     const docker = placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } });
-    const agentic = (definition: Record<string, unknown>) => ({ kind: "agentic" as const, definition: { version: 1, name: "a", instructions: "", skills: [], tools: ["write"], ...definition } }) as never;
+    const agentic = (definition: Record<string, unknown>) => ({ kind: "agentic" as const, definition: { version: 1, name: "a", instructions: "", skills: [], tools: ["write", "bash"], ...definition } }) as never;
     expect(runsWhere(agentic({ place: { mode: "runner" } }), docker)).toEqual({ place: { mode: "runner" }, byDefault: false });
     expect(runsWhere(agentic({}), docker)).toEqual({ place: { mode: "sandbox", box: "docker" }, byDefault: true });
     expect(runsWhere(agentic({ tools: ["browser"] }), docker)).toEqual({ place: { mode: "runner" }, byDefault: true });
+    expect(runsWhere(agentic({ tools: ["write"] }), docker)).toEqual({ place: { mode: "runner" }, byDefault: true });
+    expect(runsWhere(agentic({ tools: [] }), null)).toEqual({ place: { mode: "runner" }, byDefault: true });
     expect(runsWhere(agentic({}), placesOf({ places: PLACES }))).toEqual({ place: { mode: "runner" }, byDefault: true });
     expect(runsWhere(agentic({}), null)).toBeUndefined();
   });
 
   // The server's cases (packages/serve/test/default-place.test.mjs): a revision with no place runs where default_place
-  // says; one with the browser, and a workflow, on the runner; where default_place is the runner, there.
+  // says when it has a shell tool; one whose tools need no shell, one with the browser, and a workflow, on the runner;
+  // where default_place is the runner, there.
   it("resolves no place as the server's defaultPlaceOf does at a run", () => {
     const docker = placesOf({ places: { ...PLACES, default_place: { mode: "sandbox", box: "docker" } } });
-    expect(defaultPlaceOf(false, ["write"], docker)).toEqual({ mode: "sandbox", box: "docker" });
+    expect(defaultPlaceOf(false, ["write"], docker)).toEqual({ mode: "runner" });
+    expect(defaultPlaceOf(false, [], docker)).toEqual({ mode: "runner" });
     expect(defaultPlaceOf(false, ["bash"], docker)).toEqual({ mode: "sandbox", box: "docker" });
+    expect(defaultPlaceOf(false, ["read", "bash_background"], docker)).toEqual({ mode: "sandbox", box: "docker" });
     expect(defaultPlaceOf(false, ["read", "browser"], docker)).toEqual({ mode: "runner" });
     expect(defaultPlaceOf(true, [], docker)).toEqual({ mode: "runner" });
     expect(defaultPlaceOf(false, ["bash"], placesOf({ places: PLACES }))).toEqual({ mode: "runner" });

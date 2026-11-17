@@ -22,7 +22,7 @@ import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./b
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
-import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { harnessIds, onAdapter } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
@@ -842,7 +842,7 @@ export async function toolingOf(revision: Revision): Promise<Tooling> {
 export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] => entry.needs.filter((name) => !env[name]);
 
 /** Every tool as capabilities show it, the server's one tool catalog: available here, or the variables it is missing
- *  (names only), and the harnesses that run it (another harness than pi runs only the host tools, host-tools.ts). A tool
+ *  (names only), and the harnesses that run it (one on an adapter runs only the host tools, host-tools.ts). A tool
  *  a user picks a provider for (tool-plane.ts) gives the providers offered, the server's (`provider`, the default where it
  *  sets none), the default, and what it resolves to on each harness under the server's `settings`: available where any
  *  is not unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. An unavailable tool says why
@@ -855,6 +855,11 @@ export const missingEnv = (entry: ToolEntry, env: NodeJS.ProcessEnv): string[] =
 export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}, noBox?: string, refused: Readonly<Record<string, string>> = {}, runnerShell: ReadonlySet<string> = new Set()) => {
   const views = explainsView(env, settings);
   const picked = withDefaults(settings);
+  // The harnesses by the table `env` runs on (a module's among them): a host tool runs on each; any other tool on those
+  // that run on the general spec with pi's tools (no adapter facts: pi, and a module's harness without them), as the save
+  // check takes them (runnable.ts onAdapter).
+  const everyHarness = harnessIds(env);
+  const generalSpec = everyHarness.filter((id) => !onAdapter(env, id));
   const table = Object.entries(TOOLS).map(([name, entry]) => {
     const view = (PICKABLE as readonly string[]).includes(name) ? views[name as Pickable] : undefined;
     const plane = view?.resolves;
@@ -868,11 +873,11 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...HARNESSES] : [DEFAULT_HARNESS], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
   // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
   // so the owner sees them and their setting (allow or deny; a deny is not offered at all).
-  const meta = [...META_TOOLS].map((name) => ({ name, summary: META_SUMMARY[name]!, blurb: blurbOf(name)!, nodes: false, calls: false, meta: true as const, available: true, harnesses: [...HARNESSES], ...serverGate(name, settings) }));
+  const meta = [...META_TOOLS].map((name) => ({ name, summary: META_SUMMARY[name]!, blurb: blurbOf(name)!, nodes: false, calls: false, meta: true as const, available: true, harnesses: [...everyHarness], ...serverGate(name, settings) }));
   return [...table, ...meta];
 };
 
