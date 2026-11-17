@@ -98,12 +98,12 @@ const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
   Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 412: "PreconditionFailed", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported", 503: "Unavailable" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
-/** GET /health's answer (host.ts Health). */
+/** GET /health's answer (host.ts Health; listen-first.ts while the server is warming). */
 const HEALTH = {
   type: "object", additionalProperties: false, required: ["status", "checks"],
   properties: {
-    status: { enum: ["ok", "failing"] },
-    checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
+    status: { enum: ["ok", "failing", "warming"] },
+    checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open", "opening"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
   },
 };
 
@@ -1828,10 +1828,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/health": {
     get: {
       operationId: "getHealth", tags: ["capabilities"], summary: "Whether this server can serve", security: [{}],
-      description: "Readable without a credential: the store opens and the data directory's disk is above its floor. 503 with the same shape when either fails.",
+      description: "Readable without a credential: the store opens and the data directory's disk is above its floor. 503 with the same shape when either fails. While the server is still starting (it listens before it has loaded and opened its store), 503 with `status` `warming` and `checks.store` `opening`, and a Retry-After; every other request then answers 503 `unavailable`, retryable.",
       responses: {
         "200": json(HEALTH, "Healthy."),
-        "503": json(HEALTH, "Not healthy: which check failed."),
+        "503": json(HEALTH, "Not healthy: which check failed; or warming, still starting."),
         ...errors(429, 500),
       },
     },
