@@ -63,7 +63,7 @@ import { readSnapshot } from "../learn/folder.js";
 import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { excerptShown } from "../learn/secrets.js";
-import { dslRefusalOf } from "../learn/skills.js";
+import { dslRefusalOf } from "../learn/workflow-draft.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
 
@@ -256,7 +256,7 @@ async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest
 export const DSL_REFUSES = "this release's workflow DSL refuses it";
 
 /** `serving` as it serves this run, once a serving revision this release's workflow DSL refuses is held. The refusal is of
- *  the text alone (learn/skills.ts dslRefusalOf: the DSL's own validation, no tool list), never of a host setting (a tool
+ *  the text alone (learn/workflow-draft.ts dslRefusalOf: the DSL's own validation, no tool list), never of a host setting (a tool
  *  gated, denied or missing, no adapter), which the run's own check still refuses as before. The hold is a promotion
  *  record of its digest, `hold` by its reason alone ("this release's workflow DSL refuses it: <code> at <path>: <its
  *  words>", cut of the host's secrets as a check's texts are), written only while the digest's newest record is still the
