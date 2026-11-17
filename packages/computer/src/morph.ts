@@ -229,11 +229,15 @@ class MorphHost implements MachineHost {
 		}
 	}
 
-	/** GET /instance/{id}/ssh/key (OpenAPI InstanceSshKey): its private key, in the PEM armor ssh2 reads. The answer's password and token are not kept. */
+	/**
+	 * GET /instance/{id}/ssh/key (OpenAPI InstanceSshKey): its private key, in a form ssh2 reads. Morph answers PKCS#8
+	 * (the PEM label "PRIVATE KEY"; d7/morph-live-2's ssh2 refused it), which pemOf converts. The answer's password and
+	 * token are not kept.
+	 */
 	async #keyOf(id: string, ctx: HostCall): Promise<string> {
 		const { private_key: given } = (await this.#rest<{ private_key?: unknown }>("GET", `/instance/${id}/ssh/key`, undefined, ctx)) ?? {};
 		const key = typeof given === "string" ? pemOf(given) : undefined;
-		if (key === undefined) throw new HostError("vendor", `GET /instance/${id}/ssh/key answered no private key in PEM armor`);
+		if (key === undefined) throw new HostError("vendor", `GET /instance/${id}/ssh/key answered no private key ssh2 can read (PEM: OpenSSH, PKCS#1, SEC1, or PKCS#8 RSA, EC or Ed25519)`);
 		return key;
 	}
 
