@@ -1052,6 +1052,79 @@ above the harness's highest runs at that highest (Codex and OpenCode stop at `xh
 (`src/effort-guidance.ts`): `low` answers directly, `medium` plans briefly and checks once, `high` plans each part, fills
 the gaps and reviews. A run with no level, or one above `high`, gets no note.
 
+### Per-run model keys (LiteLLM virtual keys)
+
+A caller can hand each run its own model key, such as a [LiteLLM](https://docs.litellm.ai/docs/proxy/virtual_keys)
+virtual key minted for that run, with `model_key` on `POST /v2/runs`, `POST /v2/agents/{agent_id}/runs` and
+`POST /v2/runs/{run_id}/messages`. AgentRun uses that key for every model request tied to the run and never mints,
+lists or revokes it: the caller owns the key's life.
+
+**Run without a server key: callers pass a per-run key.** There is no setting. Point `AGENT_MODEL_BASE_URL` at the
+gateway and give the server no model key of its own (no `AGENT_MODEL_API_KEY`, nothing saved in Settings → Model keys).
+The server and its runners start, and capabilities read ready, with no standing key. Then:
+
+- A run with `model_key` spends on that key alone.
+- A run without one, whose model goes to the gateway, is 422 `model_key_required` at its start, before any model call.
+- A message that would start a new turn (the run's last turn ended) without `model_key` is also 422
+  `model_key_required`, and nothing is written.
+
+A server that does hold a key spends it on a run that brings none, as before, and never on a run that brings its own.
+
+Where the key goes: to the gateway at `AGENT_MODEL_BASE_URL` only, which every pi and codex model and every workflow
+model node is sent to, and to Anthropic's Messages endpoint when `ANTHROPIC_BASE_URL` names the same origin (claude-agent
+on the gateway). A key sent with a run whose model goes elsewhere (no gateway, a native run, a model routed to a
+provider's own API) is 422 at `model_key`, never kept unused.
+
+```sh
+# Mint a virtual key for this run (LiteLLM's proxy, with its master key; your backend does this, never the agent).
+KEY=$(curl -s https://litellm.example.com/key/generate \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'content-type: application/json' \
+  -d '{"duration": "1h", "max_budget": 2, "metadata": {"run": "ticket-4521"}}' | jq -r .key)
+
+# Hand it to the run.
+curl -s http://127.0.0.1:7340/v2/agents/support/runs -H "Authorization: Bearer $AGENTRUN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"input\": {\"content\": \"Triage ticket 4521\"}, \"model_key\": \"$KEY\"}"
+
+# A follow-up turn gets a key of its own.
+curl -s http://127.0.0.1:7340/v2/runs/$RUN_ID/messages -H "Authorization: Bearer $AGENTRUN_TOKEN" \
+  -H 'content-type: application/json' -d "{\"content\": \"And the refund?\", \"model_key\": \"$NEXT_KEY\"}"
+
+# When the run's turn has ended (run.ended), revoke it.
+curl -s https://litellm.example.com/key/delete -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H 'content-type: application/json' -d "{\"keys\": [\"$KEY\"]}"
+```
+
+Custody, as for a per_run MCP server's `mcp_auth`:
+
+- The key is taken out of the body before anything reads it. It is never in the run's saved body, its timeline, its
+  view, a log or an `Idempotency-Key`'s fingerprint. A retry with a new key answers the first request's run and keeps
+  its first key.
+- It is sealed with the run under the server's seal key, bound to the gateway's origin then. A runner opens it at each
+  claim, a reclaim after a runner's crash included. A gateway moved since never receives it.
+- Each model route reads it per request through the kernel model proxy. The harness, its tools and its sandbox never
+  see it, and the run's redactor cuts it from anything the run writes.
+- A message's `model_key` replaces the run's key from the turn the message starts. A message without one keeps the key
+  the run holds.
+
+**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key, and the run reports the turn
+ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
+tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run look-back
+and compile turns. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
+answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
+
+| Spend | With the run's key | Server holds no key, run brought none |
+| --- | --- | --- |
+| The learning run's grade (after the turn) | Not queued: the proposal is dropped `grade_failed`, in words | Skipped in words |
+| A shadow audit, a learned workflow's replay check | Skipped, logged | Skipped, logged |
+| A grade's feedback round (`PUT /runs/{id}/grade`) | A new turn with no key: the server's, else not opened | Not opened; the grade is kept |
+| An owner's replay, learning from a CSV, an SDK run's look-back | Tied to no run's key | 409 or skipped, in words |
+| A trigger's firing | Starts a run with no key | 422 `model_key_required` for the firing |
+
+Jev and the other decision providers run on their own keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`,
+`OPENROUTER_API_KEY`), which are not model keys and which a run's key does not replace. On a run that brings its own
+key, no model key is on the env its decision nodes run under, so Jev's route on an openrouter.ai gateway's key is off.
+
 ### On a ChatGPT plan
 
 A server needs no model key to start, on any of its deploys. With none, capabilities say `models.ready: false` and

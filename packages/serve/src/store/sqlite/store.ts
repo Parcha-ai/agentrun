@@ -33,7 +33,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { readLaunch, readLearningStarts, writeLaunch } from "./run-launch.js";
+import { readLaunch, readLearningStarts, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -1008,7 +1008,7 @@ class SqliteStore implements Store {
           const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
           if (reopened === 0) throw new RunFinal(runId);
           // The message's launch secrets, with it: the claim that runs its turn reads them.
-          if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
+          if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
           await lockCommandsOf(tx, runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
@@ -1996,7 +1996,7 @@ class SqliteStore implements Store {
         expect: { kind: "final", runId },
       });
       // The message's launch secrets, in the command's own write: written only when the command is (a final run refuses both).
-      if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
+      if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
       return inserted;
     });
     wakeCommands(this.where, { runId, what: "written" });

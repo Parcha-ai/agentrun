@@ -54,7 +54,7 @@ import { placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
+import { claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { catalogSessionNames, type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { piAdapter } from "./adapters/pi.js";
@@ -547,11 +547,18 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
   const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch);
+  // The run's own model key, when its caller handed one (model_key, sealed in its launch): opened at every claim, a reclaim
+  // after a crash among them, and held by the run's one redactor. Its model routes read it alone; its tools never do.
+  const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, claim.runId);
+  if (runKey) {
+    withoutModelKeys(toolEnv);
+    holdRunKey(cut, runKey);
+  }
   // The keys it opened join the run's one redactor before any tool or model request can echo one.
   holdClaimed(cut, toolEnv);
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
-  // saved in Settings → Model keys runs the next run with no restart (withModelKeys).
-  const modelEnv = withModelKeys(deps.env, toolEnv);
+  // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
+  const modelEnv = claimModelEnv(deps.env, toolEnv, runKey);
   const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
@@ -580,9 +587,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // requests as that route books them.
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
-    const savedKeys = await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
+    // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
+    const savedKeys = runKey ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
     holdClaimed(cut, savedKeys);
-    const tierEnv = withModelKeys(deps.env, { ...savedKeys, ...toolEnv });
+    const tierEnv = claimModelEnv(deps.env, { ...savedKeys, ...toolEnv }, runKey);
     for (const tier of SUBAGENT_TIERS) {
       if (body.modelTiers?.[tier] === undefined && tierModelOf(tierEnv, tier) === undefined) continue;
       try {
@@ -673,10 +681,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
-  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey };
+  // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit, a replay check and
+  // the learning run's grade are skipped, in words, where the run brought its own key or the server holds none.
+  const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
   if (launch.learning && !launch.replay && !launch.audit) await settleAudits(audits);
   const promotion = claimPromotion({
-    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
+    store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff,
   });
   const firstChoice = learnsWorkflows(revision.kind, laidFlows) ? await workflowFirstOf(revision.kind, laidFlows, launch, log, () => pastRunsOverStore(deps.store, runRow.agentId), promotionGate(promotion), (revision.body as { outputSchema?: unknown }).outputSchema) : {};
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
@@ -694,9 +705,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The keys those tiers' models need (tierModelKeys: a key saved in Settings too, which claimSecrets opened only for the
     // run's own model), held by the run's one redactor, on the tiers' route env alone (withModelKeys, never enumerable),
     // never on the tools' (toolEnv).
-    const tierKeys = await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+    // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
+    const tierKeys = runKey ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
-    const tierEnv = withModelKeys(deps.env, { ...toolEnv, ...tierKeys });
+    const tierEnv = claimModelEnv(deps.env, { ...toolEnv, ...tierKeys }, runKey);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
       if ("why" in routed) tierUnreachable.set(tier, routed.why);
       else tierRoutes.set(tier, routed);
@@ -801,6 +813,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
+    spendOff,
     ...(deps.env ? { env: deps.env } : {}),
     // What the run must never learn beside the runner's secrets: the keys its claim handed it, every secret the server
     // keeps sealed (storeSecrets: the run's redactor holds the same list), and its sign-in's pointers, read back from the
@@ -832,6 +845,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),
+    // The run's own model key: a command row opens it again before the next model request (a message's new key).
+    ...(runKey ? { modelKey: runKey } : {}),
     // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
     ...(endOfRun ? { endOfRun } : {}),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),

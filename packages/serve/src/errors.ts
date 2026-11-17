@@ -76,6 +76,9 @@ export const ERROR_STATUS = {
   // A replay its owner asked of a learned workflow's revision that cannot start now (runner/promotion.ts askReplay): one
   // replays already, another revision of it replays, it is promoted, or no graded input fits it.
   replay_conflict: 409,
+  // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
+  // model (run-model-key.ts): nothing to spend, so refused before any model call.
+  model_key_required: 422,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

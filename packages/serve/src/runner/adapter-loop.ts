@@ -255,6 +255,10 @@ export interface AdapterRunSpec {
    *  the session through the loop's gate, a command row makes them fresh again, and the pass's end lets them go. Absent:
    *  the run grants no MCP tool. */
   readonly mcp?: ClaimMcp;
+  /** The run's own model key (claim-secrets.ts claimModelKey), which its model routes read at each request: a command row
+   *  opens it from the run's launch again before the next model request, so a message's new key replaces it. Absent: the
+   *  run holds none, and its routes read the server's keys. */
+  readonly modelKey?: { fresh(): Promise<void> };
   /** The JSON Schema the run's final answer's last json block meets (its revision's definition.output_schema). An answer
    *  that misses it is asked again once, in the same session under the same cap (the output contract's retry); absent:
    *  the run's answer is never checked here. */
@@ -2338,9 +2342,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // turn's cut (TurnCut). Its side calls and the host's own requests go on.
             if (askCut.armed && !(request as { side?: boolean }).side && (request as { host?: string }).host === undefined) return askCut.hold();
             // A command row since the MCP credentials were made fresh: made fresh again before this request.
-            if (mcpStale && mcp) {
+            // And the run's own model key, read again from its launch: a message's new key is the one this request carries.
+            if (mcpStale && (mcp || specNow?.modelKey)) {
               mcpStale = false;
-              await mcp.fresh();
+              await mcp?.fresh();
+              await specNow?.modelKey?.fresh();
             }
             // The note this request carries, the one it took (takeNote: one at a time). Admitted with it, the request holds it
             // until it ends (afterRequest tells it or gives it back); a refusal (the throw) or a dropped note gives it back

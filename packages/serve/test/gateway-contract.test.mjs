@@ -55,8 +55,8 @@ async function gateway(t) {
 }
 
 /** A run of agent `id` to its end: its record and its last usage row. */
-async function runOf(api, id, deadlineMs = 60_000) {
-  const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Say hi." } });
+async function runOf(api, id, deadlineMs = 60_000, modelKey) {
+  const started = await api("POST", `/agents/${id}/runs`, { input: { content: "Say hi." }, ...(modelKey ? { model_key: modelKey } : {}) });
   assert.equal(started.status, 202, `the run starts: ${JSON.stringify(started.body)}`);
   const { rows } = await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs });
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
@@ -155,20 +155,25 @@ test("claude-agent's OpenRouter form, guard on main: on its adapter as serve bui
 
 // --- Key custody: the OpenRouter key never rides an explicit route. Guards on main. ----------------------------------
 
-test("custody, guard on main: with the OpenRouter key and an explicit gateway (AGENT_MODEL_BASE_URL=<gw>/api) whose own key is unset, codex sends POST /api/v1/responses with \"Bearer none\", and neither codex nor pi puts the OpenRouter key on the wire", { timeout: 90_000, skip: noSetpriv }, async (t) => {
+test("custody, guard on main: with the OpenRouter key and an explicit gateway (AGENT_MODEL_BASE_URL=<gw>/api) whose own key is unset, a run without model_key is 422 model_key_required with nothing sent; with one, codex sends POST /api/v1/responses with the run's key, and neither codex nor pi puts the OpenRouter key on the wire", { timeout: 90_000, skip: noSetpriv }, async (t) => {
   const gw = await gateway(t);
   withEnv(t, { OPENROUTER_API_KEY: OR_KEY, AGENT_MODEL_BASE_URL: `${gw.url}/api`, AGENT_MODEL: CODEX_OR_MODEL, ...CODEX_STAND_IN }, NAMES);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("codex-custody", { harness: "codex" }))).status, 201);
-  const codex = await runOf(api, "codex-custody", 80_000);
-  assert.deepEqual(sent(gw).shapes, [["/api/v1/responses", "Bearer none", null, CODEX_OR_MODEL]], JSON.stringify(gw.requests));
+  // The gateway's own key is unset: the server holds none for it, so each run brings its own (run-model-key.ts).
+  const refused = await api("POST", "/agents/codex-custody/runs", { input: { content: "Say hi." } });
+  assert.deepEqual([refused.status, refused.body.error?.code], [422, "model_key_required"], JSON.stringify(refused.body));
+  assert.deepEqual(gw.requests, [], "nothing was sent for it");
+  const RUN_KEY = KEY("run");
+  const codex = await runOf(api, "codex-custody", 80_000, RUN_KEY);
+  assert.deepEqual(sent(gw).shapes, [["/api/v1/responses", `Bearer ${RUN_KEY}`, null, CODEX_OR_MODEL]], JSON.stringify(gw.requests));
   assert.equal(codex.run.status, "completed", JSON.stringify(codex.run.error));
-  // pi on the same gateway: whatever path it takes, its key is the gateway's (none), never OpenRouter's.
+  // pi on the same gateway: whatever path it takes, its key is the run's, never OpenRouter's.
   assert.equal((await api("POST", "/agents", agent("pi-custody"))).status, 201);
-  await runOf(api, "pi-custody");
+  await runOf(api, "pi-custody", 60_000, RUN_KEY);
   const posts = gw.requests.filter((r) => r.method === "POST");
   assert.ok(posts.length >= 2, "pi asked the gateway too");
-  assert.ok(posts.every((r) => r.headers.authorization === "Bearer none" && r.headers["x-api-key"] === undefined), JSON.stringify(posts.map((r) => r.headers)));
+  assert.ok(posts.every((r) => r.headers.authorization === `Bearer ${RUN_KEY}` && r.headers["x-api-key"] === undefined), JSON.stringify(posts.map((r) => r.headers)));
   assert.ok(!JSON.stringify(gw.requests).includes(OR_KEY), "the OpenRouter key is in no recorded header and no body");
 });
 

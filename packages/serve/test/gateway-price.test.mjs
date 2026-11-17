@@ -113,6 +113,8 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
   for (const name of names) delete process.env[name];
   process.env.AGENT_MODEL_BASE_URL = endpoint.url;
+  // The server's key for the gateway (a server with none needs each run's own: run-model-key.ts).
+  process.env.AGENT_MODEL_API_KEY = `not-a-secret-${"gateway"}`;
   const { api } = await serve(t, { faux: undefined });
   const run = async (id, model, capped = { max_cost_usd: 1 }) => {
     assert.equal((await api("POST", "/agents", agent(id, { model }))).status, 201);

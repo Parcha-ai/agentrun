@@ -17,6 +17,7 @@ import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { gradeModelFor, type GradeRouteAsk, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
@@ -48,7 +49,14 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     if (harness !== "learning" && launch.sdk) return createSdkLoop(launch, deps, async () => {
       const base = deps.env ?? process.env;
+      // An SDK run's look-back runs after its backend reported it complete, on no run's key: on a server that holds no
+      // gateway key it is skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
       const env = withModelKeys(base, await savedModelKeys({store:deps.store,sealKey:deps.sealKey,env:base}));
+      const off = noServerKeyFor(env, "An SDK run's look-back");
+      if (off) {
+        deps.log?.(off);
+        throw new Error(off);
+      }
       return gradeRouteFor({model:launch.learning!.gradeModel,agentId:run!.agentId},env,deps.routeOf);
     });
     if (harness !== "learning" && launch.native) return createNativeLoop(launch, deps);
@@ -71,7 +79,15 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
         // at each grade, so a key saved with no restart grades the next learning run.
         routeOf: async (grade) => {
           const base = deps.env ?? process.env;
+          // A learning run grades after its source run's turn ended, on no run's key (a run that brought its own queues no
+          // grade: learning-end.ts spendOff): on a server that holds no gateway key it is skipped in words
+          // (run-model-key.ts noServerKeyFor). Nothing is sent; the learning run ends dropped.
           const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+          const off = noServerKeyFor(env, "A learning run's grade");
+          if (off) {
+            deps.log?.(off);
+            throw new Error(off);
+          }
           return gradeRouteFor(grade, env, deps.routeOf);
         },
         ...(deps.log ? { log: deps.log } : {}),
