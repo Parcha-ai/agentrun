@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -112,9 +112,13 @@ test("until the server is ready, it answers warming: health says so, the API ans
 });
 
 test("a port already taken is left to the start's own wait, as before: no Starting line, and the start says the port is in use", { timeout: 120_000 }, async (t) => {
-  const taken = createServer();
+  // The port's holder cuts off whatever connects to it, so its close at the end waits on no visitor's connection.
+  const taken = createServer((socket) => socket.destroy());
   await new Promise((resolve, reject) => taken.once("error", reject).listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => taken.close(() => resolve())));
+  // A visitor that asks the port GET / and stays, as a box's port watcher does to every new listener.
+  const visitor = connect(taken.address().port, "127.0.0.1", () => visitor.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+  visitor.on("error", () => {});
   const server = cli(t, ["--port", String(taken.address().port)]);
   const { code } = await server.exited;
   assert.equal(code, 1, server.out() + server.err());
