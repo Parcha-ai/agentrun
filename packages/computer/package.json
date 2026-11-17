@@ -51,6 +51,10 @@
       "types": "./dist/agent37.d.ts",
       "default": "./dist/agent37.js"
     },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.ts",
+      "default": "./dist/cloudflare.js"
+    },
     "./morph": {
       "types": "./dist/morph.d.ts",
       "default": "./dist/morph.js"
