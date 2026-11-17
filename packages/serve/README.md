@@ -640,6 +640,8 @@ has the Docker client (Debian's `docker-cli`) and no daemon; `group_add` gives t
   with the file tools and no shell.
 - On a host the server finds no container of its own and asks Docker nothing: a box binds this machine's paths and its
   proxy's directory is under `/tmp`, as before.
+- **ffmpeg.** The image has Debian's `ffmpeg`, which records an agent's screen where its computer says `record: true`
+  ([A video of each run](#computers)).
 
 <a id="boxes"></a>
 
@@ -651,7 +653,7 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd` |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `cloudflare` (through a relay Worker you deploy) |
 | `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
@@ -687,8 +689,9 @@ the owner's signed-in session only (the API token is 403), and `POST /v2/compute
 the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
-`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, and `BOXD_API_KEY` (with `BOXD_ORG` and
-`BOXD_REGION` optional); Docker takes none.
+`BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
+`BOXD_REGION` optional), `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
+`packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
 The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
@@ -742,6 +745,28 @@ one computer that it keeps between runs, instead of a fresh one for each run:
 - Archiving the agent, turning `persistent` off, or moving the setting to another provider or image deletes it.
 - The computer is owned by this server's id (kept in its store) and the agent's id, so two servers on one vendor
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
+
+**A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
+screen during each of the agent's runs. Off by default; a desktop or a phone only (another kind is 422).
+
+- **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
+  any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
+  you would be fine to keep and share.
+- **What it records.** The screen while the run holds its computer: from the claim's attach until the computer's
+  release or the run's end. A parked run's recording pauses and goes on in a new file when the run resumes. At most 10
+  frames a second, 1280 pixels on the long side, no sound, H.264 in fragmented MP4, so a file cut short still plays.
+  Each frame is stamped with the time it came, so the video plays at the screen's own pace. The recorder watches the screen on a connection of its own, so it
+  records with no viewer open, and it never holds up the live view or the agent: a frame that comes while the encoder is
+  still busy replaces the one waiting.
+- **Where it goes.** `recordings/<computer>.mp4` in the run's folder on the machine that runs it
+  (`<data>/disk/agents/<agent>/runs/<run>/recordings`, beside the run's `work/` folder, never in it, so the agent can't
+  read or change it). It is kept with the run's files. A phone whose frames change from PNG to JPEG, and a resumed run,
+  go on in `<computer>-2.mp4` and so on.
+- **Its caps.** 500 MB across a run's files, a resumed run's included, and 2 hours of recording from its start or the
+  run's resume, whichever comes first. At a cap the recording stops, and the run's timeline says so. So does an encoder that stops by itself (a crash, a full disk) or a screen that stops
+  answering. The run itself never fails because of its recording.
+- **It needs ffmpeg** on the server's `PATH` (the published image has it). A server without it refuses `record: true`
+  when the agent is saved, with 422 `not_allowed` naming the fix.
 
 #### A person's own computer
 

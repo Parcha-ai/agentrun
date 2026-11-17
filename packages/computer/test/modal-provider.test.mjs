@@ -856,7 +856,7 @@ test("the conformance module reads COMPUTER_MODAL_CONNECT as connect, and its di
 	const env = { [MODAL_ENV.tokenId]: "ak-fake-test-key", [MODAL_ENV.tokenSecret]: "as-not-a-secret", [MODAL_ENV.app]: APP, [MODAL_ENV.connect]: "dial" };
 	assert.equal(MODAL_ENV.connect, "COMPUTER_MODAL_CONNECT");
 	assert.equal(settingsFromEnv(env).connect, "dial");
-	assert.throws(() => dialKit(), /a Modal machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process \(packages\/serve\/scripts\/dial-conformance\.mjs --provider modal with COMPUTER_MODAL_CONNECT=dial\)/);
+	assert.throws(() => dialKit(), /Modal's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider modal with COMPUTER_MODAL_CONNECT=dial inside a server the internet reaches at AGENTRUN_PUBLIC_URL/);
 });
 
 test("the conformance module's run image on dial is the box image, the one that holds agentrun-dial; on exec, the CLI's debian:bookworm-slim", async () => {

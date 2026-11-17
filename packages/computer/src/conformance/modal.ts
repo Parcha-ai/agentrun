@@ -22,6 +22,7 @@ import { create, MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type Mod
 import type { MountKind } from "../mount.js";
 import type { ProviderNote } from "../mount-archil.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
+import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 import type { RunFolder } from "./types.js";
 
@@ -109,14 +110,8 @@ export function conformanceImage({ env = process.env }: Pick<ModalModuleOptions,
 	return env[MODAL_ENV.connect] === "dial" ? boxImageRef() : "debian:bookworm-slim";
 }
 
-/**
- * A dial machine (COMPUTER_MODAL_CONNECT=dial) dials the server that minted its token, so its Core run happens inside
- * the public server's process (packages/serve/scripts/dial-conformance.mjs, which gives createProvider its dial), never
- * from this CLI, which has no public server: refused in words.
- */
-export function dialKit(): never {
-	throw new Error(`a Modal machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process (packages/serve/scripts/dial-conformance.mjs --provider modal with ${MODAL_ENV.connect}=dial)`);
-}
+/** A dial machine (COMPUTER_MODAL_CONNECT=dial) runs its Core inside the public server's process: refused here (dial-only.ts). */
+export const dialKit = dialOnlyFromServer("modal", "Modal", `${MODAL_ENV.connect}=dial`);
 
 /**
  * A run folder for an Archil mount, and none for any other kind (a Modal computer takes no bind): a fresh folder on the

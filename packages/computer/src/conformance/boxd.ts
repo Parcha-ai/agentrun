@@ -18,7 +18,7 @@ import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 /** The environment this module reads, by name, each for the option its comment names, the live switch and the run's image. */
 export const BOXD_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_BOXD",
-	/** The image every computer of the run starts from: "default" (boxd's own), or a snapshot's name. */
+	/** The image every computer of the run starts from: "default" (boxd's own), or a snapshot's name; unset, a desktop's is the desktop snapshot. */
 	image: "COMPUTER_BOXD_IMAGE",
 	/** apiKey, required: the boxd API key. */
 	key: "COMPUTER_BOXD_API_KEY",
@@ -68,7 +68,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"boxd: every computer is an isolated boxd machine with the egress allowlist none, no standby and no hibernation; the daemon is a child of boxd's own agent, started as a detached root command; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run; no stream() (a screen is streamed through agentrun), so screen.stream is skipped.",
+	"boxd: every computer is an isolated boxd machine with the egress allowlist none, no standby and no hibernation; the daemon is a child of boxd's own agent, started as a detached root command; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run; no stream() (a screen is streamed through agentrun), so screen.stream is skipped. Kind desktop (COMPUTER_BOXD_KIND=desktop) starts from agentrun-desktop-<recipe hash>, boxd's own image with Xfce's text editor added, a snapshot the run's provider finds or builds in the key's org first (prepareImage), with Xvfb on :0 started through the daemon as the tool user.",
 ];
 
 export interface BoxdModuleOptions extends Pick<BoxdOptions, "Boxd" | "daemonPath" | "timeouts"> {
@@ -82,9 +82,18 @@ function live(env: Record<string, string | undefined>): void {
 	if (env[BOXD_ENV.live] !== "1") throw new Error(`the boxd conformance module makes real machines: set ${BOXD_ENV.live}=1, with your own key, to run it`);
 }
 
-/** The image every computer of the run starts from: COMPUTER_BOXD_IMAGE, or boxd's own. */
-export function conformanceImage({ env = process.env }: Pick<BoxdModuleOptions, "env"> = {}): string {
-	return env[BOXD_ENV.image] || BOXD_DEFAULT_IMAGE;
+/**
+ * The image every computer of the run starts from: COMPUTER_BOXD_IMAGE, else boxd's own, else for kind desktop the
+ * desktop snapshot, which the run's provider finds or builds in the key's org first (prepareImage, live).
+ */
+export async function conformanceImage(options: BoxdModuleOptions = {}, { signal }: { signal?: AbortSignal } = {}): Promise<string> {
+	const { env = process.env } = options;
+	const named = env[BOXD_ENV.image];
+	if (named) return named;
+	if (env[BOXD_ENV.kind] !== "desktop") return BOXD_DEFAULT_IMAGE;
+	const ready = await (await createProvider(options)).prepareImage(signal ? { signal } : {});
+	if (!ready.ok) throw new Error(ready.error.message);
+	return ready.value;
 }
 
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */

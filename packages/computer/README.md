@@ -2204,8 +2204,12 @@ account, or builds it once: a base snapshot of `morphvm-minimal` at 2 vCPUs, 4 G
 /instance/{id}/snapshot` with the digest, and the instance deleted. The box snapshot and its base have no TTL, so
 neither expires. A build that fails before it asks for the box snapshot deletes its base as well, so it leaves nothing.
 A cancel does the same: the base's and the instance's creates take no cancel signal, only their own time bound, so
-their ids are always read and then deleted. Only a create that outlives that bound (60 s) can leave its result unseen.
-A failed box snapshot, with none other, is refused in words until it is deleted in the account.
+their ids are always read and then deleted. `POST /snapshot` answers only once the base is made (78 s at 1 vCPU, 2 GiB
+and 8 GiB of disk), so its bound is the build's remaining time. The base carries the label `agentrun-box-build=<name>`,
+and a build looks for one by it before it makes one: a ready one is used, a pending one waited for, a failed one
+deleted. A base create whose answer is lost (a timeout, a dropped connection, a 5xx) looks again the same way, so the
+base Morph made all the same is used, never left. A failed box snapshot, with none other, is refused in words until it
+is deleted in the account.
 
 **Unverified** (the lane's live kit settles them): that the gateway takes the instance's key for the user `<instance
 id>`; that SSH lands as root; that `morphvm-minimal` has apt and dpkg;
@@ -2623,6 +2627,37 @@ the sweep of a create that lands late). Every call goes through the host's boxd 
 package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
 the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
 
+### The desktop snapshot
+
+boxd's own image (`"default"`) has Xvfb but lists none of a desktop's stock apps (Xfce's text editor and terminal,
+xterm), so a boxd desktop starts from a snapshot that adds one. `prepareImage()` answers it by name,
+`agentrun-desktop-<12 hex>`, the hash of the recipe in `src/boxd.ts`, so a new recipe is a new snapshot. When the
+key's org has none, it builds it once, telling `onWait` "build" first:
+
+1. `machines.create` of an isolated machine of boxd's own image, named `agentrun-desktop-build-<8 hex>`, with no labels
+   (a restore carries a snapshot's labels over to every machine made from it) and boxd's delete timer at 2 hours;
+2. the recipe as root through the image user's passwordless sudo: `apt-get install mousepad` (Ubuntu's universe), its
+   `org.xfce.mousepad.desktop` checked;
+3. `snapshots.create` under the name, read until boxd says `ready`;
+4. the build machine deleted and read gone, pass, fail or cancel: the id create answered, read through `get` (a
+   lagging list can't hide it), and any machine of its name in the org's list, so a create whose reply was lost is
+   cleaned up too. One that can't be deleted within 2 minutes fails the call in words
+   (after the build's own error, when it failed), and boxd's delete timer ends it.
+
+A cancelled call makes no build machine, and a cancel while one starts stops the wait. Two servers that build the
+first snapshot of an org at once each pay for a build machine; both captures land under the one name, and boxd keeps
+the latest.
+
+The snapshot stays in the org: it is the image of every boxd desktop, and the next `prepareImage()` finds it with no
+build. One that failed, or that boxd archived (it makes no machine from an archived snapshot), is refused in words:
+delete it with `boxd snapshots remove`, and the next call builds it anew. A sandbox's `prepareImage()` answers
+`"default"` with no call.
+
+A desktop asked for on `"default"` is refused in words, and so is a desktop with `vcpu` and `memory`: a restore keeps
+the size the snapshot was captured at (the org's default). The box image's recipe (`box/install.sh`) is not used here:
+it is written for Debian's `python:3.12-slim`, not Ubuntu, and it takes sudo away, while boxd's exec runs as the
+image's user, which reaches root through sudo alone.
+
 ### Settings
 
 `create(options)` takes the key as `options.apiKey` and nowhere else, and refuses in words without it. It reads no
@@ -2636,8 +2671,8 @@ explicitly, so the SDK takes none of them from the environment.
 | `org` | the org machines are made in and listed from, by name or id | the key's own |
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
 | `baseUrl` | the API's address | `https://boxd.sh:9443` |
-| `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither | the org's default |
-| `kind` | `linux` or `desktop` | `linux` |
+| `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither; a sandbox's alone | the org's default |
+| `kind` | `linux` or `desktop` (from the desktop snapshot) | `linux` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
 | `daemonUser` | uid:gid the daemon runs as; never root, never the image's own user (1000) | `2510:2510` |
 | `daemonPath`, `desktop`, `timeouts`, `probeTargets` | as on E2B | |
@@ -2654,7 +2689,7 @@ explicitly, so the SDK takes none of them from the environment.
 | `upload` | `files.upload` |
 | `extend` | `machines.updateLabels({ set })` of the janitor's deadline label |
 | `errorCode` | the SDK's error names (`NotFoundError`, `AuthenticationError`, `RateLimitError`, `ConflictError`, ...), then an `APIStatusError`'s gRPC code (3 invalid, 4 and 14 timeout, 8 limit, 9 refused) |
-| `check` | `"default"` or a snapshot's name, and no snapshot when the provider names a size (a restore has the snapshot's); no `cpus` or `memoryMb` in the spec (the size is the provider's); label names of 1 to 63 of `a-z0-9._/-`, not `boxd/` |
+| `check` | `"default"` or a snapshot's name, a desktop's a snapshot alone, and no snapshot when the provider names a size (a restore has the snapshot's); no `cpus` or `memoryMb` in the spec (the size is the provider's); label names of 1 to 63 of `a-z0-9._/-`, not `boxd/` |
 
 `get` reads the state: `suspended` (standby that wakes on the next call) and `migrating` run; `hibernated` and
 `stopped` are stopped; `failed`, `destroyed` and any status it does not know are gone. boxd keeps a name to one
@@ -2669,7 +2704,7 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 
 | Capability | Declared | Why |
 | --- | --- | --- |
-| `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own |
+| `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own, on the desktop snapshot |
 | `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; boxd's own delete timer ends it 5 minutes past the most it may live, even when the server that made it is gone |
 | `network` | `none` | the egress allowlist `["none"]`, and the daemon's own network namespace, read from inside by the probe |
 | `networkReadBack` | `false` | as on every vendor on the adapter |
@@ -2693,7 +2728,8 @@ The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LI
 else, then reads `COMPUTER_BOXD_API_KEY` (`apiKey`, required), `COMPUTER_BOXD_ORG` (`org`), `COMPUTER_BOXD_REGION`
 (`region`), `COMPUTER_BOXD_DAEMON` (`daemonPath`), `COMPUTER_BOXD_KIND` (`kind`) and `COMPUTER_BOXD_USER`
 (`daemonUser`), never `BOXD_API_KEY`, and caps every computer of a run at 30 minutes. `conformanceImage()` is
-`COMPUTER_BOXD_IMAGE`, else `"default"`, and `createDriftedProvider()` uploads a daemon built with Go as
+`COMPUTER_BOXD_IMAGE`, else `"default"` for a sandbox and for a desktop the desktop snapshot, which it finds or builds
+first through the provider's `prepareImage()` (so a desktop run may build it, and leaves it in the org on purpose), and `createDriftedProvider()` uploads a daemon built with Go as
 `<version>-drift`. `createHost()` is the generic sweep's host, and `sweepScope()` names where it lists (the org, the
 region and the key by its sha256 prefix), so `--after` refuses a before file listed with another. `test/boxd/conformance.boxd.test.mjs` runs the suite
 with `computerd-fixture` built for linux/amd64, and skips unless the switch and `COMPUTER_BOXD_API_KEY` are both set.
@@ -2704,6 +2740,9 @@ On 2026-11-12, against boxd with an org key, the provider as first written (befo
 passed Core on both kinds: `kind linux` 62/62, `kind desktop` 68/68, and the CLI's run of `--provider boxd` 63/63.
 Every run left no computer behind. On 2026-11-14, the host on the shared adapter passed Core on `kind linux`, 63/63
 (Full 5/36, the rest not declared), in 179 s, and the sweep after it read `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+On 2026-11-16, `kind linux` passed Core again and `kind desktop` did not: 0 cases failed, but six Core cases were
+skipped, five because the run passed no `--fixture`, and `apps.launch-terminate` because boxd's own image lists none
+of the stock apps. The desktop snapshot above is the fix for the last; it has not run live yet.
 
 ## Conformance
 
