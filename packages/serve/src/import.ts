@@ -493,6 +493,8 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   if (chosen) {
     const ofChosen: Skipped[] = [];
     for (const entry of skipped) {
+      // A stop ends these reads as it ends the listing's: the plan is the stopped one's, and is not used.
+      if (signal?.aborted) break;
       const { source, cwd = (await remoteHistoryMetadata(entry.what, source).catch(() => undefined))?.cwd } = leftFrom.get(entry)!;
       if (cwd !== undefined && chosen.has(agentIdOf(cwd))) ofChosen.push(entry);
     }
