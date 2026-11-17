@@ -42,6 +42,26 @@ services stop at logout unless lingering is on: `install` and `status` print the
 when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
 `~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.
 
+On a machine you keep on (a Mac mini, a home server, a VPS), `--tailscale` also puts AgentRun on your own
+[Tailscale](https://tailscale.com) network, at `https://<machine>.<tailnet>.ts.net`, which only your devices on that
+network open:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale
+```
+
+It runs `tailscale serve --bg --https=443` to AgentRun's port, 7340, where AgentRun keeps listening on loopback only,
+and prints the address from `tailscale status --json`. The server is told that address (`AGENTRUN_PUBLIC_URL`), so its
+first visit asks for the setup code in `~/.agentrun/logs/agentrun.log`. It never uses Funnel, which would put the
+address on the public internet: where Funnel is already on for that address, or the address serves something else, it
+changes nothing and says so. It never installs Tailscale, logs in or runs sudo. With Tailscale missing or logged out,
+it starts AgentRun on this machine and prints the steps and the command to run again. On Linux, where only root or
+Tailscale's operator may change what it serves, it prints the one `sudo tailscale set --operator=$USER` line.
+`agentrun service install --tailscale` does the same for an installed service, `--no-tailscale` takes it off, and
+`agentrun service uninstall` removes the serve entry it added and no other. Tailscale's Personal plan is free: up to 6
+users, unlimited user devices ([pricing](https://tailscale.com/pricing)). The https address needs MagicDNS and HTTPS
+certificates turned on in your tailnet's [DNS settings](https://login.tailscale.com/admin/dns).
+
 The server binds its port first and says so; this command then names the address on stderr at once, and prints its line
 on stdout once the server is ready, which on a cold, slow disk can take minutes. A start that fails says why on stderr:
 the step that failed, how the server ended (its exit code or signal, or still running after 60 seconds without printing

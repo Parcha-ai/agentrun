@@ -16,7 +16,8 @@
 # Then it starts AgentRun as a service of this user (`agentrun service install`: launchd on macOS, systemd --user on
 # Linux), so it keeps running after the terminal closes and starts again at login. Where this user has no service
 # manager (a container, say), it starts AgentRun in the background until the machine stops (`agentrun stop` stops it).
-# Either way it returns once AgentRun answers, and prints its address. Options: --help.
+# Either way it returns once AgentRun answers, and prints its address. With --tailscale it is also served over HTTPS on
+# the person's own tailnet (lib/tailscale.mjs), on port 7340. Options: --help.
 #
 # The whole script is one function, called on its last line, so a download cut short runs nothing.
 
@@ -29,6 +30,7 @@ main() {
   tarball=
   node_version=
   start=default
+  ts_flag=
 
   while [ $# -gt 0 ]; do
     case $1 in
@@ -40,6 +42,7 @@ main() {
       --node-version=*) node_version=${1#--node-version=}; node_version=${node_version#v} ;;
       --no-start) start=none ;;
       --service) start=service ;;
+      --tailscale | --no-tailscale) ts_flag=$1 ;;
       -h | --help) usage; return 0 ;;
       *) fail "unknown option $1 (see --help)" ;;
     esac
@@ -134,28 +137,31 @@ EOF
   mv -f "$work/agentrun" "$shim"
   "$shim" help > /dev/null 2>&1 || fail "$shim does not run: $("$shim" help 2>&1 | tail -n 3)"
   say "Installed AgentRun $version (Node.js $node_version) in $root"
+  tailnet_js=$lib_dir/node_modules/@parcha/agentrun/lib/tailscale.mjs
+  [ -z "$ts_flag" ] || [ -f "$tailnet_js" ] || fail "AgentRun $version has no $ts_flag; install a newer version"
 
   add_to_path
 
   case $start in
     none)
       say ""
-      say "Start it: $(shown_shim) service install    (keeps running, starts again at login)"
+      say "Start it: $(shown_shim) service install ${ts_flag:+$ts_flag }   (keeps running, starts again at login)"
       say "      or: $(shown_shim)                    (in this terminal; Ctrl-C stops it)"
       ;;
     service)
       stop_background
-      "$shim" service install
+      "$shim" service install ${ts_flag:+"$ts_flag"}
       ;;
     default)
-      # A service already installed restarts on this version; status exits 3 when there is none.
+      # A service already installed restarts on this version, or installs again to go on or off the tailnet; status
+      # exits 3 when there is none.
       code=0
       "$shim" service status > /dev/null 2>&1 || code=$?
-      if [ "$code" = 0 ] || [ "$code" = 1 ]; then
+      if { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -z "$ts_flag" ]; then
         "$shim" service restart
-      elif [ "$code" = 3 ] && service_manager; then
+      elif [ "$code" = 0 ] || [ "$code" = 1 ] || { [ "$code" = 3 ] && service_manager; }; then
         stop_background
-        "$shim" service install
+        "$shim" service install ${ts_flag:+"$ts_flag"}
       else
         [ "$code" = 3 ] || why="AgentRun $version has no service command"
         say "AgentRun can't run as a service here ($why), so it runs in the background."
@@ -186,6 +192,9 @@ Options:
                     floor's major line, from nodejs.org/dist/index.json)
   --no-start        install only
   --service         install the service, and fail if this machine can't run one
+  --tailscale       also serve it over HTTPS on your own tailnet only, at https://<machine>.<tailnet>.ts.net
+                    (tailscale serve, never Funnel; Tailscale must be installed and logged in, and it says how when
+                    not); --no-tailscale takes it off
   -h, --help        this help
 EOF
 }
@@ -388,14 +397,27 @@ stop_background() {
 # `curl | sh` returns. Its output goes to the service's log, its pid to agentrun.pid for `agentrun stop`. Waits for the
 # launcher's "AgentRun is running at" line, or for it to end (it stops a server that never answers, after 60 s).
 start_background() {
+  # On the tailnet (--tailscale, or an earlier install's entry kept): the server takes its https address and a fixed port.
+  # Checked before the AgentRun running now stops, so a refusal (Funnel on there) leaves it running.
+  [ -n "$ts_flag" ] || [ ! -f "$root/tailscale.json" ] || [ ! -f "$tailnet_js" ] || ts_flag=--tailscale
+  set -- --no-open
+  public=
+  if [ "$ts_flag" = --no-tailscale ]; then
+    tailnet off
+  elif [ "$ts_flag" = --tailscale ]; then
+    set -- --no-open --port 7340
+    public=$(tailnet address 7340) || exit 1
+  fi
   stop_background
   log=$root/logs/agentrun.log
   touch "$log"
   from=$(($(wc -c < "$log") + 1))
-  if command -v setsid > /dev/null 2>&1; then
-    nohup setsid "$shim" --no-open < /dev/null >> "$log" 2>&1 &
+  launch=
+  command -v setsid > /dev/null 2>&1 && launch=setsid
+  if [ -n "$public" ]; then
+    AGENTRUN_PUBLIC_URL=$public AGENTRUN_TRUSTED_PROXIES=loopback nohup $launch "$shim" "$@" < /dev/null >> "$log" 2>&1 &
   else
-    nohup "$shim" --no-open < /dev/null >> "$log" 2>&1 &
+    nohup $launch "$shim" "$@" < /dev/null >> "$log" 2>&1 &
   fi
   pid=$!
   printf '%s\n' "$pid" > "$root/agentrun.pid"
@@ -413,8 +435,21 @@ start_background() {
     kill "$pid" 2> /dev/null || true
     fail "AgentRun did not start (its last lines are above, and all of them are in $log)"
   fi
+  # The launcher names the https address it was given; on this machine it is the loopback one, in the server's record,
+  # until serve is on.
+  here=
+  [ -z "$public" ] || here=$(sed -n 's/.*"base_url": *"\(http[^"]*\)\/v2".*/\1\//p' "$root/.server.json" 2> /dev/null | head -n 1)
+  [ -z "$here" ] || url=$here
   say "AgentRun is running at $url"
   say "It runs in the background until this machine or container stops. $(shown_shim) stop stops it; its log is $log."
+  [ -z "$public" ] || tailnet serve 7340 "$public" || exit 1
+}
+
+# tailscale.mjs of the version installed, on its Node: `address PORT`, `serve PORT URL` or `off`.
+tailnet() {
+  verb=$1
+  shift
+  "$node_dir/bin/node" "$tailnet_js" "$verb" "${1:-}" "curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale" "${2:-}"
 }
 
 shown_shim() {
