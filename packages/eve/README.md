@@ -70,7 +70,7 @@ learning off. Open that agent's **Learning** tab and enable **Self-improving** f
 The next fresh turn pins its accepted learning revision. Alternatively, `learning: true` in this
 mount opts in on first registration only; without workflow bindings it selects notes/skills mode.
 With explicit workflow bindings, `learning: { compile_after: 5 }` opts a new agent into full
-workflow learning with a five-completed-run compilation interval (the server default is 20).
+workflow learning with a five-completed-run compilation threshold (the server default is 20).
 `agree_min` and `alone_min` may also configure the independent check. These settings do not
 force a workflow to pass its check. An existing agent's console setting always wins. The extension declares its own build dependencies;
 the application's model, tools and `agent.ts` build configuration need no changes.
@@ -103,6 +103,11 @@ it does not reflect on every successful task without feedback.
    Raw tool inputs/results, reasoning and native credentials remain with eve.
 4. Submit the original outcome once. AgentRun's ordinary runner reflects and independently checks
    proposals. A future fresh turn receives only accepted learning; submission alone is not promotion.
+
+Evidence is bounded per turn. An oversized or conflicting buffer skips that turn’s learning;
+later native turns can still proceed. A missing start boundary or a full delivery backlog
+continues native execution without admitting another learning receipt. Unreported receipts
+expire without an invented completion.
 
 Opening AgentRun does not relocate the eve process or let AgentRun start arbitrary eve jobs. Run
 and edit actions direct the coding agent back to the existing eve project.

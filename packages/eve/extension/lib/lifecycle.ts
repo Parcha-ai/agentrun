@@ -73,11 +73,11 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
     expiresAt: (source.startedAt ?? Date.now()) + 3_600_000 };
 }
 
-export function learningInstructions(record: TurnRecord): string {
+export function learningInstructions(record: TurnRecord, workflows?: EveWorkflowOptions): string {
   const learning = record.receipt.learning;
   return renderLearningContext({
     learningEnabled: learning.enabled, revision: learning.revision, context: learning.context, skills: learning.skills,
-    workflowContext: workflowInstructions(record),
+    workflowContext: workflowInstructions(record, workflows),
   });
 }
 

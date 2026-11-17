@@ -29,4 +29,8 @@ learning mode when another client saves it before the switch's update.
 
 Support configurable full-learning settings for Eve registration and workflow execution, and preserve
 an already-enabled loop configuration when the console refreshes before saving. The fresh-agent
-cookbook opts into a five-run compilation interval without changing acceptance thresholds.
+cookbook opts into a five-run compilation threshold without changing acceptance thresholds.
+
+Scope bounded native evidence to the recorded turn boundary, so an invalid or oversized buffer
+does not disable future turns. Skip unverifiable learning without inventing a completion, and
+resolve workflow input schema references before advertising them in the native context.

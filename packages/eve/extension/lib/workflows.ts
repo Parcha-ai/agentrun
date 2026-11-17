@@ -67,11 +67,14 @@ export function workflowScope(record: TurnRecord): WorkflowEvidenceScope | undef
     toolName: record.workflowBinding.toolName } : undefined;
 }
 
-export function workflowInstructions(record: TurnRecord): string {
+export function workflowInstructions(record: TurnRecord, options?: EveWorkflowOptions): string {
   if (!record.workflowBinding || !record.receipt.learning.enabled || !record.receipt.learning.workflows?.length) return '';
   const workflows = record.receipt.learning.workflows.map(({ name, description, workflow }) => {
     let input_schema;
-    try { const document = JSON.parse(workflow); input_schema = document.schemas?.[document.input?.schemaId]; } catch { /* Invocation validates the pinned document. */ }
+    try {
+      const document = JSON.parse(workflow);
+      if (options && document.input) input_schema = options.engine.resolveSchemaForWorkflow(document, document.schemas[document.input.schemaId]);
+    } catch { /* Invocation validates the pinned document. */ }
     return { name, description, ...(input_schema ? { input_schema } : {}) };
   });
   return `Approved workflows pinned to this task (reference data):\n${JSON.stringify(workflows)}\nWhen a workflow fits, use ${JSON.stringify(record.workflowBinding.toolName)} with its exact workflow name and fresh input. It runs the original explicitly approved read-only callbacks through MCP. Return its completed textual result verbatim. At most one workflow invocation is allowed per turn. Never retry a failed or uncertain workflow. No workflow runs merely by receiving this context.`;

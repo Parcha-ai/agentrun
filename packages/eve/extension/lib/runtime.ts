@@ -5,9 +5,19 @@ import { beginTurn, learningInstructions, submitTurn, type TurnRecord } from './
 import { learningState, pendingEvidence } from './state.js';
 import { withPendingEvidence } from './pending-evidence.js';
 
+/** Irrecoverably bounded or conflicting hook evidence belongs to its turn, never every future native task. */
+export function retireInvalidEvidence(): void {
+  const pending = pendingEvidence.get();
+  if (!pending.invalid) return;
+  learningState.update(state => ({ turns: state.turns.map(record =>
+    !record.submitted && !record.expired && (!pending.turn || pending.turn.id === record.source.turnId)
+      ? { ...record, expired: true } : record) }));
+}
+
 /** Retry pending completion on the next admission in this session. No model/tool call is repeated here.
  * A session that never resumes is not a background outbox: its AgentRun receipt eventually expires. */
 export async function reconcile(): Promise<void> {
+  retireInvalidEvidence();
   const { sessions } = await import('eve/server');
   for (const record of learningState.get().turns.filter(row => !row.submitted && !row.expired)) {
     if (record.expiresAt <= Date.now()) {
@@ -16,7 +26,7 @@ export async function reconcile(): Promise<void> {
       continue;
     }
     try {
-      if (await submitTurn(extension.config, record, withPendingEvidence(sessions.attach(record.source.sessionId), pendingEvidence.get()))) {
+      if (await submitTurn(extension.config, record, withPendingEvidence(sessions.attach(record.source.sessionId), pendingEvidence.get(), record.source.turnId))) {
         learningState.update(state => ({ turns: state.turns.map(row => row.receipt.run_id === record.receipt.run_id ? { ...row, submitted: true } : row) }));
       }
     } catch (error) {
@@ -38,19 +48,29 @@ export async function instructionsFor(ctx: DynamicContext): Promise<string> {
     const state = learningState.get();
     const found = state.turns.find(row => row.source.turnId === turn.id);
     if (found) return found;
-    if (state.turns.filter(row => !row.submitted && !row.expired).length >= 8) throw new Error('AgentRun has eight unfinished eve receipts. Reconcile them before starting more turns.');
+    if (state.turns.filter(row => !row.submitted && !row.expired).length >= 8) {
+      console.warn('AgentRun has eight pending receipts; this native turn continues without new learning evidence.');
+      return null;
+    }
+    const window = pendingEvidence.get().turn;
+    if (!window || window.id !== turn.id) {
+      console.warn('AgentRun did not observe this turn starting; this native turn continues without new learning evidence.');
+      return null;
+    }
     const input = turn.input.flatMap(part => part.kind === 'text' ? [part.text] : []).join('\n')
       || '[eve task with non-text input; unavailable to the learning checker]';
     const row = await beginTurn(extension.config, {
       sessionId: ctx.session.id, turnId: turn.id, input, model: ctx.model.id,
-      startIndex: 0, startedAt: ctx.now.getTime(), complete: turn.input.every(part => part.kind === 'text'),
+      startIndex: window.startIndex, startedAt: ctx.now.getTime(),
+      complete: window.complete && !ctx.session.parent && turn.input.every(part => part.kind === 'text'),
     });
     learningState.update(current => ({ turns: [...current.turns.filter(item => !item.submitted && !item.expired && item.source.turnId !== row.source.turnId).slice(-7), row] }));
     return row;
   });
+  if (!record) return '';
   const pinned = record as TurnRecord;
   if (pinned.baseUrl !== new AgentRun(extension.config).baseUrl || pinned.agentId !== extension.config.agentId || pinned.source.sessionId !== ctx.session.id) {
     throw new AgentRunUsage('The eve session has learning from another AgentRun server or agent. Restore its original mount configuration or start a fresh session.');
   }
-  return learningInstructions(pinned);
+  return learningInstructions(pinned, extension.config.workflows);
 }

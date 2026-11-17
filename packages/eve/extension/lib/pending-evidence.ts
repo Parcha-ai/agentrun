@@ -12,6 +12,8 @@ export interface PendingEvidence {
   events: Array<{ event: HookEvent; position: FactPosition; at: string; digest: string }>;
   bytes: number;
   invalid?: Invalid;
+  /** Actual public turn.started source line, retained even when its cache is full. One turn, never session history. */
+  turn?: { id: string; startIndex: number; complete: boolean };
 }
 
 export function emptyPendingEvidence(): PendingEvidence { return { events: [], bytes: 0 }; }
@@ -33,11 +35,18 @@ const digestOf = (event: HookEvent | ReaderEvent): string => createHash('sha256'
  * No last-event or complete-commit assertion is inferred from a terminal fact or that view cursor.
  */
 export function recordHookEvent(state: PendingEvidence, event: HookEvent, position: FactPosition,
-  observed: { at: string; committedThrough?: number }): PendingEvidence {
-  if (state.invalid) return state;
+  observed: { at: string; committedThrough?: number; childSession?: boolean }): PendingEvidence {
   if (!validPosition(position) || observed.committedThrough !== undefined &&
     (!Number.isSafeInteger(observed.committedThrough) || observed.committedThrough <= position.line))
     return { ...state, invalid: 'position' };
+  if (event.type === 'turn.started' && state.turn?.id !== event.data.turnId) {
+    // Previous turns now have durable history. Keep an already-observed prefix when the new start is mid-line;
+    // never infer missing facts, clear a same-turn conflict, or retain a previous turn's invalid flag forever.
+    const events = state.invalid ? [] : state.events.filter(saved => saved.position.line === position.line && saved.position.index < position.index);
+    state = { events, bytes: events.reduce((sum, saved) => sum + Buffer.byteLength(JSON.stringify(saved)), 0),
+      turn: { id: event.data.turnId, startIndex: position.line, complete: event.data.follows === null && !observed.childSession } };
+  }
+  if (state.invalid) return state;
   try {
     // Snapshot the public JSON payload so caller mutation cannot rewrite an earlier hook observation.
     const encoded = JSON.stringify({ event: core(event), position, at: observed.at });
@@ -49,7 +58,7 @@ export function recordHookEvent(state: PendingEvidence, event: HookEvent, positi
     snapshot.digest = digest;
     const bytes = state.bytes + Buffer.byteLength(JSON.stringify(snapshot));
     if (bytes > MAX_BYTES || state.events.length >= MAX_EVENTS) return { ...state, invalid: 'limit' };
-    return { events: [...state.events, snapshot], bytes };
+    return { ...state, events: [...state.events, snapshot], bytes };
   } catch {
     // A malformed future payload cannot fail the user's native hook or become a silently missing fact.
     return { ...state, invalid: 'payload' };
@@ -61,12 +70,17 @@ export function recordHookEvent(state: PendingEvidence, event: HookEvent, positi
  * line is deliberately partial: hooks expose positions, but do not expose a commit's last index.
  * Normalization may stop at an observed target settlement; this reader never fabricates EOL there.
  */
-export function withPendingEvidence(reader: SessionReader, state: PendingEvidence): SessionReader {
+export function withPendingEvidence(reader: SessionReader, state: PendingEvidence, turnId?: string): SessionReader {
   return { id: reader.id, async *stream(options = {}) {
     if (options.follow !== false) throw new Error('finite_history_required');
     const start = options.startIndex ?? 0;
     if (!Number.isSafeInteger(start) || start < 0) throw new Error('invalid_history_position');
-    if (state.invalid) throw new Error(`pending_evidence_${state.invalid}`);
+    // A newer turn's buffer cannot alter or invalidate a receipt retry for an older, settled turn.
+    const sameTurn = !turnId || !state.turn || state.turn.id === turnId;
+    if (state.invalid && sameTurn) throw new Error(`pending_evidence_${state.invalid}`);
+    const pending = sameTurn ? state.events : [];
+    const settlesTarget = (event: HookEvent | ReaderEvent) => turnId !== undefined && event.type === 'turn.settled' && event.data.turnId === turnId;
+    let terminal = pending.find(saved => settlesTarget(saved.event))?.position;
     options.signal?.throwIfAborted();
     type Row = { event: ReaderEvent; digest: string; durable: boolean };
     const merged = new Map<string, Row>();
@@ -78,9 +92,10 @@ export function withPendingEvidence(reader: SessionReader, state: PendingEvidenc
     let previous: FactPosition | undefined;
     for await (const event of reader.stream({ ...options, startIndex: start, follow: false })) {
       options.signal?.throwIfAborted();
-      budget(event);
       const position = event.meta.position;
       if (!validPosition(position) || position.line < start) throw new Error('invalid_history_position');
+      if (terminal && compare(position, terminal) > 0) break;
+      budget(event);
       const key = keyOf(position), digest = digestOf(event), duplicate = merged.get(key);
       if (duplicate) {
         if (duplicate.digest !== digest) throw new Error('conflicting_history');
@@ -92,11 +107,13 @@ export function withPendingEvidence(reader: SessionReader, state: PendingEvidenc
       if (previous && compare(position, previous) <= 0) throw new Error('unordered_history');
       previous = position;
       merged.set(key, { event, digest, durable: true });
+      if (settlesTarget(event)) { terminal = position; break; }
     }
-    for (const saved of state.events) {
+    for (const saved of pending) {
       options.signal?.throwIfAborted();
       if (!validPosition(saved.position)) throw new Error('invalid_history_position');
       if (saved.position.line < start) continue;
+      if (terminal && compare(saved.position, terminal) > 0) continue;
       const key = keyOf(saved.position), digest = digestOf(saved.event), duplicate = merged.get(key);
       if (duplicate) {
         if (duplicate.digest !== digest) throw new Error('conflicting_history');

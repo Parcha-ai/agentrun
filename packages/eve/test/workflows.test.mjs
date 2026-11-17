@@ -3,6 +3,7 @@ import test from 'node:test';
 import { executeLearnedWorkflow, reserveWorkflowInvocation, workflowBinding, workflowInstructions, workflowInvocation, workflowScope } from '../dist/extension/lib/workflows.mjs';
 import { readWorkflowResult } from '../dist/extension/lib/workflow-evidence.mjs';
 import { collectTurn } from '../dist/extension/lib/evidence.mjs';
+import { resolveSchemaForWorkflow, validateWorkflow } from '@parcha/agentrun-dsl';
 
 const inputSchema = { type: 'object', properties: { service: { type: 'string' } }, required: ['service'], additionalProperties: false };
 const native = () => ({ sessionId: 'session-one', turnId: 'turn-one', callId: 'call-one', signal: new AbortController().signal });
@@ -87,6 +88,24 @@ test('an explicit custom mount name and native aliases are pinned without export
   assert.match(workflowInstructions(f.record), /my_learning__learned_workflow/);
   assert.doesNotMatch(workflowInstructions(f.record), /secret|capability|Bearer/);
   assert.doesNotMatch(JSON.stringify(f.record.workflowBinding.manifest), /nativeName|execute|readOnly/);
+});
+
+test('workflow instructions include sibling input definitions needed to supply fresh arguments', () => {
+  const f = fixture();
+  const release = { type: 'object', properties: { service: { type: 'string' } }, required: ['service'], additionalProperties: false };
+  const workflow = {
+    v: 2, name: 'read-release',
+    schemas: { Input: { $ref: '#/definitions/Release' }, Release: release,
+      Output: { type: 'object', properties: { brief: { type: 'string' } }, required: ['brief'] } },
+    input: { schemaId: 'Input' }, output: { schemaId: 'Output', path: 'result' },
+    root: { node: 'chain', steps: [{ node: 'call', label: 'read', via: 'tool', tool: 'mcp:release/status',
+      args: { service: '{service}' }, out: 'Output', as: 'result', deadline_s: 5 }] },
+  };
+  assert.equal(validateWorkflow(workflow).ok, true);
+  f.record.receipt.learning.workflows = [{ name: 'read-release', description: 'Read status.', workflow: JSON.stringify(workflow) }];
+  f.options.engine.resolveSchemaForWorkflow = resolveSchemaForWorkflow;
+  const [advertised] = JSON.parse(workflowInstructions(f.record, f.options).split('\n')[1]);
+  assert.deepEqual(advertised.input_schema, { $ref: '#/definitions/Release', definitions: { Release: release } });
 });
 
 test('mutating, unbound, duplicate or host-generative capabilities cannot be declared', () => {

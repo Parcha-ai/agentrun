@@ -164,3 +164,44 @@ test('the wrapper refuses follow mode and keeps cancellation and the requested s
   assert.equal((await Array.fromAsync(reader.stream({ startIndex: 5, follow: false })))[0].meta.position.line, 5);
   await assert.rejects(Array.fromAsync(reader.stream({ startIndex: 5, follow: false, signal: AbortSignal.abort() })), /abort/i);
 });
+
+test('a new authoritative turn starts a bounded window after an oversized earlier turn', async () => {
+  let pending = append(emptyPendingEvidence(), history()[0], 0);
+  pending = append(pending, fact('content.delta', { partId: 'huge', delta: 'x'.repeat(4_000_001) }), 1);
+  assert.equal(pending.invalid, 'limit');
+  const nextId = 'next-turn';
+  const next = history().map(event => ({ ...event, scope: { turnId: nextId }, data: {
+    ...event.data, ...(event.data.turnId === turnId ? { turnId: nextId } : {}),
+    ...(event.data.owner ? { owner: { turnId: nextId } } : {}),
+  } }));
+  for (let i = 0; i < next.length; i++) pending = append(pending, next[i], 20_000 + i);
+  assert.equal(pending.invalid, undefined, 'The old turn must not permanently poison every subsequent hook.');
+  assert.deepEqual(pending.turn, { id: nextId, startIndex: 20_000, complete: true });
+  assert.equal(pending.events.length, next.length);
+  const evidence = await collectTurn(withPendingEvidence(source([]), pending, nextId), nextId, 20_000);
+  assert.equal(evidence.complete, true); assert.equal(evidence.settled, true);
+});
+
+test('retrying a settled turn reads neither later turns nor their oversized or conflicting cache', async () => {
+  const facts = history(); let reads = 0;
+  const durable = { id: 'session-one', async *stream() {
+    for (let line = 0; line < facts.length; line++) { reads++; yield recorded(facts[line], line); }
+    throw new Error('The old receipt scanned unrelated future history.');
+  } };
+  let pending = append(emptyPendingEvidence(), fact('turn.started', { turnId: 'later', follows: turnId }), 30_000);
+  pending = append(pending, fact('content.delta', { delta: 'x'.repeat(4_000_001) }), 30_001);
+  const evidence = await collectTurn(withPendingEvidence(durable, pending, turnId), turnId);
+  assert.equal(evidence.complete, true);
+  assert.equal(reads, facts.length);
+  assert.deepEqual(evidence, await collectTurn(source(facts.map((event, line) => recorded(event, line))), turnId));
+});
+
+test('new turn windows preserve same-line prefixes and child or follow-up exclusions', () => {
+  const prefix = fact('delivery.admitted', { deliveryId: 'new-delivery' });
+  const first = append(emptyPendingEvidence(), prefix, 40, 0);
+  const started = recordHookEvent(first, history()[0], { line: 40, index: 1 }, { at, committedThrough: 41, childSession: true });
+  assert.equal(started.events.length, 2, 'A start in the middle of a source line must not manufacture a missing prefix.');
+  assert.deepEqual(started.turn, { id: turnId, startIndex: 40, complete: false });
+  const followed = append(started, fact('turn.started', { turnId: 'followup', follows: turnId }), 50);
+  assert.deepEqual(followed.turn, { id: 'followup', startIndex: 50, complete: false });
+});
