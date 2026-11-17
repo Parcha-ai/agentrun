@@ -145,3 +145,139 @@ test("over the store: the series' bill, each run's all-in over v2 (a shadow's co
   const sum = Object.values(all).reduce((total, one) => total + Math.round(one.all_in_usd * 1e6), 0);
   assert.equal(sum + Math.round(cost.bill.unattributed_usd * 1e6), Math.round(cost.bill.booked_usd * 1e6), "every run's all-in and the unattributed remainder are the booked total");
 });
+
+// r2 (#3087, TL decisions on the A8 split and the review threads).
+
+test("billOf: booked spend after a withheld last job joins no point but is in the gap: a priced replay after it leaves no false break-even", () => {
+  // The r1 series breaks even at run 6; a last job of unknown cost, then a $3.00 replay after it.
+  const tail = [...SERIES, row(13, "workflow", 14, null), { ...row(14, "replay", 15, 3), run_id: "replay-4" }];
+  const bill = billOf(tail, PROMOTED);
+  assert.equal(bill.withheld, 1, "the job of unknown cost is on neither line");
+  assert.equal(bill.points.at(-1).run_id, "run-12", "no point for it, nor for the replay after it");
+  assert.equal(bill.booked_usd, 9.35, "the replay is booked");
+  assert.equal(bill.break_even, null, "$9.35 booked is over the agent for all of it at the last point ($9.00)");
+  assert.equal(bill.gap_usd, 0.35);
+  // Booked spend with no point before it is carried to the next point that has one.
+  const carried = billOf([...tail, row(15, "workflow", 16, 0.1)], PROMOTED);
+  assert.deepEqual(carried.points.at(-1), { n: 11, run_id: "run-15", actual_usd: 9.45, agent_usd: 10 });
+  assert.deepEqual(carried.break_even, { n: 6, run_id: "run-08" }, "carried, it never put a point over the line");
+  assert.equal(carried.gap_usd, null);
+  assert.equal(carried.booked_usd, 9.45);
+});
+
+const C = "c".repeat(16);
+const compiled = (digest, cost) => (digest ? { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest } : { workflow: "answer", from_notes: [], attempts: [{ ok: false, errors: [cost.error] }] });
+/** A kept round that looked back: its job's cost, its look-back's (the compile turn's among it) and, when it compiled,
+ *  the compile turn's spend and the draft it kept (none when every draft failed its checks). */
+const kept = ({ job, look, compile, digest, error }) => ({
+  state: "dropped", reason: "empty", detail: "kept nothing", answered_at: at(0), job_cost_usd: job, look_back_usd: look,
+  ...(compile === undefined ? {} : { compile_usd: compile, compiled: compiled(digest, { error }), ...(digest ? {} : { draft_errors: [error] }) }),
+});
+
+/** Agent `agent-1` over the A8 split, each run a minute apart:
+ *  - run-01, an agent run ($1.00, it looked back on nothing: $0);
+ *  - run-02, an agent run whose session compiled revision C: its row $1.50, the job $1.00, its look-back $0.50 of which
+ *    the compile turn $0.30;
+ *  - run-03, an agent run whose compile drafts all failed: its row $1.25, the job $1.00, its look-back $0.25 of which the
+ *    compile turn $0.20;
+ *  - C's check: replay-1 and replay-2 at `replay` each ($0.30 by default);
+ *  - C promoted (compile_after 3), then four runs it served at $0.10 (run-04 to run-07);
+ *  - run-08, an agent run at $3.00 by hand after them;
+ *  - `records`: the promotion feed (C's promote by default). */
+async function splitStore(t, { replay = 0.3, records } = {}) {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (id, cost, metrics, { body = LEARNS, round } = {}) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics }, round ? { also: [{ table: "learning_proposals", row: { turn: {}, proposal: round } }] } : undefined);
+  };
+  const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  await end("run-01", 1, { path: "agent" });
+  await end("run-02", 1.5, { path: "agent" }, { round: kept({ job: 1, look: 0.5, compile: 0.3, digest: C }) });
+  await end("run-03", 1.25, { path: "agent" }, { round: kept({ job: 1, look: 0.25, compile: 0.2, error: "its draft failed its checks" }) });
+  for (const id of ["replay-1", "replay-2"]) await end(id, replay, { path: "replay", workflow: "answer", workflow_digest: C, replay: { of: "run-01", outcome: "answered" } }, { body: { ...LEARNS, replay: { of: "run-01", workflow: "answer", digest: C } } });
+  const promotedAt = at((minute += 1));
+  for (const id of ["run-04", "run-05", "run-06", "run-07"]) await end(id, 0.1, served);
+  await end("run-08", 3, { path: "agent" });
+  const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  const promote = { workflow: "answer", digest: C, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"] } };
+  await store.settings.put("learning.promotions.agent-1", { v: 1, items: records ?? [promote] });
+  return store;
+}
+
+/** Every run's v2 figures (runAllInOverStore) by id, and the invariant: their all-in and the bill's unattributed are its booked total. */
+async function v2Of(store, bill) {
+  const all = {};
+  for (const run of await store.runs.list({ agentId: "agent-1" })) all[run.id] = await runAllInOverStore(store, run.id);
+  if (bill) {
+    const sum = Object.values(all).reduce((total, one) => total + Math.round(one.all_in_usd * 1e6), 0);
+    assert.equal(sum + Math.round(bill.unattributed_usd * 1e6), Math.round(bill.booked_usd * 1e6), `Σ all_in + unattributed = booked: ${JSON.stringify(all)}`);
+  }
+  return all;
+}
+
+test("A8 (1): the run whose session compiled revision C reports cost.usd its job alone, and its learning_usd leaves the compile turn out; a look-back that compiles nothing stays its own run's learning", async (t) => {
+  const store = await splitStore(t);
+  const cost = await agentCostOverStore(store, "agent-1");
+  const all = await v2Of(store, cost.bill);
+  const pick = (id) => [all[id].path, all[id].usd, all[id].learning_usd, all[id].all_in_usd];
+  assert.deepEqual(pick("run-02"), ["agent", 1, 0.2, 1.2], "its job $1.00; its look-back less the compile turn, $0.20");
+  assert.deepEqual(pick("run-01"), ["agent", 1, 0, 1]);
+  assert.deepEqual(pick("run-08"), ["agent", 3, 0, 3]);
+});
+
+test("A8 (2): C's next K = compile_after served runs each carry (compile + check)/K; the run past the K-th carries none", async (t) => {
+  const store = await splitStore(t);
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[C, 0.3, 0.6, 0.9, 3, 3, 0.9, 0, "serving"]]);
+  const all = await v2Of(store, cost.bill);
+  const pick = (id) => [all[id].path, all[id].usd, all[id].learning_usd, all[id].all_in_usd];
+  for (const id of ["run-04", "run-05", "run-06"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0.3, 0.4], `${id}: a third of $0.30 compile + $0.60 check`);
+  assert.deepEqual(pick("run-07"), ["workflow", 0.1, 0, 0.1], "C is paid");
+  assert.deepEqual(pick("replay-1"), ["replay", 0.3, 0, 0], "a check's spend is on its revision's served runs");
+});
+
+test("A8 (3): a compile whose drafts all failed has no revision to serve: its turn's spend is unattributed on the agent ledger, never on a run", async (t) => {
+  const store = await splitStore(t);
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.equal(cost.bill.unattributed_usd, 0.2, "run-03's compile turn");
+  const all = await v2Of(store, cost.bill);
+  assert.deepEqual([all["run-03"].usd, all["run-03"].learning_usd, all["run-03"].all_in_usd], [1, 0.05, 1.05], "its look-back less its compile turn");
+  assert.equal(cost.bill.booked_usd, 7.75);
+});
+
+test("A8: a served run whose revision's check cost is unknown reports learning_usd and all_in_usd null, never $0; the ledger's remainder is unknown too", async (t) => {
+  const store = await splitStore(t, { replay: null });
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.equal(cost.bill.unattributed_usd, null);
+  const all = await v2Of(store);
+  assert.deepEqual([all["run-04"].usd, all["run-04"].learning_usd, all["run-04"].all_in_usd], [0.1, null, null]);
+  assert.deepEqual([all["run-07"].learning_usd, all["run-07"].all_in_usd], [0, 0.1], "past the K-th: none of it to carry");
+});
+
+test("A8: with the promotion feed trimmed below the first promotion, the invariant and the baseline hold: an aged-out revision's spend is unattributed, the cutoff is the first served run", async (t) => {
+  const kept = await splitStore(t);
+  const whole = (await agentCostOverStore(kept, "agent-1")).bill;
+  // A later revision's hold, its record the only one the feed still keeps (recordPromotion trims it to 200).
+  const hold = { workflow: "answer", digest: "e".repeat(16), at: at(30), decided: "hold", reason: "its draft failed its checks" };
+  const store = await splitStore(t, { records: [hold] });
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.bill.baseline, whole.baseline, "the agent runs before the first served run, as with the feed whole");
+  assert.deepEqual(cost.bill.baseline, { runs: 3, mean_usd: 1 }, "run-08, by hand after the served runs, is no part of it");
+  assert.deepEqual([whole.promoted, cost.bill.promoted], [{ n: 4, run_id: "run-04", at: at(7) }, { n: 4, run_id: "run-04", at: at(7) }], "from the first served run's start");
+  assert.deepEqual(cost.bill.revisions.map((one) => one.digest), ["e".repeat(16)]);
+  assert.equal(cost.bill.unattributed_usd, 1.1, "C's compile and check, and run-03's failed compile, carried by no run");
+  const all = await v2Of(store, cost.bill);
+  assert.deepEqual([all["run-04"].learning_usd, all["run-02"].learning_usd], [0, 0.2]);
+});
+
+test("the bill's holds: each at its run of the whole series, placed by the server whatever the runs listed", async (t) => {
+  const store = await ledgerStore(t);
+  const read = await agentCostOverStore(store, "agent-1", 2);
+  assert.deepEqual(read.runs.map((run) => run.run_id), ["run-11", "run-12"], "only the 2 latest runs listed");
+  assert.deepEqual(read.bill.holds, [{ n: 8, at: at(11), workflow: "answer", by: "check", reason: "held" }], "B's hold at run-11, the first job from it on");
+});
