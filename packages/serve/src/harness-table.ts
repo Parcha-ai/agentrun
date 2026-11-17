@@ -15,7 +15,7 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
 import type { AdapterNeeds } from "./adapters.js";
-import { DEFAULT_HARNESS, type HarnessId, PLAN_HARNESSES } from "./harness.js";
+import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
 import { chooseModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
@@ -220,11 +220,14 @@ function modulesOf(env: NodeJS.ProcessEnv): string[] {
   return paths;
 }
 
+const harnessId = new RegExp(HARNESS_ID_PATTERN);
+
 /** The table `env` runs on: the built-in entries; then, only under a test runner (node --test's NODE_TEST_CONTEXT, which a
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the
  *  harnesses each of the owner's harness modules adds (HARNESS_MODULES_ENV), under a test runner or not. A module adds
- *  whole entries of new ids: one naming a built-in harness, an id another module adds, or an entry missing a member is
- *  refused by name, so no module changes what a built-in harness is (grep pins claude-agent). Loaded once per setting. */
+ *  whole entries of new ids: one whose id is not one the API carries (HARNESS_ID_PATTERN), naming a built-in harness, an
+ *  id another module adds, or an entry missing a member is refused by name, so no module changes what a built-in harness
+ *  is (grep pins claude-agent). Loaded once per setting. */
 export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> {
   const path = env.NODE_TEST_CONTEXT ? env[HARNESS_TABLE_ENV] : undefined;
   const modules = modulesOf(env);
@@ -236,6 +239,7 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
     if (path) for (const [id, entry] of Object.entries(entriesOf(path, HARNESS_TABLE_ENV))) built[id] = Object.freeze({ ...(BUILTIN as Record<string, HarnessEntry>)[id], ...entry, id }) as HarnessEntry;
     for (const module of modules) {
       for (const [id, entry] of Object.entries(entriesOf(module, HARNESS_MODULES_ENV))) {
+        if (!harnessId.test(id)) throw new Error(`harness module ${module} names ${id}, which is not a harness id: an id matches ${HARNESS_ID_PATTERN}`);
         if (Object.hasOwn(BUILTIN, id)) throw new Error(`harness module ${module} names ${id}, a built-in harness: a module adds a harness and never replaces one`);
         if (Object.hasOwn(built, id)) throw new Error(`harness module ${module} names ${id}, which another module already adds`);
         const missing = WHOLE.filter((member) => entry[member] === undefined);
@@ -283,6 +287,18 @@ export const harnessIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.
 /** The built-in entry of harness `id` (none: the default, pi), for what a test's entry never changes: its memory (host.ts),
  *  which a stand-in reserves as the harness it stands in for does, so tests admit as a real server does. */
 export const builtinHarness = (id: string | undefined): HarnessEntry | undefined => (BUILTIN as Record<string, HarnessEntry>)[id ?? DEFAULT_HARNESS];
+
+/** The owner's table on `env`: the built-in entries and those its harness modules add (HARNESS_MODULES_ENV), never a test
+ *  table's. What a run weighs and whether one fits (host.ts, runner/memory-claim.ts) read it, so a test's stand-in admits
+ *  as the built-in harness it stands in for, and a module's harness as its entry declares. */
+export const ownerTable = (env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> => harnessTable(env[HARNESS_MODULES_ENV] ? { [HARNESS_MODULES_ENV]: env[HARNESS_MODULES_ENV] } : {});
+
+/** The entry of harness `id` (none: the default, pi) on the owner's table (ownerTable); undefined for one it has not. */
+export const ownerHarness = (env: NodeJS.ProcessEnv, id: string | undefined): HarnessEntry | undefined => {
+  const table = ownerTable(env);
+  const key = id ?? DEFAULT_HARNESS;
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+};
 
 /** The entry of harness `id` (none: the default, pi) on `env`'s table; undefined for an id this server has none of. */
 export const harnessOf = (env: NodeJS.ProcessEnv, id: string | undefined): HarnessEntry | undefined => harnessTable(env)[id ?? DEFAULT_HARNESS];

@@ -9,7 +9,7 @@ import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
 import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
 import { harnessOf } from "../../harness-table.js";
-import { piAdapter } from "./pi.js";
+import { piAdapter, type PiAdapterOptions } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
 export interface HarnessLaunch {
@@ -46,13 +46,16 @@ const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
 /** Every harness the runner runs, by name. */
 export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
   pi: {
-    adapter: async (launch) =>
+    // `extra`: pi's own options (PiAdapterOptions), as the run's spec gives them (adapter-run-spec.ts): its extensions,
+    // tools, redactor, tiers, and the route's whole provider over the launch's.
+    adapter: async (launch, extra = {}) =>
       piAdapter({
         run: launch.run,
         model: launch.model,
         provider: { api: launch.provider.api ?? "anthropic-messages", origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        ...(extra as Partial<PiAdapterOptions>),
       }),
   },
   [claudeFacts.id]: {

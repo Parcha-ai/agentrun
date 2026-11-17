@@ -2673,8 +2673,11 @@ takes the same flag and setting, and needs them to run the module's harnesses. M
 with `npm install --prefix <data>/harnesses <package>`.
 
 A module exports `entries(builtins)`, which returns new entries by id. Each entry gives `label`, `steer`, `runMib`,
-`oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`, `refusal` and its `runner`, and may give `promises`. A module
-adds harnesses and never replaces one. The start is refused, naming the module and the id, when a module:
+`oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`, `refusal` and its `runner`, and may give `promises`. A run of
+the harness runs on its runner's `adapter(launch, extra)`, and is admitted by the `runMib` its entry declares. A module
+adds harnesses and never replaces one. The start of the server, or of a separate runner, is refused, naming the module
+and the id, when a module:
+- gives an id that does not match `^[a-z][a-z0-9-]{0,39}$`;
 - names a built-in harness;
 - names an id another module adds;
 - gives an entry that is missing a member;

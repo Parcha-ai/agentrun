@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditPage, AgentsPage } from "./AgentsPage";
 import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, DECISION, WORKFLOW } from "@/lib/agentForm";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
 const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
@@ -112,7 +112,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
     await settle();
     return { DECISION_STARTER, sent, went, host, v2, settle };
   }
-  const createDecision = (provider: string) => createFrom("decision", provider);
+  const createDecision = (provider: string) => createFrom(DECISION, provider);
 
   it("creates a workflow agent from the starter decision workflow, with no harness, and opens its page on the Workflow tab", async () => {
     const { DECISION_STARTER, sent, went, host, v2, settle } = await createDecision("jev");
@@ -131,7 +131,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
 
   it("on a server with no decision provider, creates a workflow agent from the general starter and opens its Workflow tab", async () => {
     const { WORKFLOW_STARTER } = await import("@/lib/workflowStarter");
-    const { sent, went } = await createFrom("workflow");
+    const { sent, went } = await createFrom(WORKFLOW);
     expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: WORKFLOW_STARTER, skills: [], tools: [] });
     expect(went).toBe("#/agents/gambling-check/workflow");
   });

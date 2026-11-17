@@ -19,7 +19,7 @@ import { dockerPathsForRuns } from "../box-paths.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { claimInstallsStopped } from "../harness-install.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf } from "../harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessTable } from "../harness-table.js";
 import { maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
@@ -224,7 +224,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
   const env = options.env ?? process.env;
   const { store, kind, schema } = await openRunnerStore(options.dataDir, env, warn, options.storeUrl);
-  const memory = options.memory ?? runnerMemory(store);
+  const memory = options.memory ?? runnerMemory(store, undefined, env);
   let runner: Runner;
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   let janitor: ReturnType<typeof startJanitor> | undefined;
@@ -430,10 +430,14 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   // inherited (AGENTRUN_SERVE_FAUX*, the harness table, left in an operator's shell or a platform's settings) never loads
   // a module or decides what a run answers. --faux sets the faux model's.
   // The owner's harness modules are this start's too: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES, as the
-  // server reads them, so a runner apart from the server runs the harnesses its table adds.
+  // server reads them, so a runner apart from the server runs the harnesses its table adds. Each is loaded and checked
+  // here, as the server's start checks them (harness-table.ts harnessTable), before the runner opens the store or claims a
+  // run: a module that names a built-in, repeats an id, gives an id the API does not carry or lacks a member refuses the
+  // start in words naming the module and the id, never failing every run the runner would claim.
   let modules: NodeJS.ProcessEnv;
   try {
     modules = harnessModulesEnv(harnessModulesOf(args.harnessModules, given), args.dataDir);
+    harnessTable(modules);
   } catch (error) {
     console.error(`agentrun-serve runner: ${(error as Error).message}`);
     return 2;

@@ -72,12 +72,14 @@ export function same(a: unknown, b: unknown): boolean {
 }
 
 /** The picker's choice that makes a decision agent: a workflow revision from the starter decision workflow. It is a
- *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default. */
-export const DECISION = "decision";
+ *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default.
+ *  Its value has a colon, which no harness id has (`^[a-z][a-z0-9-]{0,39}$`), so a harness a server's module adds as
+ *  `decision` stays a harness. */
+export const DECISION = "starter:decision";
 
 /** The picker's choice that makes a general workflow agent: a workflow revision from the general starter
- *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is. */
-export const WORKFLOW = "workflow";
+ *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is, and never a harness id. */
+export const WORKFLOW = "starter:workflow";
 
 /** The workflow each starter choice creates the agent from: Decision's judge names the server's decision provider. */
 const STARTERS: Record<string, (decisionProvider?: string) => unknown> = { [DECISION]: decisionStarter, [WORKFLOW]: workflowStarter };

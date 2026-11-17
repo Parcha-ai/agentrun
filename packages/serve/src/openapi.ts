@@ -17,7 +17,7 @@ import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
 import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
-import { HARNESSES } from "./harness.js";
+import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
@@ -104,8 +104,6 @@ const HEALTH = {
 
 const COUNT = { type: "integer", minimum: 0 };
 
-/** A harness id: a built-in one or one a harness module adds (harness-table.ts). */
-const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** What a harness promises (harness-table.ts HarnessPromises), as capabilities show it. */
 const HARNESS_PROMISES = {
   type: "object", additionalProperties: false, required: ["resume", "tool_gate", "billing"],

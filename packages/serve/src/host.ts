@@ -7,7 +7,7 @@ import { totalmem } from "node:os";
 import { REQUEST_BUSY_MS, whenFree } from "./agents.js";
 import type { Store } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
-import { builtinHarness } from "./harness-table.js";
+import { builtinHarness, ownerHarness, ownerTable } from "./harness-table.js";
 
 const MiB = 2 ** 20;
 /** Memory the server keeps for itself, before any run, in MiB. Measured with the runs' (harness-table.ts): the server's anon
@@ -29,15 +29,17 @@ export function hostMemory(): number {
 /** The memory runs may hold on a host of `memory` bytes, in MiB: all of it less the server's own. */
 export const runsMemoryMib = (memory: number): number => Math.floor(memory / MiB) - SERVER_MIB;
 
-/** What a run of `harness` reserves, in MiB. A harness outside the table (no saved revision names one) reserves the most. */
-export const runMibOf = (harness: string | undefined): number => builtinHarness(harness)?.runMib ?? Math.max(...HARNESSES.map((id) => builtinHarness(id)!.runMib));
+/** What a run of `harness` reserves, in MiB: its entry's on the owner's table of `env` (harness-table.ts ownerHarness: a
+ *  built-in's, or what a harness module declares; a test's stand-in reserves as the built-in it stands in for). A harness
+ *  outside that table (no saved revision names one) reserves the most a built-in one does. */
+export const runMibOf = (harness: string | undefined, env: NodeJS.ProcessEnv = {}): number => ownerHarness(env, harness)?.runMib ?? Math.max(...HARNESSES.map((id) => builtinHarness(id)!.runMib));
 
 /** How many runs of `harness` alone fit on a host of `memory` bytes. One whose entry says one always fits (pi, the
  *  default) always has one place, as before runs were admitted by memory: a server too small for even that still runs
- *  one at a time. */
-export function runsThatFit(harness: string, memory: number): number {
-  const fit = Math.max(0, Math.floor(runsMemoryMib(memory) / runMibOf(harness)));
-  return builtinHarness(harness)?.oneAlwaysFits ? Math.max(1, fit) : fit;
+ *  one at a time. `env`: whose owner's table says what a run weighs (runMibOf). */
+export function runsThatFit(harness: string, memory: number, env: NodeJS.ProcessEnv = {}): number {
+  const fit = Math.max(0, Math.floor(runsMemoryMib(memory) / runMibOf(harness, env)));
+  return ownerHarness(env, harness)?.oneAlwaysFits ? Math.max(1, fit) : fit;
 }
 
 /** The default cap on how many runs at once: as many pi runs, the smallest, as fit. */
@@ -49,11 +51,12 @@ const aRun = (harness: string): string => `${/^[aeiou]/i.test(harness) ? "an" : 
 /** "pi", "pi and codex", "pi, claude-agent and codex". */
 const listed = (names: string[]): string => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join(""));
 
-/** Why no run of `harness` can ever start on a host of `memory` bytes, in words; undefined when one fits. */
-export function neverFits(harness: string, memory: number): string | undefined {
-  if (runsThatFit(harness, memory) > 0) return undefined;
-  const fit = HARNESSES.filter((id) => runsThatFit(id, memory) > 0);
-  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))} more, so it can't start here. ${listed(fit)} runs fit.`;
+/** Why no run of `harness` can ever start on a host of `memory` bytes, in words; undefined when one fits. `env`: whose
+ *  owner's table says what each run weighs (runMibOf), and which harnesses the words list. */
+export function neverFits(harness: string, memory: number, env: NodeJS.ProcessEnv = {}): string | undefined {
+  if (runsThatFit(harness, memory, env) > 0) return undefined;
+  const fit = Object.keys(ownerTable(env)).filter((id) => runsThatFit(id, memory, env) > 0);
+  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness, env))} more, so it can't start here. ${listed(fit)} runs fit.`;
 }
 
 /** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. A runner

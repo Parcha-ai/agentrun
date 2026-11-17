@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
+import { DECISION, WORKFLOW } from "@/lib/agentForm";
 
 const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "web_fetch", available: true, harnesses: ["pi"] }];
 const caps = { harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }], tools, thinking: ["low"] };
@@ -165,7 +166,7 @@ describe("AgentEditor, a new decision agent", () => {
   it("picks Decision in the harness picker on create: no instructions, tools or thinking to fill, and Create sends the choice", async () => {
     let saved: { harness?: string; name?: string } | undefined;
     const { host, click, button, type, act, done } = await mount({ agent: null, caps: { ...caps, decisionProvider: "jev" }, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
-    const decision = host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]');
+    const decision = host.querySelector<HTMLInputElement>(`input[type=radio][value="${DECISION}"]`);
     expect(decision?.disabled).toBe(false);
     click(decision);
     expect(host.querySelector('[role=radiogroup][aria-label="Thinking"]')).toBeNull();
@@ -175,13 +176,13 @@ describe("AgentEditor, a new decision agent", () => {
     expect(host.textContent).toContain("Workflow step");
     type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Gambling check");
     await act(async () => { button(/^Create$/)!.click(); });
-    expect(saved).toMatchObject({ harness: "decision", name: "Gambling check" });
+    expect(saved).toMatchObject({ harness: DECISION, name: "Gambling check" });
     done();
   });
 
   it("shows Decision disabled, with why, when the server runs no decision workflows", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "settings" }));
-    const radio = html.match(/<input type="radio" name="harness"[^>]*value="decision"[^>]*>/)?.[0];
+    const radio = html.match(new RegExp(`<input type="radio" name="harness"[^>]*value="${DECISION}"[^>]*>`))?.[0];
     expect(radio).toContain('disabled=""');
     expect(html).toContain("decision workflows");
   });
@@ -201,15 +202,15 @@ describe("AgentEditor, a new decision agent", () => {
   it("offers no Decision and no Workflow when editing an agent", () => {
     const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent as never, caps: { ...caps, decisionProvider: "jev" }, step: "settings" }));
-    expect(html).not.toContain('value="decision"');
-    expect(html).not.toContain('value="workflow"');
+    expect(html).not.toContain(`value="${DECISION}"`);
+    expect(html).not.toContain(`value="${WORKFLOW}"`);
   });
 
   it("picks Workflow on a server with no decision provider: enabled where Decision is not, no instructions, tools, thinking or model to fill, and Create sends the choice", async () => {
     let saved: { harness?: string; name?: string } | undefined;
     const { host, click, button, type, act, done } = await mount({ agent: null, caps, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
-    expect(host.querySelector<HTMLInputElement>('input[type=radio][value="decision"]')?.disabled).toBe(true);
-    const general = host.querySelector<HTMLInputElement>('input[type=radio][value="workflow"]');
+    expect(host.querySelector<HTMLInputElement>(`input[type=radio][value="${DECISION}"]`)?.disabled).toBe(true);
+    const general = host.querySelector<HTMLInputElement>(`input[type=radio][value="${WORKFLOW}"]`);
     expect(general?.disabled).toBe(false);
     click(general);
     expect(host.querySelector('[role=radiogroup][aria-label="Thinking"]')).toBeNull();
@@ -220,7 +221,7 @@ describe("AgentEditor, a new decision agent", () => {
     expect(host.textContent).toContain("paste a workflow's JSON over it, in the Workflow step");
     type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Next steps");
     await act(async () => { button(/^Create$/)!.click(); });
-    expect(saved).toMatchObject({ harness: "workflow", name: "Next steps" });
+    expect(saved).toMatchObject({ harness: WORKFLOW, name: "Next steps" });
     done();
   });
 });

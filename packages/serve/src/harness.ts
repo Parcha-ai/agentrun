@@ -11,6 +11,8 @@ import type { HarnessPromises } from "./harness-table.js";
 export const HARNESSES = ["pi", "claude-agent", "codex", "opencode"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
+/** What a harness id is, as the API says it (openapi.ts): a harness module's id that is not one refuses the start. */
+export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
  *  API as the plan takes them. The others need a model key. */
 export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] satisfies HarnessId[]);
@@ -77,7 +79,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       // a save warns and a run is refused at once with why (runnable.ts), never a 429 to try again. One that lacks only a
       // key keeps its reason, but no key would run it: it has no `keys`.
       const base = probed.map((offer): HarnessOffer => {
-        const tooBig = offer.available || offer.keys ? neverFits(offer.id, memory) : undefined;
+        const tooBig = offer.available || offer.keys ? neverFits(offer.id, memory, env) : undefined;
         if (!tooBig) return offer;
         const { keys: _keys, ...rest } = offer;
         return offer.available ? { ...rest, available: false, reason: tooBig } : rest;
