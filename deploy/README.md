@@ -293,5 +293,6 @@ Two walk the Railway template:
   user's, every process runs as that user, the first visit asks for the setup code, the token works as that code, and
   the password survives a restart.
 - `railway/publish-and-walk.sh`, run by hand with a Railway token: the template deployed into a throwaway project, its
-  health, its first visit and its token as the setup code, then the project deleted. `--dry-run` prints the plan with
-  no token; `--check-api` validates every operation it sends against Railway's live API.
+  health, its first visit and its token as the setup code, then the project deleted. With `--first-run` it also runs a
+  no-tool agent to completion on a model key given in the template's form. `--dry-run` prints the plan with no token;
+  `--check-api` validates every operation it sends against Railway's live API.

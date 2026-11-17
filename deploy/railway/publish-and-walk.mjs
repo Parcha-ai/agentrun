@@ -1,6 +1,7 @@
 // Publishes deploy/railway/template.json as AgentRun's Railway template and walks it: one deploy of the template into a
 // throwaway project, its health, its first visit asking for the setup code, the token made for it working as that code,
-// then the project deleted. Run through publish-and-walk.sh, which says how; this file is its body.
+// with --first-run an agent's first run finished on a model key given in the template's form, then the project deleted.
+// Run through publish-and-walk.sh, which says how; this file is its body.
 //
 // Railway's public API makes a template only from a project (templateGenerate) and changes none of a template's services
 // once made, so the template is generated from a source project in the workspace, agentrun-template-source, kept in step
@@ -8,6 +9,10 @@
 // from template.json in anything (image, start command, health check, variables, domain port, volume) stops the run
 // before any deploy, saying where. A template made by hand in Railway's template editor is walked and published with
 // --template CODE.
+//
+// Every request goes through curl with its headers and body in the config curl reads on stdin, so the Railway token, the
+// deploy's AGENTRUN_TOKEN and a model key are never in a process's arguments, in a file, or in the output.
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../../scripts/is-main.mjs";
@@ -20,11 +25,25 @@ const README = new URL("../README.md", import.meta.url);
 const OVERVIEW = new URL("./overview.md", import.meta.url);
 const PUBLISH = { category: "AI/ML", description: "Deploy and host AgentRun, an open-source platform for running agents, on Railway" };
 
+/** The first run --first-run makes: a no-tool agent on pi, the model key given as a person gives it in the template's
+ *  form, and a cap well under the walk's budget. */
+export const FIRST_RUN = {
+  keyName: "OPENROUTER_API_KEY",
+  model: "openrouter/anthropic/claude-haiku-5.5",
+  maxCostUsd: 1,
+  agent: { name: "Release notes", instructions: "Write short release notes for the changes you are given: a heading, then one bullet per change in plain words." },
+  input: "Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings.",
+};
+
+// Railway's list prices (railway.com/pricing), per minute: what the walk's usage is costed at.
+const PRICE_PER_MINUTE = { CPU_USAGE: 0.00000772 * 60, MEMORY_USAGE_GB: 0.00000386 * 60, DISK_USAGE_GB: 0.00000006 * 60 };
+const PRICE_PER_GB_EGRESS = 0.05;
+
 // Every operation this script sends, each checked against Railway's live schema by --check-api.
 export const OPS = {
   Workspace: `query Workspace($id: String!) { workspace(workspaceId: $id) { id name } }`,
   Projects: `query Projects($workspaceId: String!) { projects(workspaceId: $workspaceId, first: 100) { edges { node { id name createdAt environments { edges { node { id name } } } services { edges { node { id name } } } } } } }`,
-  ProjectCreate: `mutation ProjectCreate($input: ProjectCreateInput!) { projectCreate(input: $input) { id name environments { edges { node { id name } } } } }`,
+  ProjectCreate: `mutation ProjectCreate($input: ProjectCreateInput!) { projectCreate(input: $input) { id name workspace { id name } environments { edges { node { id name } } } } }`,
   ServiceCreate: `mutation ServiceCreate($input: ServiceCreateInput!) { serviceCreate(input: $input) { id name } }`,
   VolumeCreate: `mutation VolumeCreate($input: VolumeCreateInput!) { volumeCreate(input: $input) { id name } }`,
   ServiceDomainCreate: `mutation ServiceDomainCreate($input: ServiceDomainCreateInput!) { serviceDomainCreate(input: $input) { id domain targetPort } }`,
@@ -36,11 +55,12 @@ export const OPS = {
   TemplateDeploy: `mutation TemplateDeploy($input: TemplateDeployV2Input!) { templateDeployV2(input: $input) { projectId workflowId } }`,
   ProjectRename: `mutation ProjectRename($id: String!, $name: String!) { projectUpdate(id: $id, input: { name: $name }) { id name } }`,
   WorkflowStatus: `query WorkflowStatus($id: String!) { workflowStatus(workflowId: $id) { status error } }`,
-  Project: `query Project($id: String!) { project(id: $id) { id name deletedAt environments { edges { node { id name } } } services { edges { node { id name } } } } }`,
+  Project: `query Project($id: String!) { project(id: $id) { id name deletedAt workspace { id name } environments { edges { node { id name } } } services { edges { node { id name } } } } }`,
   Deployments: `query Deployments($input: DeploymentListInput!) { deployments(input: $input, first: 1) { edges { node { id status createdAt } } } }`,
   Domains: `query Domains($projectId: String!, $environmentId: String!, $serviceId: String!) { domains(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) { serviceDomains { domain targetPort } } }`,
   Variables: `query Variables($projectId: String!, $environmentId: String!, $serviceId: String!) { variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) }`,
   DeploymentLogs: `query DeploymentLogs($id: String!, $filter: String) { deploymentLogs(deploymentId: $id, filter: $filter, limit: 200) { message timestamp } }`,
+  Usage: `query Usage($projectId: String!, $startDate: DateTime) { usage(projectId: $projectId, startDate: $startDate, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_GB]) { measurement value } }`,
   TemplatePublish: `mutation TemplatePublish($id: String!, $input: TemplatePublishInput!) { templatePublish(id: $id, input: $input) { id code status } }`,
   ProjectDelete: `mutation ProjectDelete($id: String!) { projectDelete(id: $id) }`,
 };
@@ -59,21 +79,55 @@ class Refused extends Error {
   }
 }
 
+/** curl's arguments for one request, its headers and body read from the config on stdin (-K -). Nothing secret is here. */
+export function curlArgs(url, { method = "GET", timeoutS = 60 } = {}) {
+  return ["-sS", "--max-time", String(timeoutS), "-X", method, "-K", "-", "-w", "\n%{http_code} %{content_type}", url];
+}
+
+const quoted = (s) => `"${String(s).replace(/[\\"]/g, (c) => `\\${c}`).replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")}"`;
+
+/** The config curl reads on stdin: one `header` line per header and the body as `data-binary`, each a quoted string. */
+export const curlConfig = (headers = {}, body) =>
+  [...Object.entries(headers).map(([k, v]) => `header = ${quoted(`${k}: ${v}`)}`), ...(body === undefined ? [] : [`data-binary = ${quoted(body)}`])].join("\n") + "\n";
+
+/** One HTTP request through curl, its headers and body in the config on curl's stdin. Answers a Response's few parts the
+ *  walk reads: status, the content-type header, json() and text(). */
+export function curl(url, { method = "GET", headers = {}, body, timeoutS = 60 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("curl", curlArgs(url, { method, timeoutS }), { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.setEncoding("utf8").on("data", (c) => (out += c));
+    child.stderr.setEncoding("utf8").on("data", (c) => (err += c));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`${method} ${url}: curl exit ${code} ${err.trim()}`));
+      const cut = out.lastIndexOf("\n");
+      const tail = out.slice(cut + 1);
+      const space = tail.indexOf(" ");
+      const text = out.slice(0, cut);
+      const type = space < 0 ? "" : tail.slice(space + 1);
+      resolve({ status: Number(space < 0 ? tail : tail.slice(0, space)), headers: { get: (n) => (n.toLowerCase() === "content-type" ? type : null) }, text: async () => text, json: async () => JSON.parse(text) });
+    });
+    child.stdin.on("error", () => {}); // curl may exit before it reads its config
+    child.stdin.end(curlConfig(headers, body));
+  });
+}
+
 /** Railway's API, for real: each operation by name, with the token (never printed) unless `anonymous`. */
 export function liveClient({ token, api = API }) {
   return {
     async call(op, variables, { anonymous = false } = {}) {
-      const res = await fetch(api, {
+      const res = await curl(api, {
         method: "POST",
         headers: { "content-type": "application/json", ...(anonymous ? {} : { authorization: `Bearer ${token}` }) },
         body: JSON.stringify({ query: OPS[op], variables, operationName: op }),
-        signal: AbortSignal.timeout(60_000),
       });
       const body = await res.json().catch(() => ({ errors: [{ message: `HTTP ${res.status}, not JSON` }] }));
       if (body.errors?.length) throw new Refused(op, body.errors);
       return body.data;
     },
-    http: (url, init = {}) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(30_000), ...init }),
+    http: (url, init = {}) => curl(url, { ...init, timeoutS: 30 }),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   };
 }
@@ -93,11 +147,12 @@ export async function checkApi(client, log) {
     EnvironmentConfig: { id }, EnvironmentPatchCommit: { environmentId: id, patch: {}, commitMessage: "check" },
     TemplateSource: { projectId: id }, TemplateGenerate: { projectId: id, environmentId: id },
     Template: { code: "agentrun-check-api" },
-    TemplateDeploy: { input: { templateId: id, serializedConfig: config, workspaceId: id } },
+    TemplateDeploy: { input: { templateId: id, serializedConfig: formValues(config), workspaceId: id } },
     ProjectRename: { id, name: WALK_PROJECT }, WorkflowStatus: { id }, Project: { id },
     Deployments: { input: { projectId: id, environmentId: id, serviceId: id } },
     Domains: { projectId: id, environmentId: id, serviceId: id }, Variables: { projectId: id, environmentId: id, serviceId: id },
     DeploymentLogs: { id, filter: "Set up this server" },
+    Usage: { projectId: id, startDate: new Date(0).toISOString() },
     TemplatePublish: { id, input: { ...PUBLISH, readme: "check", workspaceId: id } },
     ProjectDelete: { id },
   };
@@ -132,6 +187,20 @@ export function sourcePatch(service, serviceId, current = {}) {
   return { services: { [serviceId]: { source: { image: service.source.image }, deploy: service.deploy, variables } } };
 }
 
+/** A template's config as its deploy form sends it, as the Railway CLI's `deploy --template` does: each variable's
+ *  `value` is the one given (by `NAME` or `Service.NAME`), else its default; an optional one with neither is left out. */
+export function formValues(config, given = {}) {
+  const out = structuredClone(config);
+  for (const service of Object.values(out.services ?? {})) {
+    for (const [name, v] of Object.entries(service.variables ?? {})) {
+      if (!v) continue;
+      const value = given[`${service.name}.${name}`] ?? given[name] ?? (v.defaultValue ? v.defaultValue : undefined);
+      if (value !== undefined) v.value = value;
+    }
+  }
+  return out;
+}
+
 /** Waits for `check` to return a value (not undefined), asking every `everyMs`, for at most `forMs`; else throws `what`. */
 async function until(client, what, forMs, everyMs, check) {
   const end = Date.now() + forMs;
@@ -153,6 +222,14 @@ function rows(log) {
   };
 }
 
+/** A project this run made, checked to be in the workspace it was given: one elsewhere is deleted and the run stops. */
+async function inWorkspace(client, project, workspaceId) {
+  const at = project.workspace ?? (await client.call("Project", { id: project.id })).project.workspace;
+  if (at?.id === workspaceId) return;
+  await client.call("ProjectDelete", { id: project.id }).catch(() => {});
+  throw new Error(`project ${project.id} was made in workspace ${at?.name ?? "?"} (${at?.id ?? "?"}), not ${workspaceId}: deleted it, and stopped`);
+}
+
 /** The template brought in step with template.json: the source project made or updated, the template generated from it
  *  when the one it has differs (or there is none), and that template checked against template.json. */
 async function ensureTemplate(client, { workspaceId, config, step }) {
@@ -162,6 +239,7 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
   let environmentId, serviceId;
   if (!source) {
     const made = (await client.call("ProjectCreate", { input: { name: SOURCE_PROJECT, workspaceId, description: "The source of AgentRun's Railway template (deploy/railway/template.json). Never deployed." } })).projectCreate;
+    await inWorkspace(client, made, workspaceId);
     source = made;
     environmentId = edges(made.environments)[0].id;
     serviceId = (await client.call("ServiceCreate", { input: { projectId: made.id, environmentId, name: service.name } })).serviceCreate.id;
@@ -197,15 +275,33 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
   return made;
 }
 
-/** One deploy of the template into a throwaway project, checked as a person who clicks the button meets it, then deleted. */
-async function walk(client, { workspaceId, template, step }) {
+const minutes = (ms) => `${(ms / 60_000).toFixed(1)} min`;
+
+/** What the project used, from Railway's usage query, costed at the list prices; or why it could not be read. */
+async function usageOf(client, projectId, since) {
+  try {
+    const got = (await client.call("Usage", { projectId, startDate: new Date(since).toISOString() })).usage;
+    const by = Object.fromEntries(got.map((u) => [u.measurement, u.value]));
+    const usd = Object.entries(PRICE_PER_MINUTE).reduce((sum, [m, p]) => sum + (by[m] ?? 0) * p, 0) + (by.NETWORK_TX_GB ?? 0) * PRICE_PER_GB_EGRESS;
+    return got.length ? { usd, by } : { usd: null, why: "Railway's usage query answered no measurements yet" };
+  } catch (error) {
+    return { usd: null, why: error.message };
+  }
+}
+
+/** One deploy of the template into a throwaway project, checked as a person who clicks the button meets it, then deleted.
+ *  With `firstRun` ({key, model}), the key goes in the form as a person pastes it, and the walk ends with that person's
+ *  first run: an agent made and run to completion over the API with the deploy's own AGENTRUN_TOKEN. */
+async function walk(client, { workspaceId, template, step, firstRun, times }) {
   const { service } = onlyService(template.serializedConfig);
   let projectId;
   try {
-    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: template.serializedConfig, workspaceId } })).templateDeployV2;
+    times.clicked = Date.now();
+    const config = formValues(template.serializedConfig, firstRun ? { [FIRST_RUN.keyName]: firstRun.key } : {});
+    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: config, workspaceId } })).templateDeployV2;
     projectId = deployed.projectId;
     await client.call("ProjectRename", { id: projectId, name: `${WALK_PROJECT}-${Date.now()}` });
-    step.pass("template deployed", `into a new project ${projectId}`);
+    step.pass("template deployed", `into a new project ${projectId}${firstRun ? `, ${FIRST_RUN.keyName} given in the form (value not shown)` : ""}`);
     if (deployed.workflowId) {
       await until(client, "the template's deploy workflow completed", 10 * 60_000, 5_000, async () => {
         const s = (await client.call("WorkflowStatus", { id: deployed.workflowId })).workflowStatus;
@@ -214,6 +310,7 @@ async function walk(client, { workspaceId, template, step }) {
       });
     }
     const project = (await client.call("Project", { id: projectId })).project;
+    await inWorkspace(client, project, workspaceId);
     const environmentId = edges(project.environments)[0]?.id;
     const serviceId = edges(project.services).find((s) => s.name === service.name)?.id;
     if (!environmentId || !serviceId) throw new Error(`the walk's project has no service named ${service.name}`);
@@ -222,7 +319,8 @@ async function walk(client, { workspaceId, template, step }) {
       if (d && ["FAILED", "CRASHED", "REMOVED", "SKIPPED"].includes(d.status)) throw new Error(`the service's deploy ended ${d.status} (deployment ${d.id})`);
       return d?.status === "SUCCESS" ? d : undefined;
     });
-    step.pass("deploy succeeded", `deployment ${deployment.id}: SUCCESS, after Railway's health check on ${service.deploy.healthcheckPath}`);
+    times.deployed = Date.now();
+    step.pass("deploy succeeded", `deployment ${deployment.id}: SUCCESS, after Railway's health check on ${service.deploy.healthcheckPath}, ${minutes(times.deployed - times.clicked)} after the deploy started`);
 
     const domain = (await client.call("Domains", { projectId, environmentId, serviceId })).domains.serviceDomains[0];
     if (!domain) throw new Error("the service has no Railway domain");
@@ -233,13 +331,15 @@ async function walk(client, { workspaceId, template, step }) {
     const vars = (await client.call("Variables", { projectId, environmentId, serviceId })).variables;
     const made = [/^[0-9a-f]{64}$/.test(vars.AGENTRUN_TOKEN ?? ""), /^[A-Za-z0-9+/]{43}=$/.test(vars.AGENTRUN_SEAL_KEY ?? ""), vars.AGENTRUN_PUBLIC_URL === base];
     if (made.includes(false)) throw new Error(`the deploy's variables are not as made by the template: AGENTRUN_TOKEN 64 hex ${made[0]}, AGENTRUN_SEAL_KEY 32 bytes in base64 ${made[1]}, AGENTRUN_PUBLIC_URL ${base} ${made[2]}`);
-    step.pass("token and seal key made", "AGENTRUN_TOKEN: 64 hex characters; AGENTRUN_SEAL_KEY: 32 bytes in base64; AGENTRUN_PUBLIC_URL: the domain (values not shown)");
+    if (firstRun && vars[FIRST_RUN.keyName] !== firstRun.key) throw new Error(`${FIRST_RUN.keyName} given in the form is not the service's`);
+    step.pass("token and seal key made", `AGENTRUN_TOKEN: 64 hex characters; AGENTRUN_SEAL_KEY: 32 bytes in base64; AGENTRUN_PUBLIC_URL: the domain${firstRun ? `; ${FIRST_RUN.keyName}: the one given` : ""} (values not shown)`);
 
     const health = await until(client, `${base}/v2/health answered 200`, 5 * 60_000, 5_000, async () => {
       const r = await client.http(`${base}/v2/health`).catch(() => undefined);
       return r?.status === 200 ? r.json() : undefined;
     });
-    step.pass("healthy", `GET ${base}/v2/health: 200 ${JSON.stringify(health)}`);
+    times.healthy = Date.now();
+    step.pass("healthy", `GET ${base}/v2/health: 200 ${JSON.stringify(health)}, ${minutes(times.healthy - times.clicked)} after the deploy started`);
 
     const page = await client.http(`${base}/`, { headers: { accept: "text/html" } });
     if (page.status !== 200 || !/text\/html/.test(page.headers.get("content-type") ?? "")) throw new Error(`GET ${base}/ answered ${page.status} ${page.headers.get("content-type")}, not the console`);
@@ -260,19 +360,52 @@ async function walk(client, { workspaceId, template, step }) {
     });
     const answer = await setup.json().catch(() => ({}));
     if (setup.status !== 201 || answer.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(answer)}`);
+    times.setUp = Date.now();
     step.pass("token works as the setup code", `POST ${base}/v2/setup with AGENTRUN_TOKEN as the code: 201, signed in`);
+
+    if (firstRun) await firstRunOf(client, { base, token: vars.AGENTRUN_TOKEN, model: firstRun.model, step, times });
   } finally {
     if (projectId) {
+      const usage = await usageOf(client, projectId, times.clicked);
+      times.usage = usage;
+      step.pass("railway usage", usage.usd === null ? `not read: ${usage.why}` : `$${usage.usd.toFixed(4)} at list prices, from ${JSON.stringify(usage.by)} (CPU in vCPU-minutes, memory and disk in GB-minutes, egress in GB)`);
       try {
         await client.call("ProjectDelete", { id: projectId });
         const gone = await client.call("Project", { id: projectId }).then((d) => Boolean(d.project.deletedAt), () => true);
-        if (gone) step.pass("throwaway project deleted", projectId);
+        times.deleted = Date.now();
+        if (gone) step.pass("throwaway project deleted", `${projectId}, ${minutes(times.deleted - times.clicked)} after the deploy started`);
         else step.fail("throwaway project deleted", `${projectId} still reads as live: delete it in the dashboard`);
       } catch (error) {
         step.fail("throwaway project deleted", `${projectId}: ${error.message}; delete it in the dashboard`);
       }
     }
   }
+}
+
+/** The person's first run, over the API with the deploy's AGENTRUN_TOKEN: a no-tool agent on pi on the given model, one
+ *  run of it to completion, and what its model cost. */
+async function firstRunOf(client, { base, token, model, step, times }) {
+  const api = async (method, path, body) => {
+    const r = await client.http(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const got = await r.json().catch(() => ({}));
+    if (r.status >= 300) throw new Error(`${method} /v2${path} answered ${r.status}: ${got.error?.message ?? JSON.stringify(got).slice(0, 300)}`);
+    return got;
+  };
+  const definition = { ...FIRST_RUN.agent, harness: "pi", model, tools: [], place: { mode: "runner" }, max_cost_usd: FIRST_RUN.maxCostUsd };
+  const agent = await api("POST", "/agents", { definition });
+  step.pass("agent made", `"${FIRST_RUN.agent.name}" (${agent.agent_id}): pi on ${model}, no tools, on the runner, capped at $${FIRST_RUN.maxCostUsd}`);
+  const started = await api("POST", `/agents/${agent.agent_id}/runs`, { input: { content: FIRST_RUN.input } });
+  const run = await until(client, `run ${started.run_id} ended`, 10 * 60_000, 3_000, async () => {
+    const r = await api("GET", `/runs/${started.run_id}`);
+    return ["completed", "failed", "cancelled"].includes(r.status) ? r : undefined;
+  });
+  times.finished = Date.now();
+  times.runId = started.run_id;
+  times.modelUsd = run.cost?.usd ?? null;
+  if (run.status !== "completed") throw new Error(`run ${started.run_id} ended ${run.status}: ${JSON.stringify(run.error ?? null)}`);
+  const result = typeof run.result === "string" ? run.result : run.result?.content ?? JSON.stringify(run.result ?? null);
+  times.result = result;
+  step.pass("first run finished", `run ${started.run_id}: completed, model cost $${times.modelUsd}, ${minutes(times.finished - times.clicked)} after the deploy started; it wrote ${result.length} characters: ${JSON.stringify(result.slice(0, 160))}`);
 }
 
 /** A walk's longest run (its waits added up, with room to spare): a walk project younger than this may be another run's,
@@ -292,13 +425,17 @@ async function sweep(client, { workspaceId, step, now = Date.now() }) {
 }
 
 /** The whole run. `mode`: "publish" (the default), "walk" (an existing template, walked only) or "template" (one made in
- *  the editor, walked and published). Returns the report's rows. */
-export async function run(client, { workspaceId, mode = "publish", code, log = console.error }) {
+ *  the editor, walked and published). `expectWorkspace`: the workspace's name, checked before anything is made.
+ *  `firstRun`: {key, model} for the person's first run. Returns the report's rows; `times` gets the walk's timings. */
+export async function run(client, { workspaceId, mode = "publish", code, expectWorkspace, firstRun, times = {}, log = console.error }) {
   const step = rows(log);
   const config = loadTemplate();
   try {
     const ws = (await client.call("Workspace", { id: workspaceId })).workspace;
-    step.pass("workspace", `${ws.name} (${ws.id})`);
+    if (!ws) throw new Error(`workspace ${workspaceId} not found`);
+    if (expectWorkspace !== undefined && ws.name !== expectWorkspace) throw new Error(`workspace ${workspaceId} is named ${JSON.stringify(ws.name)}, not ${JSON.stringify(expectWorkspace)}: nothing was made`);
+    step.pass("workspace", `${ws.name} (${ws.id})${expectWorkspace !== undefined ? ", the one expected" : ""}`);
+    times.workspace = ws.name;
     await sweep(client, { workspaceId, step });
     let template;
     if (mode === "publish") template = await ensureTemplate(client, { workspaceId, config, step });
@@ -309,11 +446,13 @@ export async function run(client, { workspaceId, mode = "publish", code, log = c
     const off = differences(config, template.serializedConfig);
     if (off.length) throw new Error(`template ${template.code} would deploy something other than deploy/railway/template.json:\n  ${off.join("\n  ")}\nRailway's API can't change a template's services: make them match in the template editor (railway.com/workspace/templates), then run again with --template ${template.code}`);
     step.pass("template is template.json", `${template.code}: image, start command, health check, variables, domain port and volume as the repository has them`);
-    await walk(client, { workspaceId, template, step });
+    times.template = { id: template.id, code: template.code };
+    await walk(client, { workspaceId, template, step, firstRun, times });
     if (mode !== "walk" && !step.all.some((r) => r[1] === "FAIL")) {
       const readme = readFileSync(OVERVIEW, "utf8");
       const published = (await client.call("TemplatePublish", { id: template.id, input: { ...PUBLISH, readme, workspaceId } })).templatePublish;
-      step.pass("published", `${published.code}: ${published.status}, https://railway.com/deploy/${published.code}`);
+      times.template = { id: published.id, code: published.code, url: `https://railway.com/deploy/${published.code}` };
+      step.pass("published", `${published.code}: ${published.status}, ${times.template.url}`);
       const doc = readFileSync(README, "utf8");
       if (!doc.includes(buttonLine(published.code))) log(`\ndeploy/README.md: replace the line after\n  ${BUTTON_MARK}\nwith\n  ${buttonLine(published.code)}\n`);
     }
@@ -323,20 +462,22 @@ export async function run(client, { workspaceId, mode = "publish", code, log = c
   return step.all;
 }
 
-/** A stand-in for Railway, for --dry-run and the test: each call logged (its variables cut to a line), answered as a first
- *  run in an empty workspace would be, and a deploy whose server answers as a fresh AgentRun server does. No network. */
-export function planClient({ log, workspaceId }) {
+/** A stand-in for Railway, for --dry-run and the test: each call logged (its variables cut to a line, the deploy's config
+ *  never), answered as a first run in an empty workspace would be, and a deploy whose server answers as a fresh AgentRun
+ *  server does. No network. */
+export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) {
   const calls = [];
   const config = loadTemplate();
   const { key } = onlyService(config);
   const domain = "agentrun-production-0000.up.railway.app";
-  const env = renderVariables(onlyService(config).service, { domain });
+  let env = renderVariables(onlyService(config).service, { domain });
   const generated = { ...config, services: { "<template service id>": { ...config.services[key], volumeMounts: { "<template service id>": Object.values(config.services[key].volumeMounts)[0] } } } };
   const node = (id, name) => ({ edges: [{ node: { id, name } }] });
+  const workspace = { id: workspaceId, name: workspaceName };
   const answers = {
-    Workspace: () => ({ workspace: { id: workspaceId, name: "<workspace>" } }),
+    Workspace: () => ({ workspace }),
     Projects: () => ({ projects: { edges: [] } }),
-    ProjectCreate: () => ({ projectCreate: { id: "<source project>", name: SOURCE_PROJECT, environments: node("<source environment>", "production") } }),
+    ProjectCreate: () => ({ projectCreate: { id: "<source project>", name: SOURCE_PROJECT, workspace, environments: node("<source environment>", "production") } }),
     ServiceCreate: () => ({ serviceCreate: { id: "<source service>", name: "AgentRun" } }),
     VolumeCreate: () => ({ volumeCreate: { id: "<source volume>", name: "agentrun-volume" } }),
     ServiceDomainCreate: () => ({ serviceDomainCreate: { id: "<source domain>", domain: "agentrun-template-source.up.railway.app", targetPort: 7340 } }),
@@ -345,20 +486,26 @@ export function planClient({ log, workspaceId }) {
     TemplateSource: () => ({ templateSourceForProject: null }),
     TemplateGenerate: () => ({ templateGenerate: { id: "<template>", code: "<code>", status: "UNPUBLISHED", serializedConfig: generated } }),
     Template: (v) => ({ template: { id: "<template>", code: v.code, status: "PUBLISHED", serializedConfig: generated } }),
-    TemplateDeploy: () => ({ templateDeployV2: { projectId: "<walk project>", workflowId: "<workflow>" } }),
+    TemplateDeploy: (v) => {
+      // The form's values become the service's, as a deploy sets them.
+      for (const [name, value] of Object.entries(Object.values(v.input.serializedConfig.services)[0].variables)) if (value?.value !== undefined && !value.value.includes("${{")) env = { ...env, [name]: value.value };
+      return { templateDeployV2: { projectId: "<walk project>", workflowId: "<workflow>" } };
+    },
     ProjectRename: (v) => ({ projectUpdate: { id: v.id, name: v.name } }),
     WorkflowStatus: () => ({ workflowStatus: { status: "Complete", error: null } }),
-    Project: () => (calls.some((c) => c.op === "ProjectDelete") ? Promise.reject(new Error("Project not found")) : { project: { id: "<walk project>", name: WALK_PROJECT, deletedAt: null, environments: node("<walk environment>", "production"), services: node("<walk service>", "AgentRun") } }),
+    Project: () => (calls.some((c) => c.op === "ProjectDelete") ? Promise.reject(new Error("Project not found")) : { project: { id: "<walk project>", name: WALK_PROJECT, deletedAt: null, workspace, environments: node("<walk environment>", "production"), services: node("<walk service>", "AgentRun") } }),
     Deployments: () => ({ deployments: { edges: [{ node: { id: "<deployment>", status: "SUCCESS", createdAt: "<time>" } }] } }),
     Domains: () => ({ domains: { serviceDomains: [{ domain, targetPort: 7340 }] } }),
     Variables: () => ({ variables: env }),
     DeploymentLogs: () => ({ deploymentLogs: [{ message: `Set up this server: https://${domain}/setup#code=${"x".repeat(22)} (or paste AGENTRUN_TOKEN)`, timestamp: "<time>" }] }),
+    Usage: () => ({ usage: [{ measurement: "CPU_USAGE", value: 0.5 }, { measurement: "MEMORY_USAGE_GB", value: 3 }, { measurement: "DISK_USAGE_GB", value: 2 }, { measurement: "NETWORK_TX_GB", value: 0.001 }] }),
     TemplatePublish: () => ({ templatePublish: { id: "<template>", code: "<code>", status: "PUBLISHED" } }),
     ProjectDelete: () => ({ projectDelete: true }),
   };
-  const json = (status, body, type = "application/json") => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": type } });
+  const json = (status, body, type = "application/json") => ({ status, headers: { get: (n) => (n.toLowerCase() === "content-type" ? type : null) }, text: async () => (typeof body === "string" ? body : JSON.stringify(body)), json: async () => (typeof body === "string" ? JSON.parse(body) : body) });
   return {
     calls,
+    env: () => env,
     async call(op, variables) {
       calls.push({ op, variables });
       const shown = JSON.stringify(variables, (k, v) => (k === "serializedConfig" ? "<the template's config>" : v));
@@ -367,13 +514,17 @@ export function planClient({ log, workspaceId }) {
     },
     async http(url, init = {}) {
       const path = new URL(url).pathname;
-      calls.push({ op: `${init.method ?? "GET"} ${path}` });
-      log(`  → ${init.method ?? "GET"} ${url}`);
+      const method = init.method ?? "GET";
+      calls.push({ op: `${method} ${path}`, headers: init.headers, body: init.body });
+      log(`  → ${method} ${url}`);
       if (path === "/v2/health") return json(200, { status: "ok", checks: { store: "ok", disk: "ok" } });
       if (path === "/") return json(200, "<!doctype html>", "text/html; charset=utf-8");
       if (path === "/v2/auth/session") return json(200, { accounts: true, password_set: false, signed_in: false, setup_code: true });
       if (path === "/v2/setup") return json(201, { signed_in: true });
-      return json(404, { error: "not_found" });
+      if (path === "/v2/agents" && method === "POST") return json(201, { agent_id: "<agent>" });
+      if (/^\/v2\/agents\/[^/]+\/runs$/.test(path) && method === "POST") return json(201, { run_id: "<run>" });
+      if (path.startsWith("/v2/runs/")) return json(200, { run_id: "<run>", status: "completed", cost: { usd: 0.0004 }, result: { content: "# Release notes\n- Runs page: export runs as CSV." } });
+      return json(404, { error: { code: "not_found" } });
     },
     sleep: async () => {},
   };
@@ -385,34 +536,58 @@ export function report(all) {
   return [`Verdict: ${verdict}`, "", "| step | result | evidence |", "| --- | --- | --- |", ...all.map((r) => `| ${r.map((c) => c.replace(/\|/g, "\\|").replace(/\n/g, " ")).join(" | ")} |`)].join("\n");
 }
 
+/** NAME=VALUE lines (stdin's, with --secrets-stdin), as an object. */
+export const secretLines = (text) => Object.fromEntries(text.split("\n").map((l) => /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(l.replace(/\r$/, ""))).filter(Boolean).map((m) => [m[1], m[2]]));
+
+async function readStdin() {
+  let text = "";
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
+}
+
 async function main(argv) {
-  const usage = "usage: publish-and-walk.sh WORKSPACE_ID [--walk CODE | --template CODE] | --dry-run [WORKSPACE_ID] | --check-api";
+  const usage = "usage: publish-and-walk.sh WORKSPACE_ID [--expect-workspace NAME] [--walk CODE | --template CODE] [--first-run [--model ID]] [--secrets-stdin] | --dry-run [WORKSPACE_ID] | --check-api";
   const log = (line) => console.error(line);
   const flag = (name) => {
     const i = argv.indexOf(name);
     return i < 0 ? undefined : argv.splice(i, 2)[1] ?? "";
   };
+  const has = (name) => {
+    const i = argv.indexOf(name);
+    return i >= 0 && argv.splice(i, 1).length === 1;
+  };
   if (argv[0] === "--check-api") {
     log(`Every operation against ${API}, with no token:`);
     return (await checkApi(liveClient({}), log)) ? 1 : 0;
   }
+  const walkCode = flag("--walk");
+  const templateCode = flag("--template");
+  const expectWorkspace = flag("--expect-workspace");
+  const model = flag("--model");
+  const firstRun = has("--first-run");
+  const fromStdin = has("--secrets-stdin");
   if (argv[0] === "--dry-run") {
-    const client = planClient({ log, workspaceId: argv[1] ?? "<workspace id>" });
+    const workspaceId = argv[1] ?? "<workspace id>";
+    const client = planClient({ log, workspaceId, workspaceName: expectWorkspace ?? "<workspace>" });
     log("The plan: a first run in a workspace with no template yet, every call in order, against a stand-in for Railway (no network, no token).");
-    const all = await run(client, { workspaceId: argv[1] ?? "<workspace id>", log });
+    const all = await run(client, { workspaceId, expectWorkspace, firstRun: { key: "<the key given in the form>", model: model ?? FIRST_RUN.model }, log });
     console.log(report(all));
     return 0;
   }
-  const walkCode = flag("--walk");
-  const templateCode = flag("--template");
   const [workspaceId, ...rest] = argv;
-  if (!workspaceId || workspaceId.startsWith("-") || rest.length || walkCode === "" || templateCode === "" || (walkCode && templateCode)) {
+  if (!workspaceId || workspaceId.startsWith("-") || rest.length || [walkCode, templateCode, expectWorkspace, model].includes("") || (walkCode && templateCode)) {
     log(usage);
     return 2;
   }
-  const token = process.env.RAILWAY_API_TOKEN;
+  const secrets = fromStdin ? secretLines(await readStdin()) : {};
+  const token = secrets.RAILWAY_API_TOKEN ?? process.env.RAILWAY_API_TOKEN;
   if (!token) {
-    log("RAILWAY_API_TOKEN is not set: an account or workspace token of the workspace (railway.com/account/tokens), from the environment, never an argument.");
+    log("RAILWAY_API_TOKEN is not set: a token of the workspace (railway.com/account/tokens), from the environment or, with --secrets-stdin, a RAILWAY_API_TOKEN=... line on stdin; never an argument.");
+    return 2;
+  }
+  const key = secrets[FIRST_RUN.keyName] ?? process.env[FIRST_RUN.keyName];
+  if (firstRun && !key) {
+    log(`--first-run needs ${FIRST_RUN.keyName}, from the environment or a ${FIRST_RUN.keyName}=... line on stdin with --secrets-stdin.`);
     return 2;
   }
   log(`Every operation against ${API}, with no token:`);
@@ -421,10 +596,13 @@ async function main(argv) {
     return 1;
   }
   const mode = walkCode ? "walk" : templateCode ? "template" : "publish";
-  const all = await run(liveClient({ token }), { workspaceId, mode, code: walkCode ?? templateCode, log });
+  const times = {};
+  const all = await run(liveClient({ token }), { workspaceId, mode, code: walkCode ?? templateCode, expectWorkspace, firstRun: firstRun ? { key, model: model ?? FIRST_RUN.model } : undefined, times, log });
   const text = report(all);
   console.log(text);
   if (process.env.REPORT) writeFileSync(process.env.REPORT, `${text}\n`);
+  const { result, ...facts } = times;
+  if (process.env.TIMES) writeFileSync(process.env.TIMES, `${JSON.stringify({ ...facts, result }, null, 2)}\n`);
   return all.every((r) => r[1] === "PASS") ? 0 : 1;
 }
 

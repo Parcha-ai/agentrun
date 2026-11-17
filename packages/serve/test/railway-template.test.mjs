@@ -10,7 +10,7 @@ import { sealKeyOf } from "../dist/tool-keys.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const { differences, loadTemplate, onlyService, renderValue, renderVariables, startArgv } = await import(new URL("deploy/railway/template.mjs", ROOT));
-const { BUTTON_MARK, BUTTON_PLACEHOLDER, WALK_MAX_MS, buttonLine, planClient, run, sourcePatch } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
+const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
 const { dockerRunArgs } = await import(new URL("deploy/railway/local-walk.mjs", ROOT));
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
 const { service } = onlyService(loadTemplate());
@@ -142,6 +142,50 @@ test("a first run: the source project made, the template generated and checked, 
   const env = (await client.call("Variables", {})).variables;
   for (const secret of [env.AGENTRUN_TOKEN, env.AGENTRUN_SEAL_KEY]) assert.ok(!lines.some((l) => l.includes(secret)), "a generated secret was printed");
   assert.ok(lines.some((l) => l.includes(buttonLine("<code>"))), "the README's button line is printed");
+});
+
+test("the first run: the model key goes in the deploy's form, never in the output, and the run finishes before the project is deleted", async () => {
+  const lines = [];
+  const key = `sk-or-v1-${"k".repeat(40)}`;
+  const client = planClient({ log: (l) => lines.push(l), workspaceId: "ws", workspaceName: "Parcha" });
+  const times = {};
+  const rows = await run(client, { workspaceId: "ws", expectWorkspace: "Parcha", firstRun: { key, model: FIRST_RUN.model }, times, log: (l) => lines.push(l) });
+  assert.deepEqual(rows.filter((r) => r[1] !== "PASS"), []);
+  const deploy = client.calls.find((c) => c.op === "TemplateDeploy").variables.input.serializedConfig;
+  assert.equal(Object.values(deploy.services)[0].variables[FIRST_RUN.keyName].value, key);
+  assert.ok(!lines.some((l) => l.includes(key)) && !rows.some((r) => r[2].includes(key)), "the model key was printed");
+  const agent = JSON.parse(client.calls.find((c) => c.op === "POST /v2/agents").body).definition;
+  assert.deepEqual([agent.name, agent.harness, agent.model, agent.tools, agent.place], ["Release notes", "pi", FIRST_RUN.model, [], { mode: "runner" }]);
+  assert.equal(JSON.parse(client.calls.find((c) => /^POST \/v2\/agents\/.+\/runs$/.test(c.op)).body).input.content, FIRST_RUN.input);
+  const ops = client.calls.map((c) => c.op);
+  assert.ok(ops.findIndex((o) => o.startsWith("GET /v2/runs/")) < ops.indexOf("Usage") && ops.indexOf("Usage") < ops.indexOf("ProjectDelete"), ops.join(" "));
+  assert.deepEqual([times.workspace, times.runId, times.modelUsd], ["Parcha", "<run>", 0.0004]);
+  assert.ok(times.clicked <= times.healthy && times.healthy <= times.finished && times.finished <= times.deleted);
+});
+
+test("a workspace not named as expected stops the run before anything is made", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws", workspaceName: "Someone else" });
+  const rows = await run(client, { workspaceId: "ws", expectWorkspace: "Parcha", log: quiet });
+  assert.match(rows.at(-1)[2], /named "Someone else", not "Parcha": nothing was made/);
+  assert.deepEqual(client.calls.map((c) => c.op), ["Workspace"]);
+});
+
+test("the deploy form takes a given value, else the default; an optional variable with neither is left out", () => {
+  const config = loadTemplate();
+  const vars = Object.values(formValues(config, { OPENROUTER_API_KEY: "given" }).services)[0].variables;
+  assert.equal(vars.OPENROUTER_API_KEY.value, "given");
+  assert.equal(vars.AGENTRUN_TOKEN.value, service.variables.AGENTRUN_TOKEN.defaultValue);
+  assert.equal(vars.ANTHROPIC_API_KEY.value, undefined);
+  assert.equal(Object.values(config.services)[0].variables.OPENROUTER_API_KEY.value, undefined, "the template's config is left as it was");
+});
+
+test("curl gets the request's headers and body on stdin, quoted, and nothing of them in its arguments", () => {
+  const body = JSON.stringify({ code: "s3cr\"t\\x", note: "a\nb" });
+  const config = curlConfig({ authorization: "Bearer tok-123" }, body);
+  assert.equal(config, `header = "authorization: Bearer tok-123"\ndata-binary = "${body.replace(/[\\"]/g, (c) => `\\${c}`)}"\n`);
+  const args = curlArgs("https://example.test/x", { method: "POST" });
+  assert.ok(!args.some((a) => a.includes("tok-123") || a.includes("s3cr")), args.join(" "));
+  assert.deepEqual(args.slice(args.indexOf("-K"), args.indexOf("-K") + 2), ["-K", "-"]);
 });
 
 test("a walk that fails deletes its project and publishes nothing", async () => {
