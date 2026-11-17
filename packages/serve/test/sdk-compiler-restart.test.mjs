@@ -57,9 +57,9 @@ for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real comp
  const requests=sent.length;assert.equal(requests,2,"no look-back on any run; the fifth run's end asks only the compile: the malformed answer, then the corrected one");
  await settle(runId);
  assert.equal(sent.length,requests,"reclaim reuses all durable answers, with no repeated paid request");
- const kept=await s.store.learning.proposal(runId);assert.equal(kept.proposal.state,"proposed",JSON.stringify(kept.proposal));
+ const kept=await s.store.learning.proposal(runId);assert.equal(kept.proposal.state,"merged",JSON.stringify(kept.proposal));
  assert.deepEqual(kept.proposal.compiled.attempts.map(a=>a.ok),[false,true]);
- assert.ok(kept.proposal.proposal.files.some(f=>f.file==="workflows/release-status/workflow.json"));
+ assert.deepEqual(kept.proposal.workflows,[{file:"workflows/release-status/workflow.json",name:"release-status"}],"the passing draft commits directly");
  const view=await sdk("GET",`/sdk-runs/${runId}`);assert.equal(view.status,200,JSON.stringify(view.body));
  assert.deepEqual(view.body.learning.compiled.attempts.map(a=>a.ok),[false,true],"the actual SDK HTTP learning response retains both compiler attempts");
  assert.equal(view.body.learning.compiled.digest,kept.proposal.compiled.digest);assert.deepEqual(view.body.learning.draft_errors,[],"the HTTP contract reports no remaining draft errors after correction");
