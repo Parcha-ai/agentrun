@@ -2,7 +2,7 @@
 // found, with two choices: keep the directory with the earlier version, or start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
 // not made yet, or one holding this version's store) opens.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,21 @@ for (const [what, make, named] of SHAPES) {
     assert.deepEqual(readdirSync(dir, { recursive: true }).sort(), before, "nothing made, moved or removed");
   });
 }
+
+test("a disk mounted as the data directory opens though its lost+found is root's and closed, and an earlier version's file beside it is still found", async (t) => {
+  const dir = dataDir(t);
+  const lost = join(dir, "lost+found");
+  mkdirSync(lost);
+  chmodSync(lost, 0o000);
+  try {
+    const store = await openSqliteStore({ dataDir: dir, role: "server" });
+    await store.close();
+    file(join(dir, "triggers.json"));
+    await assert.rejects(openSqliteStore({ dataDir: dir, role: "server" }), (error) => error.name === "StoreFromEarlierVersion" && error.found.includes("triggers.json"));
+  } finally {
+    chmodSync(lost, 0o700);
+  }
+});
 
 test("an empty data directory, one not made yet, and one holding this version's store all open", async (t) => {
   const empty = dataDir(t);
