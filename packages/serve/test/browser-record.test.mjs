@@ -79,7 +79,14 @@ async function browserRun({ record, ffmpeg }) {
   closers.push(() => view.close());
   const id = await claim.computer.browser.open("ar-run-1-1", 600);
   await view.open("ar-run-1-1", fake.url);
-  return { fake, claim, view, id, folder, lines, changed: sessionRecordings(view, claim.computer.browser.record) };
+  // Each recording the claim's `record` makes, so a test can wait on its facts (frames written to ffmpeg).
+  const recordings = [];
+  const kept = claim.computer.browser.record && ((computer, watch) => {
+    const recording = claim.computer.browser.record(computer, watch);
+    recordings.push(recording);
+    return recording;
+  });
+  return { fake, claim, view, id, folder, lines, recordings, changed: sessionRecordings(view, kept) };
 }
 
 test("record on: a session's screencast, shared with the live view, makes recordings/<computer>.mp4 of its frames; every frame is acked", async (t) => {
@@ -89,13 +96,17 @@ test("record on: a session's screencast, shared with the live view, makes record
   await run.changed("ar-run-1-1", run.id);
   await until(() => run.fake.screencasts().length === 1, "the live view's screencast");
   const page = readFileSync(new URL("../docker/frame.jpg", import.meta.url));
-  // Two frames, the second sent once the first is acked and half a second on (so ffmpeg reads them apart, however late
-  // it reads), then the release.
+  // Two frames, each acked and written to ffmpeg before the next step (an ack comes from the live view at once, while
+  // ffmpeg may still be starting on a loaded machine), the second half a second after the first so ffmpeg reads them
+  // apart however late it reads; then the release.
+  const [recording] = run.recordings;
   assert.ok(run.fake.frame({ bytes: page }));
   await until(() => run.fake.acks.length === 1, "the first frame's ack, with no viewer open");
+  await until(() => recording.facts().written === 1, "the first frame written to ffmpeg", 30_000);
   await sleep(500);
   assert.ok(run.fake.frame({ bytes: page }));
   await until(() => run.fake.acks.length === 2, "the second frame's ack, with no viewer open");
+  await until(() => recording.facts().written === 2, "the second frame written to ffmpeg", 30_000);
   await run.changed("ar-run-1-1", null);
   assert.deepEqual(run.lines, [`Recording the browser's screen into recordings/${run.id}.mp4.`]);
   const probed = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,nb_read_frames:format=duration", "-of", "json", join(run.folder, `${run.id}.mp4`)], { encoding: "utf8" }));
