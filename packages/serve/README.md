@@ -930,6 +930,13 @@ A desktop, a phone and a browser run in either mode. The run's folder is at
   followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
   with a link on the way.
 
+**The run's scratch.** `bash`'s `TMPDIR` is `.agentrun/tmp` in the run's folder, and a cut answer's full output is in
+`.agentrun/output/`. The run's end removes both before its end commit: through the computer when it mounts the folder,
+else through the folder itself. A computer that mounts the folder from Archil holds Archil's write delegation for it
+until its release, so Archil refuses the server's own deletes there until then; the computer's deletes sync to the disk
+before they answer. If that computer no longer answers, a Mode 2 run's scratch stays and the release logs why. A park
+that keeps the computer removes neither.
+
 **An agent with no setting.** With no `computer` and no `place`, the server decides at each run's start: in Mode 1, the
 Docker sandbox where this server's Docker answers, else no computer; in Mode 2, no computer. A workflow always runs with
 no computer.
