@@ -9,7 +9,7 @@
 // older server wrote is scrubbed at the start.
 import assert from "node:assert/strict";
 import { randomBytes, randomInt } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -929,6 +929,43 @@ test("a create answer kept under an Idempotency-Key with a field only its event'
   assert.equal(replay.headers.get("idempotent-replayed"), "true", "the record still replays");
   assert.ok(!JSON.stringify(replay.body).includes(value), `its replay holds no value: ${JSON.stringify(replay.body.source?.config)}`);
   assert.equal(replay.body.source.config.hub_value, MASK);
+});
+
+test("a cached create answer that cannot be saved masked (the file's write fails) once the after-start seal wrote the trigger: the trigger stays sealed with its value kept, the failed save is said by a code, the replay is masked, and the next save writes the record masked", async (t) => {
+  const { s, value, id } = await keptUnmarked(t);
+  const body = { name: "form", source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu", hub_value: value } } };
+  const answer = { status: 201, body: { id, ...body }, headers: { location: `/v2/triggers/${id}` } };
+  const { stable } = await import("../dist/validate.js");
+  writeFileSync(join(s.server.data, ".idempotency.json"), JSON.stringify({ version: 1, entries: [[`/triggers\nform-key`, { fingerprint: stable(body), at: Date.now(), answer }]] }), { mode: 0o600 });
+  // A directory where the save writes first: every save of the file fails until it goes.
+  const partial = join(s.server.data, ".idempotency.json.partial");
+  mkdirSync(partial);
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  const ended = await lineOf(lines, (l) => (l.includes("composio_config_sealed") || l.includes("composio_config_not_sealed")) && l.includes(id));
+  assert.match(ended ?? "", /composio_config_sealed/, `a failed save of the cached answer does not undo a seal already written: ${JSON.stringify(lines.filter((l) => l.includes("composio") || l.includes("idempotency")))}`);
+  const read = await again.api("GET", `/triggers/${id}`);
+  assert.equal(read.body.source.config.hub_value, MASK, "the trigger stays masked");
+  const { bootSealKey } = await import("../dist/seal-key.js");
+  const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
+  const adapter = await import("../dist/trigger-composio.js");
+  const seal = await bootSealKey(again.store, again.data, { role: "runner" });
+  const settings = sealedSettingsOverStore(again.store, "composio", adapter.composio.settings, seal.key, () => undefined);
+  await settings.load();
+  assert.equal(settings.get(adapter.configScope(id, "hub_value"), adapter.CONFIG_SECRET), value, "its sealed value is kept");
+  const failed = await lineOf(lines, (l) => l.includes("idempotency_not_saved"));
+  assert.match(failed ?? "", /trigger=trg_/, `the failed save is said, naming the trigger: ${JSON.stringify(lines.filter((l) => l.includes("idempotency")))}`);
+  assert.match(failed ?? "", /error=[A-Za-z_]+/, "by a code");
+  assert.ok(!lines.some((l) => l.includes(value)), "no line holds the value");
+  const replay = await again.api("POST", "/triggers", body, { "idempotency-key": "form-key" });
+  assert.equal(replay.headers.get("idempotent-replayed"), "true");
+  assert.equal(replay.body.source.config.hub_value, MASK, "the replay is masked");
+  // Once the file can be written, the next save writes every kept record, this one masked.
+  rmSync(partial, { recursive: true });
+  assert.equal((await again.api("POST", "/triggers", { ...dealTrigger(""), name: "other", source: { ...body.source, config: { app_id: "4242", region: "eu" } } }, { "idempotency-key": "other-key" })).status, 201);
+  const record = readFileSync(join(again.data, ".idempotency.json"), "utf8");
+  assert.ok(record.includes("form-key"), "the record is still kept");
+  assert.ok(!record.includes(value), "and saved without the value");
 });
 
 test("with Composio down, the start still serves, says once by a code that the schemas were not read, and leaves the trigger for the next start", async (t) => {
