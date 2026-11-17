@@ -967,6 +967,23 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
   return valid.ok ? [] : valid.issues;
 };
 
+/** A DSL issue as a refusal says it: its code, where, and its words (cut at 200). */
+const issueWords = (issue: { readonly code: string; readonly path: string; readonly message: string }): string => `${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}`;
+
+/** The first thing this release's workflow DSL refuses in a learned workflow's text on its own (`validateWorkflow`, no code
+ *  run, no tool list: a refusal of the text, never of a host setting such as a tool gated, denied or missing), in the
+ *  words a run's refusal gives it (draftProblems); undefined when the DSL takes it, or it is no JSON (no DSL issue). */
+export function dslRefusalOf(dsl: DraftReader, text: string): string | undefined {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const issue = issuesOf(dsl, doc)[0];
+  return issue ? issueWords(issue) : undefined;
+}
+
 /** Why `workflows/<name>/workflow.json` is not a draft the host can run; empty when it is. The DSL's own
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked),
  *  and with `tools`, so a node that names a tool outside them is its error: a harness's own tool (Bash, exec_command,
@@ -986,7 +1003,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   // (gatedNodes), not the DSL's for a tool it was never given.
   const listed = tools ? [...tools, ...Object.keys(gated)] : undefined;
   const issues = issuesOf(dsl, doc, listed);
-  if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
+  if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issueWords(issue)}` }));
   let out: DraftProblem[];
   try {
     // A label names one step (workflow-nodes.ts repeatedLabels): its events and escalation read by it.

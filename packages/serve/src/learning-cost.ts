@@ -155,8 +155,9 @@ export type RevisionShare = RevisionSpend & { served: number; attributed_usd: nu
 
 /** A hold of a learned workflow, placed on the series by the server (agentCostOverStore): `n` the first run that does a
  *  job from it on (its number among them, as the points have it; null when none has run since), `by` what held it (its
- *  audits, or a check of a new revision), and its record's `reason`. */
-export type BillHold = { n: number | null; at: string; workflow: string; by: "audit" | "check"; reason: string };
+ *  audits, a check of a new revision, or this release's workflow DSL refusing the serving revision: a hold with neither
+ *  `audit` nor `check`, runner/promotion.ts holdRefused), and its record's `reason`. */
+export type BillHold = { n: number | null; at: string; workflow: string; by: "audit" | "check" | "dsl"; reason: string };
 
 /** The owner's bill over the series (GET /agents/{id}/learning/cost `bill`, billOf), booked $ only: `points`, one a run
  *  that does a job; `baseline` the mean own $ (learning left out) of the `agent` runs before the first served run (every

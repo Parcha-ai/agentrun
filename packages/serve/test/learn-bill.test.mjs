@@ -165,13 +165,23 @@ test("billOf: booked spend after a withheld last job joins no point but is in th
   assert.equal(carried.booked_usd, 9.45);
 });
 
+test("billOf: replay spend with no job to join is still booked: an owner who archived every job run keeps the replays' dollars", () => {
+  const replays = [{ ...row(1, "replay", 1, 0.3), run_id: "replay-1" }, { ...row(2, "replay", 2, 0.3), run_id: "replay-2" }];
+  const bill = billOf(replays, null);
+  assert.deepEqual(bill.points, [], "no job, no point");
+  assert.equal(bill.booked_usd, 0.6, "both replays booked");
+  assert.deepEqual([bill.break_even, bill.gap_usd, bill.withheld], [null, null, 0]);
+});
+
 const C = "c".repeat(16);
 const compiled = (digest, cost) => (digest ? { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest } : { workflow: "answer", from_notes: [], attempts: [{ ok: false, errors: [cost.error] }] });
 /** A kept round that looked back: its job's cost, its look-back's (the compile turn's among it) and, when it compiled,
- *  the compile turn's spend and the draft it kept (none when every draft failed its checks). */
-const kept = ({ job, look, compile, digest, error }) => ({
-  state: "dropped", reason: "empty", detail: "kept nothing", answered_at: at(0), job_cost_usd: job, look_back_usd: look,
-  ...(compile === undefined ? {} : { compile_usd: compile, compiled: compiled(digest, { error }), ...(digest ? {} : { draft_errors: [error] }) }),
+ *  the compile turn's spend and the draft it kept (none when every draft failed its checks). `capped`: the cap refused a
+ *  later attempt of the compile, so the round closed no_budget with the turn's spend and no draft at all
+ *  (runner/reflect-hook.ts `capped`). */
+const kept = ({ job, look, compile, digest, error, capped = false }) => ({
+  state: "dropped", reason: capped ? "no_budget" : "empty", detail: "kept nothing", answered_at: at(0), job_cost_usd: job, look_back_usd: look,
+  ...(compile === undefined ? {} : { compile_usd: compile, ...(capped ? {} : { compiled: compiled(digest, { error }), ...(digest ? {} : { draft_errors: [error] }) }) }),
 });
 
 /** Agent `agent-1` over the A8 split, each run a minute apart:
@@ -183,8 +193,10 @@ const kept = ({ job, look, compile, digest, error }) => ({
  *  - C's check: replay-1 and replay-2 at `replay` each ($0.30 by default);
  *  - C promoted (compile_after 3), then four runs it served at $0.10 (run-04 to run-07);
  *  - run-08, an agent run at $3.00 by hand after them;
- *  - `records`: the promotion feed (C's promote by default). */
-async function splitStore(t, { replay = 0.3, records } = {}) {
+ *  - `records`: the promotion feed (C's promote by default);
+ *  - `capped`: run-03's compile spent its $0.20 on a draft the checks refused, then the cap refused its next attempt, so
+ *    its round kept the spend and no draft. */
+async function splitStore(t, { replay = 0.3, records, capped = false } = {}) {
   const clock = { now: Date.parse(at(0)) };
   const { store } = await storeOn(t, { clock });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
@@ -198,7 +210,7 @@ async function splitStore(t, { replay = 0.3, records } = {}) {
   const served = { path: "workflow", workflow: "answer", workflow_digest: C };
   await end("run-01", 1, { path: "agent" });
   await end("run-02", 1.5, { path: "agent" }, { round: kept({ job: 1, look: 0.5, compile: 0.3, digest: C }) });
-  await end("run-03", 1.25, { path: "agent" }, { round: kept({ job: 1, look: 0.25, compile: 0.2, error: "its draft failed its checks" }) });
+  await end("run-03", 1.25, { path: "agent" }, { round: kept({ job: 1, look: 0.25, compile: 0.2, error: "its draft failed its checks", capped }) });
   for (const id of ["replay-1", "replay-2"]) await end(id, replay, { path: "replay", workflow: "answer", workflow_digest: C, replay: { of: "run-01", outcome: "answered" } }, { body: { ...LEARNS, replay: { of: "run-01", workflow: "answer", digest: C } } });
   const promotedAt = at((minute += 1));
   for (const id of ["run-04", "run-05", "run-06", "run-07"]) await end(id, 0.1, served);
@@ -250,6 +262,14 @@ test("A8 (3): a compile whose drafts all failed has no revision to serve: its tu
   assert.equal(cost.bill.booked_usd, 7.75);
 });
 
+test("A8 (3b): a compile the cap stopped after a refused draft keeps its turn's spend apart: unattributed on the agent ledger, never on its run's learning_usd", async (t) => {
+  const store = await splitStore(t, { capped: true });
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.equal(cost.bill.unattributed_usd, 0.2, "run-03's compile turn, no draft kept");
+  const all = await v2Of(store, cost.bill);
+  assert.deepEqual([all["run-03"].usd, all["run-03"].learning_usd, all["run-03"].all_in_usd], [1, 0.05, 1.05], "its look-back less its compile turn");
+});
+
 test("A8: a served run whose revision's check cost is unknown reports learning_usd and all_in_usd null, never $0; the ledger's remainder is unknown too", async (t) => {
   const store = await splitStore(t, { replay: null });
   const cost = await agentCostOverStore(store, "agent-1");
@@ -280,4 +300,15 @@ test("the bill's holds: each at its run of the whole series, placed by the serve
   const read = await agentCostOverStore(store, "agent-1", 2);
   assert.deepEqual(read.runs.map((run) => run.run_id), ["run-11", "run-12"], "only the 2 latest runs listed");
   assert.deepEqual(read.bill.holds, [{ n: 8, at: at(11), workflow: "answer", by: "check", reason: "held" }], "B's hold at run-11, the first job from it on");
+});
+
+test("the bill's holds say what held each: a hold this release's workflow DSL wrote (neither check nor audit) is `dsl`, never a check's", async (t) => {
+  const { DSL_REFUSES } = await import("../dist/runner/promotion.js");
+  const store = await ledgerStore(t);
+  const { items } = await store.settings.get("learning.promotions.agent-1");
+  const refused = { workflow: "answer", digest: A, at: at(12), decided: "hold", reason: `${DSL_REFUSES}: SCHEMA_UNKNOWN_KEY at root: a key this release does not take`, commit: "c".repeat(40) };
+  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [...items, refused] });
+  const read = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(read.bill.holds.map((one) => [one.n, one.by]), [[8, "check"], [9, "dsl"]], JSON.stringify(read.bill.holds));
+  assert.equal(read.bill.holds[1].reason, refused.reason);
 });

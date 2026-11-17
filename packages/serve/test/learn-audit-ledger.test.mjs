@@ -1,5 +1,5 @@
-// The shadow audit (runner/audit.ts, learn/audit.ts): a run its promoted learned workflow serves first (answered alone or
-// handed back) is drawn for an audit at 1/k, a seeded choice that is a function of the run's id alone (k is the agent
+// The shadow audit (runner/audit.ts, learn/audit.ts): a run its promoted learned workflow answered alone (path `workflow`;
+// never one it handed back) is drawn for an audit at 1/k, a seeded choice that is a function of the run's id alone (k is the agent
 // definition's `learning.audit_every`, 10 by default). A drawn run starts a shadow run at its end: the same agent on the
 // same input with learning off, marked as the audit of that run (its launch's `audit`, its record's path `audit`), billed
 // to the agent as learning cost, capped at what the served run's cap left (none left: no shadow, a `skipped` row). A

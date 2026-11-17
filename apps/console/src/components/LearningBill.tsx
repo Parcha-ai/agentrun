@@ -200,7 +200,7 @@ export function AuditLine({ serving, audits, bill }: { serving: readonly Serving
         <ul className="space-y-0.5 border-t px-4 py-3 font-mono text-small" data-testid="audit-holds">
           {holds.map((hold) => (
             <li key={`${hold.workflow}:${hold.at}`}>
-              {hold.n !== null ? `Held at run ${hold.n}` : `Held after run ${last ?? 0}`} <span className="text-muted-foreground">· {hold.workflow} · by its {hold.by === "audit" ? "audits" : "check"} · {when(hold.at)}</span>
+              {hold.n !== null ? `Held at run ${hold.n}` : `Held after run ${last ?? 0}`} <span className="text-muted-foreground">· {hold.workflow} · {hold.by === "audit" ? "by its audits" : hold.by === "check" ? "by its check" : "refused by this release's DSL"} · {when(hold.at)}</span>
             </li>
           ))}
         </ul>

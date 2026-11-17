@@ -82,6 +82,14 @@ describe("the audit line", () => {
     expect(holds[0]).toMatch(/^Held at run 7 · answer · by its audits/);
     expect(holds[1]).toMatch(/^Held after run 9 · answer · by its check/);
   });
+  it("says a hold this release's DSL wrote is the DSL's refusal, never a check's", () => {
+    const refused: Bill = { ...BILL, holds: [{ n: 8, at: hour(7), workflow: "answer", by: "dsl", reason: "this release's workflow DSL refuses it: SCHEMA_UNKNOWN_KEY at root" }] };
+    const host = draw(createElement(AuditLine, { serving: SERVING, audits: AUDITS, bill: refused }));
+    const holds = [...host.querySelectorAll("[data-testid=audit-holds] li")].map((li) => li.textContent);
+    expect(holds).toHaveLength(1);
+    expect(holds[0]).toMatch(/^Held at run 8 · answer · refused by this release's DSL/);
+    expect(holds[0]).not.toContain("check");
+  });
   it("says nothing of all time while the audits are read", () => {
     const host = draw(createElement(AuditLine, { serving: SERVING, audits: "loading", bill: BILL }));
     expect(host.textContent).toContain("Last 12 audits: 11 agreed");

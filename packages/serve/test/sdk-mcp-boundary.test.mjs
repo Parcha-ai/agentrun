@@ -12,21 +12,28 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       const fake = await startFakeMcp();
       t.after(() => fake.close());
       assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
-      let unavailableRequests = 0;
+      // What reached the unavailable endpoint, as the fake logs it: the HTTP method, the path and the JSON-RPC method.
+      const unavailableLog = [];
       if (registry === "missing") {
         assert.equal((await api("DELETE", "/settings/mcp-servers/fake")).status, 204);
       } else if (registry === "unavailable") {
         // Retain the registered URL and listing, but make its actual loopback endpoint unavailable.
         await fake.close();
         const unavailable = createServer((req, res) => {
-          unavailableRequests++;
-          req.resume();
-          res.writeHead(503).end("Fixture MCP server is unavailable.");
+          let body = "";
+          req.on("data", (chunk) => (body += chunk));
+          req.on("end", () => {
+            let method;
+            try { method = JSON.parse(body)?.method; } catch {}
+            unavailableLog.push({ http: req.method, path: req.url, method, at: Date.now() });
+            res.writeHead(503).end("Fixture MCP server is unavailable.");
+          });
         });
         await new Promise((resolve) => unavailable.listen(Number(new URL(fake.url).port), "127.0.0.1", resolve));
         t.after(() => new Promise((resolve) => { unavailable.close(resolve); unavailable.closeAllConnections(); }));
       }
-      const requests = () => fake.log.length + unavailableRequests;
+      const requests = () => fake.log.length + unavailableLog.length;
+      const seen = () => JSON.stringify({ fake: fake.log, unavailable: unavailableLog });
       const baseline = requests(), id = `sdk-${runtime}-${registry}`;
       const created = await api("POST", "/agents", {
         definition: { id, name: id, instructions: "Keep backend callback ownership.", sdk: { runtime }, learning: false, tools: ["mcp:fake/add"] },
@@ -38,12 +45,12 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       assert.deepEqual(edited.body.definition.sdk, { runtime });
       assert.deepEqual(edited.body.definition.tools, ["mcp:fake/add"], "editing preserves the backend's declared tools");
       assert.equal(edited.body.mcp_pin, null);
-      assert.equal(requests(), baseline, "SDK save and edit never list managed tools");
+      assert.equal(requests(), baseline, `SDK save and edit never list managed tools: ${seen()}`);
 
       const ordinary = await api("POST", `/agents/${id}/runs`, { input: { content: "Do not launch a managed harness." } });
       assert.equal(ordinary.status, 409, JSON.stringify(ordinary.body));
       assert.match(ordinary.body.error.message, /backend SDK/);
-      assert.equal(requests(), baseline, "a refused ordinary launch must not list managed MCP first");
+      assert.equal(requests(), baseline, `a refused ordinary launch must not list managed MCP first: ${seen()}`);
       assert.equal((await store.agents.revision(edited.body.revision)).mcpPin, null, "no managed MCP pin was written");
       assert.deepEqual((await api("GET", `/agents/${id}/runs`)).body.runs, [], "refusal creates no managed run");
 
@@ -55,7 +62,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       });
       assert.equal(inline.status, 409, JSON.stringify(inline.body));
       assert.match(inline.body.error.message, /backend SDK/);
-      assert.equal(requests(), baseline, "a refused inline SDK start must not list managed MCP before checking its mode");
+      assert.equal(requests(), baseline, `a refused inline SDK start must not list managed MCP before checking its mode: ${seen()}`);
       assert.equal((await api("GET", "/agents")).body.agents.length, 1, "refusal creates no inline agent");
 
       const started = await api("POST", `/agents/${id}/sdk-runs`, {
@@ -77,7 +84,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       assert.equal(run.result.final_answer, "5");
       assert.equal(run.sdk.runtime, runtime);
       assert.equal((await store.runs.launch(receipt.run_id)).body.harness, "sdk");
-      assert.equal(requests(), baseline, "recording the real backend callback must not invoke or pin managed MCP");
+      assert.equal(requests(), baseline, `recording the real backend callback must not invoke or pin managed MCP: ${seen()}`);
       assert.equal((await store.agents.revision(edited.body.revision)).mcpPin, null);
     });
   }

@@ -395,7 +395,7 @@ export function compilePrompt(ask: CompileAsk): string {
                 : []),
               `Give \`${ask.workflow}\` again whole under its name, changed so it says what you said on these inputs: fix the step that gets them wrong, and hand back at an \`escalate\` step only a case its rules do not cover. This revision is checked once on your recent inputs and these; if audits hold it again, nothing compiles again.`,
             ]
-          : [`Give \`${ask.workflow}\` again whole under its name, changed so its answers agree with the agent's own: fix the step that gets them wrong, or hand those cases back at an \`escalate\` step.`]),
+          : [`Give \`${ask.workflow}\` again whole under its name, changed so what held it holds no more: fix what its reason names. This revision is checked once on your recent inputs; if it falls short again, nothing compiles again.`]),
         OUTPUT_FORMAT,
       ];
   return [

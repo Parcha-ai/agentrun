@@ -326,7 +326,7 @@ function holdsOf(records: readonly PromotionRecord[], runs: readonly CostRun[]):
   const jobs = runs.filter((run) => JOB_PATHS.includes(run.path));
   return records.filter((one) => one.decided === "hold").map((one) => {
     const at = jobs.findIndex((run) => run.started_at >= one.at);
-    return { n: at < 0 ? null : at + 1, at: one.at, workflow: one.workflow, by: one.audit ? "audit" : "check", reason: one.reason };
+    return { n: at < 0 ? null : at + 1, at: one.at, workflow: one.workflow, by: one.audit ? "audit" : one.check ? "check" : "dsl", reason: one.reason };
   });
 }
 

@@ -91,6 +91,9 @@ export interface ViewDeps {
  *  review; a stopped run is a cancellation), as runs.ts's STATUS_OF mapped them. A running run reads its status from the
  *  journal, and so does an agentic run a person stopped, which reads running (runReadState). */
 const STATUS_OF: Record<Exclude<RunReadState, "running">, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
+/** A settled run's v2 status from its row alone (STATUS_OF), the status its view reads (statusOf returns the outcome
+ *  first); undefined for a run still going, whose status only its journal says. */
+export const settledStatusOf = (state: RunReadState): Status | undefined => (state === "running" ? undefined : STATUS_OF[state]);
 /** A run that has reached a last state (its view is its ended shape). */
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 

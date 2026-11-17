@@ -1,9 +1,10 @@
 // The shadow audit over HTTP v2, API first: what an owner reads of the runs a promoted learned workflow serves and of
 // their audits, with nothing console-only. A served run (answered by the workflow alone, or handed back to the agent)
 // reads like any run: its answer text in GET /runs/{id}, its timeline in the documented row kinds, its path, its cost.usd
-// its own requests (its hand-back's among them), its shadow's on cost.learning_usd and both in cost.all_in_usd. The shadow
-// reads as the audit of its run (`audit_of`), is no row of the owner's run lists and sends no webhook (w): a host never
-// sees it but as the run's learning_usd. The workflow's state (serving, checking, held, stopped), its check's numbers and its audit
+// its own requests (its hand-back's among them), its shadow's (when it has one: only a run the workflow answered is
+// drawn) on cost.learning_usd and both in cost.all_in_usd. The shadow reads as the audit of its run (`audit_of`), is no
+// row of the owner's run lists and sends no webhook (w): a host never sees it but as the run's learning_usd. The
+// workflow's state (serving, checking, held, stopped), its check's numbers and its audit
 // line are in GET /agents/{id}/learning/promotions; the rows are GET /agents/{id}/learning/audits. And (f): an owner's
 // grade on a served run is a row of the same ledger (source grade, agreed = the grade), opening no round and asking no
 // compile by itself.
@@ -86,11 +87,15 @@ async function world(t, learning, tools = [], options = {}) {
 test("(h) served runs over v2 read like any run: the answer text, documented timeline kinds in the documented order, its path, cost.usd its own and the shadow's on learning_usd; the shadow is the audit of its run and no row of the list; the workflow's state, check numbers, audit line and rows are v2 reads", { timeout: 300_000 }, async (t) => {
   const { api, store, doc, meets, run, shadowOf } = await world(t, { audit_every: 1 });
   const alone = await run({ content: "What is 1 plus 41?" });
+  // Its path before its shadow is waited on: one handed back is never drawn, and its timeline says why it was.
+  assert.equal((await store.runs.get(alone)).metrics?.path, "workflow", JSON.stringify((await api("GET", `/runs/${alone}/timeline`)).body.rows));
   const escalated = await run({ content: HAND_BACK });
-  const shadows = { [alone]: await shadowOf(alone), [escalated]: await shadowOf(escalated) };
-  // A later run's claim writes both finished audits' rows.
+  // Only a run the workflow answered is drawn: the one it handed back has no shadow (path handed_back).
+  const shadows = { [alone]: await shadowOf(alone) };
+  // A later run's claim writes the finished audit's row.
   const later = await run({ content: "What is 3 plus 39?" });
   await shadowOf(later);
+  for (const row of await store.runs.list({ agentId: "source" })) assert.notEqual((await store.runs.launch(row.id))?.body?.audit?.of, escalated, "the handed-back run is never audited");
 
   for (const [id, path] of [[alone, "workflow"], [escalated, "handed_back"]]) {
     const view = (await api("GET", `/runs/${id}`)).body;
@@ -111,15 +116,18 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
     assert.deepEqual(kinds.slice(-2), ["final_answer", "usage"], JSON.stringify(kinds));
     if (path === "workflow") assert.equal(kinds.length, 5, `served alone, nothing else: ${JSON.stringify(kinds)}`);
     else assert.equal(kinds[3], "phase", `a hand-back opens with a phase row: ${JSON.stringify(kinds)}`);
-    // Its path; cost.usd its own requests (its hand-back's among them); its shadow's on learning_usd (its revision's
-    // check ran no replay run here: nothing else to pass on), all_in_usd the two.
+    // Its path; cost.usd its own requests (its hand-back's among them); its shadow's, when it has one, on learning_usd
+    // (its revision's check ran no replay run here: nothing else to pass on), all_in_usd the two.
     assert.equal(view.path, path);
     const own = (await store.runs.get(id)).costUsd;
     const shadow = shadows[id];
-    assert.ok(own > 0 && shadow.costUsd > 0, `${own} ${shadow.costUsd}`);
+    const shadowUsd = shadow?.costUsd ?? 0;
+    assert.ok(own > 0 && (shadow === undefined || shadowUsd > 0), `${own} ${shadowUsd}`);
     assert.equal(Math.round(view.cost.usd * 1e6), Math.round(own * 1e6), `its own: ${JSON.stringify(view.cost)}`);
-    assert.equal(Math.round(view.cost.learning_usd * 1e6), Math.round(shadow.costUsd * 1e6), `its shadow's: ${JSON.stringify(view.cost)}`);
-    assert.equal(Math.round(view.cost.all_in_usd * 1e6), Math.round((own + shadow.costUsd) * 1e6), `all in: ${JSON.stringify(view.cost)}`);
+    assert.equal(Math.round(view.cost.learning_usd * 1e6), Math.round(shadowUsd * 1e6), `its shadow's: ${JSON.stringify(view.cost)}`);
+    assert.equal(Math.round(view.cost.all_in_usd * 1e6), Math.round((own + shadowUsd) * 1e6), `all in: ${JSON.stringify(view.cost)}`);
+    assert.equal(view.audit_of, null, "a served run audits nothing");
+    if (!shadow) continue;
     // The shadow reads as the audit of its run, at its own cost, carried by the run it audits.
     const audit = (await api("GET", `/runs/${shadow.id}`)).body;
     meets("/runs/{run_id}", audit);
@@ -127,7 +135,6 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
     assert.equal(audit.path, "audit");
     assert.equal(Math.round(audit.cost.usd * 1e6), Math.round(shadow.costUsd * 1e6));
     assert.deepEqual([audit.cost.learning_usd, audit.cost.all_in_usd], [0, 0], "its spend is on the run it audits");
-    assert.equal(view.audit_of, null, "a served run audits nothing");
   }
   // No shadow is a row of the owner's run lists, the agent's or every agent's.
   const listed = (await api("GET", "/agents/source/runs")).body.runs.map((one) => one.run_id);
@@ -135,10 +142,11 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
   const everyone = (await api("GET", "/runs?agent=source")).body.runs.map((one) => one.run_id);
   assert.deepEqual([...everyone].sort(), [alone, escalated, later].sort(), JSON.stringify(everyone));
 
-  // The rows: one per finished audit, both costs.
+  // The rows: one per finished audit, both costs; none for the handed-back run.
   const audits = (await api("GET", "/agents/source/learning/audits")).body;
   meets("/agents/{agent_id}/learning/audits", audits);
-  for (const id of [alone, escalated]) {
+  assert.equal(audits.audits.some((one) => one.run === escalated), false, JSON.stringify(audits));
+  for (const id of [alone]) {
     const row = audits.audits.find((one) => one.run === id);
     assert.ok(row, JSON.stringify(audits));
     assert.deepEqual([row.shadow_run, row.workflow, row.digest, row.source, typeof row.agreed], [shadows[id].id, "answer", DIGEST, "shadow", "boolean"]);

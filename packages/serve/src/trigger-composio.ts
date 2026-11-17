@@ -46,46 +46,62 @@ export const configScope = (id: string, field: string) => `config:${id}:${encode
 /** The words of a config field's name, lower case: snake, kebab, dotted and camel case split (developerApiKey and
  *  developer_api_key both read developer, api, key). */
 const wordsOf = (name: string): string[] => name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-/** A word that names a credential wherever it stands in a name. */
-const SECRET_WORDS = new Set(["secret", "password", "passwd", "passphrase", "token", "credential", "credentials", "apikey", "authorization", "bearer", "cookie"]);
+/** A word of a name read as its singular: a trailing s dropped (tokens, secrets, keys), from a word of two letters or more. */
+const singular = (word: string): string => (word.length > 1 && word.endsWith("s") ? word.slice(0, -1) : word);
+/** A word that names a credential wherever it stands in a name, read as its singular (credentials, tokens). */
+const SECRET_WORDS = new Set(["secret", "password", "passwd", "passphrase", "passcode", "pwd", "pat", "token", "credential", "apikey", "hapikey", "jwt", "dsn", "authorization", "bearer", "cookie"]);
+/** Two words that name a credential together, the one after the other (connection_string); neither does alone. */
+const SECRET_PAIRS: readonly (readonly [string, string])[] = [["connection", "string"]];
 
-/** Whether config field `name` is named like a credential: a word of it is secret, password, passwd, passphrase, token,
- *  credential(s), apikey, authorization, bearer or cookie, or its last word is key (api_key, developer_api_key, private_key, signing_key; key_id and
- *  keyword are not). Conservative: a field so named that holds no secret is sealed all the same. */
+/** Whether config field `name` is named like a credential. Each word is read as its singular (a trailing s dropped), and
+ *  the name is a credential's when a word is secret, password, passwd, passphrase, passcode, pwd, pat, token, credential,
+ *  apikey, hapikey, jwt, dsn, authorization, bearer or cookie; when it has connection then string; or when its last word
+ *  is key (api_key, api_keys, developer_api_key, private_key; key_id and keyword are not). Conservative: a field so named
+ *  that holds no secret is sealed all the same (max_tokens, token_count). */
 export const secretConfigName = (name: string): boolean => {
-  const words = wordsOf(name);
-  return words.some((word) => SECRET_WORDS.has(word)) || words.at(-1) === "key";
+  const words = wordsOf(name).map(singular);
+  return words.some((word) => SECRET_WORDS.has(word)) || words.at(-1) === "key" || SECRET_PAIRS.some(([first, then]) => words.some((word, i) => word === first && words[i + 1] === then));
 };
 
-/** The fields of `config` sealed at a save: each named like a credential (secretConfigName) whose value is a string, not
- *  empty. A number, a switch or an object is no credential to seal. */
-export const sealedConfigFields = (config: unknown): string[] =>
-  isObject(config) ? Object.entries(config).filter(([name, value]) => typeof value === "string" && value !== "" && secretConfigName(name)).map(([name]) => name) : [];
+/** Whether `value` is one a credential's field seals: a string, not empty, or a number (its decimal text is what is
+ *  sealed; the config keeps its type wherever the value goes). A switch, null, an object or an array is not. */
+export const sealableValue = (value: unknown): value is string | number => (typeof value === "string" && value !== "") || (typeof value === "number" && Number.isFinite(value));
 
-/** The fields of an event's config schema a save seals: each property named like a credential that may hold a string
- *  (its type is string, or says none). What the console's form takes as a password. */
+/** The fields of `config` sealed at a save by their names: each named like a credential (secretConfigName) whose value is
+ *  sealable (sealableValue). A create adds those its event's schema marks (sealedSchemaFields). */
+export const sealedConfigFields = (config: unknown): string[] =>
+  isObject(config) ? Object.entries(config).filter(([name, value]) => sealableValue(value) && secretConfigName(name)).map(([name]) => name) : [];
+
+/** The JSON Schema types a credential's value may have. */
+const SEALABLE_TYPES = ["string", "number", "integer"];
+
+/** The fields of an event's config schema a save seals: each property the schema marks as a credential (format: password,
+ *  or writeOnly), whatever its name; and each named like a credential that may hold a string or a number (its type is one
+ *  of those, or says none). What the console's form takes as a password. */
 export const sealedSchemaFields = (schema: unknown): string[] => {
   const properties = isObject(schema) && isObject(schema.properties) ? schema.properties : {};
   return Object.entries(properties).filter(([name, property]) => {
+    if (isObject(property) && (property.format === "password" || property.writeOnly === true)) return true;
     const type = isObject(property) ? property.type : undefined;
-    return secretConfigName(name) && (type === undefined || type === "string" || (Array.isArray(type) && type.includes("string")));
+    return secretConfigName(name) && (type === undefined || SEALABLE_TYPES.includes(String(type)) || (Array.isArray(type) && type.some((one) => SEALABLE_TYPES.includes(String(one)))));
   }).map(([name]) => name);
 };
 
 /** A credential in a config, where it is: `name`, its top-level field's name or, below the top level, its JSON Pointer
  *  (/auth/api_key), as sealed_config names it and its sealed scope is keyed (configScope); `path`, its keys from the
  *  config down; `value`. */
-export type ConfigSecret = { name: string; path: string[]; value: string };
+export type ConfigSecret = { name: string; path: string[]; value: string | number };
 const pointerOf = (path: readonly string[]) => `/${path.map((key) => key.replace(/~/g, "~0").replace(/\//g, "~1")).join("/")}`;
 
-/** Every credential `config` holds in the clear, at any depth: a string, not empty and not SEALED_MASK, whose field is
- *  named like a credential (secretConfigName), or that is anywhere inside an object or array so named. A create takes one
+/** Every credential `config` holds in the clear, at any depth: a sealable value (sealableValue: a string, not empty, or a
+ *  number), not SEALED_MASK, whose field is named like a credential (secretConfigName), or that is anywhere inside an
+ *  object or array so named. A create takes one
  *  at the top level alone (composio-triggers.ts make); a trigger an earlier server kept may hold one deeper. */
 export const configSecrets = (config: unknown): ConfigSecret[] => {
   const found: ConfigSecret[] = [];
   const walk = (node: unknown, path: string[], named: boolean): void => {
-    if (typeof node === "string") {
-      if (named && node !== "" && node !== SEALED_MASK) found.push({ name: path.length === 1 ? path[0]! : pointerOf(path), path, value: node });
+    if (typeof node === "string" || typeof node === "number") {
+      if (named && sealableValue(node) && node !== SEALED_MASK) found.push({ name: path.length === 1 ? path[0]! : pointerOf(path), path, value: node });
     } else if (Array.isArray(node)) node.forEach((item, i) => walk(item, [...path, String(i)], named));
     else if (isObject(node)) for (const [key, item] of Object.entries(node)) walk(item, [...path, key], named || secretConfigName(key));
   };
@@ -185,7 +201,7 @@ export const composio: TriggerAdapter = {
         kind: { const: "composio" },
         server: { type: "string", pattern: MCP_SERVER_NAME.source, description: "A saved Composio MCP server (Settings → MCP servers): its key makes the instance, for the account it is connected as." },
         event: { type: "string", pattern: COMPOSIO_EVENT.source, description: "One of the server's toolkit's events, Composio's trigger slug (GET /settings/mcp-servers/{name}/composio/events)." },
-        config: { type: "object", description: `The event's config, as its schema in the events list says (GitHub's new-issue event: {owner, repo}). A field named like a credential (a word of its name is secret, password, passwd, passphrase, token, credential, apikey, authorization, bearer or cookie, or its last word is key: developer_api_key), holding a string, is sealed at the save: Composio gets it, and every answer has "${SEALED_MASK}" in its place, the field named in ${SEALED_FIELD}. One below the config's top level is refused 422. A PATCH that leaves it out or sends "${SEALED_MASK}" keeps it; another value is a change to the config, refused as any is.` },
+        config: { type: "object", description: `The event's config, as its schema in the events list says (GitHub's new-issue event: {owner, repo}). A field named like a credential (a word of its name, read as its singular, is secret, password, passwd, passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, authorization, bearer or cookie; it has connection then string; or its last word is key: developer_api_key, api_keys), or one the event's schema marks with format: password or writeOnly, holding a string or a number, is sealed at the save: Composio gets it, and every answer has "${SEALED_MASK}" in its place, the field named in ${SEALED_FIELD}. One below the config's top level is refused 422. A PATCH that leaves it out or sends "${SEALED_MASK}" keeps it; another value is a change to the config, refused as any is.` },
       },
       {
         accept: { ...ACCEPT_SCHEMA, description: "Optional: which of the event's deliveries fire it. A rule's `event` is the trigger's own, `where` pointers read the delivery, its event's data under `/data` (`/data/title`). None: every delivery for its instance fires." },
