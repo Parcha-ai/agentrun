@@ -115,8 +115,8 @@ start a new agent from a template.
 
 Rather have your coding agent do it? Tell it `Read https://agentrun.ai/SKILL.md and set up AgentRun for me`.
 That page is [the setup skill](docs/SKILL.md) in this repository: it asks where AgentRun should run (this computer,
-your own always-on machine, Railway, Render or AgentRun Cloud) before it installs anything, then creates and runs a
-first agent with you.
+your own always-on machine, Railway, Render or AgentRun Cloud) before it installs anything. It brings in a Claude Code
+or Codex job you already schedule as the first run, or creates and runs a first agent with you.
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>
