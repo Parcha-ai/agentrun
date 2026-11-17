@@ -69,7 +69,7 @@ again. Skip the question only when they already named one of the five places, or
 ### This computer
 
 First look for a server that already runs here, and reuse it rather than starting another:
-`curl -fsS http://127.0.0.1:7340/v2/health`, `AGENTRUN_BASE_URL`, or a `~/.agentrun` folder. Never overwrite,
+`npx --yes @parcha/agentrun@0.4 server health` answering, `AGENTRUN_BASE_URL`, or a `~/.agentrun` folder. Never overwrite,
 migrate or delete an existing data folder.
 
 <!-- INSTALLER: the one-command installer replaces the Node check and the npx start below once it ships. -->
@@ -101,7 +101,7 @@ the same command starts it again on the same data.
 
 The install runs on that machine, not here: continue in a session there, or in an SSH session they already use. It
 needs Tailscale on that machine, signed in to their own tailnet. Read its name with
-`tailscale status --json | jq -r .Self.DNSName` (for example `box.example-tailnet.ts.net.`), then start AgentRun as
+`tailscale status --json | jq -r .Self.DNSName` (drop the trailing dot), then start AgentRun as
 under **This computer** with `AGENTRUN_PUBLIC_URL=https://<that name>/` in front of `npx`, and with their OK share it
 on the tailnet only:
 
