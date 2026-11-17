@@ -60,7 +60,8 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 		if (path === "/snapshot" && method === "POST") return json(200, snapshot({ status: "pending", digest: body.digest ?? null, metadata: body.metadata ?? {}, spec: { vcpus: body.vcpus, memory: body.memory, disk_size: body.disk_size }, refs: { image_id: body.image_id } }));
 		if (path === "/snapshot" && method === "GET") {
 			const digest = searchParams.get("digest");
-			return json(200, { object: "list", data: [...snapshots.values()].filter((one) => digest === null || one.digest === digest) });
+			const labels = [...searchParams].map(([name, value]) => [/^metadata\[(.+)\]$/.exec(name)?.[1], value]).filter(([label]) => label !== undefined);
+			return json(200, { object: "list", data: [...snapshots.values()].filter((one) => (digest === null || one.digest === digest) && labels.every(([label, value]) => one.metadata?.[label] === value)) });
 		}
 		const one = /^\/snapshot\/([^/]+)$/.exec(path);
 		if (one) {
