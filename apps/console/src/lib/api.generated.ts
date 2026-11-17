@@ -1729,6 +1729,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -1857,6 +1858,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -3265,6 +3267,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -3666,6 +3669,7 @@ export interface operations {
         description: string;
         config: Record<string, unknown>;
         polled: boolean;
+        sealed: string[];
         instructions?: string;
       }[];
     };
@@ -4441,6 +4445,7 @@ export interface operations {
             })[];
           }[];
           instance_id?: string;
+          sealed_config?: string[];
           hook?: string;
           move_subscription?: true;
         } | {
@@ -5671,6 +5676,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -5799,6 +5805,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {

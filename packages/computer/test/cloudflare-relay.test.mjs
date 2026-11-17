@@ -327,6 +327,28 @@ test("a create whose idle timeout fails after a delete and a create again leaves
 	assert.deepEqual((await cf.call("GET", "/v1/computers")).json.computers.map(({ name }) => name), [NAME]);
 });
 
+test("a new object sets the idle timeout once at start for a running container that has not ended, and not for one that has", async () => {
+	const cf = fakeCloudflare();
+	await cf.call("POST", "/v1/computers", create());
+	const one = cf.computer();
+	assert.deepEqual(one.container.idle, [6 * HOUR]);
+	cf.env.COMPUTER.restart(NAME);
+	cf.computer();
+	await settle();
+	assert.deepEqual(one.container.idle, [6 * HOUR, 6 * HOUR], "the redeployed object sets it at once, not at the next alarm");
+	// An ended row: the object's end leaves the container stopped, and a restart sets nothing.
+	const other = "computer-00000000000c";
+	await cf.call("POST", "/v1/computers", create({ name: other }));
+	const ended = cf.computer(other);
+	ended.container.exit(0);
+	await settle();
+	const before = ended.container.idle.length;
+	cf.env.COMPUTER.restart(other);
+	cf.computer(other);
+	await settle();
+	assert.equal(ended.container.idle.length, before);
+});
+
 test("the alarm sets the idle timeout again each hour, and at backstopAt destroys the container and drops its row", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: T0 });
 	const cf = fakeCloudflare();
