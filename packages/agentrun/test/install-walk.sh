@@ -4,8 +4,8 @@
 #       the service; its health through a stop and start, a restart by the service manager, `service restart`, a crash
 #       (SIGKILL), running the installer again, and `service uninstall`.
 #   install-walk.sh container [installer options]  no service manager: the installer piped to sh, `service install`
-#       refused in words; the default start, in the background, returns and AgentRun answers after it; the installer
-#       again replaces it; `agentrun stop` stops it.
+#       refused in words; the default start, in the background, returns and AgentRun answers after it; an older launcher
+#       with no `agentrun stop`, then this one again, each replace it; `agentrun stop` stops it.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
@@ -17,6 +17,8 @@ record=$HOME/.agentrun/.server.json
 log=$HOME/.agentrun/logs/agentrun.log
 pidfile=$HOME/.agentrun/agentrun.pid
 floor=$(sed -n 's/^ *"node": *">=\([0-9][0-9.]*\)".*/\1/p' "$here/package.json")
+# A published launcher from before `agentrun stop`, for the downgrade in the container walk.
+older=0.4.9
 if [ "${NODE_PIN:-}" = 1 ]; then set -- "$@" --node-version "$floor"; fi
 
 step() { printf '\n== %s\n' "$*"; }
@@ -57,9 +59,10 @@ expect_exit() {
 # The Node.js the installer chose, from its output in $1: the floor when pinned, else the newest on the floor's major line
 # it named, and never below the floor.
 node_chosen() {
-  local dirs got said a b c x y z
-  dirs=$(ls "$HOME/.agentrun/node")
-  [ "$(wc -l <<< "$dirs")" = 1 ] || die "node/ holds $(tr '\n' ' ' <<< "$dirs")"
+  local dirs got said a b c x y z all
+  all=("$HOME"/.agentrun/node/*)
+  ((${#all[@]} == 1)) && [ -d "${all[0]}" ] || die "node/ holds ${all[*]##*/}"
+  dirs=${all[0]##*/}
   got=$("$HOME/.agentrun/node/$dirs/bin/node" --version)
   [ "$got" = "$dirs" ] || die "node/$dirs runs Node.js $got"
   if [ "${NODE_PIN:-}" = 1 ]; then
@@ -114,12 +117,23 @@ if [ "$mode" = container ]; then
   bash -c "curl -fsS '$(base)/health'"
   echo
 
-  step "the installer again: stops the AgentRun it started, and starts the new install"
+  step "an older version, $older, which has no agentrun stop: the installer stops the AgentRun it started itself"
+  before=$(pid)
+  piped_install 300 /tmp/older.log --version "$older"
+  grep -q "Stopping the AgentRun started in the background before (pid $first)" /tmp/older.log || die "the installer did not stop pid $first"
+  healthy 10 "$before"
+  running "$first" && die "the AgentRun started first (pid $first) still runs beside $older"
+  second=$(cat "$pidfile")
+  [ "$second" != "$first" ] || die "the pid file still names $first"
+  grep -qF "/lib/$older/" "$agentrun" || die "agentrun does not run $older: $(tail -n 1 "$agentrun")"
+
+  step "the installer again: stops the AgentRun $older runs, and starts the new install"
   before=$(pid)
   piped_install 300 /tmp/again.log "$@"
+  grep -q "Stopping the AgentRun started in the background before (pid $second)" /tmp/again.log || die "the installer did not stop pid $second"
   healthy 10 "$before"
-  running "$first" && die "the AgentRun started first (pid $first) still runs beside the new one"
-  [ "$(cat "$pidfile")" != "$first" ] || die "the pid file still names $first"
+  running "$second" && die "the AgentRun $older ran (pid $second) still runs beside the new one"
+  [ "$(cat "$pidfile")" != "$second" ] || die "the pid file still names $second"
 
   step "agentrun stop"
   "$agentrun" stop

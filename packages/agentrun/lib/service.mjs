@@ -15,8 +15,9 @@ export const UNIT = "agentrun.service";
 export const INSTALL_COMMAND = "curl -fsSL https://agentrun.ai/install | sh";
 /** How long a start waits for the server to answer /health before it says it did not. */
 export const HEALTH_WAIT_MS = 90_000;
-/** How long `agentrun stop` waits for the background AgentRun to end after its SIGTERM before it sends a SIGKILL. */
-export const STOP_WAIT_MS = 20_000;
+/** How long `agentrun stop` waits for the background AgentRun to end after its SIGTERM before it sends a SIGKILL: past the
+ *  server's own drain (--drain-timeout, 30 s by default), so a busy run gets its turn and the server cleans up. */
+export const STOP_WAIT_MS = 45_000;
 const INSTALLER = fileURLToPath(new URL("../install.sh", import.meta.url));
 
 const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -366,50 +367,67 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       return 0;
     },
     /** `agentrun stop`: the AgentRun install.sh started in the background, stopped as Ctrl-C would (SIGTERM, which the
-     *  launcher passes on to the server), then SIGKILL past stopWaitMs. Exit 0, or 3 when none is running. */
+     *  launcher passes on to the server), then SIGKILL past stopWaitMs. Exit 0 once the launcher and its server have
+     *  ended, 3 when none is running, 1 when one outlives its SIGKILL. install.sh stops it with the same steps in sh, so an
+     *  install of a version with no `agentrun stop` stops it too. */
     async background() {
       const file = join(root, "agentrun.pid");
       let pid;
       try {
         pid = Number(readFileSync(file, "utf8").trim());
       } catch {}
-      // Its state letter and command line: from /proc where there is one (a container may have no ps), else from ps.
-      // Undefined once it is gone. A process that ended is a zombie (Z) until its parent reaps it, and in a container
+      // A process's state letter and command line: from /proc where there is one (a container may have no ps), else from
+      // ps. Undefined once it is gone. A process that ended is a zombie (Z) until its parent reaps it, and in a container
       // with no init nothing does, so a zombie counts as ended.
-      const processOf = () => {
+      const processOf = (n) => {
         try {
-          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-          return { state: stat.slice(stat.lastIndexOf(")") + 2)[0], args: readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ") };
+          const stat = readFileSync(`/proc/${n}/stat`, "utf8");
+          return { state: stat.slice(stat.lastIndexOf(")") + 2)[0], args: readFileSync(`/proc/${n}/cmdline`, "utf8").replaceAll("\0", " ") };
         } catch {
           if (existsSync("/proc/self/stat")) return undefined;
         }
-        const ps = exec("ps", ["-o", "stat=", "-o", "args=", "-p", String(pid)]);
+        const ps = exec("ps", ["-o", "stat=", "-o", "args=", "-p", String(n)]);
         const [, state, args] = (ps.status === 0 && /^\s*(\S)\S*\s+(.*)$/s.exec(ps.stdout ?? "")) || [];
         return state === undefined ? undefined : { state, args };
       };
-      const alive = () => {
-        const now = processOf();
-        return now !== undefined && now.state !== "Z";
+      // A pid file outlives a crash, and its pid can be another process's by now: only a running process that runs this
+      // install's files counts.
+      const ours = (n) => {
+        const now = Number.isInteger(n) && n > 1 ? processOf(n) : undefined;
+        return now !== undefined && now.state !== "Z" && now.args.includes(`${root}/`);
       };
-      // A pid file outlives a crash, and its pid can be another process's by now: only a process running this install's
-      // files is stopped.
-      const ours = Number.isInteger(pid) && pid > 1 && alive() && processOf()?.args.includes(`${root}/`);
-      if (!ours) {
+      if (!ours(pid)) {
         rmSync(file, { force: true });
         say(`No AgentRun started in the background is running.${installed() ? " AgentRun runs as a service here: agentrun service stop stops it." : ""}`);
         return 3;
       }
+      // The launcher passes its SIGTERM on to the server it started (the pid in the server's record) and waits for it.
+      // The server is waited for too: without setsid the two share no process group of their own, and a SIGKILL to the
+      // launcher alone would leave the server running.
+      let server;
+      try {
+        server = JSON.parse(readFileSync(join(root, ".server.json"), "utf8")).pid;
+      } catch {}
+      const until = async (ms) => {
+        const deadline = Date.now() + ms;
+        while ([pid, server].some(ours) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 200));
+        return [pid, server].filter(ours);
+      };
       kill(pid, "SIGTERM");
-      const deadline = Date.now() + stopWaitMs;
-      while (alive() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 200));
-      if (alive()) {
-        // The installer starts it with setsid, so it leads a process group, the server's too.
+      const running = await until(stopWaitMs);
+      if (running.length > 0) {
+        // The installer starts it with setsid where there is one, so it leads a process group, the server's too.
         try {
           kill(-pid, "SIGKILL");
-        } catch {
-          kill(pid, "SIGKILL");
+        } catch {}
+        for (const each of running) {
+          try {
+            kill(each, "SIGKILL");
+          } catch {}
         }
-        say(`AgentRun (pid ${pid}) was still running ${stopWaitMs / 1000} s after its SIGTERM, so it was sent a SIGKILL.`);
+        say(`AgentRun (pid ${running.join(", ")}) was still running ${stopWaitMs / 1000} s after its SIGTERM, so it was sent a SIGKILL.`);
+        const still = await until(5_000);
+        if (still.length > 0) return say(`AgentRun (pid ${still.join(", ")}) still runs after its SIGKILL; ${file} stays.`), 1;
       }
       rmSync(file, { force: true });
       say(`Stopped AgentRun (pid ${pid}).`);

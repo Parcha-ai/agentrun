@@ -29,10 +29,11 @@ left alone, and nothing needs sudo. When no line in your shell's startup file pu
 one and says so. Then it starts AgentRun as a service of your user, a LaunchAgent on macOS or a systemd user unit on
 Linux, which starts again at login and after a crash and logs to `~/.agentrun/logs/agentrun.log`. Where there is no
 service manager (a container, say), it starts AgentRun in the background, logging to the same file. It runs until the
-machine or container stops, and `agentrun stop` stops it. Either way the installer returns once AgentRun answers, and
-prints its address. `sh -s -- --no-start` installs only, `--version V` installs another version, `--node-version V`
-installs that Node.js (at least the floor), and `--service` fails where there is no service manager. Running it again
-upgrades.
+machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
+after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
+installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
+and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
+first stops the AgentRun it started in the background itself, whatever version that is.
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and

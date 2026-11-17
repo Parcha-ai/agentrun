@@ -272,8 +272,9 @@ test("service start on a service that is already running accepts its record, how
 });
 
 /** A process in its own process group, as install.sh starts AgentRun (setsid), running a file under `home`'s
- *  .agentrun/lib; `ignoreTerm` makes it ignore SIGTERM. Resolves once it runs, with its exit. */
-async function holder(home, { ignoreTerm = false } = {}) {
+ *  .agentrun/lib; `ignoreTerm` makes it ignore SIGTERM, and `pidFile` false leaves agentrun.pid as it is. Resolves once
+ *  it runs, with its exit. */
+async function holder(home, { ignoreTerm = false, pidFile = true } = {}) {
   const dir = join(home, ".agentrun", "lib", "0.0.0");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "hold.mjs");
@@ -281,11 +282,11 @@ async function holder(home, { ignoreTerm = false } = {}) {
   const child = spawn(process.execPath, [file], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
   const exited = new Promise((done) => child.on("exit", (code, signal) => done(signal ?? code)));
   await new Promise((done) => child.stdout.once("data", done));
-  writeFileSync(join(home, ".agentrun", "agentrun.pid"), `${child.pid}\n`);
+  if (pidFile) writeFileSync(join(home, ".agentrun", "agentrun.pid"), `${child.pid}\n`);
   return { child, exited };
 }
 
-test("stop: the AgentRun the installer started in the background ends on a SIGTERM, or a SIGKILL past the wait; none running is exit 3", async () => {
+test("stop: the AgentRun the installer started in the background, and its server, end on a SIGTERM, or a SIGKILL past the wait; none running is exit 3", async () => {
   const home = fresh();
   const pidFile = join(home, ".agentrun", "agentrun.pid");
   const { out, io } = ioOf();
@@ -302,6 +303,18 @@ test("stop: the AgentRun the installer started in the background ends on a SIGTE
   assert.equal(await service(600).background(), 0);
   assert.equal(await stubborn.exited, "SIGKILL");
   assert.match(out.join(""), /still running 0\.6 s after its SIGTERM, so it was sent a SIGKILL/);
+
+  // The launcher ends on its SIGTERM, and its server, in a process group of its own (no setsid), outlives it: the server,
+  // the pid in its record, is waited for too and sent the SIGKILL, and only then is AgentRun stopped.
+  const launcher = await holder(home);
+  const server = await holder(home, { ignoreTerm: true, pidFile: false });
+  writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340", pid: server.child.pid }));
+  out.splice(0);
+  assert.equal(await service(600).background(), 0);
+  assert.equal(await launcher.exited, "SIGTERM");
+  assert.equal(await server.exited, "SIGKILL");
+  assert.equal(existsSync(pidFile), false);
+  assert.match(out.join(""), new RegExp(`^AgentRun \\(pid ${server.child.pid}\\) was still running 0\\.6 s after its SIGTERM, so it was sent a SIGKILL\\.\\nStopped AgentRun \\(pid ${launcher.child.pid}\\)\\.\\n$`));
 
   // No pid file; then a pid file naming a live process that runs nothing of this install (this test's own): neither is
   // stopped, and the stale file goes.

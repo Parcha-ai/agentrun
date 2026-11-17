@@ -329,9 +329,58 @@ service_manager() {
   return 1
 }
 
-# Stops the AgentRun an earlier install started in the background, if one runs, so only one server uses ~/.agentrun.
+# Whether process $1 runs, from /proc where there is one (a container may have no ps), else from ps. A process that ended
+# is a zombie until its parent reaps it, and in a container with no init nothing does, so a zombie has ended. $args is
+# its command line.
+alive() {
+  case $1 in '' | *[!0-9]* | 0 | 1) return 1 ;; esac
+  if [ -r "/proc/$1/stat" ]; then
+    state=$(sed 's/.*) \(.\).*/\1/' "/proc/$1/stat" 2> /dev/null)
+    args=$(tr '\0' ' ' < "/proc/$1/cmdline" 2> /dev/null)
+  elif [ -e /proc/self/stat ]; then
+    return 1
+  else
+    state=$(ps -o stat= -p "$1" 2> /dev/null | tr -d ' ' | cut -c 1)
+    args=$(ps -o args= -p "$1" 2> /dev/null)
+  fi
+  [ -n "$state" ] && [ "$state" != Z ]
+}
+
+# Whether process $1 runs this install's files: a pid file outlives a crash, and its pid can be another process's by now.
+ours() {
+  alive "$1" || return 1
+  case $args in *"$root/"*) return 0 ;; esac
+  return 1
+}
+
+# Stops the AgentRun an earlier install started in the background, so only one server uses ~/.agentrun. The installer does
+# it itself, as `agentrun stop` does, since the version installed may have no `agentrun stop`: a SIGTERM to the launcher,
+# which passes it on to its server (the pid in .server.json) and waits for it. Both get 45 s, past the server's 30 s
+# drain, then a SIGKILL; one that outlives that fails the install, so a second server never starts beside it.
 stop_background() {
-  "$shim" stop > /dev/null 2>&1 || true
+  bg=$(cat "$root/agentrun.pid" 2> /dev/null) || return 0
+  if ours "$bg"; then
+    server=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$root/.server.json" 2> /dev/null | head -n 1)
+    say "Stopping the AgentRun started in the background before (pid $bg) ..."
+    kill -s TERM "$bg" 2> /dev/null || true
+    waited=0
+    while { ours "$bg" || ours "$server"; } && [ "$waited" -lt 45 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if ours "$bg" || ours "$server"; then
+      # Started with setsid, it leads a process group, the server's too.
+      kill -s KILL -- "-$bg" 2> /dev/null || true
+      for each in $bg $server; do
+        if ours "$each"; then kill -s KILL "$each" 2> /dev/null || true; fi
+      done
+      sleep 1
+      if ours "$bg" || ours "$server"; then
+        fail "the AgentRun started before (pid $bg) still runs after a SIGKILL; stop it, then run the installer again"
+      fi
+    fi
+  fi
+  rm -f "$root/agentrun.pid"
 }
 
 # AgentRun in the background, where there is no service manager: in a session of its own where setsid is there (Linux),
@@ -355,7 +404,7 @@ start_background() {
   while [ "$waited" -lt 120 ]; do
     url=$(tail -c "+$from" "$log" | sed -n 's/^AgentRun is running at //p' | head -n 1)
     [ -z "$url" ] || break
-    kill -0 "$pid" 2> /dev/null || break
+    alive "$pid" || break
     sleep 1
     waited=$((waited + 1))
   done
