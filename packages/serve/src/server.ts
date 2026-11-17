@@ -1107,6 +1107,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
   const stopping = new AbortController();
+  /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
+  let schemaSealed: Promise<unknown> = Promise.resolve();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -1824,6 +1826,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       else process.stderr.write(`agentrun-serve: ${line}\n`);
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Then, not waited on: a trigger kept with a value in the clear in a field only its event's schema marks, sealed once
+  // the schemas are read from Composio (composio-triggers.ts sealMarked). Drained by stop before the store closes.
+  const scrubSaid = ({ left }: { left?: string }) => {
+    if (!left) return;
+    const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  schemaSealed = composioTriggers
+    .sealMarked(async (id, source) => void (await sealing.triggers.update(id, { source })), async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work)) : void (await work())))
+    .catch((error: Error) => void (stopping.signal.aborted || process.stderr.write(`agentrun-serve: sealing the composio triggers' config by their events' schemas: ${error.message}\n`)));
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
   {
@@ -4793,6 +4806,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
+    await schemaSealed;
     await installStopped;
     await observationStopped;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
