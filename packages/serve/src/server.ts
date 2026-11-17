@@ -4539,7 +4539,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  is not done (a read that failed, or its notice not saved): it is read again. */
   const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
-    if (readWaits.get(row.id) === seen) return true;
+    // An audit's shadow run waits on no one (runner/audit.ts AUDIT_PARKED): the park it ends at once is no one's to answer.
+    if (readWaits.get(row.id) === seen || isShadowRun(row.id)) return true;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];

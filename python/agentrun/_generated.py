@@ -2219,8 +2219,9 @@ class _ListLearningAuditsResponseAuditsItemRequired(TypedDict):
 
 
 class ListLearningAuditsResponseAuditsItem(_ListLearningAuditsResponseAuditsItemRequired, total=False):
+    turn: str
     skipped: Literal["no allowance"]
-    capped: Literal[True]
+    parked: Literal[True]
 
 
 class ListLearningPromotionsResponse(TypedDict):

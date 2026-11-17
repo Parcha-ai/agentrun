@@ -3817,8 +3817,9 @@ export interface operations {
         served_cost: number | null;
         shadow_cost: number | null;
         at: string;
+        turn?: string;
         skipped?: "no allowance";
-        capped?: true;
+        parked?: true;
       }[];
     };
   };
