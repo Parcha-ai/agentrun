@@ -433,10 +433,14 @@ test("two opens of one computer at once run one after the other: one endpoint le
   t.after(() => b.view.close("ended"));
   const rows = await readLiveViewers(store, KEY, RUN);
   assert.equal(rows.length, 1);
-  const ports = store.received.map(({ v }) => v.port);
-  assert.equal(ports.length, 2);
-  await assert.rejects(new Promise((resolve, reject) => tcp(ports[0], "127.0.0.1").once("connect", resolve).once("error", reject)), "the first open's endpoint is closed, not orphaned");
-  assert.equal(rows[0].port, ports[1]);
+  const [first, second, ...more] = store.received.map(({ v }) => v);
+  assert.deepEqual(more, []);
+  // The first open's endpoint is closed, not orphaned: its own page no longer answers 200 (an orphan's still would). Its
+  // port is asked for that page, not whether anything listens on it: a freed port can be handed out again at once, to
+  // the second open's listen or another process's, so something may listen there.
+  const page = await fetch(`http://127.0.0.1:${first.port}/v/${first.id}`).then((res) => res.status, () => "refused");
+  assert.notEqual(page, 200, "the first open's endpoint is closed, not orphaned");
+  assert.equal(rows[0].port, second.port);
   await a.view.close("ended");
   assert.deepEqual((await readLiveViewers(store, KEY, RUN)).map((v) => v.id), [rows[0].id], "the stale view's close leaves the live row");
   // Another process's relaunch put a newer row under the same kind and tag: this view's close leaves it.
