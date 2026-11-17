@@ -67,6 +67,7 @@ import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { claimPromotion, promotionGate, replayCallsFor, replayClaimed, replayLaid, toolFlowsFor } from "./promotion.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { pathMetrics, servedOf, workflowFirstOf } from "./workflow-first.js";
+import { AUDIT_PARKED, settleAudits, withAudit } from "./audit.js";
 import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
@@ -634,7 +635,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
-    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
+    // What its learning runs' grades and its audit's shadow took beside it, read by every gate with its own sessions
+    // (none: it queues none).
     ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
@@ -670,6 +672,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // serves (runner/promotion.ts: replayed on the agent's graded inputs first, or promoted on its dry run with fewer than
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
+  // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey };
+  if (launch.learning && !launch.replay && !launch.audit) await settleAudits(audits);
   const promotion = claimPromotion({
     store: deps.store, agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, launch, context, log, folder: learningFolder, shown, sealKey: deps.sealKey,
   });
@@ -790,8 +795,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the data directory, Mode 2 the
   // agent's folder on THIS claim's Archil disk (the proposal is checked against the seed on the disk, never this machine's
   // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
-  // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
-  const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
+  // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  // A run the promoted workflow served first starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
+  // withAudit): at its end, so the shadow's cap is what the run's own left.
+  const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -807,7 +814,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  });
+  }), { ...audits, launch });
 
   return {
     adapter,
@@ -833,6 +840,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The tool host's install lifecycle (its bindings' onConversation/beforeResume/beforeRelease), run by the adapter loop.
     lifecycle: life,
     agentId: runRow.agentId,
+    // An audit's shadow run waits on no one: where it would park (an approval, a raise of its cap, a person's answer) it
+    // ends at once, its row `parked` (runner/audit.ts).
+    ...(launch.audit ? { neverWaits: AUDIT_PARKED } : {}),
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),

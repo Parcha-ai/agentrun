@@ -5,13 +5,29 @@
 //     it answered alone, at least this share say what the agent's own recorded answer said;
 //   alone_min (S): ...and when it answered at least this share of them alone (no escalate, no failed step).
 // learn/compile.ts compileDue reads compile_after; runner/promotion.ts's check reads all three.
+// Once a workflow serves, its shadow audit (runner/audit.ts) reads the other six:
+//   audit_every (k): a run it serves is audited at 1 in k, drawn from the run's id (learn/audit.ts auditDrawn);
+//   audit_every_later, audit_later_after: 1 in this many once the digest served audit_later_after runs;
+//   hold_window, hold_disagree: it stops serving (a hold) when its last hold_window audit rows hold at least
+//     hold_disagree disagreements;
+//   stop_window: a second hold within this many served runs of the first stops it for good.
 
 /** The loop's numbers as a definition may set them (each optional: its default stands in). */
 export interface LearningLoop {
   readonly compile_after?: number;
   readonly agree_min?: number;
   readonly alone_min?: number;
+  readonly audit_every?: number;
+  readonly audit_every_later?: number;
+  readonly audit_later_after?: number;
+  readonly hold_window?: number;
+  readonly hold_disagree?: number;
+  readonly stop_window?: number;
 }
+/** The check's numbers (runner/promotion.ts): what a check record keeps of the loop. */
+export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min" | "alone_min">>;
+/** The audit's numbers (runner/audit.ts). */
+export type AuditLoop = Required<Pick<LearningLoop, "audit_every" | "audit_every_later" | "audit_later_after" | "hold_window" | "hold_disagree" | "stop_window">>;
 /** A definition's `learning`, as kept on an agentic revision. */
 export type LearningSetting = boolean | "notes" | LearningLoop;
 
@@ -20,8 +36,21 @@ export const AGREE_MIN_DEFAULT = 0.8;
 export const ALONE_MIN_DEFAULT = 0.7;
 /** The most completed runs a compile may wait for: the newest this many of an agent's runs are what it counts and checks. */
 export const COMPILE_AFTER_MAX = 200;
+export const AUDIT_DEFAULTS: AuditLoop = { audit_every: 10, audit_every_later: 20, audit_later_after: 50, hold_window: 10, hold_disagree: 3, stop_window: 100 };
+/** The most any audit number may be: 1 in 1,000 runs, a window of 1,000 (the ledger keeps more rows than that). */
+export const AUDIT_MAX = 1_000;
 
-const LOOP_KEYS = ["compile_after", "agree_min", "alone_min"] as const;
+const AUDIT_KEYS = ["audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"] as const;
+const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", ...AUDIT_KEYS] as const;
+/** Each audit number's words, for its 422. */
+const AUDIT_WORDS: Record<(typeof AUDIT_KEYS)[number], string> = {
+  audit_every: "audits 1 in this many served runs",
+  audit_every_later: "audits 1 in this many served runs once audit_later_after served",
+  audit_later_after: "is the served runs after which audit_every_later applies",
+  hold_window: "is the audit rows the hold rule reads",
+  hold_disagree: "is the disagreements in hold_window rows that hold the workflow",
+  stop_window: "is the served runs within which a second hold stops the workflow",
+};
 
 const isLoop = (value: unknown): value is LearningLoop => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -29,7 +58,7 @@ const isLoop = (value: unknown): value is LearningLoop => value !== null && type
 export const learnsWorkflowsOf = (learning: unknown): boolean => learning === true || isLoop(learning);
 
 /** The loop's numbers for a revision's `learning`: its object's, each one it leaves out at its default. */
-export function loopOf(learning: unknown): Required<LearningLoop> {
+export function loopOf(learning: unknown): CheckLoop {
   const set = isLoop(learning) ? learning : {};
   return {
     compile_after: set.compile_after ?? COMPILE_AFTER_DEFAULT,
@@ -38,11 +67,17 @@ export function loopOf(learning: unknown): Required<LearningLoop> {
   };
 }
 
+/** The audit's numbers for a revision's `learning`: its object's, each one it leaves out at its default (AUDIT_DEFAULTS). */
+export function auditLoopOf(learning: unknown): AuditLoop {
+  const set = isLoop(learning) ? learning : {};
+  return Object.fromEntries(AUDIT_KEYS.map((key) => [key, set[key] ?? AUDIT_DEFAULTS[key]])) as unknown as AuditLoop;
+}
+
 /** What is wrong with a definition's `learning`, in words naming the field (`at` its path), or undefined when it is one
  *  of true, false, "notes" or an object of the loop's numbers. */
 export function learningSettingIssue(value: unknown, at = "learning"): string | undefined {
   if (typeof value === "boolean" || value === "notes") return undefined;
-  if (!isLoop(value)) return `${at} is true, false, "notes" or an object of the loop's numbers ({compile_after?, agree_min?, alone_min?}, on with those set)`;
+  if (!isLoop(value)) return `${at} is true, false, "notes" or an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}, on with those set)`;
   const other = Object.keys(value).find((key) => !(LOOP_KEYS as readonly string[]).includes(key));
   if (other !== undefined) return `${at}.${other} is not one of the loop's numbers: ${LOOP_KEYS.join(", ")}`;
   const { compile_after: after, agree_min: agree, alone_min: alone } = value as Record<string, unknown>;
@@ -50,6 +85,12 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
   for (const [key, share] of [["agree_min", agree], ["alone_min", alone]] as const) {
     if (share !== undefined && !(typeof share === "number" && Number.isFinite(share) && share >= 0 && share <= 1)) return `${at}.${key} is a share from 0 to 1`;
   }
+  for (const key of AUDIT_KEYS) {
+    const n = (value as Record<string, unknown>)[key];
+    if (n !== undefined && !(Number.isInteger(n) && (n as number) >= 1 && (n as number) <= AUDIT_MAX)) return `${at}.${key} ${AUDIT_WORDS[key]}: a whole number from 1 to ${AUDIT_MAX}`;
+  }
+  const audit = auditLoopOf(value);
+  if (audit.hold_disagree > audit.hold_window) return `${at}.hold_disagree is at most hold_window (${audit.hold_window}): the disagreements are counted in that many rows`;
   return undefined;
 }
 

@@ -51,7 +51,7 @@ import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
-import { recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
+import { pinAnnotations, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
 import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
@@ -60,6 +60,7 @@ import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
 import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import type { LearningFolder } from "../learn/folder.js";
+import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
 
@@ -299,13 +300,24 @@ async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">)
 }
 
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first
- *  check's hold, or a first compile's failed draft (this revision is its one recompile), else 1. A stop with nothing
- *  checked (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first revision after a first
- *  compile whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that compile's recompile too. */
+ *  check's hold or an audit's hold, or a first compile's failed draft (this revision is its one recompile), else 1. A
+ *  stop with nothing checked (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first
+ *  revision after a first compile whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that
+ *  compile's recompile too. */
 function attemptOf(records: readonly PromotionRecord[], name: string, digest: string): 1 | 2 {
   const before = records.findLast((one) => one.workflow === name && one.digest !== digest);
   if (!before) return newCompileAttempt(records.filter((one) => one.digest !== digest));
-  return before.decided === "hold" && before.check?.attempt === 1 && !before.check.stopped ? 2 : 1;
+  if (before.decided !== "hold") return 1;
+  return before.audit ? (before.audit.stopped ? 1 : 2) : before.check?.attempt === 1 && !before.check.stopped ? 2 : 1;
+}
+
+/** The shadow runs a recompile's check runs on beside the agent's last runs: the disagreeing audit rows the workflow's
+ *  newest audit hold names (a grade's row has no answer of the agent's to check against), when that hold is the
+ *  workflow's newest record of another revision. */
+function auditInputsOf(records: readonly PromotionRecord[], name: string, digest: string): string[] {
+  const before = records.findLast((one) => one.workflow === name && one.digest !== digest);
+  if (before?.decided !== "hold" || !before.audit || before.audit.stopped) return [];
+  return before.audit.disagreements.filter((one) => !one.graded && one.agent !== null).map((one) => one.run);
 }
 
 /** An agent run a check may read its input from: a completed run of its own (agentRun: no learned workflow answered it
@@ -316,14 +328,20 @@ const checkable = (deps: Pick<PromotionDeps, "runId">, row: RunRow): boolean =>
 /** The inputs a check runs its draft on: the agent's runs `pick.of` names (a check's own, asked again; each still
  *  checkable), then the agent's last `pick.n` completed runs of its own (lastOwnRuns: never the claimed run, an archived
  *  or imported one), newest first, picked before anything else limits them: runs its workflow served since, however many,
- *  never push them out of the read. Of those, the ones whose input `workflow` takes (fits), each with its launch read
- *  back; one with an uploaded file is never an input. With how many of the agent's runs it looked at (`looked`) and why
- *  each it looked at is no input (`unfit`, `files`). */
-async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, pick: { readonly of: readonly string[]; readonly n: number }): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
+ *  never push them out of the read. And `audited`: an audit hold's disagreeing shadow runs (auditInputsOf), each ended.
+ *  Of those, the ones whose input `workflow` takes (fits), each with its launch read back; one with an uploaded file is
+ *  never an input. With how many of the agent's runs it looked at (`looked`) and why each it looked at is no input
+ *  (`unfit`, `files`). */
+async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, pick: { readonly of: readonly string[]; readonly n: number }, audited: readonly string[] = []): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
   const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row));
   const last = pick.n ? await lastOwnRuns(deps.store, deps.agentId, pick.n + pick.of.length, deps.runId) : [];
   const own = [...named, ...last.filter((row) => !pick.of.includes(row.id)).slice(0, pick.n)];
+  // And an audit hold's disagreeing shadow runs: the agent's answers the recompile must say too.
+  for (const id of audited) {
+    const row = await deps.store.runs.get(id);
+    if (row && row.state === "ended" && !own.some((one) => one.id === id)) own.push(row);
+  }
   const out: ReplayInput[] = [];
   let files = 0;
   for (const row of own) {
@@ -359,7 +377,7 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
   }
   const loop = await loopOfRevision(deps);
   const bar: CheckBar = { compile_after: loop.compile_after, agree_min: loop.agree_min, alone_min: loop.alone_min, attempt: attemptOf(records, workflow.name, digest) };
-  const { inputs, looked, unfit, files } = await checkInputs(deps, workflow, { of: [], n: loop.compile_after });
+  const { inputs, looked, unfit, files } = await checkInputs(deps, workflow, { of: [], n: loop.compile_after }, auditInputsOf(records, workflow.name, digest));
   if (!inputs.length) {
     // Nothing of the agent's to check it on (a workflow landed before any run it fits): never promoted unchecked. It
     // stops, its record naming why (the compile's draft error), and asks no recompile: a revision would have nothing to be
@@ -417,7 +435,8 @@ async function settleAhead(deps: PromotionDeps, name: string, ahead: PromotionRe
 /** A check's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed); undefined while one is at work or not
  *  created yet. One row per reserved input, so every one counts: a run not ended by the deadline failed, and so did one
  *  never created by then (`unstarted`: the server stopped after reserving it, say), its input read from the agent's run
- *  the record names for it. With what its runs cost, their outcomes, and how many were never created by the deadline.
+ *  the record names for it. With what its runs cost, the rows' outcomes (one per row, the never created failed), and how
+ *  many were never created by the deadline.
  *  No grade is read: the label is the agent's own recorded answer. */
 async function checkRows(deps: Pick<PromotionDeps, "store" | "context" | "now">, record: PromotionRecord): Promise<{ rows: CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number } | undefined> {
   const { store, context } = deps;
@@ -445,7 +464,10 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "context" | "now">,
       ...(stoppedAt ? { skipped: stoppedAt } : {}),
     });
   }
-  return { rows, cost: replayCost(runs, late), outcomes: outcomesOf(runs, late), unstarted: runs.filter((row) => !row).length };
+  // The outcomes are the rows', so they add up to its n: a reserved run never created is a failed input there too.
+  const outcomes = { ...NO_OUTCOMES };
+  for (const row of rows) outcomes[row.outcome] += 1;
+  return { rows, cost: replayCost(runs, late), outcomes, unstarted: rows.filter((row) => row.unstarted).length };
 }
 
 /** A run's input as a check's disagreement shows it: its text, else its JSON. */
@@ -488,13 +510,9 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   const agrees = (row: CheckRow) => alone(row) && sameAnswer(row.answer, row.agent);
   const score = { n: ran.length, agreed: ran.filter(agrees).length, alone: ran.filter(alone).length };
   const ok = checkPasses(score, bar);
-  // Each text is cut of the host's secrets whole, then shortened: shortened first, a secret straddling the cut would leave
-  // its prefix, which no redactor matches.
+  // Each text is cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown).
   const shown = await deps.shown();
-  const cut = (text: string) => {
-    const clean = shown.text(text);
-    return clean.length > CHECK_TEXT_MAX ? `${clean.slice(0, CHECK_TEXT_MAX)}…` : clean;
-  };
+  const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
   const disagreements: CheckDisagreement[] = ran.filter((row) => !agrees(row)).map((row) => ({
     run: row.of, input: cut(row.input), agent: row.agent === null ? null : cut(row.agent),
     ...(row.outcome === "answered" ? { draft: cut(row.answer ?? "") } : row.outcome === "handed_back" ? { escalated: cut(row.escalated ?? "") } : { failed: true as const }),
@@ -507,14 +525,16 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   const tools = skippedToolsOf(read.rows);
   const { skipped_write: skipped, failed } = read.outcomes;
   const { hint, why: skipWhy } = skipWordsOf(tools, skipped);
-  const numbers = { of: read.rows.map((row) => row.of), cost_usd: read.cost, outcomes: read.outcomes, ...(tools.length ? { skipped_tools: tools } : {}) };
+  const numbers = { of: read.rows.map((row) => row.of), cost_usd: read.cost, outcomes: read.outcomes, ...(read.unstarted ? { unstarted: read.unstarted } : {}), ...(tools.length ? { skipped_tools: tools } : {}) };
   // Every input skipped at a write (each reserved input counts: one never created or never ended failed, so this is the
   // only way to none): nothing to check it on, so it stops, never promoted unchecked, and asks no recompile.
   if (!score.n) {
     const why = skipped ? `${plural(skipped, "input")} skipped because ${hint ? skipWhy : `each ${SKIPPED_WRITE} (a check never runs a write)`}` : "it ran on no input";
     return stopUnchecked(deps, name, digest, bar, why, still, numbers, extra);
   }
-  const aside = [...(failed ? [`${failed} failed: a step failed, or it was still at work at the check's deadline`] : []), ...(skipped ? [`${skipped} skipped: ${skipWhy}`] : []), ...(read.unstarted ? [`${read.unstarted} never started by the check's deadline (the server stopped after reserving it, say), each a failed input`] : [])].join("; ");
+  // A run never created is a failed outcome too, said once: as never started.
+  const ranFailed = failed - read.unstarted;
+  const aside = [...(ranFailed ? [`${ranFailed} failed: a step failed, or it was still at work at the check's deadline`] : []), ...(skipped ? [`${skipped} skipped: ${skipWhy}`] : []), ...(read.unstarted ? [`${read.unstarted} never started by the check's deadline (the server stopped after reserving it, say), each a failed input`] : [])].join("; ");
   // Every input reserved and none started (a launch interrupted before its first run existed): each counts failed in n,
   // and the words say none ran.
   const said = read.unstarted === score.n
@@ -649,16 +669,21 @@ async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: 
   return made;
 }
 
-/** A run's final answer, whole (its last final answer row that is not its end-of-run turn's), or null: none, or its
- *  record could not be read. */
-async function answerOf(store: PromotionDeps["store"], runId: string, context: Context): Promise<string | null> {
+/** A run's final answer row, its text whole (its last final answer row that is not its end-of-run turn's), or null: none,
+ *  or its record could not be read. `turn`: the row of that id instead (the answer an audit is of, runner/audit.ts), so an
+ *  answer a follow-up gave since is never read for it. */
+export async function answerRowOf(store: PromotionDeps["store"], runId: string, context: Context, turn?: string): Promise<{ id: string; text: string } | null> {
   try {
     const rows = await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } });
-    return rows.findLast((row) => row.kind === "final_answer" && row.agent_label !== LEARNING_LABEL)?.text ?? null;
+    const row = rows.findLast((one) => one.kind === "final_answer" && one.agent_label !== LEARNING_LABEL && (turn === undefined || one.id === turn));
+    return typeof row?.text === "string" ? { id: row.id, text: row.text } : null;
   } catch {
     return null;
   }
 }
+
+/** A run's final answer, whole (answerRowOf's text; `turn`: that row's), or null. */
+export const answerOf = async (store: PromotionDeps["store"], runId: string, context: Context, turn?: string): Promise<string | null> => (await answerRowOf(store, runId, context, turn))?.text ?? null;
 
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { replay?: { outcome?: unknown; skipped?: Skipped }; path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
 
@@ -817,7 +842,7 @@ async function checkView(ask: ReplayAsk, record: PromotionRecord, id: string, na
     const n = check.n ?? 0;
     const handedBack = check.outcomes.handed_back;
     const wf = n ? Math.round(((check.agreed ?? 0) + handedBack) / n * 1e4) / 1e4 : 0;
-    const neverStarted = inputs > 0 && Object.values(check.outcomes).every((count) => count === 0);
+    const neverStarted = inputs > 0 && check.unstarted === inputs;
     return { replay: id, workflow: name, digest, status: neverStarted ? "failed" : "done", inputs, outcomes: check.outcomes, score: { n, agree: check.agreed ?? 0, agent_acc: n ? 1 : 0, wf_acc: wf, delta: n ? Math.round((wf - 1) * 1e4) / 1e4 : 0, handed_back: handedBack }, cost_usd: check.cost_usd ?? null, decided, reason: record.reason };
   }
   const runs = await Promise.all((record.runs ?? []).map((run) => ask.store.runs.get(run)));
@@ -863,12 +888,6 @@ export async function replayCallsFor(store: Store, runId: string, launch: RunLau
   const entries = await runEntries(store, launch.replay.of, context).catch(() => []);
   const recorded = recordedCalls(isCliRecord(entries) ? piShaped(entries) : entries);
   const pin = (await store.mcp.pin(runId).catch(() => undefined))?.body as McpPin | undefined;
-  const annotations = (tool: string) => {
-    const named = /^mcp:([^/]+)\/(.+)$/.exec(tool);
-    const server = named && pin && Object.hasOwn(pin, named[1]!) ? pin[named[1]!] : undefined;
-    const listed = server?.tools.find((one) => one.name === named![2]) as { annotations?: Record<string, unknown> } | undefined;
-    // Listed with none: `{}`, so a tool its server left unannotated reads unmarked, never as one it does not list.
-    return listed ? (listed.annotations ?? {}) : undefined;
-  };
+  const annotations = pinAnnotations(pin);
   return replayCalls(recorded, (tool) => toolClassOf(tool, annotations));
 }

@@ -28,6 +28,7 @@ import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
+import { isShadowRun, shadowRunId } from "../learn/audit.js";
 import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
@@ -61,7 +62,8 @@ export type RunRecords = {
 /** Agent `agentId`'s runs' records read at once, whatever their number: its runs' launches (Store.runs.launches) and every
  *  round its runs' learning kept with the learning runs they name (Store.learning.kept), two reads beside `listed` (its
  *  runs, as runs.list read them). Each answers as the store's per-run read does: a run of `listed` with no launch row is
- *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store. */
+ *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store, but for an
+ *  audit's shadow run: `listed` is every run of the agent, its shadows among them. */
 export async function agentRecordsOf(store: Store, agentId: string, listed: readonly RunRecord[]): Promise<RunRecords> {
   const [starts, kept] = await Promise.all([store.runs.learningStarts(agentId), store.learning.kept(agentId)]);
   const ours = new Set(listed.map((run) => run.id));
@@ -78,7 +80,9 @@ export async function agentRecordsOf(store: Store, agentId: string, listed: read
         if (!startOf.has(runId)) throw new StoreLaunchMissing(runId);
         return learningStartOfStored(startOf.get(runId));
       },
-      get: async (id) => rows.get(id) ?? store.runs.get(id),
+      // An audit's shadow run is the agent's: one not among `listed` (every run of the agent) was never started, so a
+      // run's shadow (allInOf) is no read a run.
+      get: async (id) => rows.get(id) ?? (isShadowRun(id) ? undefined : store.runs.get(id)),
     },
     learning: {
       proposal: async (runId, round) => {
@@ -272,7 +276,8 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const listed = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId);
   // Every run's launch and learning in a few reads (agentRecordsOf), never a read a run.
   const records = await agentRecordsOf(store, agentId, listed);
-  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+  // An audit's shadow run is no run of the series: its cost is its served run's learning (allInOf).
+  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const runs: CostRun[] = [];
   let unknownPath = 0;
   for (const run of ended) {
@@ -363,7 +368,20 @@ type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
 export async function allInOf(store: RunRecords, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
   // Every round's (learningSpendOf over the rounds: what its row spent after its job answered is learning, roundsLooked).
   const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
-  return runCostOf(run.costUsd, looked, grade);
+  // An audit's shadow run of it (runner/audit.ts) is its learning too (shadowSpendOf): unknown while it is queued or
+  // running, never $0.
+  const audited = (await shadowSpendOf(store, run.id)).usd;
+  return runCostOf(run.costUsd, looked, grade === null || audited === null ? null : grade + audited);
+}
+
+/** What run `runId`'s audit shadow run (runner/audit.ts) adds to its all-in cost: `open` while it is queued or running
+ *  (its cost not known yet: `usd` null, never $0), else its cost once it ended, stopped or failed (null: unknown); 0 when
+ *  none was started, and for a shadow itself. */
+export async function shadowSpendOf(store: { readonly runs: Pick<RunRecords["runs"], "get"> }, runId: string): Promise<{ open: boolean; usd: number | null }> {
+  if (isShadowRun(runId)) return { open: false, usd: 0 };
+  const shadow = await store.runs.get(shadowRunId(runId));
+  if (!shadow) return { open: false, usd: 0 };
+  return FINAL_STATES.includes(shadow.state) ? { open: false, usd: shadow.costUsd ?? null } : { open: true, usd: null };
 }
 
 /** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,
@@ -386,7 +404,7 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
   for (const run of await store.runs.list({ agentId, limit: PAST_RUNS })) {
-    if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null) continue;
+    if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null || isShadowRun(run.id)) continue;
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) !== "workflow") kept.push(run);
   }

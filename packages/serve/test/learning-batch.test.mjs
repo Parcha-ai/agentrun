@@ -670,6 +670,37 @@ test("the live cost is the booked one's function: a row in flight adds what its 
   await batches.halt();
 });
 
+// Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBr): a run's all-in is unknown while its audit's shadow run is queued or
+// running (store-reads/learning.ts shadowSpendOf), never $0, so its row is not closed, nor its cost saved, until it ends.
+test("a row whose run's audit shadow still runs stays open and starts no next row; once the shadow ends the row closes at served + shadow, and the cap stops the batch", async () => {
+  const host = fakeHost({ costs: [] });
+  const learned = { learned: { notes: [], skills: [], workflows: [] }, merged: null, revisions: [] };
+  // Row 1's run spent $0.20; its shadow, still running, will cost $0.25: the cap of $0.50 then has $0.05 left.
+  let shadowEnded = false;
+  let looks = 0;
+  let seen;
+  const sawOpen = new Promise((resolve) => (seen = resolve));
+  host.figures = async () => {
+    if (shadowEnded) return { path: "workflow", cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45, ...learned };
+    if (++looks === 3) seen();
+    return { path: "workflow", cost_usd: 0.2, learning_usd: null, total_usd: null, ...learned, unsettled: true };
+  };
+  const batches = new LearningBatches(host);
+  const made = await batches.create("a1", asked({ max_cost_usd: 0.5 }));
+  // Its figures read three times unsettled, or the batch over without waiting on them.
+  await Promise.race([sawOpen, batches.idle(made.id)]);
+  const mid = await batches.read("a1", made.id);
+  assert.deepEqual([mid.status, mid.current, mid.finished, mid.rows[0].state, mid.rows[0].total_usd ?? null], ["running", 1, 0, "running", null], JSON.stringify(mid));
+  assert.equal(mid.cost_usd, null, "the cost so far is unknown while the shadow runs, never the served part as all");
+  assert.equal(host.runs.size, 1, "no next row starts while row 1's all-in is unknown");
+  shadowEnded = true;
+  await batches.idle(made.id);
+  const end = await batches.read("a1", made.id);
+  assert.deepEqual([end.status, end.stopped, end.finished, end.spent_usd], ["stopped", "cap", 1, 0.45], JSON.stringify(end));
+  assert.deepEqual([end.rows[0].state, end.rows[0].cost_usd, end.rows[0].learning_usd, end.rows[0].total_usd], ["done", 0.2, 0.25, 0.45]);
+  assert.equal(host.runs.size, 1, "$0.05 left covers no second row: none started");
+});
+
 test("a cancel while a row's run is starting stops that run once it has an id, and the row ends failed with it", async () => {
   const cancelled = [];
   const host = fakeHost({ costs: [0.1], cancelled });

@@ -98,6 +98,12 @@ Route: `GET /agents`.
 - `--archived` (boolean): true lists only archived agents; false, the default, the others.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
+### `agentrun agents list-learning-audits AGENT_ID`
+
+The audit ledger of the agent's serving learned workflows.
+
+Route: `GET /agents/{agent_id}/learning/audits`.
+
 ### `agentrun agents list-learning-promotions AGENT_ID`
 
 Each learned workflow revision's promotion: its replay's numbers and whether it serves.

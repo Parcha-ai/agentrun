@@ -104,8 +104,8 @@ test("with no run a learned workflow served the after side says so, never a figu
 });
 
 test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bound is true, and the summary withholds the ratio with at_most 1", async () => {
-  // A store with no launch and no learning rounds: only the run row's cost fields are read.
-  const store = { runs: { launch: async () => undefined }, learning: { proposal: async () => undefined } };
+  // A store with no launch, no learning rounds and no audit shadow run: only the run row's cost fields are read.
+  const store = { runs: { launch: async () => undefined, get: async () => undefined }, learning: { proposal: async () => undefined } };
   // The store's row for a bounded run: costUsd null, costAtMostUsd the bound (RunRow).
   const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, costAtMostUsd: null, ...extra });
   const exact = await costRunOf(store, row("r1"), 1);
