@@ -2,13 +2,14 @@
 // the ordinary fenced runner owns journals, reflection, checking and learning commits.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
-import { ApiError } from "../errors.js";
+import { ApiError, invalid } from "../errors.js";
 import { canonical, isObject, type AgenticBody } from "../store/agent-body.js";
 import type { Claim, RunOrigin, Store } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
+import { labelsIssues, labelsOf } from "../run-labels.js";
 import { learnsWorkflowsOf } from "../learning-setting.js";
 import { chooseWorkflows, type LearnedWorkflow, chooseSkills, learningFolderOf, readerOf, seedFrom, secretsShown } from "../learning.js";
 import { NATIVE_GRADE_INSTRUCTION_BYTES } from "../learn/grade.js";
@@ -62,6 +63,14 @@ export type SdkInbox = {
 };
 type SdkSeedSkill = { name: string; files: Record<string, string> };
 const keyOf = (id: string) => `sdk-run:${id}`;
+/** An inbox takes evidence until an hour after its start or its latest events batch, and never past a day after its start. */
+const SDK_OPEN_MS = 3_600_000;
+export const SDK_MAX_OPEN_MS = 86_400_000;
+/** A start's `started_at`: at most this far ahead of the server's clock, at most this far behind it. */
+const STARTED_SKEW_MS = 60_000,
+  STARTED_BACK_MS = 7 * 86_400_000;
+const TITLE_LIMIT = 200;
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/;
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
   TOTAL_LIMIT = 4_000_000;
@@ -95,6 +104,17 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   }
   return result;
 };
+/** An RFC 3339 date-time as epoch ms, or undefined when it is not one (a field out of range included). */
+function rfc3339(value: string): number | undefined {
+  const m = RFC3339.exec(value);
+  if (!m) return undefined;
+  const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const day = new Date(Date.UTC(y, mo - 1, d));
+  if (day.getUTCFullYear() !== y || day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d || h > 23 || mi > 59 || s > 59) return undefined;
+  if (m[8] && (Number(m[9]) > 23 || Number(m[10]) > 59)) return undefined;
+  const offset = m[8] ? (m[8] === "-" ? -1 : 1) * (Number(m[9]) * 60 + Number(m[10])) * 60_000 : 0;
+  return Date.UTC(y, mo - 1, d, h, mi, s, Math.floor(Number(`0${m[7] ?? ""}`) * 1000)) - offset;
+}
 export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
   isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk")
     ? { runtime: body.sdk.runtime }
@@ -106,11 +126,13 @@ export async function sdkInbox(store: Pick<Store, "settings">, runId: string): P
 }
 
 /** Completion and closure compete on the same inbox. A stale runner cannot close it, and a completion that won
- *  remains available to the next claim even if this one cannot read or journal it. No external SDK call is replayed. */
+ *  remains available to the next claim even if this one cannot read or journal it. No external SDK call is replayed.
+ *  An expiry is checked against the row it replaces: an events batch that moved the deadline keeps the inbox open. */
 export async function closeSdkInbox(store: Pick<Store, "settings">, claim: Claim, reason: NonNullable<SdkInbox["closed"]>): Promise<SdkInbox> {
   for (let retry = 0; retry < 20; retry++) {
     const row = await sdkInbox(store, claim.runId);
     if (row.completion || row.closed) return row;
+    if (reason === "expired" && row.expires_at >= Date.now()) return row;
     const next = { ...row, closed: reason };
     if (await store.settings.replaceIf(keyOf(claim.runId), row, next, claim)) return next;
   }
@@ -202,7 +224,7 @@ export class SdkRuns {
     checkGrade: (model: string) => Promise<void>,
     consoleOrigin: string,
   ) {
-    only(body, ["runtime", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
+    only(body, ["runtime", "input", "instructions", "model", "workflow_tools", "workflow_adapters", "started_at", "title", "labels"]);
     const workflow = sdkWorkflowManifest(body.workflow_tools, body.workflow_adapters);
     if (workflow && canonical(this.clean(workflow)) !== canonical(workflow))
       refuse("The workflow manifest contains a protected value; keep credentials in the backend.");
@@ -214,6 +236,15 @@ export class SdkRuns {
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);
+    const startedAt = body.started_at === undefined ? undefined : this.startedAt(body.started_at);
+    const title = body.title === undefined ? undefined : text(body.title, "title").trim().replace(/\s+/g, " ");
+    if (title !== undefined && ([...title].length < 1 || [...title].length > TITLE_LIMIT))
+      refuse(`title must be text of 1 to ${TITLE_LIMIT} characters.`);
+    const labelIssues = labelsIssues(body.labels);
+    if (labelIssues.length) throw invalid(labelIssues);
+    const labels = labelsOf(body.labels);
+    if (labels && canonical(this.clean(labels)) !== canonical(labels))
+      refuse("A label contains a protected value; keep credentials in the backend.");
     if (origin) {
       const known = await this.store.runOfOrigin(origin.key);
       if (known) {
@@ -261,7 +292,7 @@ export class SdkRuns {
     const runId = uuidv7();
     const launch: RunLaunch = {
       input: { content: cleanedInput },
-      title: cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80),
+      title: title === undefined ? cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80) : this.clean({ title }).title,
       place: { mode: "runner" },
       harness: "sdk",
       sdk: {
@@ -276,14 +307,14 @@ export class SdkRuns {
     await this.store.settings.put(keyOf(runId), {
       run_id: runId,
       created_at: now,
-      expires_at: now + 3_600_000,
+      expires_at: now + SDK_OPEN_MS,
       batches: [],
       learning_skills: skills,
       learning_workflows: workflows,
     } satisfies SdkInbox);
     try {
       await this.store.runs.create(
-        { id: runId, agentId: entry.agent.id, revisionId: entry.revision.id, ...(origin ? { origin } : {}) },
+        { id: runId, agentId: entry.agent.id, revisionId: entry.revision.id, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(startedAt !== undefined ? { startedAt } : {}) },
         { body: launchBody(launch) },
       );
     } catch (error) {
@@ -291,6 +322,15 @@ export class SdkRuns {
       throw error;
     }
     return this.receipt(runId, consoleOrigin);
+  }
+  /** A start's `started_at`: when the backend began the task, if before this request. The run's `created_at` takes it. */
+  private startedAt(value: unknown): number {
+    const at = typeof value === "string" ? rfc3339(value) : undefined;
+    if (at === undefined) return refuse("started_at must be an RFC 3339 date-time, such as 2026-01-02T03:04:05Z.");
+    const now = Date.now();
+    if (at > now + STARTED_SKEW_MS) refuse("started_at must not be in the future.");
+    if (at < now - STARTED_BACK_MS) refuse("started_at must be at most 7 days ago.");
+    return Math.min(at, now);
   }
   async receipt(runId: string, consoleOrigin: string) {
     const run = await this.store.runs.get(runId);
@@ -446,7 +486,9 @@ export class SdkRuns {
         if (batch.sequence !== row.batches.length + 1)
           throw new ApiError("idempotency_mismatch", "SDK event sequences must be contiguous.");
         checkToolParents(row, batch.events);
-        return { ...row, batches: [...row.batches, batch] };
+        // Every accepted batch, an empty one too, keeps the inbox open another hour, up to a day after its start.
+        const expires = Math.max(row.expires_at, Math.min(Date.now() + SDK_OPEN_MS, row.created_at + SDK_MAX_OPEN_MS));
+        return { ...row, batches: [...row.batches, batch], expires_at: expires };
       },
       EVIDENCE_LIMIT,
     );

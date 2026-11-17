@@ -1,3 +1,4 @@
+import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "../run-labels.js";
 import { MCP_TOOL_KEY_PATTERN } from "../tool-names.js";
 
 const text = { type: "string" };
@@ -70,7 +71,7 @@ export const SDK_PATHS = {
       operationId: "startSdkRun",
       summary: "Register a task executed by an existing backend SDK",
       description:
-        "Requires an SDK agent definition. Captures the actual original policy and input, pins approved learning, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key.",
+        "Requires an SDK agent definition. Captures the actual original policy and input, pins approved learning, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key. The run takes evidence until an hour after this request; each events batch moves that deadline to an hour after the batch, up to 24 hours after this request (capabilities.features.sdk_runs.max_open_s).",
       parameters: [id("agent_id"), { ...key, required: true }],
       requestBody: body(
         object(
@@ -88,6 +89,15 @@ export const SDK_PATHS = {
               price_usd: { type: "number", minimum: 0 },
             }, ["name", "description", "input_schema", "permission"]) },
             workflow_adapters: { type: "array", maxItems: 2, uniqueItems: true, items: { enum: ["runNode", "runJudge"] }, description: "Optional backend callbacks available for workflow model and decision nodes. Default empty; requires workflow_tools." },
+            started_at: { ...text, format: "date-time", description: "When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request." },
+            title: { ...text, minLength: 1, maxLength: 200, description: "The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input." },
+            labels: {
+              type: "object",
+              maxProperties: MAX_LABELS,
+              propertyNames: { pattern: LABEL_KEY.source },
+              additionalProperties: { type: "string", minLength: 1, maxLength: MAX_LABEL_VALUE },
+              description: "The caller's own labels for the run, under the same rules as RunCreate.labels: kept on the run, served on every read of it and matched by GET /runs' label. Put no secret in one: a label holding a server secret is refused.",
+            },
           },
           ["runtime", "input", "instructions"],
         ),
@@ -136,7 +146,7 @@ export const SDK_PATHS = {
       operationId: "sdkRunEvents",
       summary: "Record bounded SDK execution evidence",
       description:
-        "Use the scoped run token. Batches are contiguous from sequence 1, at most 100 events and 256 KB each, 4 MB total per run. Exact retries are idempotent; conflicting retries and events after completion are refused. Tool start IDs are unique per run. A nested callback names an already open, pinned learned_workflow invocation in parent_tool_use_id, and its result keeps the original call name and parent. Evidence never authorizes or executes a tool.",
+        "Use the scoped run token. Batches are contiguous from sequence 1, at most 100 events and 256 KB each, 4 MB total per run. Each new batch, an empty one (events: []) included, moves the run's deadline to an hour after it, up to 24 hours after the start; a run past its deadline takes no more evidence or completion and ends with an unknown outcome. Exact retries are idempotent; conflicting retries and events after completion are refused. Tool start IDs are unique per run. A nested callback names an already open, pinned learned_workflow invocation in parent_tool_use_id, and its result keeps the original call name and parent. Evidence never authorizes or executes a tool.",
       parameters: [id("run_id"), key],
       requestBody: body(
         object({ sequence: { type: "integer", minimum: 1 }, events: { type: "array", maxItems: 100, items: event } }),

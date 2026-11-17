@@ -704,8 +704,9 @@ export interface Runs {
   /** A queued run of `revisionId`, its row's only writer until a runner claims it. With `origin`, the origin row is written
    *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
-   *  or nothing). */
-  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
+   *  or nothing). `startedAt` (ms) is when the run began, for one reported after it began elsewhere (a backend SDK run's
+   *  `started_at`); absent, now. */
+  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels; startedAt?: number }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then

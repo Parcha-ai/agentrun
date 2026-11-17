@@ -905,6 +905,8 @@ Route: `POST /agents/{agent_id}/sdk-runs`.
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)
+- `--started-at STRING` (string): When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request.
+- `--title STRING` (string): The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 

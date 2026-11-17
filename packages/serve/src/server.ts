@@ -1,6 +1,6 @@
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
-import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
+import { SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
 import { gradeRouteFor } from "./runner/harness-loops.js";
 import { routeOf as sdkModelRoute } from "./runner/model-route.js";
 import { answerSkill } from './skill-route.js';
@@ -884,6 +884,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       // Always sealed: the server starts with its seal key (seal-key.ts bootSealKey), so nothing is kept in the clear.
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
+      /** A backend SDK run's start (sdk/runs.ts): the fields it takes, and the most seconds it stays open. */
+      sdk_runs: { started_at: true, title: true, labels: true, max_open_s: SDK_MAX_OPEN_MS / 1000 },
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
