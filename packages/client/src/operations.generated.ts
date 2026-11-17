@@ -657,6 +657,13 @@ export type Run = {
   labels?: Record<string, string>;
   approvals?: "ask" | "never";
   last_progress_at?: string | null;
+  recordings?: Array<{
+    path: string;
+    computer: string;
+    seconds: number;
+    bytes: number;
+    finished: boolean;
+  }>;
   input?: Record<string, unknown> | null;
   file_ids?: Array<string>;
   claim?: {
