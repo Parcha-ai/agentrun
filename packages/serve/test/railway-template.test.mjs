@@ -10,7 +10,7 @@ import { sealKeyOf } from "../dist/tool-keys.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const { differences, loadTemplate, onlyService, renderValue, renderVariables, startArgv } = await import(new URL("deploy/railway/template.mjs", ROOT));
-const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
+const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, PRICE_PER_MINUTE, PUBLISH, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
 const { dockerRunArgs } = await import(new URL("deploy/railway/local-walk.mjs", ROOT));
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
 const { service } = onlyService(loadTemplate());
@@ -218,6 +218,19 @@ test("a failed deploy is reported with its last log lines, the setup code's line
   assert.match(stopped, /deploy ended FAILED[\s\S]*Healthcheck failed![\s\S]*\(a line with the setup code, not shown\)/);
   assert.doesNotMatch(stopped, /#code=/);
   assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
+});
+
+test("the walk's Railway cost: each metric sample held until the next (the last for one sample period), at the list prices", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const got = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0 });
+  // CPU 0.1 vCPU for 60 s then 0.05 for 10 s; memory 0.2 GB for 60 s then 0.3 for 10 s.
+  assert.ok(Math.abs(got.by.CPU_USAGE - 6.5 / 60) < 1e-9 && Math.abs(got.by.MEMORY_USAGE_GB - 15 / 60) < 1e-9, JSON.stringify(got.by));
+  assert.ok(Math.abs(got.usd - ((6.5 / 60) * PRICE_PER_MINUTE.CPU_USAGE + (15 / 60) * PRICE_PER_MINUTE.MEMORY_USAGE_GB)) < 1e-12);
+  assert.equal(got.usage.CPU_USAGE, 0.5);
+});
+
+test("the published template's description fits Railway's 75 characters", () => {
+  assert.ok(PUBLISH.description.length <= 75, PUBLISH.description.length);
 });
 
 test("a workspace not named as expected stops the run before anything is made", async () => {

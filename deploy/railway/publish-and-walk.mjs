@@ -23,7 +23,8 @@ export const SOURCE_PROJECT = "agentrun-template-source";
 export const WALK_PROJECT = "agentrun-template-walk";
 const README = new URL("../README.md", import.meta.url);
 const OVERVIEW = new URL("./overview.md", import.meta.url);
-const PUBLISH = { category: "AI/ML", description: "Deploy and host AgentRun, an open-source platform for running agents, on Railway" };
+// Railway takes a description of at most 75 characters.
+export const PUBLISH = { category: "AI/ML", description: "AgentRun, an open-source platform for running agents, on Railway" };
 
 /** The first run --first-run makes: a no-tool agent on pi, the model key saved as a person saves it in the console's
  *  Settings, and a cap well under the walk's budget. */
@@ -37,8 +38,8 @@ export const FIRST_RUN = {
 };
 
 // Railway's list prices (railway.com/pricing), per minute: what the walk's usage is costed at.
-const PRICE_PER_MINUTE = { CPU_USAGE: 0.00000772 * 60, MEMORY_USAGE_GB: 0.00000386 * 60, DISK_USAGE_GB: 0.00000006 * 60 };
-const PRICE_PER_GB_EGRESS = 0.05;
+export const PRICE_PER_MINUTE = { CPU_USAGE: 0.00000772 * 60, MEMORY_USAGE_GB: 0.00000386 * 60, DISK_USAGE_GB: 0.00000006 * 60 };
+const METRIC_SAMPLE_S = 10;
 
 // Every operation this script sends, each checked against Railway's live schema by --check-api.
 export const OPS = {
@@ -62,6 +63,7 @@ export const OPS = {
   Variables: `query Variables($projectId: String!, $environmentId: String!, $serviceId: String!) { variables(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) }`,
   DeploymentLogs: `query DeploymentLogs($id: String!, $filter: String) { deploymentLogs(deploymentId: $id, filter: $filter, limit: 200) { message timestamp } }`,
   BuildLogs: `query BuildLogs($id: String!) { buildLogs(deploymentId: $id, limit: 200) { message timestamp } }`,
+  Metrics: `query Metrics($projectId: String!, $environmentId: String!, $serviceId: String!, $startDate: DateTime!) { metrics(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId, startDate: $startDate, sampleRateSeconds: ${METRIC_SAMPLE_S}, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB]) { measurement values { ts value } } }`,
   Usage: `query Usage($projectId: String!, $startDate: DateTime) { usage(projectId: $projectId, startDate: $startDate, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_GB]) { measurement value } }`,
   TemplatePublish: `mutation TemplatePublish($id: String!, $input: TemplatePublishInput!) { templatePublish(id: $id, input: $input) { id code status } }`,
   ProjectDelete: `mutation ProjectDelete($id: String!) { projectDelete(id: $id) }`,
@@ -160,6 +162,7 @@ export async function checkApi(client, log) {
     Domains: { projectId: id, environmentId: id, serviceId: id }, Variables: { projectId: id, environmentId: id, serviceId: id },
     DeploymentLogs: { id, filter: "Set up this server" }, BuildLogs: { id },
     Usage: { projectId: id, startDate: new Date(0).toISOString() },
+    Metrics: { projectId: id, environmentId: id, serviceId: id, startDate: new Date(0).toISOString() },
     TemplatePublish: { id, input: { ...PUBLISH, readme: "check", workspaceId: id } },
     ProjectDelete: { id }, TemplateDelete: { id, input: { workspaceId: id } },
   };
@@ -299,16 +302,25 @@ async function lastLines(client, id) {
   return lines.map((l) => `    ${/#code=|setup code|AGENTRUN_TOKEN=/i.test(l.message) ? "(a line with the setup code, not shown)" : l.message}`).join("\n");
 }
 
-/** What the project used, from Railway's usage query, costed at the list prices; or why it could not be read. */
-async function usageOf(client, projectId, since) {
+/** What the service used, from Railway's live metrics (CPU in vCPU and memory and disk in GB, sampled), each sample held
+ *  until the next and costed at the list prices; and Railway's own usage figures for the project, which lag, beside it. */
+export async function usageOf(client, { projectId, environmentId, serviceId, since }) {
+  const out = { usd: null, by: {}, usage: null };
   try {
-    const got = (await client.call("Usage", { projectId, startDate: new Date(since).toISOString() })).usage;
-    const by = Object.fromEntries(got.map((u) => [u.measurement, u.value]));
-    const usd = Object.entries(PRICE_PER_MINUTE).reduce((sum, [m, p]) => sum + (by[m] ?? 0) * p, 0) + (by.NETWORK_TX_GB ?? 0) * PRICE_PER_GB_EGRESS;
-    return got.length ? { usd, by } : { usd: null, why: "Railway's usage query answered no measurements yet" };
+    const series = (await client.call("Metrics", { projectId, environmentId, serviceId, startDate: new Date(since).toISOString() })).metrics;
+    const seconds = (ts) => (typeof ts === "number" ? ts : Date.parse(ts) / 1000);
+    for (const { measurement, values } of series) {
+      const points = [...values].sort((a, b) => seconds(a.ts) - seconds(b.ts));
+      out.by[measurement] = points.reduce((sum, p, i) => sum + p.value * ((i + 1 < points.length ? seconds(points[i + 1].ts) : seconds(p.ts) + METRIC_SAMPLE_S) - seconds(p.ts)), 0) / 60;
+    }
+    out.usd = Object.entries(PRICE_PER_MINUTE).reduce((sum, [m, p]) => sum + (out.by[m] ?? 0) * p, 0);
   } catch (error) {
-    return { usd: null, why: error.message };
+    out.why = error.message;
   }
+  try {
+    out.usage = Object.fromEntries((await client.call("Usage", { projectId, startDate: new Date(since).toISOString() })).usage.map((u) => [u.measurement, u.value]));
+  } catch {}
+  return out;
 }
 
 /** One deploy of the template into a throwaway project, checked as a person who clicks the button meets it, then deleted.
@@ -316,7 +328,7 @@ async function usageOf(client, projectId, since) {
  *  with the session setup signed in, then an agent made and run to completion with the deploy's own AGENTRUN_TOKEN. */
 async function walk(client, { workspaceId, template, step, firstRun, times }) {
   const { service } = onlyService(template.serializedConfig);
-  let projectId;
+  let projectId, environmentId, serviceId;
   try {
     times.clicked = Date.now();
     const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: formValues(template.serializedConfig), workspaceId } })).templateDeployV2;
@@ -332,8 +344,8 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     }
     const project = (await client.call("Project", { id: projectId })).project;
     await inWorkspace(client, project, workspaceId);
-    const environmentId = edges(project.environments)[0]?.id;
-    const serviceId = edges(project.services).find((s) => s.name === service.name)?.id;
+    environmentId = edges(project.environments)[0]?.id;
+    serviceId = edges(project.services).find((s) => s.name === service.name)?.id;
     if (!environmentId || !serviceId) throw new Error(`the walk's project has no service named ${service.name}`);
     const deployment = await until(client, "the service's deploy succeeded", 20 * 60_000, 10_000, async () => {
       const d = edges((await client.call("Deployments", { input: { projectId, environmentId, serviceId } })).deployments)[0];
@@ -388,9 +400,12 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     if (firstRun) await firstRunOf(client, { base, token: vars.AGENTRUN_TOKEN, cookie, key: firstRun.key, model: firstRun.model, step, times });
   } finally {
     if (projectId) {
-      const usage = await usageOf(client, projectId, times.clicked);
-      times.usage = usage;
-      step.pass("railway usage", usage.usd === null ? `not read: ${usage.why}` : `$${usage.usd.toFixed(4)} at list prices, from ${JSON.stringify(usage.by)} (CPU in vCPU-minutes, memory and disk in GB-minutes, egress in GB)`);
+      if (serviceId) {
+        const usage = await usageOf(client, { projectId, environmentId, serviceId, since: times.clicked });
+        times.usage = usage;
+        const round = (by) => JSON.stringify(by, (k, v) => (typeof v === "number" ? Number(v.toPrecision(3)) : v));
+        step.pass("railway usage", `${usage.usd === null ? `metrics not read: ${usage.why}` : `$${usage.usd.toFixed(5)} at list prices, from the service's metrics ${round(usage.by)} (vCPU-minutes and GB-minutes)`}; Railway's usage query: ${usage.usage ? round(usage.usage) : "not read"}`);
+      }
       try {
         await client.call("ProjectDelete", { id: projectId });
         const gone = await client.call("Project", { id: projectId }).then((d) => Boolean(d.project.deletedAt), () => true);
@@ -526,6 +541,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     Variables: () => ({ variables: env }),
     BuildLogs: () => ({ buildLogs: [{ message: "Healthcheck failed!", timestamp: "<time>" }] }),
     DeploymentLogs: () => ({ deploymentLogs: [{ message: `Set up this server: https://${domain}/setup#code=${"x".repeat(22)} (or paste AGENTRUN_TOKEN)`, timestamp: "<time>" }] }),
+    Metrics: () => ({ metrics: [{ measurement: "CPU_USAGE", values: [{ ts: 1000, value: 0.1 }, { ts: 1060, value: 0.05 }] }, { measurement: "MEMORY_USAGE_GB", values: [{ ts: 1000, value: 0.2 }, { ts: 1060, value: 0.3 }] }] }),
     Usage: () => ({ usage: [{ measurement: "CPU_USAGE", value: 0.5 }, { measurement: "MEMORY_USAGE_GB", value: 3 }, { measurement: "DISK_USAGE_GB", value: 2 }, { measurement: "NETWORK_TX_GB", value: 0.001 }] }),
     TemplatePublish: () => ({ templatePublish: { id: "<template>", code: "<code>", status: "PUBLISHED" } }),
     ProjectDelete: () => ({ projectDelete: true }),
