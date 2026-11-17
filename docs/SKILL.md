@@ -14,11 +14,44 @@ AgentRun is most useful for agents that run again and again: scheduled, triggere
 own systems, more than interactive coding sessions. Before choosing a place, ask whether they already run any, and
 on which machines. Skip this when they or a handoff already named the agent to bring.
 
-With their permission, look on this machine without changing it: `crontab -l`, `systemctl list-timers` or
-`launchctl list`, and the schedules in the project's CI workflows. Keep the entries that start Claude Code
-(`claude -p`), Codex (`codex exec`) or an agent SDK. Read the schedule and the command line only, never prompts,
-transcripts or credentials. Agents on another machine are found the same way in a session there; do not sign in to
-a machine the person has not asked you to use.
+With their permission, look on this machine without changing it. Run this as written: it reads cron, systemd
+timers (the system's and the person's own), launchd jobs and the project's CI workflows, and reads the command each
+one runs, because a list of timers or launchd labels alone does not show it.
+
+```sh
+agents='claude|codex'
+{ crontab -l; cat /etc/crontab /etc/cron.d/*; } 2>/dev/null | awk -v re="$agents" '
+  $1 ~ /^(@|[0-9*])/ && match($0, re) {
+    n = ($1 ~ /^@/) ? 1 : 5; when = $1; for (i = 2; i <= n; i++) when = when " " $i
+    print "cron: " when " " substr($0, RSTART, RLENGTH) }'
+for scope in --system --user; do
+  systemctl $scope list-timers --all --no-legend --plain 2>/dev/null | tr ' ' '\n' | grep '\.timer$' | while read -r timer; do
+    unit=$(systemctl $scope show -p Unit --value "$timer")
+    run=$(systemctl $scope show -p ExecStart --value "$unit" | grep -oE "$agents" | head -n 1)
+    when=$(systemctl $scope show -p TimersCalendar -p TimersMonotonic --value "$timer" | tr '\n' ' ')
+    [ -z "$run" ] || echo "systemd $scope: $timer $run $when"
+  done
+done
+for plist in ~/Library/LaunchAgents/*.plist /Library/LaunchAgents/*.plist /Library/LaunchDaemons/*.plist; do
+  run=$(plutil -p "$plist" 2>/dev/null | grep -oE "$agents" | head -n 1)
+  [ -z "$run" ] || echo "launchd: $plist $run"
+done
+for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+  run=$(grep -oE "$agents" "$workflow" 2>/dev/null | head -n 1)
+  [ -z "$run" ] || echo "ci: $workflow $run $(grep -oE "cron: *['\"][^'\"]*['\"]" "$workflow" | tr '\n' ' ')"
+done
+```
+
+For each job that names Claude Code (`claude -p`) or Codex (`codex exec`) it prints where the job is, its schedule
+and that one word. The rest of the command line stays on the machine, so a prompt, a key or an environment value
+written into a job is never returned to you. For the same reason do not run a bare `crontab -l`, `systemctl cat` or
+`launchctl print`, or open a unit, plist or script file. For how often a launchd job runs, read only its
+`StartInterval` and `StartCalendarInterval` keys with `plutil -extract`.
+
+A job that starts an agent through a wrapper script or an agent SDK program does not name it on its command line,
+so the filter cannot see it. Before concluding that there are none, ask the person which of their jobs start
+agents; do not open their scripts, prompts or transcripts to find out. Agents on another machine are found the
+same way in a session there; do not sign in to a machine the person has not asked you to use.
 
 List each one found: what it does, what starts it, how often, and which machine and project hold it. Ask which are
 worth improving. Those machines are where AgentRun should run or connect, and those agents are the ones to bring in

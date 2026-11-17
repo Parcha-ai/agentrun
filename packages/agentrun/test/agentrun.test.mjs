@@ -579,8 +579,9 @@ test("the setup skill asks where AgentRun should run before installing or deploy
   assert.doesNotMatch(where, /offer AgentRun Cloud first|Honor a deployment choice/, "no place is preferred or inferred");
   const found = section("Find the agents they already run");
   assert.ok(skill.indexOf("## Find the agents they already run") < skill.indexOf("## Choose where to run it"), "existing agents are found before a place is chosen");
-  for (const look of ["crontab -l", "systemctl list-timers", "launchctl list", "claude -p", "codex exec"]) assert.ok(found.includes(look), look);
+  for (const look of ["crontab -l", "list-timers", "LaunchAgents", ".github/workflows", "claude -p", "codex exec"]) assert.ok(found.includes(look), look);
   assert.match(found, /With their permission, look on this machine without changing it/);
+  assert.match(found, /ask the person which of their jobs start\s+agents/, "a job the filter cannot see is asked about, not assumed absent");
   assert.ok(skill.indexOf("## Choose where to run it") < skill.indexOf("npx @parcha/agentrun --no-open"), "the question precedes the install recipe");
 });
 function setupFixture(t, commands) {
@@ -593,8 +594,59 @@ function setupFixture(t, commands) {
     }
     rmSync(dir, { recursive: true, force: true });
   });
-  return { dir, run: (step) => spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } }) };
+  return { dir, run: (step, env = {}) => spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, ...env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } }) };
 }
+// A scheduled job carries its prompt, and often a key, on its command line, so a bare `crontab -l` hands both to the
+// assistant. A timer or launchd listing shows no command at all, so a job could not be told from any other. The skill's
+// discovery step reads each job's command on the machine and returns the schedule and the runtime's name, nothing else.
+test("the setup skill's discovery step names scheduled Claude Code and Codex jobs without returning their prompts, keys or environment", (t) => {
+  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
+  const step = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]).find((block) => block.includes("crontab -l"));
+  assert.ok(step, "the skill has its discovery step");
+  const exec = (program, words) => `echo '{ path=${program} ; argv[]=${program} ${words} ; ignore_errors=no ; }'`;
+  const f = setupFixture(t, {
+    crontab: [
+      "ANTHROPIC_API_KEY=private-fixture-key",
+      "PATH=/home/private-fixture-user/.claude/bin:/usr/bin",
+      "# 0 1 * * * claude -p 'a private-fixture-comment'",
+      "30 2 * * 1-5 cd /srv/app && OPENAI_API_KEY=private-fixture-inline claude -p 'triage the private-fixture-prompt'",
+      "@daily /usr/local/bin/codex exec 'summarise the private-fixture-prompt'",
+      "15 4 * * * /usr/local/bin/backup --to private-fixture-bucket",
+    ].map((line) => `echo "${line}"`).join("\n"),
+    systemctl: `case "$*" in
+  "--user list-timers"*) echo "Mon 2026-01-05 03:00:00 UTC 5h left - - nightly-review.timer nightly-review.service" ;;
+  "--system list-timers"*) echo "Mon 2026-01-05 00:00:00 UTC 2h left - - logrotate.timer logrotate.service" ;;
+  *"-p Unit --value nightly-review.timer") echo nightly-review.service ;;
+  *"-p Unit --value logrotate.timer") echo logrotate.service ;;
+  "--user show -p ExecStart --value nightly-review.service") ${exec("/usr/local/bin/codex", "exec review the private-fixture-prompt")} ;;
+  *"-p ExecStart --value logrotate.service") ${exec("/usr/sbin/logrotate", "/etc/private-fixture.conf")} ;;
+  "--user show -p TimersCalendar"*"nightly-review.timer") echo "{ OnCalendar=*-*-* 03:00:00 ; next_elapse=n/a }" ;;
+esac`,
+    plutil: `case "$2" in
+  */triage.plist) printf '%s\n' '{' '  "EnvironmentVariables" => { "ANTHROPIC_API_KEY" => "private-fixture-key" }' '  "ProgramArguments" => [ 0 => "/opt/bin/claude" 1 => "-p" 2 => "the private-fixture-prompt" ]' '}' ;;
+  *) printf '%s\n' '{' '  "Program" => "/usr/bin/private-fixture-sync"' '}' ;;
+esac`,
+  });
+  for (const name of ["triage", "sync"]) {
+    mkdirSync(join(f.dir, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(f.dir, "Library", "LaunchAgents", `${name}.plist`), "");
+  }
+  mkdirSync(join(f.dir, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(f.dir, ".github", "workflows", "nightly.yml"), "on:\n  schedule:\n    - cron: '0 6 * * *'\njobs:\n  review:\n    steps:\n      - run: claude -p 'review with the private-fixture-prompt'\n        env:\n          KEY: private-fixture-key\n");
+  writeFileSync(join(f.dir, ".github", "workflows", "lint.yaml"), "on:\n  schedule:\n    - cron: '0 7 * * *'\njobs:\n  lint:\n    steps:\n      - run: npm run private-fixture-lint\n");
+  const run = f.run(step, { HOME: f.dir });
+  assert.equal(run.status, 0, run.stderr);
+  // The machine's own system crontabs are read too; only this fixture's lines are compared.
+  const lines = run.stdout.split("\n").filter((line) => line && !(line.startsWith("cron: ") && !/^cron: (30 2 \* \* 1-5|@daily) /.test(line)));
+  assert.deepEqual(lines, [
+    "cron: 30 2 * * 1-5 claude",
+    "cron: @daily codex",
+    "systemd --user: nightly-review.timer codex { OnCalendar=*-*-* 03:00:00 ; next_elapse=n/a } ",
+    `launchd: ${join(f.dir, "Library", "LaunchAgents", "triage.plist")} claude`,
+    "ci: .github/workflows/nightly.yml claude cron: '0 6 * * *' ",
+  ], "each agent job with its schedule and runtime, and no other job");
+  assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no prompt, key, environment value or unrelated job is returned");
+});
 for (const source of [false, true]) test(`the ${source ? "source-server" : "setup"} skill's start step reports failure promptly and preserves its error in a private log`, { timeout: 30_000 }, (t) => {
     const log = source ? "serve.log" : "agentrun.log";
     const commands = { npm: "exit 0", [source ? "node" : "npx"]: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
