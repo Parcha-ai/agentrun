@@ -34,6 +34,17 @@ test("a path outside workflows/<name>/ with its workflow.json and README.md is r
   }
 });
 
+test("a draft is its workflow.json and its README.md together: one given alone names the other as missing (restore reads the README)", () => {
+  assert.deepEqual(check([added(DRAFT_PATH, workflow())]), [{ rule: "workflow", path: README_PATH, detail: "a draft writes workflows/<name>/ with its workflow.json and README.md: its README.md is missing" }]);
+  assert.deepEqual(check([added(README_PATH, readme)]), [{ rule: "workflow", path: DRAFT_PATH, detail: "a draft writes workflows/<name>/ with its workflow.json and README.md: its workflow.json is missing" }]);
+});
+
+test("checkDraft never throws: a draft checked with no workflow DSL is a draft error, in words", () => {
+  let problems;
+  assert.doesNotThrow(() => (problems = check(draft(), { dsl: undefined })));
+  assert.deepEqual(problems, [{ rule: "workflow", path: DRAFT_PATH, detail: "no workflow DSL to read it with: it was not checked" }]);
+});
+
 test("a link, a folder or anything not a regular file is refused, never read; a deletion is refused", () => {
   assert.deepEqual(check([{ path: DRAFT_PATH, status: "added", mode: "120000" }]), [{ rule: "file_mode", path: DRAFT_PATH, detail: "a link: never followed" }]);
   assert.deepEqual(check([{ path: DRAFT_PATH, status: "added", mode: "040000" }]), [{ rule: "file_mode", path: DRAFT_PATH, detail: "a folder: nothing in it was read" }]);
