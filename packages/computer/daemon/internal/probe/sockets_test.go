@@ -262,6 +262,38 @@ func TestConnectableSocketsSkipsProcAndSysfsButWalksTheMountsBelowThem(t *testin
 	}
 }
 
+// Review (#3103, PRRT_kwDOUmdVMs64niwY): below a skipped proc, the tmpfs mounts a, a-b and a/sub sort as a, a-b, a/sub
+// ('-' before '/'), so a check against the last kept mount alone kept a/sub, and it was walked twice: once through a,
+// once from the queue. Once is 8 entries (the root, p, a, sub and its 3 files, a-b); twice is 12, past the budget of 10.
+func TestConnectableSocketsWalksEachMountBelowASkippedFolderOnce(t *testing.T) {
+	root := shortDir(t)
+	proc := filepath.Join(root, "p")
+	a, ab, sub := filepath.Join(proc, "a"), filepath.Join(proc, "a-b"), filepath.Join(proc, "a", "sub")
+	for _, dir := range []string{ab, sub} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(filepath.Join(sub, fmt.Sprintf("f%d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mountinfo := filepath.Join(t.TempDir(), "mountinfo")
+	text := "25 1 0:5 / " + proc + " rw - proc proc rw\n" +
+		"26 25 0:6 / " + a + " rw - tmpfs tmpfs rw\n" +
+		"27 25 0:7 / " + ab + " rw - tmpfs tmpfs rw\n" +
+		"28 26 0:8 / " + sub + " rw - tmpfs tmpfs rw\n"
+	if err := os.WriteFile(mountinfo, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	search := probe.ConnectableSockets([]string{root}, table(t, ""), mountinfo, probe.SocketBounds{Entries: 10, Depth: 8}, 2*time.Second)
+	if len(search.Incomplete) != 0 {
+		t.Fatalf("Incomplete = %q; want none: each mount below p walked once is 8 entries", search.Incomplete)
+	}
+}
+
 // The real mount table names /proc proc: walked as a root, it is skipped at once.
 func TestConnectableSocketsSkipsTheRealProcByTheRealMountTable(t *testing.T) {
 	if runtime.GOOS != "linux" {

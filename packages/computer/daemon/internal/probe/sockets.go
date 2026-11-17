@@ -85,20 +85,25 @@ func unescapeMount(path string) string {
 // mountsBelow are the mounts strictly below the folder at path that a socket can be a file of, and that no other such
 // mount below path holds: walking each of them reaches the rest.
 func mountsBelow(mounts map[string]string, path string) []string {
-	prefix := strings.TrimSuffix(path, string(filepath.Separator)) + string(filepath.Separator)
-	below := []string{}
+	path = strings.TrimSuffix(path, string(filepath.Separator))
+	below := map[string]bool{}
 	for point, kind := range mounts {
-		if strings.HasPrefix(point, prefix) && !socketless[kind] {
-			below = append(below, point)
+		if strings.HasPrefix(point, path+string(filepath.Separator)) && !socketless[kind] {
+			below[point] = true
 		}
 	}
-	sort.Strings(below)
+	// Each folder above a mount, up to path, is looked up: a sorted list would put a/sub after a-b, not right after a.
 	outer := []string{}
-	for _, point := range below {
-		if len(outer) == 0 || !strings.HasPrefix(point, outer[len(outer)-1]+string(filepath.Separator)) {
+	for point := range below {
+		held := false
+		for up := filepath.Dir(point); len(up) > len(path) && !held; up = filepath.Dir(up) {
+			held = below[up]
+		}
+		if !held {
 			outer = append(outer, point)
 		}
 	}
+	sort.Strings(outer)
 	return outer
 }
 
