@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { caseFeeds } from "../dist/eval-feed.js";
 import { CaseError, evalTemplate, readCases } from "../dist/template-eval.js";
 import { scratch } from "./support.mjs";
 import { incident, pull } from "./feed-support.mjs";
@@ -131,4 +132,15 @@ test("a feed case checks when it is read: its fixture, a feed trigger to start f
   assert.ok(problems(scheduled).some((p) => /updated\/fixtures\/feed\.json: a feed case starts its run through the package's feed trigger, and the package has none/.test(p)), problems(scheduled).join("\n"));
 
   await assert.rejects(evalTemplate({ dir: good, server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (error) => error instanceof CaseError && error.problems.some((p) => /evals\/updated: feed fakes the package's feeds on the eval's own server alone: run it without --server/.test(p)));
+});
+
+test("the eval feed fake matches the item it delivers by the trigger's id pointer: a JSON list read at /number gets an update in place of the pull request it names, never a duplicate", async (t) => {
+  const item = (number, title) => ({ number, title, html_url: `https://github.com/acme/web/pull/${number}` });
+  const fixture = { format: "json-list", items: [item(2, "Two"), item(1, "One")], item: item(2, "Two, edited"), trigger: "New item" };
+  const url = "https://api.github.com/repos/acme/web/pulls";
+  const feeds = await caseFeeds(fixture, [url], undefined, "/number");
+  t.after(() => feeds.close());
+  feeds.deliver();
+  const served = await (await fetch(feeds.route(url))).json();
+  assert.deepEqual(served.map((one) => [one.number, one.title]), [[2, "Two, edited"], [1, "One"]]);
 });

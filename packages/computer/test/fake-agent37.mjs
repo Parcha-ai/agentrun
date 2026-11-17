@@ -110,11 +110,13 @@ export function fakeRest({ key = KEY } = {}) {
  * the handshakes that ended in a login, state.live the connections open now, state.sessions the sessions open now. A
  * connection takes MAX_SESSIONS sessions at once and refuses the next, as OpenSSH's sshd does by default (MaxSessions).
  * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
- * side, and close() ends them all, then the server.
+ * side, and close() ends them all, then the server. accept(ctx), when given, decides each login in place of the one
+ * key as root (Morph's gateway: its own username, any key); run(command, stream), when given, may answer a command
+ * itself (true), in place of bash.
  */
-export async function fakeSshd({ publicKey }) {
+export async function fakeSshd({ publicKey, accept, run }) {
 	const host = keyPair();
-	const allowed = utils.parseKey(publicKey);
+	const allowed = publicKey === undefined ? undefined : utils.parseKey(publicKey);
 	const commands = [];
 	const children = new Set();
 	const clients = new Set();
@@ -128,6 +130,7 @@ export async function fakeSshd({ publicKey }) {
 		});
 		client.on("error", () => {});
 		client.on("authentication", (ctx) => {
+			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
 			const same = key && ctx.username === "root" && key.algo === allowed.type && key.data.length === allowed.getPublicSSH().length && timingSafeEqual(key.data, allowed.getPublicSSH());
 			if (!same) return ctx.reject(["publickey"]);
@@ -152,6 +155,7 @@ export async function fakeSshd({ publicKey }) {
 				session.on("exec", (acceptExec, _reject, { command }) => {
 					commands.push(command);
 					const stream = acceptExec();
+					if (run?.(command, stream)) return;
 					const child = spawn("bash", ["-c", command], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
 					children.add(child);
 					child.stdout.pipe(stream, { end: false });

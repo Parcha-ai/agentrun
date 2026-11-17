@@ -34,10 +34,7 @@ AgentRun needs two things from your API:
 - **A streaming, two-way exec.** You start a process in a machine as root, write to its stdin and read its stdout and
   stderr while it runs. AgentRun talks to its daemon over one such process for the machine's whole life.
 - **A list by label.** You can list your machines by a label, tag or metadata pair that AgentRun sets at create.
-  If your API keeps no labels, declare `labels: "machine"` in your facts. AgentRun then writes them to a file in the
-  machine that only root can read, and you list by the name create gives the machine, or list every machine where your
-  API takes no name. Your timer must end machines (`lifetime: "vendor"`): a machine whose create stopped before the
-  file was written carries no label the janitor can find. Such a host has no `extend`.
+  A vendor whose API keeps no labels does not fit yet: a provider needs a place for them, kept by the vendor or by us.
 
 ### Exec shapes that work
 
@@ -63,7 +60,7 @@ it by them alone:
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | Daytona, [`src/daytona.ts`](src/daytona.ts): a session command, its log WebSocket, and its input call, which takes whole lines; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
 | The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
-| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill` |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill`. Morph, [`src/morph.ts`](src/morph.ts): the same SshExec over plain TCP to the vendor's gateway, as the instance id with the instance's own key, read over REST; never an account key in the username, since an unpinned gateway would read it |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` kills by the pid the shared wrapper reports |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
@@ -189,6 +186,9 @@ You add four things under `packages/computer/src/`, each copied from E2B's:
 - `conformance/<vendor>.ts`, which reads your key and builds your provider for the test suite.
 - One line in `descriptors/index.ts` that adds your descriptor to `DESCRIPTORS`.
 
+A worked example from outside the core team: [`boxd.ts`](src/boxd.ts), a janitor-lifetime host over a vendor SDK, with
+its descriptor, conformance module and fake-SDK tests (`test/boxd-provider.test.mjs`).
+
 ### The eleven members
 
 A host has eleven members: `descriptor`, `facts`, `create`, `get`, `list`, `delete` and `exec`, then the optional
@@ -216,8 +216,7 @@ over a unix socket or a virtio device, or nothing of the vendor runs in the mach
 socket but the computer's own. The pre-check prints the listeners.
 If your image leaves system paths that root runs or reads with permissions wider than root's, list them in `rootOnly`:
 create makes them root's alone (root the owner, no write by group or other users) before anything else, and the Core case `isolation.root-runs` checks
-that the computer's user can write nothing root runs. With `labels: "machine"`, the Core case `isolation.label-file`
-checks that the computer's user can't read the file the labels are kept in. `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
+that the computer's user can write nothing root runs. `HostFacts` in [`src/host.ts`](src/host.ts) lists the optional fields, such as `user` and `labels`.
 
 `maxLifetimeMs` in `facts` is the longest any of your plans keeps a machine. For E2B that's Pro's 24 hours
 (`PRO_MAX_MS`). Your provider's `maxLifetimeMs` option is the cap a user gets, and it may only lower the fact. Default
@@ -248,12 +247,7 @@ AgentRun's server is gone.
 AgentRun polls `get`. The exception is a vendor that applies a machine's settings only once it is ready, as boxd does
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
-finds machines by them. With `labels: "machine"` there is nowhere to store them: give the machine `req.name` as its
-own name where your API takes one, and answer it as `Machine.name` from `get` and `list`, and answer each machine's
-image as your API reads it back as `Machine.image`: AgentRun reads labels only in a machine of your provider's `image`
-option or a box image. AgentRun writes the labels
-into the machine once it runs. Without a name, a machine whose create was cut off before that write can't be traced to
-its request, so it ends only at your timer. Where your API keeps fewer or shorter labels than AgentRun writes, declare
+finds machines by them. Where your API keeps fewer or shorter labels than AgentRun writes, declare
 `labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
 `HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
@@ -315,14 +309,7 @@ Some vendors have states beyond these four:
 in the same shape as `get`. The listing finds; `get` answers: AgentRun takes only the ids from your listing and reads
 each one by `get` for its state, labels and end, and drops one `get` reads as not found. So your listing may be stale,
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
-don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. With
-`labels: "machine"`, list by `labels["agentrun.computer.name"]` where it is asked and your API lists by name, or list
-everything. AgentRun keeps the machines of that name whose `image` is ours, and reads each running one's labels from
-its file; one whose
-read fails or doesn't end is left out of that listing, in words, and read again at the next (a create's listing by its
-name fails instead, since the machine may be its own). A stopped
-machine can't be read: it has the labels this process last read from it, or none after a restart, so the janitor
-leaves it, and only your timer or a person ends it.
+don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does.
 
 ```ts
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
@@ -398,8 +385,7 @@ an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's 
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
 your API keeps no label change, `get` reads your moved timer as that label. Without `extend`, a computer can't be
-extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create. A host
-with `labels: "machine"` is refused one.
+extended: leave it out when what it moves (your timer, or with `"janitor"` your labels) is fixed at create.
 `check(spec)` adds your own rules for a spec, such as image names; the spec it gets is an object whose fields aren't
 checked yet. Leave out what you don't need. Settings' test of your keys is one `list` by AgentRun's label, so a
 `list` must never create anything.
@@ -435,6 +421,35 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
+- **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
+  (`src/cloudflare.ts`; deploy and remove it as `relays/cloudflare/README.md` says).
+
+A provider that can do both takes one option, `connect: "exec" | "dial"`, read once in its constructor, which picks
+its host's facts: on `dial` the host declares `connect: "dial"` and has no `exec` or `upload`, and create boots the
+machine with `req.boot.env`. Its descriptor declares the option as a setting with no default (`e2bConnect`,
+`modalConnect`), so exec holds unless the server's settings say dial. E2B and Modal do this. Modal's create gives
+the sandbox `agentrun-dial` as its command and the env as `env`. E2B can't: a template's start command runs once at
+the template's build and never sees a create's env, so E2B's create starts `agentrun-dial` itself through envd, once,
+with the env as that one process's ([README](README.md#e2b-on-dial)). Their conformance modules' `dialKit()` refuse, since
+a machine dials the server that minted its token: the Core run happens inside the public server's process.
+
+#### Worked example: Fly Machines
+
+[`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
+`create` posts the box image as `config.image`, `req.boot.env` as `config.env` and the labels as `config.metadata`, with
+`auto_destroy: true` and restart policy `"no"`: once init's deadline ends the daemon, the machine stops and Fly destroys
+it. `list` filters by `metadata.<key>=<value>`, `delete` passes `force=true`, and `extend` writes the deadline label
+alone, for the janitor. Each Fly fact has its doc link in the file, and the ones the docs leave open say **unverified**.
+
+Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
+in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+(`--exit` exits 0 on a pass, else 1):
+
+```sh
+COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=… AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
+  node packages/serve/scripts/dial-conformance.mjs --provider fly
+```
 
 ### Wire it up
 
@@ -782,9 +797,7 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
 
 `--before <file>` records every machine listed with `agentrun.computer=1`. `--after <file>` deletes each new machine
 that carries a conformance run's label (`agentrun.conformance`) and reads it back gone. It leaves alone everything
-recorded before, and any new machine without that label, which belongs to someone else on the account. With
-`labels: "machine"`, labels are read only in a machine of a box image or of `--image <image>`, the image your run
-started from. It prints
+recorded before, and any new machine without that label, which belongs to someone else on the account. It prints
 `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` and exits 0 when every swept machine is gone, 1 when one is
 still there, and 2 on a usage error. It reaches your API through the conformance module's `createHost({ env })`, which
 reads the same settings as the run and needs no live switch. If one account holds more than one place to list, such as

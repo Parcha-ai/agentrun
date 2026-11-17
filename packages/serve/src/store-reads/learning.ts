@@ -28,8 +28,8 @@ import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
-import { championOf, gradesOf, gradeView, type PromotionRecord, promotionsOf, withinBar } from "../learn/promote.js";
-import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
+import { isShadowRun, shadowRunId } from "../learn/audit.js";
+import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -62,7 +62,8 @@ export type RunRecords = {
 /** Agent `agentId`'s runs' records read at once, whatever their number: its runs' launches (Store.runs.launches) and every
  *  round its runs' learning kept with the learning runs they name (Store.learning.kept), two reads beside `listed` (its
  *  runs, as runs.list read them). Each answers as the store's per-run read does: a run of `listed` with no launch row is
- *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store. */
+ *  StoreLaunchMissing, one that kept no learning has no round. A run not of `listed` is read from the store, but for an
+ *  audit's shadow run: `listed` is every run of the agent, its shadows among them. */
 export async function agentRecordsOf(store: Store, agentId: string, listed: readonly RunRecord[]): Promise<RunRecords> {
   const [starts, kept] = await Promise.all([store.runs.learningStarts(agentId), store.learning.kept(agentId)]);
   const ours = new Set(listed.map((run) => run.id));
@@ -79,7 +80,9 @@ export async function agentRecordsOf(store: Store, agentId: string, listed: read
         if (!startOf.has(runId)) throw new StoreLaunchMissing(runId);
         return learningStartOfStored(startOf.get(runId));
       },
-      get: async (id) => rows.get(id) ?? store.runs.get(id),
+      // An audit's shadow run is the agent's: one not among `listed` (every run of the agent) was never started, so a
+      // run's shadow (allInOf) is no read a run.
+      get: async (id) => rows.get(id) ?? (isShadowRun(id) ? undefined : store.runs.get(id)),
     },
     learning: {
       proposal: async (runId, round) => {
@@ -138,26 +141,20 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   // What the grade spent: the graded entry's, or what a grade that failed spent before it did.
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
-  // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
-  // every note. Its provider's error stays in the journal.
-  // One skipped for no room under the cap (GENERAL_NO_BUDGET) says so.
-  const unchecked = graded?.unchecked ?? dropped?.unchecked;
-  const skip = unchecked === undefined ? undefined : unchecked === GENERAL_NO_BUDGET ? GENERAL_NO_ROOM : GENERAL_UNCHECKED;
-  const withSkip = (detail: string | null) => (skip ? [detail, skip].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
     const verdict = merged.verdict;
     const what = verdict ? learnedOf(keptOf(row.proposal, verdict), verdict) : { learned: [], pending: [], skills: [], workflows: [] };
     return {
-      state: "merged", reason: null, detail: withSkip(merged.detail), at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
+      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
       learned: what.learned, ...(what.pending.length ? { pending: what.pending } : {}), ...(what.skills.length ? { skills: what.skills } : {}), ...(what.workflows.length ? { workflows: what.workflows } : {}),
     };
   }
   const reason = (dropped?.reason ?? null) as Learning["reason"];
   const lost = reason === "grader" ? lostOf(row.proposal) : [];
   return {
-    state: "dropped", reason, detail: withSkip(dropped?.detail ?? null), at: endedAt,
+    state: "dropped", reason, detail: dropped?.detail ?? null, at: endedAt,
     ...(dropped?.problems?.length ? { problems: [...dropped.problems] as Learning["problems"] } : left),
     // The verdict, when one was given; the blobs it read only go with a merge (the server kept them for its merge alone).
     ...(graded ? { verdict: graded.verdict } : {}), ...cost, ...(lost.length ? { lost } : {}),
@@ -279,7 +276,8 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const listed = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId);
   // Every run's launch and learning in a few reads (agentRecordsOf), never a read a run.
   const records = await agentRecordsOf(store, agentId, listed);
-  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+  // An audit's shadow run is no run of the series: its cost is its served run's learning (allInOf).
+  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const runs: CostRun[] = [];
   let unknownPath = 0;
   for (const run of ended) {
@@ -300,16 +298,17 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs, replay), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
 }
 
-/** The replay the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
- *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's `replay` numbers
- *  and whether they cleared the bar (withinBar, promotion's own). Null when no run was served, nothing serves now (held,
- *  or never promoted), or it was promoted with no replay (a dry run). */
+/** The check the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
+ *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's check numbers
+ *  (the share of the inputs it ran on that said what the agent said, against the agent's own 100%). `cleared`: it passed
+ *  (a champion is promoted), with the agreement check it passed (`agreed` of `alone`, its bar `agree_min`). Null when no run was served, nothing serves now (held, or never promoted), or it was promoted
+ *  on no input (a dry run). */
 export function servingReplayOf(records: readonly PromotionRecord[], runs: readonly CostRun[]): CostReplay | null {
   const name = runs.findLast((run) => (run.path === "workflow" || run.path === "handed_back") && run.workflow !== null)?.workflow;
-  const score = name ? championOf(records, name)?.replay : undefined;
-  if (!score) return null;
-  const pct = (acc: number) => Math.round(acc * 1000) / 10;
-  return { n: score.n, workflow_pct: pct(score.wf_acc), agent_pct: pct(score.agent_acc), cleared: withinBar(score) };
+  const check = name ? championOf(records, name)?.check : undefined;
+  if (!check?.n) return null;
+  const agreed = check.agreed ?? 0, alone = check.alone ?? 0;
+  return { n: check.n, workflow_pct: Math.round(checkShares({ n: check.n, agreed, alone }).agreement * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: check.agree_min };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what
@@ -369,7 +368,20 @@ type RunRecord = NonNullable<Awaited<ReturnType<Store["runs"]["get"]>>>;
 export async function allInOf(store: RunRecords, run: RunRecord): Promise<ReturnType<typeof runCostOf>> {
   // Every round's (learningSpendOf over the rounds: what its row spent after its job answered is learning, roundsLooked).
   const { looked, grade } = await learningSpendOf(store, run.id, run.costUsd);
-  return runCostOf(run.costUsd, looked, grade);
+  // An audit's shadow run of it (runner/audit.ts) is its learning too (shadowSpendOf): unknown while it is queued or
+  // running, never $0.
+  const audited = (await shadowSpendOf(store, run.id)).usd;
+  return runCostOf(run.costUsd, looked, grade === null || audited === null ? null : grade + audited);
+}
+
+/** What run `runId`'s audit shadow run (runner/audit.ts) adds to its all-in cost: `open` while it is queued or running
+ *  (its cost not known yet: `usd` null, never $0), else its cost once it ended, stopped or failed (null: unknown); 0 when
+ *  none was started, and for a shadow itself. */
+export async function shadowSpendOf(store: { readonly runs: Pick<RunRecords["runs"], "get"> }, runId: string): Promise<{ open: boolean; usd: number | null }> {
+  if (isShadowRun(runId)) return { open: false, usd: 0 };
+  const shadow = await store.runs.get(shadowRunId(runId));
+  if (!shadow) return { open: false, usd: 0 };
+  return FINAL_STATES.includes(shadow.state) ? { open: false, usd: shadow.costUsd ?? null } : { open: true, usd: null };
 }
 
 /** One run of the cost series, as number `n` of it: its figures (allInOf) and its path (agentCostOverStore's loop body,
@@ -392,7 +404,7 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
   for (const run of await store.runs.list({ agentId, limit: PAST_RUNS })) {
-    if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null) continue;
+    if (run.agentId !== agentId || !FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null || isShadowRun(run.id)) continue;
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
     if (kinds.get(run.revisionId) !== "workflow") kept.push(run);
   }

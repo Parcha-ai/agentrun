@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -37,8 +37,9 @@ full VM, a machine. The protocol has two layers:
 - **A daemon in every computer.** `computerd` is one small static Go program (Linux, amd64 and arm64, no cgo). It speaks
   JSON-RPC 2.0, one JSON object per line, over stdin and stdout, so it works in a computer with no network.
 - **One provisioner per vendor.** A provisioner makes, finds and ends computers, and opens a stream to the daemon
-  inside. It never runs commands itself: the daemon does. This package has four: Docker, Modal's VM runtime, Daytona
-  and E2B (desktops), each one line of the provider registry (see [Adding a computer](#adding-a-computer)).
+  inside. It never runs commands itself: the daemon does. This package has five: Docker, Modal's VM runtime, Daytona,
+  E2B (desktops) and boxd (microVMs, contributed by Michiel Voortman), each one line of the provider registry (see
+  [Adding a computer](#adding-a-computer)).
 
 The protocol is published as a spec, [`spec/computer/`](../../spec/computer/README.md), at protocol version 0.2
 (`PROTOCOL_VERSION`, which `hello` carries as `protocol`). Its JSON Schema and constants are generated from
@@ -503,7 +504,7 @@ provider declares, either way.
 
 | group | methods |
 | --- | --- |
-| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once; on a computer whose hello lists `screen.ahead`, one past the newest waits as the newest does, so two asks can be in flight): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. Computerd on a desktop learns what changed from the X server's DAMAGE extension and gives at most 15 frames a second; on an X server without DAMAGE, `screen.watch` is refused, `unsupported`, in words. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd (scaled to `maxWidth`, default 1280, at `quality`, default 60) and `png` from the phone client. One watch per connection. |
+| `screen` | `screen.shot({ region? })`: a PNG (8-bit, non-interlaced), its first `MAX_CHUNK_BYTES` in `data`, with `width`, `height` (the image's pixels, the input coordinate space, never downscaled), `scale` and `cursor?`; `screen.read({ id, offset })` for the rest. One shot is held, until its eof or the next shot. `screen.watch({ after, waitMs?, maxWidth?, quality? })`: the live view's frames, paced by the caller's ack (`after`, the seq of the last frame it has whole; an older one gets the newest frame at once; on a computer whose hello lists `screen.ahead`, one past the newest waits as the newest does, so two asks can be in flight): the next frame once the screen or the pointer changed, else `changed: false` when `waitMs` (default 2000, at most 10000) is over. Computerd on a desktop learns what changed from the X server's DAMAGE extension and gives at most 15 frames a second; on an X server without DAMAGE, `screen.watch` is refused, `unsupported`, in words. A frame is `{ seq, changed, format, frameWidth, frameHeight, width, height, cursor? }` and its bytes as a shot's (`data`, `id` and `screen.read`); `format` is `jpeg` from computerd and from phoned (scaled to `maxWidth`, default 1280, at `quality`, default 60); phoned reads the phone's screen at most every 200 ms while a watch waits, and encodes only a changed one, and the phone-harness provider's watch asks 720 wide when its caller names no width. One watch per connection. |
 | `input.pointer` | `input.actions`: `move`, `down`, `up`, `click` (`count` 1-3, held `keys`), `drag` (a path of 2 or more points), `scroll` (`unit` clicks or px) |
 | `input.keys` | `input.actions`: `key` (one key pressed, or a combo released in reverse; `repeat`), `hold` (`ms`), `type` |
 | `input.touch` | `input.actions`: `tap`, `long_press`, `swipe`, `pinch` (`scale` above 1 apart, below together), `button` (back, home, app_switch) |
@@ -660,6 +661,7 @@ live under:
   | `E2B_API_KEY` | E2B's `apiKey`: serve's new name for the E2B box |
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
+  | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -1360,7 +1362,7 @@ The conformance module, `dist/conformance/modal.js` (`--provider modal`), reads 
 (`settingsFromEnv`) and passes each to `create()` as its option: `COMPUTER_MODAL_TOKEN_ID` and
 `COMPUTER_MODAL_TOKEN_SECRET` (never `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under
 those names, and with only them set it refuses, naming the `COMPUTER_MODAL_` pair), `COMPUTER_MODAL_APP`, and, if set,
-`COMPUTER_MODAL_SERVER_URL`. It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
+`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_CONNECT` (`connect`). It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
 anything else. Its `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift`, so Go must
 be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes. Core `provider.stop` expects Modal's refusal (it
 declares no stop), and the Full `provider.janitor` case is skipped (`lifetime:janitor`, `release:stop`).
@@ -1376,6 +1378,18 @@ node packages/computer/dist/conformance/sweep.js --provider modal --after /tmp/m
 Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
 file records where it listed, the app and the server (`sweepScope`), and `--after` refuses, exit 2, before it lists
 anything, a file of another app or server, or one that names none: every computer there would read as new.
+
+### Modal on dial
+
+With `connect: "dial"` (a server's `modalConnect` setting; `exec` by default) a Modal sandbox dials the server instead
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): its command is the box image's `agentrun-dial` and the
+boot env goes in as `env`, which the SDK sends as an ephemeral Secret (`Secret.fromObject`, modal@0.11.1
+`mergeEnvIntoSecrets`). Nothing is uploaded and nothing runs through exec: the host has none. init is `agentrun-dial`'s
+child (`daemon: "child"`), and Modal still ends the sandbox at its timeout. No Archil mount; GPUs stay offered, on
+gVisor. **Unverified**: that a GPU sandbox on gVisor runs `agentrun-dial` as the VM runtime does (no live run yet). The
+conformance module's `dialKit()` refuses, as E2B's does: the Core run happens inside the public server's process. Its
+run image with `COMPUTER_MODAL_CONNECT=dial` is the box image, the one that holds `agentrun-dial` (debian:bookworm-slim
+on exec, as before).
 
 ## Daytona
 
@@ -1735,7 +1749,7 @@ made instead of making a second.
 An E2B computer is a sandbox made from an E2B template. The descriptor names no default: it says `prepareImage`, and
 `prepareImage()` answers the box template, `boxE2bTemplate()` (`src/box-image.ts`), with no call and no wait. That is
 `<BOX_E2B_PUBLISHER>/agentrun-archil-<recipe hash>`, the box image (`box/Dockerfile`: the archil client and helper,
-the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box-e2b` job builds as a template in the publishing
+the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box` job builds as a template in the publishing
 team and makes public, so any E2B account starts it by that name. A sandbox and a desktop both start from it, in either
 mode. It is kind `desktop`: computerd starts the X server and xfwm4 itself (`src/desktop.ts`), as on a Docker desktop,
 and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any template, with no display: the same
@@ -1959,9 +1973,26 @@ also sweeps its own label through the host at its end (the report's `cleanup.swe
 The conformance module's `settingsFromEnv` reads these names, and the sweep reads them through it (`createHost`),
 each passed to `create()` as the option in brackets: `COMPUTER_E2B_API_KEY` (`apiKey`, required),
 `COMPUTER_E2B_DOMAIN` (`domain`), `COMPUTER_E2B_DAEMON` (`daemonPath`), `COMPUTER_E2B_KIND` (`kind`),
-`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms) and `COMPUTER_E2B_USER` (`daemonUser`). It
-refuses while `E2B_SANDBOX_URL` is set in the environment it reads, as the provider does in `process.env`.
-`COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
+`COMPUTER_E2B_MAX_LIFETIME_MS` (`maxLifetimeMs`, a whole number of ms), `COMPUTER_E2B_USER` (`daemonUser`) and
+`COMPUTER_E2B_CONNECT` (`connect`). It refuses while `E2B_SANDBOX_URL` is set in the environment it reads, as the
+provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
+
+### E2B on dial
+
+With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): kind linux alone (its default on dial; a desktop named
+there is refused), no Archil mount, and the host has no
+exec and no upload. E2B runs a template's start command once, at the template's build, and snapshots it running, so
+it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
+So create starts the box template's `agentrun-dial` itself, once, right after `Sandbox.create`: one envd process as
+root with the boot env as that process's env alone (never the sandbox's `envs`, which envd gives every process), after
+the root-only and session-bus steps the exec path runs before init. It lets go of the process stream once envd has
+started it, and the process runs on ([docs.e2b.dev/commands/background](https://docs.e2b.dev/commands/background):
+with no command timeout, "the process keeps running after the client disconnects"). Its output goes to
+`/run/agentrun-dial.log`, root's alone. The conformance module's `dialKit()` refuses: a dial machine dials the server
+that minted its token, so its Core run happens inside the public server's process
+(`packages/serve/scripts/dial-conformance.mjs`), never from the CLI. With `COMPUTER_E2B_CONNECT=dial` and no
+`COMPUTER_E2B_TEMPLATE`, its run image is the box template, the one that holds `agentrun-dial`.
 
 ### What waits for a live run
 
@@ -2006,7 +2037,8 @@ of the key's workspace on its first run ([below](#the-desktop-agentrun-box)).
 `create(options)` takes the workspace's API key as `options.apiKey` and the private half of an SSH key registered on
 the same workspace (`POST /v1/ssh-keys`, or `agent37 ssh-keys add`) as `options.sshKey`, its contents, never a path:
 the provider reads no file and no environment. A key pasted into Settings comes back on one line (a password field
-drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. REST takes the API key as
+drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. A PKCS#8 key (PEM label
+`PRIVATE KEY`), which ssh2 does not read, is converted first: RSA to PKCS#1, EC to SEC1, Ed25519 to OpenSSH's format. REST takes the API key as
 `Authorization: Bearer <key>`; the SSH tunnel's edge takes the same key in `X-Agent37-Key` (npm `agent37@0.4.1`
 `src/cli.js`, `wsHandshake` and `runTunnel`). Neither key appears in an error, a note or a label: the sweep's scope
 names the API key by its sha256 prefix alone.
@@ -2135,6 +2167,76 @@ Agent37's docs under `https://www.agent37.com/docs/agents-api/` (instances creat
 errors; instance-sizing; vm-instances; instance-network; ssh; templates; custom-image), read 2026-11-13; npm
 `agent37@0.4.1` `src/cli.js` (the tunnel); `ssh2@1.17.0` (`lib/client.js`, `lib/Channel.js`, `lib/utils.js`); and
 the live runs above.
+
+## Morph
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's MORPH_API_KEY), and ssh2 is the host's own.
+const morph = await providerFor("morph", { apiKey });
+const box = await morph.prepareImage(); // the box image as a snapshot in the key's account
+const made = await morph.create({ image: box.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+Morph runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/morph.ts` is Morph's `MachineHost`.
+A Morph computer is kind `linux`, an instance (a VM) started from a snapshot through Morph's REST API
+(`https://cloud.morph.so/api`, `Authorization: Bearer <key>`; OpenAPI at `https://cloud.morph.so/api/openapi.json`).
+
+| MachineHost | Morph |
+| --- | --- |
+| `create` | `POST /instance` with the snapshot, the labels as metadata, and the lifetime as `ttl_seconds` with `ttl_action: "stop"` |
+| `get` | `GET /instance/{id}`: `ready` is running, `pending` and `saving` starting, `paused` stopped, `error` gone |
+| `list` | `GET /instance`, the account's every instance; the adapter matches the labels (the `metadata[...]` filter is not used: whether a dotted key survives it is **unverified**) |
+| `delete` | `DELETE /instance/{id}`, then this host's SSH connections to it end |
+| `extend` | `POST /instance/{id}/ttl`, never past the max-deadline label, its read-back end held to the call's now plus the seconds; then `POST /instance/{id}/metadata` with the deadline label moved |
+| `exec` | SSH through the gateway `ssh.cloud.morph.so:22` as `<instance id>` with the instance's own key (`GET /instance/{id}/ssh/key`, PKCS#8, converted to a form ssh2 reads; read once and kept until delete or a refused login); one channel per process on the shared connection, and the shared pid wrapper for `kill` |
+| `check` | an image is a snapshot id (`snapshot_...`); a size is the snapshot's, so `cpus` and `memoryMb` are refused |
+
+Morph's REST exec (`POST /instance/{id}/exec`) answers when the command ends, with no stdin, so it is not used. Both
+Morph SDKs log in as `<instance id>:<API key>` with any key; this provider does not, since Morph publishes no host key
+for its gateway, and a host posing as it would read the account's key out of the username. A public-key login with the
+instance's key hands such a host nothing to reuse. Morph has no egress control: network `none`, `open` and a list are
+init's. No Archil mount and no desktop yet.
+
+**The box snapshot.** `prepareImage()` answers the snapshot whose digest is `agentrun-box-<recipe hash>` in the key's
+account, or builds it once: a base snapshot of `morphvm-minimal` at 2 vCPUs, 4 GiB and 16 GiB of disk (`POST
+/snapshot`), an instance from it with a 2 h TTL of its own, `box/install.sh` run as root over SSH, then `POST
+/instance/{id}/snapshot` with the digest, and the instance deleted. The box snapshot and its base have no TTL, so
+neither expires. A build that fails before it asks for the box snapshot deletes its base as well, so it leaves nothing.
+A cancel does the same: the base's and the instance's creates take no cancel signal, only their own time bound, so
+their ids are always read and then deleted. `POST /snapshot` answers only once the base is made (78 s at 1 vCPU, 2 GiB
+and 8 GiB of disk), so its bound is the build's remaining time. The base carries the label `agentrun-box-build=<name>`,
+and a build looks for one by it before it makes one: a ready one is used, a pending one waited for, a failed one
+deleted. A base create whose answer is lost (a timeout, a dropped connection, a 5xx) looks again the same way, so the
+base Morph made all the same is used, never left. A failed box snapshot, with none other, is refused in words until it
+is deleted in the account.
+
+**Unverified** (the lane's live kit settles them): that the gateway takes the instance's key for the user `<instance
+id>`; that SSH lands as root; that `morphvm-minimal` has apt and dpkg;
+that `/ttl` counts from the call; whether `/metadata` merges or replaces (the whole map is sent); that a deleted instance
+answers 404; the arch (amd64) and the guest's sshd port (22); Morph's longest lifetime (24 h is taken) and whether
+activity resets a TTL; whether a snapshot needs its base; and whether instances started from one snapshot share the
+guest's RNG state and machine id.
+
+### Conformance on Morph
+
+```sh
+AGENTRUN_COMPUTER_LIVE_MORPH=1 COMPUTER_MORPH_API_KEY=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider morph
+```
+
+The conformance module, `dist/conformance/morph.js`, checks `AGENTRUN_COMPUTER_LIVE_MORPH=1` first, then reads
+`COMPUTER_MORPH_API_KEY` (`apiKey`, required), `COMPUTER_MORPH_SNAPSHOT` (the run's image, default the box snapshot
+`prepareImage()` finds or builds), `COMPUTER_MORPH_API_URL`, `COMPUTER_MORPH_DAEMON` (`daemonPath`) and
+`COMPUTER_MORPH_MAX_LIFETIME_MS`, never `MORPH_API_KEY`. Every computer of a run lives at most 30 minutes. The live sweep
+is the shared one, `dist/conformance/sweep.js --provider morph`; its scope is the key's account.
+
+### Sources
+
+Morph's OpenAPI (`https://cloud.morph.so/api/openapi.json`), its docs (`https://cloud.morph.so/docs/documentation/instances/ttl`),
+and its SDKs: `morph-python-sdk` `morphcloud/api.py` (`ssh_connect`) and `morph-typescript-sdk` `src/api.ts` (the
+gateway and its login), read 2026-11-16. No live run yet.
 
 ## Orgo: Windows and macOS desktops (parked)
 
@@ -2400,6 +2502,10 @@ const made = await phones.create({ image: "android", lifetimeMs: 10 * 60_000, ne
 (phone-harness.com). The phone harness bills it at 5 cents a minute from the account's credit. A cloud iPhone (driven by
 the API's control URL) is a later change: `platform: "ios"` is refused in words.
 
+- **Apps.** `apks: [{ path, sha256 }]`, else `env.PHONE_HARNESS_APKS` (its descriptor's hostEnv, a comma list of
+  `<absolute path>@sha256:<hex>`), names APK files on this machine that each phone installs (`pm install -r`) before
+  phoned starts, once per phone. A file not there, or whose bytes are not its pin, refuses `create()` before a phone is
+  rented, and `connect()`.
 - **phoned, the phone's driver.** `connect()` asks the phone harness for the session's adb link, connects to it,
   unlocks the phone with the session's code (never in a result or an error) and probes it. Then it starts phoned
   (`daemon-android/`, one dex jar built by `npm run build:phoned` into `dist/phoned.jar`) and speaks the protocol to it:
@@ -2501,6 +2607,143 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 - `ui.observe-shape`: the observation's shape, on the ui fixture where it is installed, else on Settings.
 
 `touch.pinch` skips in the provider's own refusal.
+
+## boxd
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's BOXD_API_KEY), and the @boxd-sh/sdk package is the host's own (npm 0.3.1).
+const boxd = await providerFor("boxd", { apiKey, org: "my-org", region: "fra" });
+const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A boxd computer is a [boxd](https://boxd.sh?ref=agentrun) machine: a KVM microVM running Ubuntu 24.04, with its own
+kernel and disk. It is kind `linux` by default, and kind `desktop` with `kind: "desktop"`: computerd starts Xvfb itself,
+as on E2B and a Docker desktop, and its X11 shim drives it. boxd runs on the shared machine-host adapter
+([PROVIDERS.md](PROVIDERS.md)): `src/boxd.ts` is boxd's `MachineHost`, its SDK slice and the mapping of a boxd machine
+to a machine, and `src/hosted/provider.ts` does everything that is not boxd's own (the computer's name, idempotent
+create, the upload, the install, init's start, the stdio bridge, the probe, the janitor's extend, delete-then-wait-gone,
+the sweep of a create that lands late). Every call goes through the host's boxd TypeScript SDK, the `@boxd-sh/sdk`
+package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
+the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
+
+### The desktop snapshot
+
+boxd's own image (`"default"`) has Xvfb but lists none of a desktop's stock apps (Xfce's text editor and terminal,
+xterm), so a boxd desktop starts from a snapshot that adds one. `prepareImage()` answers it by name,
+`agentrun-desktop-<12 hex>`, the hash of the recipe in `src/boxd.ts`, so a new recipe is a new snapshot. When the
+key's org has none, it builds it once, telling `onWait` "build" first:
+
+1. `machines.create` of an isolated machine of boxd's own image, named `agentrun-desktop-build-<8 hex>`, with no labels
+   (a restore carries a snapshot's labels over to every machine made from it) and boxd's delete timer at 2 hours;
+2. the recipe as root through the image user's passwordless sudo: `apt-get install mousepad` (Ubuntu's universe), its
+   `org.xfce.mousepad.desktop` checked;
+3. `snapshots.create` under the name, read until boxd says `ready`;
+4. the build machine deleted and read gone, pass, fail or cancel: the id create answered, read through `get` (a
+   lagging list can't hide it), and any machine of its name in the org's list, so a create whose reply was lost is
+   cleaned up too. One that can't be deleted within 2 minutes fails the call in words
+   (after the build's own error, when it failed), and boxd's delete timer ends it.
+
+A cancelled call makes no build machine, and a cancel while one starts stops the wait. Two servers that build the
+first snapshot of an org at once each pay for a build machine; both captures land under the one name, and boxd keeps
+the latest.
+
+The snapshot stays in the org: it is the image of every boxd desktop, and the next `prepareImage()` finds it with no
+build. One that failed, or that boxd archived (it makes no machine from an archived snapshot), is refused in words:
+delete it with `boxd snapshots remove`, and the next call builds it anew. A sandbox's `prepareImage()` answers
+`"default"` with no call.
+
+A desktop asked for on `"default"` is refused in words, and so is a desktop with `vcpu` and `memory`: a restore keeps
+the size the snapshot was captured at (the org's default). The box image's recipe (`box/install.sh`) is not used here:
+it is written for Debian's `python:3.12-slim`, not Ubuntu, and it takes sudo away, while boxd's exec runs as the
+image's user, which reaches root through sudo alone.
+
+### Settings
+
+`create(options)` takes the key as `options.apiKey` and nowhere else, and refuses in words without it. It reads no
+setting from the environment: serve passes its own `BOXD_API_KEY`, `BOXD_ORG` and `BOXD_REGION`, and the conformance
+module the `COMPUTER_BOXD_*` names it reads. The provider gives the SDK the key, the API's address and the region
+explicitly, so the SDK takes none of them from the environment.
+
+| Option | Meaning | Unset |
+| --- | --- | --- |
+| `apiKey` | the boxd API key | required |
+| `org` | the org machines are made in and listed from, by name or id | the key's own |
+| `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
+| `baseUrl` | the API's address | `https://boxd.sh:9443` |
+| `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither; a sandbox's alone | the org's default |
+| `kind` | `linux` or `desktop` (from the desktop snapshot) | `linux` |
+| `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
+| `daemonUser` | uid:gid the daemon runs as; never root, never the image's own user (1000) | `2510:2510` |
+| `daemonPath`, `desktop`, `timeouts`, `probeTargets` | as on E2B | |
+
+### The mapping
+
+| MachineHost | boxd |
+| --- | --- |
+| `create` | `machines.create` with the adapter's name and labels, the org, `isolated: true` (the machine joins none of the org's networks and holds no in-machine credential), `config.autoSuspendTimeout: 0` and the size; any image but `"default"` is a snapshot, restored with `fromSnapshot`; `deleteAfter` at the request's `backstopAt`, 5 minutes past the most it may live. Its own client, bounded by `createMs` and never sent twice. Then `machines.waitUntilReady`, `setEgressAllow(id, ["none"])` and `setAutoHibernateTimeout(id, 0)`: boxd's idle timers watch network traffic, and a computer's programs may work for a long time with none |
+| `get` | `machines.get`: the labels, the state and `createdAt`; a machine of another org is none |
+| `list` | `machines.list` by the labels, in the org |
+| `delete` | `machines.delete`; not found is done |
+| `exec` | one `machines.streamExec` of the argv quoted; boxd runs it as the image's user (`boxd`, uid 1000) with passwordless sudo, and the adapter's scripts `sudo -n` to root. `kill` cancels the stream: boxd ends the process group |
+| `upload` | `files.upload` |
+| `extend` | `machines.updateLabels({ set })` of the janitor's deadline label |
+| `errorCode` | the SDK's error names (`NotFoundError`, `AuthenticationError`, `RateLimitError`, `ConflictError`, ...), then an `APIStatusError`'s gRPC code (3 invalid, 4 and 14 timeout, 8 limit, 9 refused) |
+| `check` | `"default"` or a snapshot's name, a desktop's a snapshot alone, and no snapshot when the provider names a size (a restore has the snapshot's); no `cpus` or `memoryMb` in the spec (the size is the provider's); label names of 1 to 63 of `a-z0-9._/-`, not `boxd/` |
+
+`get` reads the state: `suspended` (standby that wakes on the next call) and `migrating` run; `hibernated` and
+`stopped` are stopped; `failed`, `destroyed` and any status it does not know are gone. boxd keeps a name to one
+machine, so a create that loses a race for its name is `exists`, and the adapter's retry finds the machine by its name.
+
+boxd's in-machine agent, which carries the SDK's exec and file calls, listens on TCP 57073. Init starts with
+`--own-network`, so the daemon and every program it starts run in a network namespace of their own, their loopback
+alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): `vendorAgentPorts` declares 57073, and
+`isolation.vendor-agent` checks that a program of the computer's user reaches it on neither loopback.
+
+### Capabilities
+
+| Capability | Declared | Why |
+| --- | --- | --- |
+| `kind` | `linux` (default) or `desktop` | `options.kind`; a desktop's X server is computerd's own, on the desktop snapshot |
+| `lifetime` | `janitor` | the janitor deletes a computer past its deadline label, and init ends every process at the deadline itself; boxd's own delete timer ends it 5 minutes past the most it may live, even when the server that made it is gone |
+| `network` | `none` | the egress allowlist `["none"]`, and the daemon's own network namespace, read from inside by the probe |
+| `networkReadBack` | `false` | as on every vendor on the adapter |
+| `isolation` | `microvm` | a KVM microVM with its own kernel |
+| `daemon` | `child` | boxd's agent runs the commands; init is a detached command it starts |
+| `groups` | `exec`, `files`, `processes`, and on a desktop `screen`, `input.pointer`, `input.keys`, `apps` | checked against hello on every connect |
+| `maxLifetimeMs` | 24 h, up to 30 days | `options.maxLifetimeMs`; boxd sets no cap of its own |
+| `release` | `delete` | `machines.delete` |
+| `mount` | none | the run's folder on an Archil disk needs box/Dockerfile's tools in the machine; not built for boxd yet |
+| `vendorAgentPorts` | `[57073]` | boxd's in-machine agent |
+
+### Conformance on boxd
+
+```sh
+AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
+AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
+node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # then --after
+```
+
+The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LIVE_BOXD=1` before it reads anything
+else, then reads `COMPUTER_BOXD_API_KEY` (`apiKey`, required), `COMPUTER_BOXD_ORG` (`org`), `COMPUTER_BOXD_REGION`
+(`region`), `COMPUTER_BOXD_DAEMON` (`daemonPath`), `COMPUTER_BOXD_KIND` (`kind`) and `COMPUTER_BOXD_USER`
+(`daemonUser`), never `BOXD_API_KEY`, and caps every computer of a run at 30 minutes. `conformanceImage()` is
+`COMPUTER_BOXD_IMAGE`, else `"default"` for a sandbox and for a desktop the desktop snapshot, which it finds or builds
+first through the provider's `prepareImage()` (so a desktop run may build it, and leaves it in the org on purpose), and `createDriftedProvider()` uploads a daemon built with Go as
+`<version>-drift`. `createHost()` is the generic sweep's host, and `sweepScope()` names where it lists (the org, the
+region and the key by its sha256 prefix), so `--after` refuses a before file listed with another. `test/boxd/conformance.boxd.test.mjs` runs the suite
+with `computerd-fixture` built for linux/amd64, and skips unless the switch and `COMPUTER_BOXD_API_KEY` are both set.
+
+### Live runs
+
+On 2026-11-12, against boxd with an org key, the provider as first written (before it moved onto the shared adapter)
+passed Core on both kinds: `kind linux` 62/62, `kind desktop` 68/68, and the CLI's run of `--provider boxd` 63/63.
+Every run left no computer behind. On 2026-11-14, the host on the shared adapter passed Core on `kind linux`, 63/63
+(Full 5/36, the rest not declared), in 179 s, and the sweep after it read `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+On 2026-11-16, `kind linux` passed Core again and `kind desktop` did not: 0 cases failed, but six Core cases were
+skipped, five because the run passed no `--fixture`, and `apps.launch-terminate` because boxd's own image lists none
+of the stock apps. The desktop snapshot above is the fix for the last; it has not run live yet.
 
 ## Conformance
 
@@ -2631,10 +2874,6 @@ Core and Full follow the Kubernetes agent-sandbox conformance levels (KEP-539.2)
   path on a read-only mount is closed (BusyBox's `test -w` reads the mode bits alone, so the case reads the mount's
   options too). It checks write access alone and changes nothing.
   `mount.archil-isolated-durable` runs the same check on its Archil computer.
-- **The label file** (`isolation.label-file`, Core wherever files runs): a host whose vendor keeps no labels
-  (`facts.labels: "machine"`) has the adapter write them to `/var/lib/agentrun/labels.json`, root's, 0600 in a 0700
-  directory. The case reads that path with `files.read`, as the computer's user, and passes on `not_found` (no such
-  file: a host that keeps labels at the vendor) or `denied`; it fails if the read succeeds.
 - **Core by kind.** `coreGroups(kind, daemon)` is what a computer of its kind must declare (the table in
   [The protocol extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)): exec, files,
   processes and network `none` wherever computerd runs, screen and keyboard and pointer on a desktop, screen and touch
@@ -2841,6 +3080,7 @@ AGENTRUN_COMPUTER_LIVE_DOCKER=1 npm run test:docker -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_SNAPSHOT=<snapshot>] npm run test:daytona -w @parcha/agentrun-computer
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
 AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
+AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer     # also needs COMPUTER_BOXD_API_KEY, for an account you can bill, and the @boxd-sh/sdk package
 ```
 
 `npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names

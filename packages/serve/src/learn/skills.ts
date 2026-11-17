@@ -953,9 +953,7 @@ const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisi
   // Managed runs name the providers their host can ask; SDK runs supply their own explicit adapter capabilities.
   const judging = decisions ? { ...(adapters === undefined || adapters.includes("runJudge") ? { runJudge: async () => ({}) } : {}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
   const callbacks = Object.fromEntries((adapters ?? ["runNode"]).map((name) => [name, async () => ({})]));
-  // Managed learned runs supply step guards; the SDK bridge advertises only the callbacks its backend implements.
-  const guards = adapters === undefined ? { guardStep: async () => ({ p: 1 }) } : {};
-  const runner = { runEffect: async () => ({}), ...callbacks, ...judging, ...guards };
+  const runner = { runEffect: async () => ({}), ...callbacks, ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];
@@ -968,6 +966,23 @@ const issuesOf = (dsl: DraftReader, doc: unknown, tools?: readonly string[]) => 
   const valid = dsl.validateWorkflow(doc as Workflow, { executeCode: false, ...(tools ? { tools } : {}) });
   return valid.ok ? [] : valid.issues;
 };
+
+/** A DSL issue as a refusal says it: its code, where, and its words (cut at 200). */
+const issueWords = (issue: { readonly code: string; readonly path: string; readonly message: string }): string => `${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}`;
+
+/** The first thing this release's workflow DSL refuses in a learned workflow's text on its own (`validateWorkflow`, no code
+ *  run, no tool list: a refusal of the text, never of a host setting such as a tool gated, denied or missing), in the
+ *  words a run's refusal gives it (draftProblems); undefined when the DSL takes it, or it is no JSON (no DSL issue). */
+export function dslRefusalOf(dsl: DraftReader, text: string): string | undefined {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const issue = issuesOf(dsl, doc)[0];
+  return issue ? issueWords(issue) : undefined;
+}
 
 /** Why `workflows/<name>/workflow.json` is not a draft the host can run; empty when it is. The DSL's own
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked),
@@ -988,10 +1003,10 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   // (gatedNodes), not the DSL's for a tool it was never given.
   const listed = tools ? [...tools, ...Object.keys(gated)] : undefined;
   const issues = issuesOf(dsl, doc, listed);
-  if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
+  if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issueWords(issue)}` }));
   let out: DraftProblem[];
   try {
-    // A label names one step (workflow-nodes.ts repeatedLabels): its guard's threshold, replay score and refit included.
+    // A label names one step (workflow-nodes.ts repeatedLabels): its events and escalation read by it.
     out = [...repeatedLabels(doc).map((label) => ({ rule: "workflow" as const, detail: `the label "${label}" names two steps: give each step its own label` })), ...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions, adapters), ...longNodes(dsl, doc), ...sdkNodeLimit(dsl, doc, adapters), ...sdkRetries(doc, adapters), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.

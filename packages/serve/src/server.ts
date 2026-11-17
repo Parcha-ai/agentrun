@@ -12,7 +12,7 @@ import { isNativeRuntime } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -44,7 +44,7 @@ import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type Mo
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
-import { healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
+import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
 import { IMPORT_ASKED } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
@@ -70,7 +70,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, settledStatusOf, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -90,8 +90,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
+import { gradeRow, notAuditableOf } from "./runner/audit.js";
+import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown } from "./learn/promote.js";
+import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf } from "./learn/promote.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -112,7 +115,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd, shadowSpendOf } from "./store-reads/learning.js";
 import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
@@ -123,13 +126,13 @@ import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
-import { type ComposioDropped, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
-import { privateHostsRoute } from "./mcp-private-hosts.js";
+import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
-import { MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
+import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
 import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
@@ -143,7 +146,7 @@ import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
-import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -161,6 +164,8 @@ import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
 import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
+import { recordingsOf, recordingsWorkspace } from "./run-recordings.js";
+import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
@@ -171,6 +176,8 @@ import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
+import { addressForms, openCalendar } from "./calendar/address.js";
+import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
@@ -184,7 +191,7 @@ export const CONTRACT = "agentrun.v2/0";
 /** A process's flags for a worker of it: without --input-type and the code string given with -e, --eval, -p or --print. */
 const workerArgs = (args: readonly string[]): string[] =>
   args.filter((arg, i) => !arg.startsWith("--input-type") && !/^(?:-e|--eval|-p|--print)(?:=|$)/.test(arg) && !/^(?:-e|--eval|-p|--print)$/.test(args[i - 1] ?? ""));
-export const DEFAULT_PORT = 7340;
+export { DEFAULT_PORT };
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const IDEMPOTENCY_FILE = ".idempotency.json";
 /** A run's live viewer, under the run's path (browser-live.ts): its run id, the family's address (`computer`, one for every
@@ -432,7 +439,8 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   dial: HostedDial;
   /** Whether this server is a local install (listening on loopback, reached at no address off it): the one kind whose own
    *  runner beside it may reach an MCP server's URL on loopback (runner/beside.ts mcpLoopback). Only that runner is told:
-   *  it is this process's finding, never a store's, so another host's runner on a shared store never inherits it. */
+   *  it is this process's finding, never a store's, so another runner on a shared store never inherits it. A runner in
+   *  its own process takes its own operator's opt-in from its own environment (runner/main.ts runnerLoopback). */
   localInstall: boolean;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
@@ -579,6 +587,11 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/email$/, name: "saveEmailAccount" },
   { method: "DELETE", pattern: /^\/settings\/email$/, name: "deleteEmailAccount" },
   { method: "POST", pattern: /^\/settings\/email\/test$/, name: "testEmailAccount" },
+  // The server's calendar (calendar/routes.ts): the owner's session's alone, its address in no answer.
+  { method: "GET", pattern: /^\/settings\/calendar$/, name: "getCalendar" },
+  { method: "PUT", pattern: /^\/settings\/calendar$/, name: "saveCalendar" },
+  { method: "DELETE", pattern: /^\/settings\/calendar$/, name: "deleteCalendar" },
+  { method: "POST", pattern: /^\/settings\/calendar\/test$/, name: "testCalendar" },
   { method: "GET", pattern: /^\/settings\/chatgpt$/, name: "getChatGPTSignIn" },
   { method: "DELETE", pattern: /^\/settings\/chatgpt$/, name: "signOutChatGPT" },
   { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in$/, name: "startChatGPTSignIn" },
@@ -637,6 +650,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
@@ -842,7 +856,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
-      files: { upload: true, read: true, range: false, during_run: true },
+      files: { upload: true, read: true, range: true, during_run: true },
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
@@ -1383,6 +1397,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   await heldEmailPassword();
   secretStores.add("email", () => [...emailPasswords]);
+  // The calendar's iCal address (calendar/address.ts), in each of its forms, and each one saved since this server started:
+  // the address reads the calendar, so it is cut from everything the server shows, as a password is.
+  const calendarAddresses = new Set<string>();
+  const heldCalendar = async () => {
+    const url = (await openCalendar(store, sealKey).catch(() => undefined))?.url;
+    if (url) for (const form of addressForms(url)) calendarAddresses.add(form);
+  };
+  await heldCalendar();
+  secretStores.add("calendar", () => [...calendarAddresses]);
   // Each agent's saved sign-ins, over the one store (module A, sign-ins-store): the vendor's calls on the server's keys
   // (under faux, the vendor's fake alone), under this server's seal key. The store holds whether a sign-in is still held
   // (a live run's sign_in_handed) and who was handed it, so this takes no `holds`/`handedTo` callback — one store, one lock.
@@ -1556,8 +1579,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
       const newest = await store.learning.proposal(runId);
       const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
-      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then.
-      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends);
+      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then. Its all-in
+      // is not known while its audit's shadow run is queued or running (shadowSpendOf): the batch closes no row on it.
+      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends, (await shadowSpendOf(store, runId)).open);
     },
     // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
     shown: (agentId) => learningShown(agentId),
@@ -1575,9 +1599,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
+  // The agent's audit ledger on its learning folder's main (learn/audit.ts), oldest first.
+  const auditsOfAgent = async (agentId: string) => {
+    const { workspace, end } = learningFolderOf(data, agentId);
+    try {
+      return await readAudits(workspace);
+    } finally {
+      await end().catch(() => undefined);
+    }
+  };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
   const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses });
+  // A run read as a whole (its own read, its archive) lists its recordings too, from its recordings folder on this machine
+  // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
+  const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
+  const runReadDepsFor = (origin: string): ViewDeps => ({ ...viewDepsFor(origin), recordings });
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1586,6 +1623,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // timeline route keeps its own stub (store-reads journal + SSE) until E2c's timeline lands.
   const runReadsDeps: RunReadsDeps = {
     runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey, env: withSecrets(process.env, "own") }),
+    recordings: async (_store, runId) => {
+      const run = await store.runs.get(runId);
+      return run ? recordingsWorkspace(recordingsFolder(data, run.agentId, runId)) : null;
+    },
     env,
     runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
@@ -1631,10 +1672,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
+  // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
+  // never the body, nor a bare digest of it, since a body can hold a credential (a composio trigger's config) and a short
+  // or guessable one could be found from a bare digest by hashing guesses. A trigger create's answer is kept as a read
+  // answers it (replayed). Entries live IDEMPOTENCY_TTL_S (a day), so one an older server wrote (the body itself as its
+  // fingerprint, a composio key in its answer) can outlive an upgrade: the start rewrites each (below, after the trigger
+  // engine), and says how many alone.
+  const fingerprintKey = createHmac("sha256", sealKey).update("agentrun-serve idempotency fingerprint").digest();
+  const fingerprintOf = (text: string) => createHmac("sha256", fingerprintKey).update(text).digest("hex");
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
+  /** A kept answer as its replay sends it, by the route its key was used on: a trigger create's (POST /triggers) with its
+   *  source as a read answers it now (shownTrigger); every other route's as it was, a run's input above all. */
+  const replayed = (path: string, body: unknown): unknown => (path === "/triggers" ? shownTrigger(body) : body);
   const keptFile = join(data, IDEMPOTENCY_FILE);
   const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
   const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
+  /** How many entries the file held that the start did not keep (expired, or never answered): the file is written again
+   *  without them at the start, so no body an older server kept stays on disk past it. */
+  const keptDropped = (kept?.entries?.length ?? 0) - idempotency.size;
   // A failed save rejects only its own caller: the next save starts from a settled chain and writes every kept key.
   let saving: Promise<void> = Promise.resolve();
   const keep = () =>
@@ -1767,6 +1822,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  // A composio trigger kept with a credential of its config in the clear (saved before the config was sealed) is sealed
+  // before the first request: no answer shows it from this start on.
+  // All of it under the store's secureRewrite, so no file of the store keeps the rows' old bytes (the key): when it can't
+  // finish the scrub (a reader held the log back), it is said by a code alone and the next start finishes it.
+  const sealing = options.store ?? store;
+  const sealKept = () => composioTriggers.sealKept(async (id, source) => void (await sealing.triggers.update(id, { source })));
+  await (sealing === store && store.secureRewrite ? store.secureRewrite(sealKept) : sealKept().then((rewritten) => ({ rewritten, left: undefined })))
+    .then(({ left }) => {
+      if (!left) return;
+      const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
+  // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
+  {
+    let scrubbed = 0;
+    for (const [slot, v] of idempotency) {
+      const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
+      const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
+      if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
+      idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
+      scrubbed++;
+    }
+    if (scrubbed || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    if (scrubbed) {
+      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    }
+  }
   /** What a save refused while Composio triggers use the server says to do once they are gone (composio-triggers.ts inUse). */
   const SAVE_AFTER_TRIGGERS = "then save the server again";
   /** What a save over a preset server left at Composio (ComposioDropped), removed there with the key it was made with, in
@@ -1959,7 +2046,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const learning = await learningOfAgent(entry);
     const native = nativeOf(entry.revision?.body);
     const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
-    const runs = await listRunsOverStore(store, { agent: entry.agent.id }, ctx);
+    const runs = (await listRunsOverStore(store, { agent: entry.agent.id }, ctx)).filter((run) => !isShadowRun(run.id));
     return {
       ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
@@ -2005,7 +2092,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key === undefined) return work();
     if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Idempotency-Key is 1 to 255 characters");
     const slot = `${path}\n${key}`;
-    const fingerprint = stable(body);
+    const text = stable(body);
+    const fingerprint = fingerprintOf(text);
     const now = Date.now();
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
     const known = idempotency.get(slot);
@@ -2017,7 +2105,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
     try {
-      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(fingerprint) });
+      // The run's origin keeps the SHA-256 it always has: a run the store made under a key before this start compares to it.
+      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(text) });
     } catch (error) {
       idempotency.delete(slot);
       throw error;
@@ -2025,7 +2114,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
     // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
     // then: the store keeps its run under the key's origin.
-    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
+    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: replayed(path, answer.body), headers: answer.headers ?? {} } });
     await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
     return answer;
   }
@@ -2061,7 +2150,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const named = mcpToolOf(tool);
         if (!named || !mcpMeta.has(named.server)) return [];
         const pinned = Object.hasOwn(pin, named.server) && pin[named.server]!.tools.some((one) => one.name === named.tool);
-        return pinned ? [] : [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: save the agent again to pin it.`, tool }];
+        if (pinned) return [];
+        // Its first run could not pin it (mcp-pin-first.ts) because this server refuses its server's address: a loopback
+        // one on a server whose operator never said it is a local install. Saving again is refused the same way, so the
+        // words say the cause, as the save's refusal does (mcp-servers-store.ts reached).
+        const at = URL.parse(mcpMeta.get(named.server)!.url)?.hostname ?? "";
+        const why = options.mcpLoopback !== true && LOOPBACK.test(at) ? `its server ${named.server} can't be listed here to pin it: ${loopbackWords(at)}` : "save the agent again to pin it.";
+        return [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: ${why}`, tool }];
       });
       if (unpinned.length) throw new ApiError("agent_not_runnable", unpinned.map((one) => one.message).join(" "), { fields: unpinned.map(({ tool: _tool, ...issue }) => issue), details: { unbound: unpinned.map((one) => one.tool), missing: {} } });
     }
@@ -2666,10 +2761,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
     const vd = viewDepsFor(origin);
-    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived);
+    // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
+    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
     if (status !== null) {
-      // The v2 status is the run view's (store-view over the journal), per row.
-      const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
+      // The v2 status is the run view's (store-view over the journal), per row; a settled run's is its row's (settledStatusOf),
+      // so only the runs still going are read over their journals.
+      const statuses = await Promise.all(rows.map((row) => settledStatusOf(row.state) ?? viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
     // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.
@@ -3442,7 +3539,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
       case "getRun": {
-        const view = await viewOverStore(store, id, viewDepsFor(linkOrigin(req)));
+        const view = await viewOverStore(store, id, runReadDepsFor(linkOrigin(req)));
         if (!view) throw new ApiError("not_found", `no run ${id}`);
         return send(res, 200, { ...view, ...(await runComputerOf(id, view)) });
       }
@@ -3524,6 +3621,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
         const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_promotion?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
+        if (m.path === "audit" || isShadowRun(row.id)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "An audit's shadow run is never graded: grade the run it audits." }]);
         const path = RUN_PATHS.includes(m.path as never) ? (m.path as Grade["path"]) : "agent";
         const grade: Grade = {
           run: row.id, correct: body.correct, ...(body.expected !== undefined ? { expected: body.expected as Record<string, unknown> } : {}), source: (body.source as GradeSource | undefined) ?? "feedback", at: new Date().toISOString(), path,
@@ -3532,6 +3630,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
         const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
+        // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
+        // reads it with the shadows'. A row not written now is logged, never the grade refused.
+        const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
+        await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, body.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
         // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).
         const shown = await learningShown(row.agentId).catch(() => undefined);
@@ -3541,7 +3643,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "unarchiveRun": {
         const run = await needRun(id);
         await archiveRun(store, run.id, found.name === "archiveRun");
-        return send(res, 200, await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))));
+        return send(res, 200, await viewOverStore(store, run.id, runReadDepsFor(linkOrigin(req))));
       }
       case "getRunBrowser":
       case "getRunComputer": {
@@ -3815,6 +3917,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (answer === undefined) return void res.writeHead(204, { "cache-control": "no-store" }).end();
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      // Never through `idempotent` either: its record keeps the body, and the body holds the calendar's address. A read
+      // reaches loopback only on a local install (its fakes), and a private host only where the owner allows it.
+      case "getCalendar":
+      case "saveCalendar":
+      case "deleteCalendar":
+      case "testCalendar": {
+        const body = found.name === "saveCalendar" || found.name === "testCalendar" ? await bodyOf(req) : undefined;
+        if (found.name === "saveCalendar" && stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the calendar was not saved.");
+        // The MCP servers' network and reach (mcp-oauth.ts calendarAt is mcpServerAt's rule), and their stop with the server's.
+        const outbound = await mcpServers.outboundReach();
+        const answer = await calendarRoute({ store, sealKey, reach: async () => outbound.reach, network: outbound.network, signal: AbortSignal.any([outbound.signal, stopping.signal]) }, found.name, body);
+        if (found.name === "saveCalendar") await heldCalendar();
+        if (answer === undefined) return void res.writeHead(204, { "cache-control": "no-store" }).end();
+        return send(res, 200, answer, { "cache-control": "no-store" });
+      }
       // The ChatGPT sign-in (chatgpt-plan.ts): a step it refuses is 400 in its words; its token is in no answer.
       case "getChatGPTSignIn":
         await planNow();
@@ -3992,11 +4109,34 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { agent: id, ...cost });
       }
       case "listLearningPromotions": {
+        const entry = await needAgent(id);
+        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its check's numbers and decisions,
+        // its holds (a check's, an audit's). Every text in them cut as the other learning reads cut theirs
+        // (promotionsShown: a reason as well as each workflow's name). Beside what serves, each one's state, its check's
+        // numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
+        const records = await promotionsOf(store.settings, id);
+        const shown = await learningShown(id);
+        const shownRead = promotionsShown(records, shown);
+        // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
+        const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop);
+        // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
+        // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
+        const writer = auditWriterOf(entry.revision ?? undefined);
+        const auditsOff = writer === undefined ? null : shown.text(auditsOffWords(writer));
+        const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
+          ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
+          not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
+        })));
+        return send(res, 200, { agent: id, promotions: shownRead.promotions, serving });
+      }
+      case "listLearningAudits": {
         await needAgent(id);
-        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
-        // its refits, its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
-        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name).
-        return send(res, 200, { agent: id, ...promotionsShown(await promotionsOf(store.settings, id), await learningShown(id)) });
+        // The audit ledger (learn/audit.ts audits.jsonl), oldest first: each workflow's name and every other text cut as the
+        // promotions read cuts its own.
+        const shown = await learningShown(id);
+        const rows = await auditsOfAgent(id);
+        return send(res, 200, { agent: id, audits: rows.map((row) => ({ ...row, workflow: shown.name(row.workflow), run: shown.text(row.run), shadow_run: row.shadow_run === null ? null : shown.text(row.shadow_run), digest: shown.text(row.digest) })) });
       }
       case "createLearningBatch": {
         await needAgent(id);
@@ -4030,7 +4170,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getLearningLoop": {
         await needAgent(id);
-        // The loop's own record over the one store (store-reads/loop.ts): compile turns and guarded steps, aggregates only.
+        // The loop's own record over the one store (store-reads/loop.ts): compile turns, aggregates only.
         // Names cut as the other learning reads cut them; a compile's error texts cut by its run's own cut as its run's
         // learning read cuts them (run-learning-served.ts), and left out when that run's handed values can't be read.
         const shown = await learningShown(id);
@@ -4044,8 +4184,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
           return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
         }));
-        const guards = read.guards.map((one) => ({ ...one, workflow: shown.name(one.workflow), node: shown.text(one.node) }));
-        return send(res, 200, { agent: id, compiles, guards });
+        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles });
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -4094,8 +4233,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const extra = unknownFields(body, ["inputs"]);
         if (extra.length) throw invalid(extra);
         const inputs = body.inputs === undefined ? "held" : body.inputs;
-        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= GRADES_KEPT)) {
-          throw new ApiError("bad_request", `inputs is "held" (the graded inputs the revision was last decided on, the default) or a whole number from 1 to ${GRADES_KEPT}: that many of the agent's newest graded inputs.`);
+        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= COMPILE_AFTER_MAX)) {
+          throw new ApiError("bad_request", `inputs is "held" (the runs the revision was last checked on, the default) or a whole number from 1 to ${COMPILE_AFTER_MAX}: that many of the agent's newest completed runs.`);
         }
         const [, , name, digest] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
         const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
@@ -4411,6 +4550,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listens: a hosted container listens on loopback behind its proxy too.
   const localInstall = options.mcpLoopback === true;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
+  // Its own addresses, kept in the store for a runner in its own process whose own opt-in lets it reach loopback: its runs
+  // never reach this server's ports there either (mcp-private-hosts.ts saveServerOwn). It listens already: a write that
+  // fails stops the start and lets go of the port, as the start's other stops let go of the store and the locks.
+  await saveServerOwn(store, mcpServers.own).catch(async (error: unknown) => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+    throw error;
+  });
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
@@ -4453,7 +4600,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  is not done (a read that failed, or its notice not saved): it is read again. */
   const tellWait = async (row: RunRow): Promise<boolean> => {
     const seen = `${row.state}\n${row.epoch}\n${row.runner ?? ""}\n${row.summary ?? ""}`;
-    if (readWaits.get(row.id) === seen) return true;
+    // An audit's shadow run waits on no one (runner/audit.ts AUDIT_PARKED): the park it ends at once is no one's to answer.
+    if (readWaits.get(row.id) === seen || isShadowRun(row.id)) return true;
     const view = await viewOverStore(store, row.id, viewDepsFor(ownOriginOf()));
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];

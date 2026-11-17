@@ -416,10 +416,11 @@ export const isComposioTrigger = (t: Trigger): t is ComposioTrigger => t.source.
 /** One field of an event's config, read from its JSON schema (the events list's `config`): its name, title, description,
  *  whether it is required, and how it is typed in (`json`: an object, a list or a type the form has no input for, typed as
  *  JSON). A deprecated field is never offered. */
-export type ConfigField = { name: string; title: string; description?: string; required: boolean; type: "string" | "number" | "integer" | "boolean" | "json"; options?: string[]; initial: string };
+export type ConfigField = { name: string; title: string; description?: string; required: boolean; type: "string" | "number" | "integer" | "boolean" | "json"; options?: string[]; initial: string; sealed?: true };
 
-/** An event's config fields, in its schema's order. */
-export function configFieldsOf(schema: Record<string, unknown> | undefined): ConfigField[] {
+/** An event's config fields, in its schema's order; each the server seals at the save (the events list's `sealed`: a
+ *  credential, taken as a password) marked so. */
+export function configFieldsOf(schema: Record<string, unknown> | undefined, sealed: readonly string[] = []): ConfigField[] {
   const properties = (schema?.properties ?? {}) as Record<string, Record<string, unknown>>;
   const required = new Set(Array.isArray(schema?.required) ? (schema.required as unknown[]).filter((x): x is string => typeof x === "string") : []);
   return Object.entries(properties).filter(([, p]) => p && typeof p === "object" && p.deprecated !== true).map(([name, p]) => {
@@ -427,7 +428,7 @@ export function configFieldsOf(schema: Record<string, unknown> | undefined): Con
     const type: ConfigField["type"] = types.length === 1 && ["string", "number", "integer", "boolean"].includes(String(types[0])) ? (types[0] as ConfigField["type"]) : "json";
     const options = type === "string" && Array.isArray(p.enum) && p.enum.every((v) => typeof v === "string") ? (p.enum as string[]) : undefined;
     const initial = p.default === undefined ? (type === "boolean" ? "false" : "") : type === "json" ? JSON.stringify(p.default) : String(p.default);
-    return { name, title: typeof p.title === "string" && p.title.trim() ? p.title : name, ...(typeof p.description === "string" && p.description.trim() ? { description: p.description } : {}), required: required.has(name), type, ...(options ? { options } : {}), initial };
+    return { name, title: typeof p.title === "string" && p.title.trim() ? p.title : name, ...(typeof p.description === "string" && p.description.trim() ? { description: p.description } : {}), required: required.has(name), type, ...(options ? { options } : {}), initial, ...(sealed.includes(name) ? { sealed: true as const } : {}) };
   });
 }
 
@@ -555,7 +556,7 @@ export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSou
   };
   const { accept, issues: filter } = eventAcceptOf(FEED_EVENT, d.where, d.others, d.read?.accept?.[0] && !d.read.accept[0].actions?.length ? d.read.accept[0] : undefined);
   Object.assign(issues, filter);
-  return { source: { kind: "feed", urls, every_s: every, ...pointer("items"), ...pointer("id"), ...(accept.length ? { accept } : {}) }, issues };
+  return { source: { kind: "feed", urls, every_s: every, ...pointer("items"), ...pointer("id"), ...(d.read?.updated !== undefined ? { updated: d.read.updated } : {}), ...(d.read?.fields ? { fields: d.read.fields } : {}), ...(accept.length ? { accept } : {}) }, issues };
 }
 
 /** A new feed trigger's create body, or what is wrong: its source (feedSourceOf), and bodyOf's rules for the run it starts. */

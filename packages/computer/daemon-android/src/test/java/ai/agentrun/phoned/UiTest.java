@@ -6,6 +6,8 @@ import static ai.agentrun.phoned.Check.map;
 import static ai.agentrun.phoned.Check.refuses;
 import static ai.agentrun.phoned.Check.yes;
 
+import ai.agentrun.phoned.device.Device;
+import ai.agentrun.phoned.device.Rect;
 import ai.agentrun.phoned.fake.FakeDevice;
 import ai.agentrun.phoned.fake.FakeNode;
 import java.util.Arrays;
@@ -417,6 +419,42 @@ final class UiTest {
 		eq(o.entries.get(0), o.entries.get(1).parent);
 	}
 
+	static void testAClickableListIsAContainerNotARow() {
+		// Clock's cities list is clickable (a phone-showpiece take saw it as one row named "6:26 PM", its cities hidden):
+		// a list keeps its rows, each named from its own texts. Live, the list was not scrollable either: its rows fit.
+		for (boolean scrolls : new boolean[] {true, false}) clickableList(scrolls);
+	}
+
+	private static void clickableList(boolean scrolls) {
+		FakeNode cities = FakeNode.of("androidx.recyclerview.widget.RecyclerView").at(0, 0, 360, 500).id("com.android.deskclock:id/cities").tappable();
+		cities.scrollable = scrolls;
+		FakeNode local = FakeNode.of("android.widget.LinearLayout").at(0, 0, 360, 100);
+		local.add(FakeNode.of("android.widget.TextView").at(0, 0, 360, 100).text("6:26 PM"));
+		FakeNode tokyo = FakeNode.of("android.widget.FrameLayout").at(0, 100, 360, 200).tappable();
+		tokyo.add(FakeNode.of("android.widget.TextView").at(0, 100, 200, 200).text("Tokyo"), FakeNode.of("android.widget.TextView").at(200, 100, 360, 200).text("10:26 AM"));
+		FakeNode paris = FakeNode.of("android.widget.FrameLayout").at(0, 200, 360, 300).tappable();
+		paris.add(FakeNode.of("android.widget.TextView").at(0, 200, 200, 300).text("Paris"), FakeNode.of("android.widget.TextView").at(200, 200, 360, 300).text("3:26 AM"));
+		cities.add(local, tokyo, paris);
+		Outline o = Outline.of(cities, false);
+		Outline.Entry list = o.entries.get(0);
+		eq("scrollarea", list.role);
+		eq(null, list.name);
+		eq(null, list.desc);
+		Outline.Entry clock = null;
+		Outline.Entry first = null;
+		Outline.Entry second = null;
+		for (Outline.Entry e : o.entries) {
+			if ("6:26 PM".equals(e.name)) clock = e;
+			if ("Tokyo".equals(e.name)) first = e;
+			if ("Paris".equals(e.name)) second = e;
+		}
+		yes(clock != null && first != null && second != null, "the list's rows are listed");
+		eq("10:26 AM", first.desc);
+		eq("3:26 AM", second.desc);
+		eq(list, first.parent);
+		eq(list, second.parent);
+	}
+
 	static void testARowHalfShownIsCutToTheWindow() throws Exception {
 		Check.Phone phone = new Check.Phone();
 		// Security & privacy's row is pixels 2300 to 2500 of a 2400-pixel window: half of it shows.
@@ -540,7 +578,7 @@ final class UiTest {
 		String late = refuses("timeout", () -> phone.call("apps.launch", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}"));
 		long waited = phone.device.clock().now() - before;
 		yes(waited >= UiDriver.LAUNCH_WINDOW_MS && waited < UiDriver.LAUNCH_WINDOW_MS + 200, "waited " + waited + " ms");
-		yes(late.contains("apps.launch: " + FakeDevice.SETTINGS + " opened no window within 10000 ms (the accessibility tree shows window 30 application \"UI fixture\" of " + FakeDevice.FIXTURE + ")"), late);
+		yes(late.contains("apps.launch: Settings opened no window within 10000 ms (the accessibility tree shows window 30 application \"UI fixture\" of UI fixture)"), late);
 		// A terminate takes the launch that has not shown yet with it.
 		phone.call("apps.terminate", "{\"id\":\"" + FakeDevice.SETTINGS + "\"}");
 		eq(FakeDevice.FIXTURE, map(phone.call("apps.list", "{}")).get("foreground"));
@@ -564,7 +602,35 @@ final class UiTest {
 		long before = phone.device.clock().now();
 		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + FakeDevice.FIXTURE + "\"}}"));
 		eq(before, phone.device.clock().now());
-		yes(missing.equals(FakeDevice.FIXTURE + " has no window on the screen (the accessibility tree shows window 10 application \"Settings\" of " + FakeDevice.SETTINGS + "): open it with apps.launch first"), missing);
+		yes(missing.equals("UI fixture has no window on the screen (the accessibility tree shows window 10 application \"Settings\" of Settings): open it with apps.launch first"), missing);
+	}
+
+	static void testANotFoundNamesAppsByTheirLabelsAndNoBareId() throws Exception {
+		Check.Phone phone = new Check.Phone();
+		String wikipedia = "org.wikipedia";
+		String systemUi = "com.android.systemui";
+		phone.device.apps.add(new Device.App(wikipedia, "Wikipedia", "2"));
+		phone.device.systemLabels.put(systemUi, "System UI");
+		// Two system windows (a navigation bar and another) on the screen, and no window of Wikipedia.
+		for (int id : new int[] {2, 5}) {
+			FakeDevice.FakeWindow w = new FakeDevice.FakeWindow(id, id == 2 ? "Navigation bar" : null, new Rect(0, 0, 1080, 100), FakeNode.of("android.widget.FrameLayout").pkg(systemUi));
+			w.type = "system";
+			w.active = false;
+			phone.device.windows.add(w);
+		}
+		String missing = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"" + wikipedia + "\"}}"));
+		yes(missing.startsWith("Wikipedia has no window on the screen ("), missing);
+		yes(missing.contains("window 2 system \"Navigation bar\" of System UI; window 5 system of System UI"), missing);
+		yes(!missing.contains("org.") && !missing.contains("com."), missing);
+		// An app the phone gives no label for keeps its id, once, in parentheses after the words.
+		phone.device.apps.add(new Device.App("org.nolabel", null, "1"));
+		String bare = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"org.nolabel\"}}"));
+		yes(bare.startsWith("the app (org.nolabel) has no window on the screen ("), bare);
+		yes(!bare.contains("com."), bare);
+		// Android's loadLabel gives the package name for an app with no label: that is no label either.
+		phone.device.apps.add(new Device.App("org.sameasid", "org.sameasid", "1"));
+		String same = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"org.sameasid\"}}"));
+		yes(same.startsWith("the app (org.sameasid) has no window on the screen ("), same);
 	}
 
 	static void testAWindowSitsWhereItsElementsAreThoughTheServicePutsItElsewhere() throws Exception {

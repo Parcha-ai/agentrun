@@ -77,7 +77,7 @@ Route: `GET /agents/{agent_id}/archil`.
 
 ### `agentrun agents get-learning-loop AGENT_ID`
 
-The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows.
+The self-learning loop's own record: each compile turn.
 
 Route: `GET /agents/{agent_id}/learning/loop`.
 
@@ -97,6 +97,12 @@ Route: `GET /agents`.
 - `--cursor STRING` (string): `next_cursor` from the previous page.
 - `--archived` (boolean): true lists only archived agents; false, the default, the others.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
+
+### `agentrun agents list-learning-audits AGENT_ID`
+
+The audit ledger of the agent's serving learned workflows.
+
+Route: `GET /agents/{agent_id}/learning/audits`.
 
 ### `agentrun agents list-learning-promotions AGENT_ID`
 

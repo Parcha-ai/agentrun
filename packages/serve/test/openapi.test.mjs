@@ -169,14 +169,25 @@ test("the contract's operations are as vendored; this server's own are added and
     }
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
       // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
-      // the contract has none; the rest as vendored.
+      // the contract has none; a file's read also serves the run's recordings (runvideo/1), video/mp4 first in its 200
+      // and 206; the rest as vendored.
       assert.ok(op.description.startsWith(original.description.trimEnd()) && /403 forbidden/.test(op.description), "the contract's description first, then the 403");
       assert.equal(op.responses["403"].$ref, "#/components/responses/Forbidden");
-      assert.deepEqual(Object.keys(changes).sort(), original.responses["403"] ? ["description"] : ["description", "responses"]);
+      const video = op.operationId === "readRunFile" ? ["200", "206"] : [];
+      assert.deepEqual(Object.keys(changes).sort(), original.responses["403"] && !video.length ? ["description"] : ["description", "responses"]);
+      if (video.length) assert.equal(changes.responses, "runvideo/1");
       const { description: _a, responses: _b, ...same } = rest;
       const { description: _c, responses: _d, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for the 403`);
-      for (const code of Object.keys(original.responses)) assert.deepEqual(op.responses[code], original.responses[code], code);
+      for (const code of Object.keys(original.responses)) {
+        if (!video.includes(code)) {
+          assert.deepEqual(op.responses[code], original.responses[code], code);
+          continue;
+        }
+        const { content, ...answer } = op.responses[code];
+        const { content: vendoredContent, ...vendoredAnswer } = original.responses[code];
+        assert.deepEqual([answer, content], [vendoredAnswer, { "video/mp4": { schema: { type: "string", contentMediaType: "video/mp4" } }, ...vendoredContent }], code);
+      }
       continue;
     }
     if (op.operationId === "getAgent") {

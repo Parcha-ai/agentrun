@@ -44,6 +44,7 @@ import learningLoop from "./learning-loop.mjs";
 import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
+import playgroundOperationWidth from "./playground-operation-width.mjs";
 
 export const flows = [
   setupOpen,
@@ -79,4 +80,5 @@ export const flows = [
   gradeRun,
   toolCards,
   ...narrowLayouts,
+  playgroundOperationWidth,
 ];

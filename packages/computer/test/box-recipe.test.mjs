@@ -334,21 +334,18 @@ test("box/ holds no file named like a key or a credential and no key material, a
   assert.ok(KEY_MATERIAL.some((pattern) => pattern.test(["-----BEGIN OPENSSH", "PRIVATE KEY-----"].join(" "))));
 });
 
-// --- the release's box job and its E2B template (.github/workflows/release.yml) ---
+// --- the release's box job, which also builds its E2B template (.github/workflows/release.yml) ---
 
-test("the release publishes the box image beside agentrun-server, amd64, by the recipe's hash, and builds the public E2B template from it under the release's approval", async () => {
+test("the release publishes the box image beside agentrun-server, amd64, by the recipe's hash, and builds the public E2B template from it in the same job, under the release's approval", async () => {
   const { parse } = await import("yaml");
   const workflow = parse(readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"));
-  const { box: job, "box-e2b": e2b, image, publish } = workflow.jobs;
-  assert.equal(job.needs, "publish");
+  const { box: job, image, publish } = workflow.jobs;
+  assert.equal(workflow.jobs["box-e2b"], undefined, "one job: a second job under the approval would ask for it again");
+  assert.equal(job.needs, "gate", "after the gate alone, so it asks for the npm-release approval with the publish job");
   assert.equal(job.if, publish.if);
+  assert.equal(job.environment, "npm-release", "under the release's own approval, whose E2B_API_KEY it reads");
   assert.deepEqual(job.permissions, image.permissions, "the image job's: read, and write packages");
-  assert.equal(job.environment, undefined, "no environment and no secret: this run's GITHUB_TOKEN alone");
-  const pinned = (steps) => {
-    for (const step of steps.filter((step) => step.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned by commit`);
-  };
-  pinned(job.steps);
-  pinned(e2b.steps);
+  for (const step of job.steps.filter((step) => step.uses)) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} is pinned by commit`);
   const buildx = job.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? ""));
   assert.deepEqual(buildx, image.steps.find((step) => /^docker\/setup-buildx-action@/.test(step.uses ?? "")), "BuildKit by digest, as the image job runs it");
   assert.match(buildx.with["driver-opts"], /@sha256:[0-9a-f]{64}$/);
@@ -370,17 +367,17 @@ test("the release publishes the box image beside agentrun-server, amd64, by the 
   assert.equal(build.if, "steps.published.outputs.published != 'true'", "built once per recipe");
   assert.match(job.steps.find((step) => step.if === "steps.published.outputs.published == 'true'").run, /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" "\$IMAGE:\$RECIPE"/, "a published recipe is tagged with the release");
 
-  assert.equal(e2b.needs, "box");
-  assert.equal(e2b.if, publish.if);
-  assert.equal(e2b.environment, "npm-release", "under the release's own approval");
-  assert.deepEqual(e2b.permissions, { contents: "read" });
-  assert.equal(e2b.env.BOX_IMAGE, "ghcr.io/parcha-ai/agentrun-box:${{ needs.box.outputs.recipe }}");
-  const secrets = JSON.stringify(e2b).match(/secrets\.\w+/g);
-  assert.deepEqual([...new Set(secrets)], ["secrets.E2B_API_KEY"], "the E2B key is the one secret it reads");
-  assert.match(e2b.steps[0].run, /\[ -n "\$E2B_API_KEY" \] \|\| \{ echo "::error::needs secret E2B_API_KEY in the npm-release environment/, "first, a missing key stops it in words");
-  const at = (pattern) => e2b.steps.findIndex((step) => pattern.test(step.run ?? ""));
-  assert.ok(at(/manifests/) > 0 && at(/manifests/) < at(/build-e2b\.mjs/), "the image is checked public before E2B is asked to pull it");
-  assert.equal(e2b.steps[at(/build-e2b\.mjs/)].run, 'node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public');
+  // The E2B template, from the image the steps above published.
+  const secrets = JSON.stringify(job).match(/secrets\.\w+/g).filter((name) => name !== "secrets.GITHUB_TOKEN");
+  assert.deepEqual([...new Set(secrets)], ["secrets.E2B_API_KEY"], "beside this run's GITHUB_TOKEN, which pushes the box image, the E2B key is the one secret it reads");
+  const at = (pattern) => job.steps.findIndex((step) => pattern.test(step.run ?? step.uses ?? ""));
+  const key = at(/\[ -n "\$E2B_API_KEY" \] \|\| \{ echo "::error::needs secret E2B_API_KEY in the npm-release environment/);
+  assert.ok(key > at(/^docker\/build-push-action@/) && key > at(/imagetools create --tag/), "a missing key stops the template, in words, after the box image is published");
+  assert.ok(key < at(/manifests/) && at(/manifests/) < at(/build-e2b\.mjs/), "then the image is checked public before E2B is asked to pull it");
+  const template = job.steps[at(/build-e2b\.mjs/)];
+  assert.equal(template.run, 'node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public');
+  for (const step of [job.steps[at(/manifests/)], template]) assert.equal(step.env.BOX_IMAGE, "${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "the image this job published, by its recipe's tag");
+  assert.equal(template.env.E2B_API_KEY, "${{ secrets.E2B_API_KEY }}");
 });
 
 test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, each checked, with no sudo", async () => {

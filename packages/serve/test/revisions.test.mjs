@@ -148,6 +148,8 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   assert.deepEqual(all.runs.map((r) => r.review), [null, null, null], "no run here escalated, so none waits for review");
   assert.deepEqual((await api("GET", "/runs?agent=one")).body.runs.map((r) => r.run_id), [c.run_id, a.run_id]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => [r.run_id, r.agent_id, r.error.code]), [[b.run_id, "two", "run_failed"]], "a failed run keeps its own error");
+  assert.deepEqual((await api("GET", "/runs?status=completed")).body.runs.map((r) => [r.run_id, r.status]), [[c.run_id, "completed"], [a.run_id, "completed"]], "an ended run is filtered on its row's status");
+  assert.deepEqual((await api("GET", "/runs?status=working")).body.runs, [], "no ended run reads working");
   assert.equal(all.runs[0].error, null);
   const page = (await api("GET", "/runs?limit=2")).body;
   assert.deepEqual(page.runs.map((r) => r.run_id), [c.run_id, b.run_id]);
@@ -155,6 +157,11 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   assert.equal((await api("GET", "/runs?status=done")).status, 400);
   assert.equal((await api("GET", "/runs?limit=101")).status, 400);
   assert.deepEqual((await api("GET", "/runs?agent=nobody")).body, { runs: [], next_cursor: null });
+});
+
+test("a settled run's status is its row's, the status its view reads; a run still going has none from its row", async () => {
+  const { settledStatusOf } = await import("../dist/store-view.js");
+  assert.deepEqual(["completed", "escalated", "failed", "stopped", "running"].map(settledStatusOf), ["completed", "completed", "failed", "cancelled", undefined]);
 });
 
 test("a workflow agent: its definition carries the workflow, its kind is workflow, and its runs are listed with the kind", async (t) => {
@@ -217,6 +224,38 @@ test("the switch: kept on a revision when a definition sets it, true or false, a
   assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]]);
   const flow = await api("POST", "/agents", flowAgent("flow", undefined, { learning: true }));
   assert.deepEqual(flow.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "not_allowed"]]);
+});
+
+test("learning as an object is on with the loop's numbers set (compile_after, agree_min, alone_min), kept in one order; a bad number or key is a 422 naming the field", async (t) => {
+  const { api } = await serve(t);
+  const created = await api("POST", "/agents", agent("loop", { learning: { alone_min: 0.5, compile_after: 5, agree_min: 0.9 } }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(Object.entries(created.body.definition.learning), [["compile_after", 5], ["agree_min", 0.9], ["alone_min", 0.5]]);
+  const some = (await api("POST", "/agents", agent("some", { learning: { compile_after: 1 } }))).body;
+  assert.deepEqual(some.definition.learning, { compile_after: 1 }, "a number left out stays out: its default stands in at the run");
+  assert.deepEqual((await api("POST", "/agents", agent("none", { learning: {} }))).body.definition.learning, {}, "an empty object is on with every default");
+  for (const learning of [{ compile_after: 0 }, { compile_after: 2.5 }, { compile_after: 201 }, { compile_after: "5" }, { agree_min: 1.1 }, { agree_min: -0.1 }, { alone_min: "0.7" }, { alone_min: null }, { notes: true }, [], null]) {
+    const wrong = await api("POST", "/agents", agent(`wrong-${Math.random().toString(36).slice(2, 8)}`, { learning }));
+    assert.equal(wrong.status, 422, JSON.stringify(learning));
+    assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]], JSON.stringify(learning));
+  }
+});
+
+test("learning's audit numbers (audit_every, audit_every_later, audit_later_after, hold_window, hold_disagree, stop_window) are kept in the loop's order after its own; a bad one is a 422 naming the field", async (t) => {
+  const { api } = await serve(t);
+  const learning = { stop_window: 50, hold_disagree: 2, hold_window: 5, audit_later_after: 30, audit_every_later: 40, audit_every: 5, compile_after: 5 };
+  const created = await api("POST", "/agents", agent("audit", { learning }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(Object.keys(created.body.definition.learning), ["compile_after", "audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"]);
+  assert.deepEqual(created.body.definition.learning, learning);
+  // Each wrong value and the field its message names: hold_disagree over hold_window (set or its default 10) names
+  // hold_disagree.
+  for (const [wrong, field] of [[{ audit_every: 0 }, "audit_every"], [{ audit_every: 1.5 }, "audit_every"], [{ audit_every_later: "20" }, "audit_every_later"], [{ audit_later_after: -1 }, "audit_later_after"], [{ hold_window: 0 }, "hold_window"], [{ hold_disagree: 0 }, "hold_disagree"], [{ hold_disagree: 4, hold_window: 3 }, "hold_disagree"], [{ hold_disagree: 11 }, "hold_disagree"], [{ stop_window: 0 }, "stop_window"], [{ stop_window: null }, "stop_window"]]) {
+    const refused = await api("POST", "/agents", agent(`wrong-${Math.random().toString(36).slice(2, 8)}`, { learning: wrong }));
+    assert.equal(refused.status, 422, JSON.stringify(wrong));
+    assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["definition.learning", "wrong_type"]], JSON.stringify(wrong));
+    assert.match(refused.body.error.fields[0].message, new RegExp(`definition\\.learning\\.${field}\\b`), JSON.stringify(refused.body.error));
+  }
 });
 
 test("an edit that leaves the switch out, checked while another edit turns learning on, lands on that edit and keeps learning on", async (t) => {

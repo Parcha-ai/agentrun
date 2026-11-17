@@ -3,7 +3,8 @@
 // for this run under this claim (labels agentrun.run and agentrun.epoch, the run's folder mounted only where the provider
 // mounts it), with a hold and its live view when it is a desktop or a phone, and released once at the run's end. The hold
 // goes back to the spec (`held`), whose adapter loop journals it and applies the owner's take-over and hand-back rows to it
-// (runner/computer-journal.ts); the live view (computer-live.ts openClaimView) drives the same hold. A computer that cannot
+// (runner/computer-journal.ts); the live view (computer-live.ts openClaimView) drives the same hold. Where the setting
+// asks for it (computer.record), the screen is recorded too (computer-record.ts), until the release or a park. A computer that cannot
 // be had is refused in words with code computer_unavailable; kind none, or no setting where the server's default is none,
 // is no computer.
 //
@@ -32,6 +33,7 @@
 import { randomUUID } from "node:crypto";
 import type { BrowserSpec, ComputerConnection, ComputerOwner, ComputerProvider, ComputerSpec, HelloResult, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
 import { getSealedKey } from "../server-keys.js";
@@ -142,6 +144,13 @@ export interface ComputerForClaimDeps {
   readonly revokeMount?: () => Promise<void>;
   /** The live view's registration for a desktop or a phone (proxy-only). Absent: no view is opened. */
   readonly openComputerView?: OpenComputerView;
+  /** Where the agent's setting asks for a video of its computer's screen (computer.record): the run's
+   *  recordings folder on this machine (paths.ts recordingsFolder) and where its lines on the run's timeline go
+   *  (computer-record.ts startRecording; for tests, the program in ffmpeg's place and the bounds). The desktop or phone
+   *  this claim attaches is recorded through a watch of its own, with or without a viewer, until its release, the run's
+   *  end or its park; a browser's sessions each by the run's browser tool, through its ClaimBrowser's `record`. Absent:
+   *  nothing is recorded. */
+  readonly recordings?: Pick<RecordInput, "folder" | "say" | "ffmpeg" | "limits">;
   /** Told once, before the claim waits on its computer's image (a provider that makes its own: Docker's recipe built on
    *  a host that lacks it, or a named image pulled); never when the host has it. The run's caller says it on the run's
    *  timeline. Absent: nothing is said. */
@@ -760,7 +769,8 @@ export async function computerForClaim(
     },
   };
 
-  const resolved = await resolveComputer(await settingOf(launch, store), deps.mode, kinds, side);
+  const setting = await settingOf(launch, store);
+  const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
   const refusedKind = deps.refuseKind?.(resolved.kind);
@@ -787,6 +797,17 @@ export async function computerForClaim(
   let hold: RunHold | undefined;
   let held: HeldComputer | undefined;
   let view: { close(why: ViewEnd): unknown } | undefined;
+  // The agent asks for a video of the screen (computer.record): the desktop's or phone's, through a watch of the
+  // recorder's own while this claim holds it; each browser session's, through its live view's (the run's browser tool).
+  const recordings: Recording[] = [];
+  const record = deps.recordings && setting?.record === true
+    ? (watch: RecordWatch, tag: string, kind: RecordInput["kind"]): Recording => {
+        const one = startRecording({ ...deps.recordings!, watch, tag, kind });
+        recordings.push(one);
+        return one;
+      }
+    : undefined;
+  const runComputer = computer?.kind === "browser" && record ? { ...computer, browser: { ...computer.browser, record: (id: string, watch: RecordWatch) => record(watch, id, "browser") } } : computer;
   if (computer && (computer.kind === "desktop" || computer.kind === "phone")) {
     const theHold = computerHold();
     if (deps.openComputerView && made?.watch) {
@@ -801,6 +822,7 @@ export async function computerForClaim(
       }
       view = opened.view;
     }
+    if (record && made?.watch) record(made.watch, made.id, computer.kind);
     // The run's end closes the hold (workspace/computer-hold.ts close()): a take in force ends `released` (the computer
     // goes; the composer's `ended` ViewEnd maps onto it), the agent's open ask is let go at once, and nothing is taken after.
     endHold = () => theHold.close();
@@ -810,6 +832,7 @@ export async function computerForClaim(
   let released: Promise<void> | undefined;
   const release = (why: ViewEnd = "released"): Promise<void> =>
     (released ??= (async () => {
+      await Promise.all(recordings.map((one) => one.stop(typeof why === "object" ? "parked" : why)));
       await Promise.resolve(view?.close(why)).catch(() => undefined);
       endHold();
       try {
@@ -823,7 +846,7 @@ export async function computerForClaim(
   const keeps = computer && keepable && store.settings ? keepable : undefined;
   const settings = store.settings;
   return {
-    ...(computer ? { computer } : {}),
+    ...(runComputer ? { computer: runComputer } : {}),
     ...(hold ? { hold } : {}),
     ...(held ? { held } : {}),
     ...(replaced ? { replaced } : {}),
@@ -847,6 +870,8 @@ export async function computerForClaim(
       // The live view ends (its frames and any take-over), saying what the run waits for and until when the computer is
       // kept, never that it ended; the hold with it; the machine and its mount stay.
       released = (async () => {
+        // The recording pauses: the claim that resumes the run goes on in a new file.
+        await Promise.all(recordings.map((one) => one.stop("parked")));
         await Promise.resolve(view?.close({ parked: cause, until: row.until })).catch(() => undefined);
         endHold();
         await keeps.computer.close();

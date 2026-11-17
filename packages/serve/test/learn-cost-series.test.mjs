@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
@@ -99,9 +99,9 @@ test("the summary's replay is the serving promotion's record, read from the stor
   await end("run-1", { path: "agent" }, 0.9);
   await end("run-2", { path: "workflow", workflow: "answer" }, 0.1);
   assert.equal((await agentCostOverStore(store, "agent-1")).summary.replay, null, "no promotion recorded");
-  const replay = { n: 40, agree: 34, agent_acc: 0.82, wf_acc: 0.86, delta: 0.04, handed_back: 3, of: [] };
-  await recordPromotion(store.settings, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent", replay }, () => true);
-  assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true });
+  const check = { compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n: 40, agreed: 34, alone: 40, of: [] };
+  await recordPromotion(store.settings, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", reason: "as good as the agent", check }, () => true);
+  assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 85, agent_pct: 100, cleared: true, agreed: 34, alone: 40, agree_min: 0.8 });
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -168,7 +168,9 @@ test(`${IN_FLIGHT} runs in flight on the faux harness, on a busy store: every en
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say your thinking.", harness: HARNESS, tools: ["read"], learning: true } });
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);
+  const flows = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }];
+  const seed = await landWorkflows(dir, "agent-1", flows);
+  await promoteChecked(server.settings, "agent-1", flows);
   const ids = Array.from({ length: IN_FLIGHT }, (_, i) => `run-${i + 1}`);
   for (const [i, id] of ids.entries()) {
     const launch = { input: { content: `What is ${i} times seven?`, question: `What is ${i} times seven` }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-6.1-terra" }, learning: startAt(seed) };

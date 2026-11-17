@@ -943,3 +943,35 @@ describe("the screen is read again soon while a change is on its way", () => {
     expect(reads).toBe(1);
   });
 });
+
+// The run's recordings (its agent's computer.record), from its read: "Recording" while one is written, Export (the run
+// files route's ?download=1) for each one finished.
+describe("the Screen tab's recording", () => {
+  const desktop = { ...working, computer: { kind: "desktop", provider: "docker", state: "ready" } } as Run;
+  const rec = (path: string, finished: boolean) => ({ path, computer: "desk", seconds: 12.5, bytes: 4096, finished });
+  async function shown(recordings: ReturnType<typeof rec>[]) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run: { ...desktop, recordings }, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "opening" }), computerEvery: 20, tab: "screen", fileUrl: (path: string) => `/v2/runs/${RUN}/files/${path}` } as never));
+    });
+    await settle();
+    const exports = [...host.querySelectorAll("a[download]")] as HTMLAnchorElement[];
+    return { text: host.textContent ?? "", exports };
+  }
+  it("says Recording while a file is written, and offers no Export for it", async () => {
+    const { text, exports } = await shown([rec("recordings/desk.mp4", false)]);
+    expect(text).toContain("Recording");
+    expect(exports).toEqual([]);
+  });
+  it("exports each finished file through the files route's download, and says nothing of recording then", async () => {
+    const { text, exports } = await shown([rec("recordings/desk.mp4", true), rec("recordings/desk-2.mp4", true)]);
+    expect(text).not.toContain("Recording");
+    expect(exports.map((a) => [a.getAttribute("href"), a.textContent?.trim()])).toEqual([[`/v2/runs/${RUN}/files/recordings/desk.mp4?download=1`, "Export 1"], [`/v2/runs/${RUN}/files/recordings/desk-2.mp4?download=1`, "Export 2"]]);
+  });
+  it("shows neither for a run that recorded nothing", async () => {
+    const { text, exports } = await shown([]);
+    expect(text).not.toContain("Recording");
+    expect(exports).toEqual([]);
+  });
+});

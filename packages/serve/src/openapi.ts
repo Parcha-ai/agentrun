@@ -20,11 +20,13 @@ import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
+import { AUDIT_DEFAULTS, AUDIT_MAX } from "./learning-setting.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
-import { LOOP_COMPILES_MAX, LOOP_POINTS_MAX } from "./store-reads/loop.js";
-import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX, PROMOTE_BAR, REFIT_EVERY, REPLAY_INPUTS, REPLAY_MIN } from "./learn/promote.js";
+import { COMPILE_AFTER_MAX } from "./learning-setting.js";
+import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
+import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX } from "./learn/promote.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
@@ -37,6 +39,9 @@ import "./mcp-secret-writes.js";
 // The email account's routes (email/routes.ts), each marked x-agentrun-secret whole, registered with the one gate as it
 // loads: the view among them, so the API token never reads the account.
 import "./email/routes.js";
+// The calendar's routes (calendar/routes.ts), each marked x-agentrun-secret whole, registered the same way: the view
+// among them, so the API token never reads which calendar is saved.
+import "./calendar/routes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
@@ -258,6 +263,20 @@ const EMAIL_ACCOUNT_BODY = {
 };
 /** One half of an email account test. */
 const MAIL_CHECK = closed({ ok: { type: "boolean" }, message: { type: "string", description: "In plain words: \"Signed in to <host>.\", with INBOX's count for IMAP, or why not." } });
+/** GET and PUT /settings/calendar's answer (calendar/address.ts calendarView): the calendar, never its address. */
+const CALENDAR_VIEW = closed({
+  configured: { type: "boolean", description: "A calendar is saved and its address opens with this server's seal key: calendar_events reads it." },
+  host: { type: ["string", "null"], description: "The host its address reads from (calendar.google.com), never the address." },
+  name: { type: ["string", "null"], description: "The calendar's own name (its X-WR-CALNAME), as the save read it; null when that read failed or it has none." },
+  time_zone: { type: ["string", "null"], description: "The calendar's own time zone (its X-WR-TIMEZONE, else the server's), as the save read it; null when that read failed." },
+}, "The server's one calendar, never its iCal address.");
+/** PUT /settings/calendar's and POST /settings/calendar/test's body: the calendar's iCal address. */
+const CALENDAR_BODY = {
+  type: "object", additionalProperties: false,
+  properties: {
+    url: { type: "string", minLength: 1, maxLength: 2048, "x-agentrun-secret": true, description: "The calendar's secret iCal address (https://… or webcal://…, read as https://): Google Calendar's \"Secret address in iCal format\", Outlook's ICS link, iCloud's public calendar link. Sealed, never answered or shown again." },
+  },
+};
 /** GET /settings/chatgpt's answer (chatgpt-plan.ts PlanView): the sign-in's state, never a token. */
 const CHATGPT_SIGN_IN = {
   type: "object", additionalProperties: false, required: ["state"],
@@ -1219,7 +1238,7 @@ const RUN_LEARNING = {
         from_notes: { type: "array", items: { type: "string" }, description: "The notes it absorbed, by file name: once merged, each carries `compiled_into: <workflow>` in its front matter and is still served on the by-hand path." },
         attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" }, description: "What the static checks and the dry run refused of this attempt, sent back to the model for the next one." } }), description: "Each attempt in order: the first, then a retry for each refusal, at most 4." },
         digest: { type: ["string", "null"], description: "The kept draft's digest (the first 16 hex of its workflow.json's sha256): what a run serving it records as `workflow_digest`, and its promotion records' `digest`; null when no attempt passed." },
-        promoted: { type: ["boolean", "null"], description: "Whether the kept draft serves the agent's runs, from its promotion records (GET /agents/{agent_id}/learning/promotions): true once promoted (or a threshold refit of it was), false while held, null while it is replayed, before its first claim decides it, or when no attempt passed." },
+        promoted: { type: ["boolean", "null"], description: "Whether the kept draft serves the agent's runs, from its promotion records (GET /agents/{agent_id}/learning/promotions): true once promoted, false while held, null while it is checked, before its first claim decides it, or when no attempt passed." },
       }), { type: "null" }], description: "The run's compile turn, when its end-of-run look-back wrote the agent's job as a learned workflow (the agent kept enough notes or ran the job enough, and has none yet; or its workflow handed a run back, cost more than by hand, or its promotion held it); null when the run compiled nothing." },
       draft_errors: { type: "array", items: { type: "string" }, description: "What the checks refused of a compiled draft that never passed after its retries, cut of the host's secrets; empty when none." },
       cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
@@ -1269,12 +1288,12 @@ const COST_RUN = closed({
   n: { type: "integer", minimum: 1, description: "The run's number among the agent's runs counted here, oldest first: 1 is its first." },
   run_id: { type: "string" },
   started_at: DATE_TIME,
-  path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run)." },
+  path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run); `audit`, never a row here: a shadow run auditing a served run is no run of the series, its cost that run's `learning_usd`." },
   workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
   learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
   cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
   cost_upper_bound: { type: "boolean", description: "The run's stored cost is only a bound (its row's `costAtMostUsd`: a model request cut at its cap hold): `cost_usd` and `total_usd` are null, never a known cost. `summary` counts such a run as `at_most`, not `unknown`." },
-  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet."),
+  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet. An audit's shadow run of it is its learning too: null while that shadow is queued or running, never $0."),
   total_usd: COST_USD("The run's all-in cost, `cost_usd` and `learning_usd` together; null when either is."),
 });
 const LEARNING_COST = closed({
@@ -1300,11 +1319,14 @@ const LEARNING_COST = closed({
     hand_backs: { oneOf: [closed({ ran: COUNT, back: COUNT }), { type: "null" }], description: "Of the runs a learned workflow ran first on from the takeover on (`path` `workflow` or `handed_back`), how many (`ran`) and how many it handed back to the agent (`back`); null before a takeover." },
     withheld: { oneOf: [closed({ unknown: { ...COUNT, description: "Runs whose cost is unknown." }, at_most: { ...COUNT, description: "Runs whose cost is known only as at most (`cost_upper_bound`)." } }), { type: "null" }], description: "After a takeover, the runs `before` and `after` would read whose cost is not known exactly: while any is, `times_cheaper` is null, so the ratio is never over a partial set. Null when every one is known, and before a takeover." },
     replay: { oneOf: [closed({
-      n: { ...COUNT, description: "The graded inputs it replayed." },
-      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "The workflow's accuracy on them, in percent to a tenth (a hand-back counts as the agent's answer)." },
-      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's accuracy on them, in percent to a tenth." },
-      cleared: { type: "boolean", description: "The workflow was at most the promotion bar under the agent: the same accuracy, as promotion reads it." },
-    }), { type: "null" }], description: "The replay the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves, or it was promoted with no replay (a dry run)." },
+      n: { ...COUNT, description: "The inputs its check ran on." },
+      workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "The share of them it answered alone with the agent's own recorded answer, in percent to a tenth." },
+      agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's accuracy on them, in percent: 100, its own answers being the label." },
+      cleared: { type: "boolean", description: "The check passed: a serving champion was promoted on it." },
+      agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many said what the agent's own recorded answer said." },
+      alone: { ...COUNT, description: "The inputs it answered alone (no hand-back, no failed step)." },
+      agree_min: { type: "number", minimum: 0, maximum: 1, description: "The agreement bar it passed (the definition's `learning.agree_min`): `agreed` over `alone` at least this. Passing it says the workflow agreed with the agent that often, never that it is as accurate." },
+    }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
 
@@ -1331,43 +1353,93 @@ const LEARNING_EVAL = closed({
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
 const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
-  n: { ...COUNT, description: "The graded inputs it was decided on." },
-  agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's recorded answer." },
-  agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them: each graded run's grade when the agent answered it; on one a learned workflow answered alone and was graded wrong, the agent counts right (it never answered it), so a revision held on runs it served wrong serves again only by answering them right." },
-  wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them, at its serving thresholds: an input it handed back counts as the agent's recorded answer, never as a failure. On an input graded wrong it is right only by the grade: the expected answer when the grade gave one; with none, on a run a learned workflow served, any answer but the one graded wrong, and on a run the agent answered, never (a different answer proves nothing)." },
-  delta: { type: "number", description: `\`wf_acc\` - \`agent_acc\`; it serves at ${-PROMOTE_BAR} or more.` },
-  handed_back: { ...COUNT, description: "How many of them it handed back; it answered `n` - `handed_back` alone. A revision that answered none alone is held: it would never serve." },
+  n: { ...COUNT, description: "The inputs it was decided on (a replay stopped at a write is none)." },
+  agree: { ...COUNT, description: "How many of them the workflow answered alone with the agent's own recorded answer." },
+  agent_acc: { type: "number", minimum: 0, maximum: 1, description: "The agent's accuracy on them: 1, the agent's own recorded answers being the label." },
+  wf_acc: { type: "number", minimum: 0, maximum: 1, description: "The workflow's accuracy on them: the share it answered alone as the agent did, plus the ones it handed back (a hand-back is the agent's answer), over `n`." },
+  delta: { type: "number", description: "`wf_acc` - `agent_acc`." },
+  handed_back: { ...COUNT, description: "How many of them it handed back; it answered `n` - `handed_back` alone." },
 };
 /** A replay's runs' outcomes, the one count of them: on its promotion record (`replay.outcomes`) and its read. */
+const SKIPPED_TOOLS = { type: "array", items: closed({ tool: { type: "string", description: "The tool's catalog name." }, inputs: { ...COUNT, description: "How many skipped inputs it stopped." }, no_read_only_hint: { type: "boolean", description: "An MCP tool its server lists with no `readOnlyHint` (and not `destructiveHint`): replay treats it as a write only because nothing says it reads. The hold's `reason` names these: if they only read, mark them read-only in the MCP server and the next replay runs them." } }), description: "The tools that stopped its skipped inputs, most inputs first." };
 const REPLAY_OUTCOMES = closed({
-  answered: { ...COUNT, description: "Replay runs the workflow answered alone, as each run did (guards read record-only: one answered under a guard's threshold counts here, and the score hands it back)." },
+  answered: { ...COUNT, description: "Replay runs the workflow answered alone, as each run did." },
   handed_back: { ...COUNT, description: "Replay runs it handed back on." },
   failed: { ...COUNT, description: "Replay runs a step failed in, or still at work past the replay's deadline: no evidence either way, never scored." },
   skipped_write: { ...COUNT, description: "Replay runs stopped at a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments: a replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." },
-}, "How many of its replay runs ended each way: what each run did, never the serving thresholds' reading of it.");
+}, "How many of its replay runs ended each way: what each run did.");
 const PROMOTION = closedWith({
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
   at: DATE_TIME,
-  decided: { enum: ["promote", "hold", "replaying", "queued", "skipped"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. `replaying`: its replay runs are at work; the champion serves meanwhile, else the agent. `queued`: it came while another revision replayed; one revision replays at a time and a running replay finishes, so it replays next, at the first run's claim once that replay is decided (the finished replay's verdict stands). `skipped`: a newer revision (`skipped_by`) came while it was queued; only the newest queued revision replays next, so it never replayed and never serves." },
-  source: { enum: ["replay", "dry_run", "refit", "graded"], description: `\`replay\`: decided on a replay of it on the agent's last ${REPLAY_INPUTS} graded inputs it fits, or those its owner asked for (POST .../revisions/{digest}/replays). \`dry_run\`: fewer than ${REPLAY_MIN} graded inputs, promoted on its passing dry run. \`refit\`: a threshold refit wrote this revision, decided on the rows it was fit on. \`graded\`: the graded runs it served fell more than ${PROMOTE_BAR * 100} points under the agent's accuracy by hand.` },
+  decided: { enum: ["promote", "hold", "replaying"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. A hold with `audit` is its audits' (a serving revision: at least the definition's `learning.hold_disagree` of its newest `learning.hold_window` audit rows, GET .../learning/audits, disagreed); one with `check`, its check's; one with neither, this release's workflow DSL refused the serving revision (`reason` names the DSL's code and where; its runs handed back to the agent): the agent's next run recompiles it once. `replaying`: its check's replay runs are at work; the champion serves meanwhile, else the agent. One revision of a workflow is checked at a time, and a running check finishes." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
-  replay: { ...closedWith(REPLAY_SCORE, { of: { type: "array", items: { type: "string" }, description: "The graded runs replayed." }, cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." }, skipped_tools: { type: "array", items: closed({ tool: { type: "string", description: "The tool's catalog name." }, inputs: { ...COUNT, description: "How many skipped inputs it stopped." }, no_read_only_hint: { type: "boolean", description: "An MCP tool its server lists with no `readOnlyHint` (and not `destructiveHint`): replay treats it as a write only because nothing says it reads. The hold's `reason` names these: if they only read, mark them read-only in the MCP server and the next replay runs them." } }), description: "The tools that stopped its skipped inputs, most inputs first." }, outcomes: REPLAY_OUTCOMES }), description: "The numbers it was decided on. A replay runs each read live (through a cache seeded from the graded run's recorded calls) and answers each write from that recording, never sending one." },
+  check: closedWith({
+    compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
+    agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on agreement: of the inputs it answered alone, the least share that must say what the agent's recorded answer said." },
+    alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
+    attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
+  }, {
+    n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
+    agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer." },
+    alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
+    of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
+    cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
+    outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
+    unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
+    skipped_tools: SKIPPED_TOOLS,
+    disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
+    stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
+  }),
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
   inputs: { type: "array", items: { type: "string" }, description: "On a replaying record: the graded run each of `runs` replays, in the same order. Its runs are reserved before they are created; one not created a few minutes on is created by the next claim." },
   replay_id: { type: "string", description: "The replay's id, on its replaying record and the one that decided it: GET .../revisions/{digest}/replays/{replay_id} reads it, whether a run's claim or its owner started it." },
-  refit: { ...closed({ from: { type: "string", description: "The digest it was refit from." }, guards: { type: "array", items: closedWith({ node: { type: "string" }, was: { type: ["number", "null"], description: "The guard's threshold before; null for an escalate." }, threshold: { type: ["number", "null"], description: "Its threshold after; null when it was switched off (the revision has no guard on that step, or no escalate by that label)." } }, { fit: { type: "object" }, escalate: { const: true, description: "An escalate node the replay recorded instead of obeying (its `when` reads a judge's field), switched off: the revision drops it." } }) } }), description: "What a refit changed: each guarded step's threshold before and after (null after: switched off), its new fit (`both` guards), and each escalate it switched off." },
-  checked: { ...COUNT, description: `The place among the agent's grades (each grade's order, one more than the grade before it) of the newest grade its last refit check read; it is checked again once ${REFIT_EVERY} more graded runs it served come after it.` },
-  since: { ...COUNT, description: "On a replay's promote: the place among the agent's grades of the newest grade when this promotion began, which names it. Its checks count only the graded runs this promotion served, so a revision promoted again after a hold is never held again on the grades it was held on, nor on a run served before it and graded after." },
-  held_on: { type: "array", items: { type: "string" }, description: `The runs it served that were graded wrong when its graded runs held it (newest first, at most ${REPLAY_INPUTS}), kept on that hold, on its next replay (those still graded that it fits, each among its inputs) and on that replay's hold. A replay promotes it only once it answered or handed back on each of them, and is within the bar on them alone (gains on other inputs never pay for repeating their wrong answers).` },
   commit: { type: "string", description: "The learning commit whose workflow.json is this revision's text: what it serves from as the champion while a newer revision replays." },
-  skipped_by: { type: "string", description: "A skipped revision's newer one: the digest that came while it was queued, and replays in its place." },
+  audit: closedWith({
+    window: { type: "integer", minimum: 1, description: "The definition's `learning.hold_window` when it was held." },
+    disagree: { type: "integer", minimum: 1, description: "The definition's `learning.hold_disagree` when it was held." },
+    rows: { ...COUNT, description: "The audit rows it was decided on: the newest `window` with a verdict." },
+    disagreements: { type: "array", items: closedWith({
+      run: { type: "string", description: "The run whose answer is the agent's: the shadow run, or the served run for a grade." },
+      served: { type: "string", description: "The run the workflow served." },
+      input: { type: "string", description: "The served run's input, as text or JSON, cut at 1200 characters." },
+      agent: { ...NULL_STRING, description: "The agent's answer (the shadow run's), cut at 1200 characters; null for a grade's row." },
+      draft: { ...NULL_STRING, description: "The served answer, cut at 1200 characters; null when it could not be read." },
+    }, { graded: { const: true, description: "An owner's grade wrote this row: the served answer was graded wrong." } }), description: "Its disagreeing rows: the data its one recompile reads." },
+  }, { stopped: { const: true, description: "A second audit hold within the definition's `learning.stop_window` served runs of the first: it stopped, no compile is asked, nothing serves again until a new revision lands." } }),
+});
+const AUDIT_LINE = closed({
+  window: { type: "integer", minimum: 1, description: "The definition's `learning.hold_window`." },
+  disagree: { type: "integer", minimum: 1, description: "The definition's `learning.hold_disagree`." },
+  rows: { ...COUNT, description: "The serving revision's newest audit rows with a verdict, at most `window`." },
+  disagreed: { ...COUNT, description: "How many of them disagreed: it is held once this reaches `disagree`." },
 });
 const SERVING = closed({
   workflow: { type: "string" },
   digest: { ...NULL_STRING, description: "The revision that serves first (the champion: the one promoted last, while its newest record still says promote); null when none does and the agent takes the runs." },
   replaying: { ...NULL_STRING, description: "A newer revision whose replay is at work, when there is one: it serves only once its replay promotes it; the champion serves meanwhile." },
+  state: { enum: ["serving", "checking", "held", "stopped"], description: "`serving`: a revision serves first. `checking`: its newest revision's check is at work (the agent takes the runs meanwhile, or the champion). `held`: none serves, its newest record holds it (a check's or an audit's hold, or this release's workflow DSL refused it: the agent's next run recompiles it once). `stopped`: none serves and nothing compiles again (a recompile's check held it too, or a second audit hold within `learning.stop_window`, or a check whose every input stopped at a write) until a new revision lands." },
+  check: { anyOf: [closed({ n: COUNT, agreed: COUNT, alone: COUNT, attempt: { enum: [1, 2] } }), { type: "null" }], description: "The numbers of the workflow's newest decided check: its inputs, those it agreed on, those it answered alone, which check of its compile it was; null when none was decided." },
+  audit: { anyOf: [AUDIT_LINE, { type: "null" }], description: "Its audit line: the serving (else the newest) revision's newest audit rows against the hold bar; null when no revision has a record." },
+  audits_off: { ...NULL_STRING, description: "Why none of the agent's runs is audited, e.g. `audits off: send_email can write`: its definition can call a tool that is not read-only (an MCP tool its server lists without `readOnlyHint`, or a built-in other than web_fetch, web_search, pdf_pages and llm, its computer's tools among them), which a shadow run would call a second time. Null when every tool it can call only reads: its served runs are audited." },
+  not_auditable: { ...COUNT, description: "Of the serving revision's newest `learning.stop_window` served runs, those a trigger started: never audited (a shadow run gets none of a trigger's context, and could answer where it answers). 0 when none serves." },
+});
+const AUDIT_ROW = closedWith({
+  run: { type: "string", description: "The served run." },
+  shadow_run: { ...NULL_STRING, description: "Its shadow run (the same agent on the same input with learning off, GET /runs/{id}'s `audit_of` names the served run); null for a grade's row, or when none was started (`skipped`)." },
+  workflow: { type: "string" },
+  digest: { type: "string", description: "The revision that served it." },
+  promoted_at: { type: ["string", "null"], format: "date-time", description: "The promotion of that revision the row counts for: its promote record's `at` (GET .../learning/promotions), the one serving when the shadow started or the grade was given. The hold rule counts only the rows of the revision's promotion now, so a revision its owner's replay promotes again after a hold starts on none. Null: none." },
+  source: { enum: ["shadow", "grade"], description: "`shadow`: the shadow run's answer compared with the served one. `grade`: an owner's grade of a run the workflow answered alone (PUT /runs/{id}/grade)." },
+  agreed: { type: ["boolean", "null"], description: "Whether the two answers say the same (a grade's: whether it was graded right); null when either answer is missing (a shadow that failed or `parked`, or none was started): no evidence, not counted." },
+  served_cost: { type: ["number", "null"], minimum: 0, description: "What the served run cost; null when unknown." },
+  shadow_cost: { type: ["number", "null"], minimum: 0, description: "What the shadow run cost (the agent's learning cost); null for a grade's row, or when unknown." },
+  at: DATE_TIME,
+}, {
+  turn: { type: "string", description: "The served run's answer the row is of: the id of its answer row in the run's timeline (GET /runs/{id}/timeline), its newest final answer when the audit began (or at the grade). A follow-up's later answer is never the one compared. Absent when the run had no answer." },
+  skipped: { const: "no allowance", description: "No shadow was started: the served run's cap left less than a run's smallest cap ($0.01), or what it spent under it is not known. `agreed` is null: not counted." },
+  parked: { const: true, description: "The shadow came to wait on a person (an approval its tool settings ask, a question, a raise of its cap: what the served run's cap left) and ended there at once, no one asked, so it has no answer. `agreed` is null: not counted." },
 });
 const BATCH_LESSONS = closed({ notes: { type: "array", items: { type: "string" } }, skills: { type: "array", items: { type: "string" } }, workflows: { type: "array", items: { type: "string" } } });
 const BATCH_ROW = closedWith(
@@ -1377,7 +1449,7 @@ const BATCH_ROW = closedWith(
     answer: { ...NULL_STRING, description: "The run's answer as compared (the `answer_field` of a JSON answer when the batch names one), cut at 2000 characters (compared whole: the review quotes it to 2000 characters and says when it was cut); null when it gave none." },
     right: { type: "boolean", description: "Whether the answer equals the reference once trimmed, case-folded and whitespace-collapsed (two numbers by value). A display: the learning grade is the judge." },
     reviewed: { type: "boolean", description: "The reference was sent to the run as a review, once." },
-    path: { enum: RUN_PATHS.filter((path) => path !== "replay"), description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
+    path: { enum: RUN_PATHS.filter((path) => path !== "replay" && path !== "audit"), description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
     cost_usd: COST_USD("The job's own cost."), learning_usd: COST_USD("What learning cost for the run."), total_usd: COST_USD("Their sum; for a failed row, what its run cost."),
     learned: { ...BATCH_LESSONS, description: "The notes, skills and workflow drafts the run's learning kept, by name." },
     merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning last merged (its job's round or its review's)." },
@@ -1411,7 +1483,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
       operationId: "gradeRun", tags: ["runs"], summary: "Grade an ended run's answer: right or wrong, and the fields a right answer holds",
-      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion by replay reads them: a learned workflow's new revision serves first only after a replay on the agent's last ${REPLAY_INPUTS} graded inputs it fits is within ${PROMOTE_BAR * 100} points of the agent's own answers on them; with fewer than ${REPLAY_MIN}, on its passing dry run. With \`expected\`, a replay's answer is right when its JSON holds each of those fields; else when it says what the graded answer said. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0; the workflow's graded hold reads it, and only a hold asks for its revision); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
+      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion reads none: a revision's check is scored against the agent's own recorded answers. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
       parameters: [ref("parameters/RunId")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads." } } } } } },
       responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 429, 500) },
@@ -1420,11 +1492,12 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/agents/{agent_id}/learning/loop": {
     get: {
-      operationId: "getLearningLoop", tags: ["agents"], summary: "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows",
-      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, the notes it absorbed, each attempt and what the checks refused, its draft's digest and whether that revision was promoted; a follow-up's round compiles on its own, so a run can list one turn a round; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. \`guards\`: each guarded step of each learned workflow revision that ran (served first or replayed), with its signal and threshold, how many runs it served first on and how many it handed back, how many the workflow answered alone were graded right and wrong (each over every run), and each run's p (its newest ${LOOP_POINTS_MAX}), with whether the run was right when its answer was the workflow's own and was graded. A replay run reads its guards at a record-only threshold, so it is counted apart (\`replays\`) and in none of the others. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
+      operationId: "getLearningLoop", tags: ["agents"], summary: "The self-learning loop's own record: each compile turn",
+      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, the notes it absorbed, each attempt and what the checks refused, its draft's digest and whether that revision was promoted; a follow-up's round compiles on its own, so a run can list one turn a round; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
       parameters: [AGENT_ID],
       responses: { "200": json(closed({
         agent: { type: "string" },
+        completed_runs: { ...COUNT, description: "The agent's completed runs of its own (never one a learned workflow answered alone, a replay, an imported or an archived run) toward its first compile, at most its definition's `learning.compile_after`." },
         compiles: { type: "array", items: closed({
           run_id: { type: "string", description: "The run whose end compiled it." },
           round: { type: "integer", minimum: 1, description: "The run's round that compiled it: 1 its first end, more for an end after a follow-up opened it again." },
@@ -1433,34 +1506,29 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
           from_notes: { type: "array", items: { type: "string" }, description: "The notes it absorbed, by file name (each marked \`compiled_into\` once it merged)." },
           attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" } } }), description: "Each attempt in order: whether its checks and dry run passed, and what they refused." },
           digest: { ...NULL_STRING, description: "The kept draft's digest; null when none passed." },
-          promoted: { type: ["boolean", "null"], description: "Whether that revision was promoted, as its records say now: true promoted (or a refit of it was), false held or skipped, null queued, undecided or none passed. It may no longer serve: the promotions read's \`serving\` says which revision does." },
-          draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. Empty when one passed." },
+          promoted: { type: ["boolean", "null"], description: "Whether that revision was promoted, as its records say now: true promoted, false held, null undecided or none passed. It may no longer serve: the promotions read's \`serving\` says which revision does." },
+          draft_errors: { type: "array", items: { type: "string" }, description: "A draft that never passed: its last errors. A draft its check had nothing to run on (its promotion `check.stopped` with `n` 0): its record's reason, starting \"nothing to check it on\". Empty otherwise." },
           withheld: { type: "boolean", description: "The run's handed values can't be read here: its error texts are left out (the counts stand)." },
         }), description: "Newest first." },
-        guards: { type: "array", items: closed({
-          workflow: { type: "string" },
-          digest: { type: "string", description: "The revision the step ran in." },
-          node: { type: "string", description: "The step's label." },
-          signal: { enum: ["self", "jev", "both"], description: "\`self\`: the step's own confidence; \`jev\`: one Jev call over its input and output; \`both\`: their fitted logistic (min of the two before a fit)." },
-          threshold: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Under it the step hands the run back to the agent, as the runs it served first on read it; null when only replays ran it." },
-          runs: { ...COUNT, description: "Runs this revision served first on that this step guarded, each once however many checks a map made of it (replays left out, and checks of another workflow's call in the same run)." },
-          escalated: { ...COUNT, description: "How many of them it handed back (one of the run's checks of it did)." },
-          right: { ...COUNT, description: "How many of them the workflow answered alone and were graded right." },
-          wrong: { ...COUNT, description: "How many of them the workflow answered alone and were graded wrong." },
-          grades_past: { ...COUNT, description: `How many of them the workflow answered alone whose grade, if one was given, is no longer kept (the agent keeps its newest ${GRADES_KEPT} grades): in neither \`right\` nor \`wrong\`, and not known to be ungraded.` },
-          replays: { ...COUNT, description: "Replay runs of this revision that read this step: in none of the other counts, nor in \`points\` (a replay reads its guards at a record-only threshold, so its row says nothing of a hand-back)." },
-          points: { type: "array", items: closed({ run_id: { type: "string" }, p: { type: ["number", "null"], minimum: 0, maximum: 1, description: "The least p the run's checks of this step read, to 4 places; null when a signal was missing on one (always handed back)." }, escalated: { type: "boolean" }, correct: { type: ["boolean", "null"], description: "The run's grade, on a run the workflow answered alone; null otherwise." } }), description: `The runs it served first on, oldest first: the newest ${LOOP_POINTS_MAX}.` },
-        }) },
-      }), "The loop's compile turns and guarded steps."), ...errors(401, 403, 404, 429, 500) },
+      }), "The loop's compile turns."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "learningloop/1",
     },
   },
   "/agents/{agent_id}/learning/promotions": {
     get: {
       operationId: "listLearningPromotions", tags: ["agents"], summary: "Each learned workflow revision's promotion: its replay's numbers and whether it serves",
-      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's replay on the agent's graded inputs (replaying, then promoted or held, with its numbers), one promoted on its dry run, a threshold refit's new revision, a serving revision held on its graded runs. A revision serves only once its replay promotes it; the champion (the revision promoted last) keeps serving while a newer one replays or after it is held, and `serving` says which digest serves and which replays. One revision replays at a time and a running replay finishes: a newer one that comes meanwhile is queued, and replays next; one queued before it is skipped, its record naming the newer one. Aggregates only: no input or answer. What the console's Learning tab marks on its cost chart.",
+      description: "Every promotion record of the agent's learned workflows, oldest first: a new revision's one check, a replay of it on the inputs of the agent's last completed runs scored against the agent's own recorded answers (replaying, then promoted or held, with its numbers), a draft held with nothing to check it on, a compile whose drafts all failed their checks (a hold with nothing checked, its reason naming the failed checks: the compile's attempt; a recompile's stops), or a serving revision held by its audits (GET .../learning/audits; the hold's `audit` holds the rows). A revision serves only once its check promotes it; the champion (the revision promoted last) keeps serving while a newer one is checked or after it is held, and `serving` says which digest serves and which is checked, each workflow's state, its newest check's numbers and its audit line. One revision of a workflow is checked at a time and a running check finishes. A hold's disagreements (a check's, an audit's) quote inputs and answers, cut as the agent's other learning reads cut them. What the console's Learning tab marks on its cost chart.",
       parameters: [AGENT_ID],
-      responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves and the one replaying." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
+      responses: { "200": json(closed({ agent: { type: "string" }, promotions: { type: "array", items: PROMOTION }, serving: { type: "array", items: SERVING, description: "Each learned workflow with a record: the revision that serves, the one replaying, its state, its check's numbers and its audit line." } }), "The agent's promotion records, and what serves."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "promotion/1",
+    },
+  },
+  "/agents/{agent_id}/learning/audits": {
+    get: {
+      operationId: "listLearningAudits", tags: ["agents"], summary: "The audit ledger of the agent's serving learned workflows",
+      description: "One row per finished audit, oldest first, as the agent's learning folder keeps them (audits.jsonl): a run a promoted learned workflow answered alone (path `workflow`; a run it handed back is never drawn) is audited at 1 in `learning.audit_every` (drawn from its id): its shadow run, the same agent on the same input with learning off, answers it again, and the row says whether the two answers say the same and what each run cost (the shadow's is the agent's learning cost; the shadow is no row of the run list, and GET /runs/{id} reads it with `audit_of`). A capped run's shadow starts at its end, capped at what its cap left, so the two never spend past it: with less than a run's smallest cap left, none starts (`skipped`). A shadow never waits on a person: one that would (an approval, a question, a raise of its cap) ends there at once with no answer (`parked`); neither is counted. Each row compares the served run's answer at the audit's start (`turn`), never a follow-up's. An owner's grade of a run the workflow answered alone is a row too. The hold rule reads them (`learning.hold_window`, `learning.hold_disagree`).",
+      parameters: [AGENT_ID],
+      responses: { "200": json(closed({ agent: { type: "string" }, audits: { type: "array", items: AUDIT_ROW } }), "The agent's audit rows."), ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
   },
@@ -1624,23 +1692,23 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays": {
     post: {
-      operationId: "startLearnedWorkflowReplay", tags: ["agents"], summary: "Replay a learned workflow's revision on the agent's graded inputs: re-check a held revision, or an edited one",
-      description: `Starts the replay a run's claim starts for a new revision (GET /agents/{agent_id}/learning/promotions explains them): one replay run of the agent per graded input, each the workflow alone at workflow cost, its reads live and its writes answered only from the graded run's recording, never sent. \`inputs\`: \`held\` (the default), the graded runs the revision's last replay or hold was decided on, or, with none, the agent's newest ${REPLAY_INPUTS}; a number from 1 to ${GRADES_KEPT}, that many of the agent's newest graded runs. Either way, a revision held on runs it served that were graded wrong is replayed on those too (its hold's \`held_on\`), and promoted only once it answered or handed back on each and is within the bar on them alone. Each is a graded run the agent answered (path \`agent\` or \`handed_back\`) or the workflow answered alone (\`workflow\`), with no uploaded file, whose input the revision takes. Its record is a replay's (\`source: replay\`, \`replaying\` then promoted or held, with its numbers, as a claim-started one is), decided once every replay run ended: at a run's claim that lays the revision, or at its read (GET .../replays/{replay_id}). A promoted revision serves first, and a held one may be refit, as after any replay. Its replay runs are handed no per-run MCP credentials. The revision is \`digest\`, the first 16 hex of its workflow.json's sha256: one a promotion record names (read at its commit), or the one on the learning folder's main. 404 for an unknown agent, workflow or revision. 409 \`replay_conflict\` when it is replaying already, another revision of the workflow replays (one at a time, and a running replay finishes: a revision queued behind it, \`queued\` in the promotions, replays at the first run's claim once it ends, no POST needed), it is promoted (it serves already), fewer than ${REPLAY_MIN} of the graded inputs asked for fit it (a replay on fewer could only hold it, so nothing is reserved and no run starts), or the agent's runs take no learned workflow here. 409 \`agent_not_runnable\` for an archived agent, as a run's start is: nothing is reserved. 400 for any other \`inputs\`. Only the owner, signed in with their password, starts one: the console's password session alone, from this server's own origin with a JSON body; every token is 403 \`forbidden\`.`,
+      operationId: "startLearnedWorkflowReplay", tags: ["agents"], summary: "Re-check a learned workflow's revision on the agent's own runs: a held revision, or an edited one",
+      description: `Starts the one check a run's claim starts for a new revision (GET /agents/{agent_id}/learning/promotions explains it): one replay run of the agent per input, each the workflow alone at workflow cost, its reads live and its writes answered only from the agent's own run's recording, never sent, scored against the agent's own recorded answers. \`inputs\`: \`held\` (the default), the runs the revision's last check ran on, or, with none, the agent's last \`compile_after\` completed runs; a number from 1 to ${COMPILE_AFTER_MAX}, that many of the agent's newest completed runs. Each is a completed run of the agent's own (path \`agent\` or \`handed_back\`), with no uploaded file, whose input the revision takes. Its record is a check's (\`replaying\` then promoted or held, with its numbers, as a claim-started one is), decided once every replay run ended: at a run's claim that lays the revision, or at its read (GET .../replays/{replay_id}). Its replay runs are handed no per-run MCP credentials. The revision is \`digest\`, the first 16 hex of its workflow.json's sha256: one a promotion record names (read at its commit), or the one on the learning folder's main. 404 for an unknown agent, workflow or revision. 409 \`replay_conflict\` when it is replaying already, another revision of the workflow replays (one at a time, and a running check finishes), it is promoted (it serves already), none of the inputs asked for fits it (nothing is reserved and no run starts), or the agent's runs take no learned workflow here. 409 \`agent_not_runnable\` for an archived agent, as a run's start is: nothing is reserved. 400 for any other \`inputs\`. Only the owner, signed in with their password, starts one: the console's password session alone, from this server's own origin with a JSON body; every token is 403 \`forbidden\`.`,
       security: [{ ownerSession: [] }],
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`.", schema: { type: "string" } }, { name: "digest", in: "path", required: true, description: "The revision: the first 16 hex of its workflow.json's sha256.", schema: { type: "string" } }],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { inputs: { oneOf: [{ const: "held" }, { type: "integer", minimum: 1, maximum: GRADES_KEPT }], default: "held", description: "`held`: the graded inputs it was last decided on; a number: the agent's newest that many." } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { inputs: { oneOf: [{ const: "held" }, { type: "integer", minimum: 1, maximum: COMPILE_AFTER_MAX }], default: "held", description: "`held`: the runs it was last checked on; a number: the agent's newest that many completed runs." } } } } } },
       responses: { "202": { description: "The replay started: its runs are queued.", headers: { Location: ref("headers/Location") }, content: { "application/json": { schema: closed({ replay: { type: "string", description: "The replay's id." }, inputs: { ...COUNT, description: "How many graded inputs it replays: one replay run each." } }) } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}": {
     get: {
       operationId: "getLearnedWorkflowReplay", tags: ["agents"], summary: "Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab)",
-      description: "A replay a run's claim or the agent's owner started. This read decides it as a claim would, once every replay run ended or its deadline passed (promoted within 2 points of the agent, else held, then one refit), so a replay of a revision no run lays is decided too. It never starts a run: a replay whose launch was interrupted (the server stopped before creating its runs) reads `running` until its deadline. `status`: `running` while it replays, `done` once promoted or held (`decided`, with its `reason`; a newer revision that came meanwhile queued behind it, never cancelling it), `failed` when none of its runs started by its deadline (held, nothing replayed; its `reason` says so and to start it again with POST). `outcomes` counts its replay runs so far (once decided, those it was decided on, as its promotion record keeps them): `answered` alone, `handed_back` (the agent's recorded answer), `failed` (no evidence either way), `skipped_write` (a write its recording does not have). `score` is the decided record's, else the runs ended so far at the revision's serving thresholds. Aggregates only, its words cut as the promotions list's are.",
+      description: "A replay a run's claim or the agent's owner started. This read decides it as a claim would, once every replay run ended or its deadline passed (promoted when it clears the check's bar, else held), so a replay of a revision no run lays is decided too. It never starts a run: a replay whose launch was interrupted (the server stopped before creating its runs) reads `running` until its deadline. `status`: `running` while it replays, `done` once promoted or held (`decided`, with its `reason`), `failed` when none of its runs started by its deadline (held, nothing replayed; its `reason` says so and to start it again with POST). `outcomes` counts its replay runs so far (once decided, those it was decided on, as its promotion record keeps them): `answered` alone, `handed_back` (the agent's recorded answer), `failed` (no evidence either way), `skipped_write` (a write its recording does not have). `score` is the decided record's. Aggregates only, its words cut as the promotions list's are.",
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name.", schema: { type: "string" } }, { name: "digest", in: "path", required: true, description: "The revision's digest.", schema: { type: "string" } }, { name: "replay_id", in: "path", required: true, description: "The replay's id: POST .../replays answered it, and its promotion records carry it (`replay_id`).", schema: { type: "string" } }],
       responses: { "200": json(closedWith({
         replay: { type: "string" }, workflow: { type: "string" }, digest: { type: "string" },
         status: { enum: ["running", "done", "failed"] },
-        inputs: { ...COUNT, description: "Its replay runs: one per graded input." },
+        inputs: { ...COUNT, description: "Its replay runs: one per input." },
         outcomes: REPLAY_OUTCOMES,
         score: closed(REPLAY_SCORE),
         cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null while one's cost is unknown (one not created or not ended yet), never a part of it." },
@@ -2190,6 +2258,44 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "email/1",
     },
   },
+  "/settings/calendar": {
+    get: {
+      operationId: "getCalendar", tags: ["local"], summary: "This server's calendar: its host, name and time zone, never its address",
+      description: "The one calendar calendar_events reads. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CALENDAR_VIEW, "The calendar."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    put: {
+      operationId: "saveCalendar", tags: ["local"], summary: "Save this server's calendar, its iCal address sealed",
+      description: "Replaces the calendar. The address is https (webcal:// is read as https://; plain http, another scheme, or a user and password in it is refused in words), sealed under the server's seal key, and in no answer, event, log line or run input. The calendar is read once for its own name and time zone; a read that fails saves the address all the same (name and time_zone null): POST /settings/calendar/test says why. 422 by field for a body that does not read. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { ...CALENDAR_BODY, required: ["url"] } } } },
+      responses: { "200": json(CALENDAR_VIEW, "Saved."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
+      "x-agentrun-serve": "calendar/1",
+    },
+    delete: {
+      operationId: "deleteCalendar", tags: ["local"], summary: "Forget this server's calendar",
+      description: "Removes the calendar and its sealed address. calendar_events then answers that no calendar is saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+  },
+  "/settings/calendar/test": {
+    post: {
+      operationId: "testCalendar", tags: ["local"], summary: "Read the calendar and say what it holds",
+      description: "Reads the saved calendar with an empty body, or the address in the body (saved nowhere), as calendar_events reads it (https only; a private address refused unless its host is allowed in Settings → MCP servers; 10 MB, 20 s, 5 redirects), and answers in words: \"Work: 214 events, time zone America/New_York, next: Standup, Mon Nov 17 09:30\" (its name, its events and series, its time zone, and its next event in the next 62 days), or why it couldn't be read, never the address. 422 for a body that does not read, or an empty body with no calendar saved. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: false, content: { "application/json": { schema: CALENDAR_BODY } } },
+      responses: { "200": json(closed({ ok: { type: "boolean", description: "The calendar was read." }, message: { type: "string", description: "In plain words: what it holds, or why it couldn't be read." } }), "The test's answer."), ...errors(400, 401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "calendar/1",
+    },
+  },
   "/settings/chatgpt": {
     get: {
       operationId: "getChatGPTSignIn", tags: ["local"], summary: "This server's ChatGPT sign-in: its state, who and which plan, never a token",
@@ -2332,7 +2438,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "listComposioEvents", tags: ["local"], summary: "List a saved Composio server's toolkit's events, for a composio trigger",
       description: "Every page of Composio's trigger types for the server's toolkit, asked with its saved key: each event's slug (a composio trigger's `event`), name, description, the JSON schema of its config (a trigger's `config`, its `required` fields marked) and whether Composio polls for it rather than being sent it. 404 for a name that is no saved server, or one not saved with the Composio preset; 422 when Composio refuses the key; 424 `upstream_failed` when Composio fails.",
       parameters: [MCP_NAME],
-      responses: { "200": json(closed({ server: { type: "string" }, toolkit: { type: "string" }, events: { type: "array", items: closedWith({ slug: { type: "string" }, name: { type: "string" }, description: { type: "string" }, config: { type: "object", description: "The event's config, as a JSON schema (`properties`, `required`)." }, polled: { type: "boolean", description: "Composio polls for it (every few minutes) rather than being sent it." } }, { instructions: { type: "string" } }) } }), "The toolkit's events."), ...errors(401, 404, 422, 429, 500), ...MCP_FAILED },
+      responses: { "200": json(closed({ server: { type: "string" }, toolkit: { type: "string" }, events: { type: "array", items: closedWith({ slug: { type: "string" }, name: { type: "string" }, description: { type: "string" }, config: { type: "object", description: "The event's config, as a JSON schema (`properties`, `required`)." }, polled: { type: "boolean", description: "Composio polls for it (every few minutes) rather than being sent it." }, sealed: { type: "array", items: { type: "string" }, description: "The fields of its config a save seals: each named like a credential (developer_api_key), taken as a password and answered as \"[sealed]\" once saved. Composio's schemas mark no field secret, so the name says it." } }, { instructions: { type: "string" } }) } }), "The toolkit's events."), ...errors(401, 404, 422, 429, 500), ...MCP_FAILED },
       ...COMPOSIO_TRIGGERS_MARK,
     },
   },
@@ -2938,6 +3044,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
       "x-agentrun-serve": "turnend/1",
     },
+    recordings: {
+      type: "array",
+      items: closed({
+        path: { type: "string", description: "Where it is read: `GET /runs/{run_id}/files/{path}` with this path (`recordings/<computer>.mp4`), `video/mp4`, its byte ranges answered; `?download=1` for an attachment." },
+        computer: { type: "string", description: "The computer it recorded: its id, as the file is named. A computer's later files (a resumed run's, a phone's frames that changed format) are `<computer>-2.mp4` and on." },
+        seconds: { type: "number", minimum: 0, description: "How long it plays, to a tenth of a second, as far as it is written." },
+        bytes: { type: "integer", minimum: 0, description: "Its size now." },
+        finished: { type: "boolean", description: "false while it is still being written: it plays up to its last whole fragment. true once its recording stopped, and for every file once the run has ended and the file has stopped changing (a few seconds after the end)." },
+      }, "One video of a computer's screen during the run (H.264 in fragmented MP4)."),
+      description: "On the run read (and an archive's or unarchive's answer) alone, never in a list: the videos of the run's screen, where its agent's computer says `record: true` (a desktop, a phone or a browser, whose every session is a computer of its own), each computer's files in the order they were recorded; empty when nothing was recorded, and for a run whose words are withheld. Read from the files on the machine whose runner recorded them. The video shows everything on the screen: see the agent's `computer.record`.",
+      "x-agentrun-serve": "runvideo/1",
+    },
     input: {
       type: ["object", "null"],
       additionalProperties: true,
@@ -2971,6 +3089,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "imported/1",
     },
     trigger: RUN_TRIGGER,
+    audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow answered alone (path `workflow`) may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, started at the served run's end and capped at what the served run's cap left, is no row of the run list, and its cost is in the served run's `cost.usd` (null while the shadow is queued or running: never $0) and the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
@@ -3122,13 +3241,24 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         persistent: { type: "boolean", description: "Whether the agent keeps its own computer between runs: true makes one at its first run, detaches it (not deletes it) at each run's end, and attaches it again at the next, with what was on it; false or absent, a fresh computer for each run. Only where the provider keeps one for the kind and image (GET /computers: the provider's `persistent`), else 422 not_allowed; never one that mounts the run's folder. One run at a time: a run that finds the computer held by another run still going is refused at its start, naming that run. Archiving the agent, turning this off, or a setting on another provider or image deletes the computer (GET /agents/{agent_id}'s `own_computer` shows it)." },
         surface: { enum: ["code", "tools"], description: "How the agent drives a desktop or a phone. `code`: by `codemode` scripts alone, whose `tools.computer_observe`, `tools.computer_act` and `tools.computer_screenshot` are each a gated, recorded call of its own; the model is offered `codemode` and the hand-over (`computer_request_handoff`), not the step tools (a harness with its own code mode, Codex, is still handed them). `tools`: the step tools and the hand-over, listed; a `codemode` script calls them too. Absent, as `tools`. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
         exec: { type: "boolean", description: "`false`: the agent gets no shell and starts no program on its desktop or phone. Its computer's `exec` and `processes` groups are taken out of what its tools and scripts see (no `computer.shell`, no `computer.processes`; a script that reaches for one is refused in words), no folder is mounted in the computer, and the run gets no `bash` or background tool, wherever its folder is. The run's own computer channel (`POST /runs/{run_id}/computer/call`, the owner's) keeps every group. `true` or absent: as the computer offers. Only a desktop or a phone takes it (422 not_allowed on another kind)." },
+        record: { type: "boolean", description: "`true`: each run records a video of its desktop's, phone's or browser's screen (a browser's from each session's page, one file per session; H.264, fragmented MP4, at most 10 frames a second and 1280 pixels on the long side, no audio) into its run folder's `recordings/`, beside `work/`, where the agent can neither read nor change it. The video shows everything on the screen, including whatever a person types while they take over and any secret that appears on screen; pixels can't be redacted the way the run's logs are. It records while the run holds the computer, with or without a viewer, pauses while the run is parked (a resumed run goes on in a new file) and stops at the computer's release, the run's end, or its cap (500 MB across the run's files, or 2 hours from its start or the run's resume), which the run's timeline says. A server without ffmpeg refuses it (422 not_allowed). `false` or absent: nothing is recorded. A sandbox doesn't take it (422 not_allowed)." },
       },
-      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, whether the agent keeps it between runs, and, for a desktop or a phone, how the agent drives it and whether it may run programs on it. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
+      description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, whether the agent keeps it between runs, and, for a desktop or a phone, how the agent drives it, whether it may run programs on it and whether its runs record its screen. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
-    learning: { enum: [true, false, "notes"], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false or `\"notes\"`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+    learning: { oneOf: [{ enum: [true, false, "notes"] }, { type: "object", additionalProperties: false, properties: {
+      compile_after: { type: "integer", minimum: 1, maximum: 200, default: 20, description: "The job compiles into a learned workflow once the agent has this many completed runs of its own." },
+      agree_min: { type: "number", minimum: 0, maximum: 1, default: 0.8, description: "The draft's one check replays it on the inputs of those runs: promoted only when, of the inputs it answered alone, at least this share say what the agent's own recorded answer said." },
+      alone_min: { type: "number", minimum: 0, maximum: 1, default: 0.7, description: "...and only when it answered at least this share of them alone (no escalate, no failed step). Under either bar it is recompiled once with the inputs it did not agree on, checked the same way, then promoted or stopped: nothing compiles again." },
+      audit_every: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.audit_every, description: "Once a learned workflow serves, 1 in this many of the runs it answers alone (path `workflow`; a run it hands back is never drawn) is audited: drawn from the run's id, the same agent runs the same input again with learning off (a shadow run, hidden from the run list, its cost the agent's learning cost), and the two answers are compared (one row of GET .../learning/audits)." },
+      audit_every_later: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.audit_every_later, description: "1 in this many once the workflow's revision served `audit_later_after` runs." },
+      audit_later_after: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.audit_later_after, description: "The served runs after which `audit_every_later` applies." },
+      hold_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_window, description: "The audit rows of the serving revision the hold rule reads: its newest this many (an owner's grade on a served run is one too)." },
+      hold_disagree: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_disagree, description: "When at least this many of those rows disagree, the workflow stops serving (a hold, source `audit`) and is recompiled once with them as data, then checked again: promoted serves again, otherwise it stops. At most `hold_window`." },
+      stop_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.stop_window, description: "A second hold within this many served runs of the first stops the workflow for good, asking no compile." },
+    } }], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, each optional: one left out is its default; `true` is every default); `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false, `\"notes\"` or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
   },
   AgentCreate: {
@@ -3660,6 +3790,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     files["x-agentrun-serve-changed"] = { description: "signins/1", ...(added ? { responses: "signins/1" } : {}) };
     changed.push(`GET ${path}`);
   }
+  // runvideo/1: a run's screen recordings are read under recordings/, as video/mp4, their byte ranges answered.
+  const readFile = (doc.paths["/runs/{run_id}/files/{path}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };
+  readFile.description = `${String(readFile.description).trimEnd()}\nHere a path under \`recordings/\` is one of the run's screen recordings (the run read's \`recordings\`, made where its agent's computer says \`record: true\`), never a file the run made: \`video/mp4\`, inline unless \`?download=1\`, read-only, to whoever may read the run's other files. A folder the run made named \`recordings\` is neither listed nor served. A recording still being written is served as it stands: a fragmented MP4 plays up to its last whole fragment. \`Range\` is honoured for every file (\`features.files.range\`): one byte range, \`206\` with \`Content-Range\`, so a \`<video>\` can seek; one that starts past the end is \`416 range_not_satisfiable\`.\n`;
+  for (const code of ["200", "206"]) readFile.responses[code]!.content = { "video/mp4": { schema: { type: "string", contentMediaType: "video/mp4" } }, ...readFile.responses[code]!.content };
+  readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), responses: "runvideo/1" };
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;

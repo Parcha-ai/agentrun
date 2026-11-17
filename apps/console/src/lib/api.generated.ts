@@ -341,6 +341,7 @@ export interface components {
       persistent?: boolean;
       surface?: "code" | "tools";
       exec?: boolean;
+      record?: boolean;
     };
     tool_settings?: {
       read?: {
@@ -384,6 +385,9 @@ export interface components {
       email_file?: {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";
+      };
+      calendar_events?: {
+        permission?: "allow" | "ask" | "deny";
       };
       browser?: {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
@@ -441,7 +445,17 @@ export interface components {
       } | undefined;
     };
     approvals?: "ask" | "never";
-    learning?: true | false | "notes";
+    learning?: true | false | "notes" | {
+      compile_after?: number;
+      agree_min?: number;
+      alone_min?: number;
+      audit_every?: number;
+      audit_every_later?: number;
+      audit_later_after?: number;
+      hold_window?: number;
+      hold_disagree?: number;
+      stop_window?: number;
+    };
     checkout?: "pull_request" | "none";
   };
   Effort: "low" | "medium" | "high";
@@ -814,6 +828,13 @@ export interface components {
     labels?: Record<string, string>;
     approvals?: "ask" | "never";
     last_progress_at?: string | null;
+    recordings?: {
+      path: string;
+      computer: string;
+      seconds: number;
+      bytes: number;
+      finished: boolean;
+    }[];
     input?: Record<string, unknown> | null;
     file_ids?: string[];
     claim?: {
@@ -927,6 +948,7 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    audit_of?: string | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1710,6 +1732,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -1737,6 +1760,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -1836,6 +1861,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -1863,6 +1889,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -1958,6 +1986,10 @@ export interface operations {
         disk_id: string;
       } | null;
     };
+  };
+  deleteCalendar: {
+    body: never;
+    answer: never;
   };
   deleteComposioSubscription: {
     body: never;
@@ -2324,6 +2356,15 @@ export interface operations {
       secrets_reason?: "sign_in" | "no_accounts" | "token";
     };
   };
+  getCalendar: {
+    body: never;
+    answer: {
+      configured: boolean;
+      host: string | null;
+      name: string | null;
+      time_zone: string | null;
+    };
+  };
   getCapabilities: {
     body: never;
     answer: components["Capabilities"];
@@ -2486,7 +2527,7 @@ export interface operations {
         n: number;
         run_id: string;
         started_at: string;
-        path: "agent" | "handed_back" | "workflow" | "replay";
+        path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         learned_revision: string | null;
         cost_usd: number | null;
@@ -2539,6 +2580,9 @@ export interface operations {
           workflow_pct: number;
           agent_pct: number;
           cleared: boolean;
+          agreed: number;
+          alone: number;
+          agree_min: number;
         } | null;
       };
     };
@@ -2547,6 +2591,7 @@ export interface operations {
     body: never;
     answer: {
       agent: string;
+      completed_runs: number;
       compiles: {
         run_id: string;
         round: number;
@@ -2561,25 +2606,6 @@ export interface operations {
         promoted: boolean | null;
         draft_errors: string[];
         withheld: boolean;
-      }[];
-      guards: {
-        workflow: string;
-        digest: string;
-        node: string;
-        signal: "self" | "jev" | "both";
-        threshold: number | null;
-        runs: number;
-        escalated: number;
-        right: number;
-        wrong: number;
-        grades_past: number;
-        replays: number;
-        points: {
-          run_id: string;
-          p: number | null;
-          escalated: boolean;
-          correct: boolean | null;
-        }[];
       }[];
     };
   };
@@ -2959,7 +2985,7 @@ export interface operations {
         correct: boolean;
         source: "feedback" | "eval";
         graded_at: string;
-        path: "agent" | "handed_back" | "workflow" | "replay";
+        path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         workflow_digest: string | null;
         feedback: "look_back" | null;
@@ -3200,6 +3226,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -3227,6 +3254,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -3366,7 +3395,7 @@ export interface operations {
       correct: boolean;
       source: "feedback" | "eval";
       graded_at: string;
-      path: "agent" | "handed_back" | "workflow" | "replay";
+      path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
       workflow: string | null;
       workflow_digest: string | null;
       feedback: "look_back" | null;
@@ -3599,6 +3628,7 @@ export interface operations {
         description: string;
         config: Record<string, unknown>;
         polled: boolean;
+        sealed: string[];
         instructions?: string;
       }[];
     };
@@ -3782,6 +3812,27 @@ export interface operations {
       truncated: boolean;
     };
   };
+  listLearningAudits: {
+    body: never;
+    answer: {
+      agent: string;
+      audits: {
+        run: string;
+        shadow_run: string | null;
+        workflow: string;
+        digest: string;
+        promoted_at: string | null;
+        source: "shadow" | "grade";
+        agreed: boolean | null;
+        served_cost: number | null;
+        shadow_cost: number | null;
+        at: string;
+        turn?: string;
+        skipped?: "no allowance";
+        parked?: true;
+      }[];
+    };
+  };
   listLearningBatches: {
     body: never;
     answer: {
@@ -3917,53 +3968,78 @@ export interface operations {
         workflow: string;
         digest: string;
         at: string;
-        decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-        source: "replay" | "dry_run" | "refit" | "graded";
+        decided: "promote" | "hold" | "replaying";
         reason: string;
-        replay?: {
-          n: number;
-          agree: number;
-          agent_acc: number;
-          wf_acc: number;
-          delta: number;
-          handed_back: number;
+        check?: {
+          compile_after: number;
+          agree_min: number;
+          alone_min: number;
+          attempt: 1 | 2;
+          n?: number;
+          agreed?: number;
+          alone?: number;
           of?: string[];
           cost_usd?: number | null;
-          skipped_tools?: {
-            tool: string;
-            inputs: number;
-            no_read_only_hint: boolean;
-          }[];
           outcomes?: {
             answered: number;
             handed_back: number;
             failed: number;
             skipped_write: number;
           };
+          unstarted?: number;
+          skipped_tools?: {
+            tool: string;
+            inputs: number;
+            no_read_only_hint: boolean;
+          }[];
+          disagreements?: {
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+          }[];
+          stopped?: true;
         };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
-        refit?: {
-          from: string;
-          guards: {
-            node: string;
-            was: number | null;
-            threshold: number | null;
-            fit?: Record<string, unknown>;
-            escalate?: true;
-          }[];
-        };
-        checked?: number;
-        since?: number;
-        held_on?: string[];
         commit?: string;
-        skipped_by?: string;
+        audit?: {
+          window: number;
+          disagree: number;
+          rows: number;
+          disagreements: {
+            run: string;
+            served: string;
+            input: string;
+            agent: string | null;
+            draft: string | null;
+            graded?: true;
+          }[];
+          stopped?: true;
+        };
       }[];
       serving: {
         workflow: string;
         digest: string | null;
         replaying: string | null;
+        state: "serving" | "checking" | "held" | "stopped";
+        check: {
+          n: number;
+          agreed: number;
+          alone: number;
+          attempt: 1 | 2;
+        } | null;
+        audit: {
+          window: number;
+          disagree: number;
+          rows: number;
+          disagreed: number;
+        } | null;
+        audits_off: string | null;
+        not_auditable: number;
       }[];
     };
   };
@@ -4282,6 +4358,7 @@ export interface operations {
             })[];
           }[];
           instance_id?: string;
+          sealed_config?: string[];
           hook?: string;
           move_subscription?: true;
         } | {
@@ -4309,6 +4386,8 @@ export interface operations {
           every_s: number;
           items?: string;
           id?: string;
+          updated?: string;
+          fields?: string[];
           accept?: {
             event: string;
             actions?: string[];
@@ -4543,6 +4622,9 @@ export interface operations {
         permission?: "allow" | "ask" | "deny";
       };
       email_file?: {
+        permission?: "allow" | "ask" | "deny";
+      };
+      calendar_events?: {
         permission?: "allow" | "ask" | "deny";
       };
       browser?: {
@@ -4990,6 +5072,17 @@ export interface operations {
       signing_secret?: string;
     };
   };
+  saveCalendar: {
+    body: {
+      url: string;
+    };
+    answer: {
+      configured: boolean;
+      host: string | null;
+      name: string | null;
+      time_zone: string | null;
+    };
+  };
   saveComposioServer: {
     body: {
       api_key: string;
@@ -5347,6 +5440,15 @@ export interface operations {
       outcome?: "done" | "cancelled" | "expired";
     };
   };
+  testCalendar: {
+    body: {
+      url?: string;
+    };
+    answer: {
+      ok: boolean;
+      message: string;
+    };
+  };
   testComputer: {
     body: never;
     answer: {
@@ -5487,6 +5589,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -5514,6 +5617,8 @@ export interface operations {
         every_s?: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];
@@ -5613,6 +5718,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -5640,6 +5746,8 @@ export interface operations {
         every_s: number;
         items?: string;
         id?: string;
+        updated?: string;
+        fields?: string[];
         accept?: {
           event: string;
           actions?: string[];

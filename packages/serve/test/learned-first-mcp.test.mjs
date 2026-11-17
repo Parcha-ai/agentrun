@@ -13,6 +13,7 @@ import { agent, follow, retried, serve as serveOf, withEnv } from "./support.mjs
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { git, resnap } from "./learn-support.mjs";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const TOKEN = `not-a-secret-${"learned-first-mcp-0123"}`;
@@ -44,10 +45,16 @@ test("served first, a learned workflow's MCP node runs once through the run's MC
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, "adder");
+  // Served first only once its check promoted it: the agent has no run to check it on here.
+  await promoteChecked(server.store.settings, "adder", [{ name: "add-two", workflow: ADD_FLOW }]);
   const started = await retried(api)("POST", "/agents/adder/runs", { input: { content: "Add two and three", a: 2, b: 3 }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   const { rows } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+  // A served run its id draws for an audit (1 in audit_every; add is read-only) has a shadow, started at its end, and
+  // its all-in cost is null until the shadow ended (runner/audit.ts): followed to its end when there is one.
+  const { shadowRunId } = await import("../dist/learn/audit.js");
+  if ((await api("GET", `/runs/${shadowRunId(runId)}`)).status === 200) await follow(api, shadowRunId(runId), ["completed", "failed"], { deadlineMs: 90_000 });
   const view = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(view.status, "completed", JSON.stringify(view));
   assert.equal(String(view.result?.final_answer).trim(), "5", `the workflow answered alone: ${JSON.stringify(rows.map(({ kind, text, tool_name }) => [kind, tool_name, text?.slice(0, 160)]))}`);

@@ -112,3 +112,49 @@ test("a desktop that mounts the run's folder starts its shell's programs in /wor
   await unmounted.hands.computer.call("shell.run", { command: "pwd" });
   assert.equal("cwd" in bare.calls.find(([method]) => method === "exec.run")[1], false);
 });
+
+/** `workspace`, each `remove` it is asked recorded in `removes`. */
+function watchedRemoves(workspace, removes) {
+  return new Proxy(workspace, {
+    get(target, key) {
+      if (key === "remove") return async (path, options) => { removes.push(path); return target.remove(path, options); };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+for (const mode of [1, 2]) {
+  test(`a computer that mounts the folder (Mode ${mode}): the sweep removes the scratch through the computer, never through the run's own Workspace (on Archil the disk's file API, which the mount's write delegation refuses)`, async () => {
+    const root = scratch();
+    const computer = fakeComputer(root);
+    const removes = [];
+    const run = await runHands(watchedRemoves(localWorkspace(root), removes), { kind: "sandbox", computer, check: { readBackOf } }, { mode, context: ctx });
+    computer.plant.file("/workspace/.agentrun/output/call-1", "a long output\n");
+    computer.clear();
+    await run.sweep();
+    assert.deepEqual(readdirSync(join(root, ".agentrun")), [], "the scratch is gone");
+    assert.deepEqual(computer.methods().filter((method) => method === "files.remove").length, 2, "both went through the computer");
+    assert.deepEqual(removes, [], "the run's own Workspace removed nothing");
+  });
+}
+
+test("a computer that no longer answers: a Mode 1 sweep removes through the run's own folder instead; a Mode 2 one fails, its scratch left, and never asks the disk's file API", async () => {
+  for (const mode of [1, 2]) {
+    const root = scratch();
+    const computer = fakeComputer(root);
+    const removes = [];
+    const run = await runHands(watchedRemoves(localWorkspace(root), removes), { kind: "sandbox", computer, check: { readBackOf } }, { mode, context: ctx });
+    computer.plant.file("/workspace/.agentrun/output/call-1", "a long output\n");
+    computer.overrides["files.remove"] = { result: { ok: false, error: { code: "unavailable", message: "the computer is gone" } } };
+    if (mode === 1) {
+      await run.sweep();
+      assert.deepEqual(readdirSync(join(root, ".agentrun")), [], "Mode 1: the run's own folder was swept");
+      assert.deepEqual(removes, [".agentrun/output", ".agentrun/tmp"]);
+    } else {
+      await assert.rejects(run.sweep(), /gone|unavailable/i, "Mode 2: the sweep fails in words, for the release's log");
+      assert.deepEqual(removes, [], "and never removes over the run's own Workspace while the mount may hold it");
+      assert.ok(existsSync(join(root, ".agentrun", "tmp")));
+    }
+  }
+});

@@ -7,13 +7,14 @@
 //     hit, recorded or already run in this replay, costs nothing and is never sent again.
 //   - A write is NEVER run in a replay: it is answered from the graded run's recording when a call there has the same
 //     tool and canonical args (its answer, an error included), else the replay of that input stops there and is skipped
-//     (SKIPPED_WRITE): no evidence either way, never scored wrong or failed (learn/refit.ts refitRowsOf).
+//     (SKIPPED_WRITE): no evidence either way, never scored wrong or failed (runner/promotion.ts decideCheck).
 // The recording is the graded run's own journal (a CLI's record shaped as pi's), each tool call by the wire name the
 // harness called it by (catalog.ts wireName): a call node names its tool by catalog name, matched through the same map.
 // Prior art: MCP's tool annotations (readOnlyHint, destructiveHint, 2025-03-26 spec) for the read/write line; VCR-style
 // record/replay of HTTP interactions (Ruby's VCR, Python's vcrpy: a cassette answers a request that matches one recorded,
 // a new one is refused in "none" record mode) for answering writes from the recording and refusing the rest.
 import { wireName } from "../catalog.js";
+import type { McpPin } from "../mcp-gateway.js";
 import { LLM_TOOL } from "../llm.js";
 import { PDF_PAGES_TOOL } from "../pdf-pages.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -45,6 +46,18 @@ export function toolClassOf(tool: string, annotations?: (tool: string) => Readon
     return said?.readOnlyHint === true ? "read" : said && said.readOnlyHint === undefined ? "unmarked" : "write";
   }
   return READ_TOOLS.includes(tool) ? "read" : "write";
+}
+
+/** The annotations toolClassOf reads, from an MCP pin (a run's, or its revision's as its save made it): a pinned tool's
+ *  listing (`{}` when its server listed none, so it reads unmarked, never as a tool it does not list); undefined for a tool
+ *  the pin does not hold. */
+export function pinAnnotations(pin: McpPin | null | undefined): (tool: string) => Readonly<Record<string, unknown>> | undefined {
+  return (tool) => {
+    const named = MCP_TOOL.exec(tool);
+    const server = named && pin && Object.hasOwn(pin, named[1]!) ? pin[named[1]!] : undefined;
+    const listed = server?.tools.find((one) => one.name === named![2]) as { annotations?: Record<string, unknown> } | undefined;
+    return listed ? (listed.annotations ?? {}) : undefined;
+  };
 }
 
 /** Why replay can't run MCP tools with no readOnlyHint (bare tool names, most-skipped first): "browse, fetch_page and 2

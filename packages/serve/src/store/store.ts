@@ -300,6 +300,9 @@ export interface Learning {
   proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
   /** The agent's kept proposals (each round of a run one), newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+  /** The agent's kept proposals whose learning run (its grade) has not ended: queued, running or parked. Every one of
+   *  them, however many proposals were kept since, newest first. */
+  grading(agentId: string): Promise<LearningProposal[]>;
   /** Everything agent `agentId`'s runs' learning kept, in two reads whatever the number of its runs: every round of every
    *  run's kept proposal (oldest round first within a run), and the rows of the learning runs they name (as runs.get
    *  reads one; a learning run named and never written has none). An agent-wide read's, never a read a run. */
@@ -1305,6 +1308,15 @@ export interface LiveViewers {
  *  store); a runner never sets anything up, and refuses a schema version it does not know. */
 export type StoreRole = "server" | "runner";
 
+/** What Store.secureRewrite did: how many rows `work` rewrote and, when old bytes may still be in the store's files (the
+ *  marker kept for the next start), why: "busy", a reader in another connection held the log back from the checkpoint, or
+ *  a write of another connection held the VACUUM off through its busy wait and its one retry; "failed", the VACUUM or
+ *  the checkpoint failed otherwise. */
+export interface SecureRewrite {
+  readonly rewritten: number;
+  readonly left?: "busy" | "failed";
+}
+
 export interface Store {
   /** Where this store's data is, as an identity two instances over the same data share and two over different data never
    *  do: "sqlite:" and the database file's real path, or "sqlite:memory:<n>" for an in-memory one (each its own data);
@@ -1342,6 +1354,14 @@ export interface Store {
   readonly signIns: SignIns;
   /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
   readonly sealedSecrets: SealedSecrets;
+  /** Runs `work`, writes that replace a secret the store kept in the clear (it answers how many rows it rewrote), so the
+   *  bytes they replace are not left in the store's files. SQLite: a marker file beside the database is written first;
+   *  secure_delete is on while `work` runs (a rewritten row's old bytes zeroed in its page); then, when a row was rewritten
+   *  or an earlier start left the marker, a VACUUM (no free page or free block keeps a copy an earlier, ordinary update
+   *  left) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
+   *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
+   *  the database's until its vacuum). */
+  secureRewrite?(work: () => Promise<number>): Promise<SecureRewrite>;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

@@ -110,6 +110,17 @@ describe("AgentEditor, what the agent learns: notes and skills, or workflows too
     expect(editBody(agentOf({ learning: true }), e.saves[0], "").definition.learning).toBe("notes");
     expect(createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [], learning: "notes" }).definition.learning).toBe("notes");
   });
+  it("a definition that sets the loop's numbers (learning: {compile_after: 5}) is on with everything checked; choosing notes and back keeps its numbers", async () => {
+    const loop = { compile_after: 5 };
+    const e = mount(agentOf({ learning: loop }), caps("on"));
+    expect(e.sw()!.getAttribute("aria-checked")).toBe("true");
+    expect(choice(e.host, /^Notes, skills and workflows/)?.checked).toBe(true);
+    await e.click(choice(e.host, /^Notes and skills only/)!);
+    await e.save();
+    expect(e.saves[0].learning).toBe("notes");
+    await e.click(choice(e.host, /^Notes, skills and workflows/)!);
+    expect(editBody(agentOf({ learning: loop }), { learning: loop }, "").unchanged).toBe(true);
+  });
   it("choosing another kind and then the saved one again saves learning as it was, not a removed field", async () => {
     for (const saved of [true, "notes"] as const) {
       const e = mount(agentOf({ learning: saved }), caps("on"));

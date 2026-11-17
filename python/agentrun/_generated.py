@@ -179,6 +179,7 @@ __all__ = [
     "DefinitionInput",
     "DefinitionInputComputer",
     "DefinitionInputComputerGpu",
+    "DefinitionInputLearning",
     "DefinitionInputModelTiers",
     "DefinitionInputNative",
     "DefinitionInputNativeCapabilities",
@@ -192,6 +193,7 @@ __all__ = [
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
     "DefinitionInputToolSettingsBrowser",
+    "DefinitionInputToolSettingsCalendarEvents",
     "DefinitionInputToolSettingsDesktop",
     "DefinitionInputToolSettingsEdit",
     "DefinitionInputToolSettingsEmailDraft",
@@ -210,6 +212,7 @@ __all__ = [
     "DefinitionInputToolSettingsWebFetch",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
+    "DefinitionLearning",
     "DefinitionModelTiers",
     "DefinitionNative",
     "DefinitionNativeCapabilities",
@@ -223,6 +226,7 @@ __all__ = [
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
     "DefinitionToolSettingsBrowser",
+    "DefinitionToolSettingsCalendarEvents",
     "DefinitionToolSettingsDesktop",
     "DefinitionToolSettingsEdit",
     "DefinitionToolSettingsEmailDraft",
@@ -333,6 +337,7 @@ __all__ = [
     "GetAgentResponseRuns",
     "GetAgentResponseTemplate",
     "GetAgentResponseToolsItem",
+    "GetCalendarResponse",
     "GetCapabilitiesResponse",
     "GetChatGPTSignInResponse",
     "GetEmailAccountResponse",
@@ -369,8 +374,6 @@ __all__ = [
     "GetLearningLoopResponse",
     "GetLearningLoopResponseCompilesItem",
     "GetLearningLoopResponseCompilesItemAttemptsItem",
-    "GetLearningLoopResponseGuardsItem",
-    "GetLearningLoopResponseGuardsItemPointsItem",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
@@ -562,6 +565,8 @@ __all__ = [
     "ListLearnedWorkflowRevisionsResponseRevisionsItem",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy1",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy2",
+    "ListLearningAuditsResponse",
+    "ListLearningAuditsResponseAuditsItem",
     "ListLearningBatchesResponse",
     "ListLearningBatchesResponseBatchesItem",
     "ListLearningBatchesResponseBatchesItemLessons",
@@ -581,12 +586,15 @@ __all__ = [
     "ListLearningNotesResponseItemsItemRuns",
     "ListLearningPromotionsResponse",
     "ListLearningPromotionsResponsePromotionsItem",
-    "ListLearningPromotionsResponsePromotionsItemRefit",
-    "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
-    "ListLearningPromotionsResponsePromotionsItemReplay",
-    "ListLearningPromotionsResponsePromotionsItemReplayOutcomes",
-    "ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem",
+    "ListLearningPromotionsResponsePromotionsItemAudit",
+    "ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheck",
+    "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
+    "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
+    "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
@@ -692,6 +700,7 @@ __all__ = [
     "PutToolSettingsBodyAskPerson",
     "PutToolSettingsBodyBash",
     "PutToolSettingsBodyBrowser",
+    "PutToolSettingsBodyCalendarEvents",
     "PutToolSettingsBodyDesktop",
     "PutToolSettingsBodyEdit",
     "PutToolSettingsBodyEmailDraft",
@@ -796,6 +805,7 @@ __all__ = [
     "RunPending6",
     "RunPlace1",
     "RunPlace2",
+    "RunRecordingsItem",
     "RunResult",
     "RunReview",
     "RunSdk",
@@ -828,6 +838,8 @@ __all__ = [
     "RunSummaryTrigger",
     "RunTrigger",
     "RunsResource",
+    "SaveCalendarBody",
+    "SaveCalendarResponse",
     "SaveComposioServerBody",
     "SaveComposioServerResponse",
     "SaveComposioServerResponseComposio",
@@ -897,6 +909,8 @@ __all__ = [
     "TakeOverRunComputerBody",
     "TakeOverRunComputerResponse",
     "TemplateResource",
+    "TestCalendarBody",
+    "TestCalendarResponse",
     "TestComputerResponse",
     "TestComputerResponseObject1",
     "TestComputerResponseObject2",
@@ -1104,7 +1118,7 @@ class Definition(_DefinitionRequired, total=False):
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
+    learning: Literal[True, False, "notes"] | DefinitionLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1189,6 +1203,7 @@ class DefinitionComputer(_DefinitionComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionComputerGpu(TypedDict):
@@ -1209,6 +1224,7 @@ class DefinitionToolSettings(TypedDict, total=False):
     email_draft: DefinitionToolSettingsEmailDraft
     email_send: DefinitionToolSettingsEmailSend
     email_file: DefinitionToolSettingsEmailFile
+    calendar_events: DefinitionToolSettingsCalendarEvents
     browser: DefinitionToolSettingsBrowser
     subagent: DefinitionToolSettingsSubagent
     pdf_pages: DefinitionToolSettingsPdfPages
@@ -1274,6 +1290,10 @@ class DefinitionToolSettingsEmailFile(TypedDict, total=False):
     scope: Literal["thread", "mailbox"]
 
 
+class DefinitionToolSettingsCalendarEvents(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
 class DefinitionToolSettingsBrowser(TypedDict, total=False):
     provider: Literal["auto", "browserbase", "kernel", "chrome"]
     permission: Literal["allow", "deny"]
@@ -1309,6 +1329,18 @@ class DefinitionToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
 
 
 class Source(TypedDict):
@@ -1566,7 +1598,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
+    learning: Literal[True, False, "notes"] | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1648,6 +1680,7 @@ class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionInputComputerGpu(TypedDict):
@@ -1668,6 +1701,7 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     email_draft: DefinitionInputToolSettingsEmailDraft
     email_send: DefinitionInputToolSettingsEmailSend
     email_file: DefinitionInputToolSettingsEmailFile
+    calendar_events: DefinitionInputToolSettingsCalendarEvents
     browser: DefinitionInputToolSettingsBrowser
     subagent: DefinitionInputToolSettingsSubagent
     pdf_pages: DefinitionInputToolSettingsPdfPages
@@ -1733,6 +1767,10 @@ class DefinitionInputToolSettingsEmailFile(TypedDict, total=False):
     scope: Literal["thread", "mailbox"]
 
 
+class DefinitionInputToolSettingsCalendarEvents(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
 class DefinitionInputToolSettingsBrowser(TypedDict, total=False):
     provider: Literal["auto", "browserbase", "kernel", "chrome"]
     permission: Literal["allow", "deny"]
@@ -1768,6 +1806,18 @@ class DefinitionInputToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionInputToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionInputLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -2068,8 +2118,8 @@ class GetAgentArchilResponseArchilDisk(TypedDict):
 
 class GetLearningLoopResponse(TypedDict):
     agent: str
+    completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
-    guards: list[GetLearningLoopResponseGuardsItem]
 
 
 class GetLearningLoopResponseCompilesItem(TypedDict):
@@ -2088,28 +2138,6 @@ class GetLearningLoopResponseCompilesItem(TypedDict):
 class GetLearningLoopResponseCompilesItemAttemptsItem(TypedDict):
     ok: bool
     errors: list[str]
-
-
-class GetLearningLoopResponseGuardsItem(TypedDict):
-    workflow: str
-    digest: str
-    node: str
-    signal: Literal["self", "jev", "both"]
-    threshold: float | None
-    runs: int
-    escalated: int
-    right: int
-    wrong: int
-    grades_past: int
-    replays: int
-    points: list[GetLearningLoopResponseGuardsItemPointsItem]
-
-
-class GetLearningLoopResponseGuardsItemPointsItem(TypedDict):
-    run_id: str
-    p: float | None
-    escalated: bool
-    correct: bool | None
 
 
 class GetNativeResponse(TypedDict):
@@ -2173,6 +2201,30 @@ class AgentList(TypedDict):
     next_cursor: str | None
 
 
+class ListLearningAuditsResponse(TypedDict):
+    agent: str
+    audits: list[ListLearningAuditsResponseAuditsItem]
+
+
+class _ListLearningAuditsResponseAuditsItemRequired(TypedDict):
+    run: str
+    shadow_run: str | None
+    workflow: str
+    digest: str
+    promoted_at: str | None
+    source: Literal["shadow", "grade"]
+    agreed: bool | None
+    served_cost: float | None
+    shadow_cost: float | None
+    at: str
+
+
+class ListLearningAuditsResponseAuditsItem(_ListLearningAuditsResponseAuditsItemRequired, total=False):
+    turn: str
+    skipped: Literal["no allowance"]
+    parked: Literal[True]
+
+
 class ListLearningPromotionsResponse(TypedDict):
     agent: str
     promotions: list[ListLearningPromotionsResponsePromotionsItem]
@@ -2183,71 +2235,110 @@ class _ListLearningPromotionsResponsePromotionsItemRequired(TypedDict):
     workflow: str
     digest: str
     at: str
-    decided: Literal["promote", "hold", "replaying", "queued", "skipped"]
-    source: Literal["replay", "dry_run", "refit", "graded"]
+    decided: Literal["promote", "hold", "replaying"]
     reason: str
 
 
 class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsResponsePromotionsItemRequired, total=False):
-    replay: ListLearningPromotionsResponsePromotionsItemReplay
+    check: ListLearningPromotionsResponsePromotionsItemCheck
     runs: list[str]
     inputs: list[str]
     replay_id: str
-    refit: ListLearningPromotionsResponsePromotionsItemRefit
-    checked: int
-    since: int
-    held_on: list[str]
     commit: str
-    skipped_by: str
+    audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
-class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
+class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
     n: int
-    agree: int
-    agent_acc: float
-    wf_acc: float
-    delta: float
-    handed_back: int
-
-
-class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
+    agreed: int
+    alone: int
     of: list[str]
     cost_usd: float | None
-    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
-    outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    stopped: Literal[True]
 
 
-class ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem(TypedDict):
-    tool: str
-    inputs: int
-    no_read_only_hint: bool
-
-
-class ListLearningPromotionsResponsePromotionsItemReplayOutcomes(TypedDict):
+class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
     answered: int
     handed_back: int
     failed: int
     skipped_write: int
 
 
-ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromotionsResponsePromotionsItemRefit", {"from": "str", "guards": "list[ListLearningPromotionsResponsePromotionsItemRefitGuardsItem]"})
+class ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
 
 
-class _ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired(TypedDict):
-    node: str
-    was: float | None
-    threshold: float | None
+class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
 
 
-class ListLearningPromotionsResponsePromotionsItemRefitGuardsItem(_ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired, total=False):
-    fit: dict[str, Any]
-    escalate: Literal[True]
+class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem]
+
+
+class ListLearningPromotionsResponsePromotionsItemAudit(_ListLearningPromotionsResponsePromotionsItemAuditRequired, total=False):
+    stopped: Literal[True]
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired(TypedDict):
+    run: str
+    served: str
+    input: str
+    agent: str | None
+    draft: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired, total=False):
+    graded: Literal[True]
 
 
 class ListLearningPromotionsResponseServingItem(TypedDict):
     workflow: str
     digest: str | None
     replaying: str | None
+    state: Literal["serving", "checking", "held", "stopped"]
+    check: ListLearningPromotionsResponseServingItemCheck | None
+    audit: ListLearningPromotionsResponseServingItemAudit | None
+    audits_off: str | None
+    not_auditable: int
+
+
+class ListLearningPromotionsResponseServingItemCheck(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemAudit(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreed: int
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -3272,7 +3363,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     n: int
     run_id: str
     started_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     learned_revision: str | None
     cost_usd: float | None
@@ -3341,6 +3432,9 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     workflow_pct: float
     agent_pct: float
     cleared: bool
+    agreed: int
+    alone: int
+    agree_min: float
 
 
 class ListLearningEvalsResponse(TypedDict):
@@ -3768,6 +3862,13 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     models: list[str]
 
 
+class GetCalendarResponse(TypedDict):
+    configured: bool
+    host: str | None
+    name: str | None
+    time_zone: str | None
+
+
 class _GetChatGPTSignInResponseRequired(TypedDict):
     state: Literal["signed_out", "pending", "signed_in", "expired"]
 
@@ -3850,6 +3951,7 @@ class _ListComposioEventsResponseEventsItemRequired(TypedDict):
     description: str
     config: dict[str, Any]
     polled: bool
+    sealed: list[str]
 
 
 class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
@@ -4136,6 +4238,17 @@ class RotateComposioSecretResponse(TypedDict):
     rotated: Literal[True]
 
 
+class SaveCalendarBody(TypedDict):
+    url: str
+
+
+class SaveCalendarResponse(TypedDict):
+    configured: bool
+    host: str | None
+    name: str | None
+    time_zone: str | None
+
+
 class _SaveComposioServerBodyRequired(TypedDict):
     api_key: str
     toolkit: str
@@ -4347,6 +4460,15 @@ class StartMcpOAuthBody(_StartMcpOAuthBodyRequired, total=False):
 
 class StartMcpOAuthResponse(TypedDict):
     authorization_url: str
+
+
+class TestCalendarBody(TypedDict, total=False):
+    url: str
+
+
+class TestCalendarResponse(TypedDict):
+    ok: bool
+    message: str
 
 
 TestComputerResponse: TypeAlias = "TestComputerResponseObject1 | TestComputerResponseObject2"
@@ -5020,6 +5142,7 @@ class Run(_RunRequired, total=False):
     labels: dict[str, str]
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
+    recordings: list[RunRecordingsItem]
     input: dict[str, Any] | None
     file_ids: list[str]
     claim: RunClaim | None
@@ -5029,6 +5152,7 @@ class Run(_RunRequired, total=False):
     pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
+    audit_of: str | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5096,6 +5220,14 @@ class RunNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunRecordingsItem(TypedDict):
+    path: str
+    computer: str
+    seconds: float
+    bytes: int
+    finished: bool
 
 
 class RunClaim(TypedDict):
@@ -5303,7 +5435,7 @@ class _GradeRunResponseRequired(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["look_back"] | None
@@ -5564,7 +5696,7 @@ class GetRunLearningResponseObjectGraded(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["look_back"] | None
@@ -6888,6 +7020,7 @@ class PutToolSettingsBody(TypedDict, total=False):
     email_draft: PutToolSettingsBodyEmailDraft
     email_send: PutToolSettingsBodyEmailSend
     email_file: PutToolSettingsBodyEmailFile
+    calendar_events: PutToolSettingsBodyCalendarEvents
     browser: PutToolSettingsBodyBrowser
     subagent: PutToolSettingsBodySubagent
     pdf_pages: PutToolSettingsBodyPdfPages
@@ -6946,6 +7079,10 @@ class PutToolSettingsBodyEmailSend(TypedDict, total=False):
 
 
 class PutToolSettingsBodyEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyCalendarEvents(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -7119,6 +7256,7 @@ class _CreateTriggerBodySource6Required(TypedDict):
 class CreateTriggerBodySource6(_CreateTriggerBodySource6Required, total=False):
     accept: list[CreateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7187,6 +7325,8 @@ class CreateTriggerBodySource8(_CreateTriggerBodySource8Required, total=False):
     every_s: int
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[CreateTriggerBodySource8AcceptItem]
 
 
@@ -7344,6 +7484,7 @@ class _CreateTriggerResponseSource6Required(TypedDict):
 class CreateTriggerResponseSource6(_CreateTriggerResponseSource6Required, total=False):
     accept: list[CreateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7412,6 +7553,8 @@ class _CreateTriggerResponseSource8Required(TypedDict):
 class CreateTriggerResponseSource8(_CreateTriggerResponseSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[CreateTriggerResponseSource8AcceptItem]
 
 
@@ -7685,6 +7828,7 @@ class _GetTriggerResponseSource6Required(TypedDict):
 class GetTriggerResponseSource6(_GetTriggerResponseSource6Required, total=False):
     accept: list[GetTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7753,6 +7897,8 @@ class _GetTriggerResponseSource8Required(TypedDict):
 class GetTriggerResponseSource8(_GetTriggerResponseSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[GetTriggerResponseSource8AcceptItem]
 
 
@@ -7970,6 +8116,7 @@ class _ListTriggersResponseTriggersItemSource6Required(TypedDict):
 class ListTriggersResponseTriggersItemSource6(_ListTriggersResponseTriggersItemSource6Required, total=False):
     accept: list[ListTriggersResponseTriggersItemSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -8038,6 +8185,8 @@ class _ListTriggersResponseTriggersItemSource8Required(TypedDict):
 class ListTriggersResponseTriggersItemSource8(_ListTriggersResponseTriggersItemSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[ListTriggersResponseTriggersItemSource8AcceptItem]
 
 
@@ -8250,6 +8399,7 @@ class _UpdateTriggerBodySource6Required(TypedDict):
 class UpdateTriggerBodySource6(_UpdateTriggerBodySource6Required, total=False):
     accept: list[UpdateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -8318,6 +8468,8 @@ class UpdateTriggerBodySource8(_UpdateTriggerBodySource8Required, total=False):
     every_s: int
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[UpdateTriggerBodySource8AcceptItem]
 
 
@@ -8474,6 +8626,7 @@ class _UpdateTriggerResponseSource6Required(TypedDict):
 class UpdateTriggerResponseSource6(_UpdateTriggerResponseSource6Required, total=False):
     accept: list[UpdateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -8542,6 +8695,8 @@ class _UpdateTriggerResponseSource8Required(TypedDict):
 class UpdateTriggerResponseSource8(_UpdateTriggerResponseSource8Required, total=False):
     items: str
     id: str
+    updated: str
+    fields: list[str]
     accept: list[UpdateTriggerResponseSource8AcceptItem]
 
 
@@ -8826,6 +8981,7 @@ OPERATIONS: dict[str, Operation] = {
     "getLearningLoop": Operation(method="GET", path="/agents/{agent_id}/learning/loop", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getNative": Operation(method="GET", path="/agents/{agent_id}/native", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listLearningAudits": Operation(method="GET", path="/agents/{agent_id}/learning/audits", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8866,12 +9022,14 @@ OPERATIONS: dict[str, Operation] = {
     "writeLearningFile": Operation(method="PUT", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match", "If-None-Match"), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="text", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteCalendar": Operation(method="DELETE", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getCalendar": Operation(method="GET", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8886,12 +9044,14 @@ OPERATIONS: dict[str, Operation] = {
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "saveCalendar": Operation(method="PUT", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
+    "testCalendar": Operation(method="POST", path="/settings/calendar/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9007,7 +9167,7 @@ class AgentsResource(Group):
         return self._call("getAgentArchil", (agent_id,), None, None, timeout=timeout)
 
     def get_learning_loop(self, agent_id: str, *, timeout: float | None = None) -> GetLearningLoopResponse:
-        """The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop)."""
+        """The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop)."""
         return self._call("getLearningLoop", (agent_id,), None, None, timeout=timeout)
 
     def get_native(self, agent_id: str, *, timeout: float | None = None) -> GetNativeResponse:
@@ -9017,6 +9177,10 @@ class AgentsResource(Group):
     def list(self, *, limit: int | None = None, cursor: str | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAgentsResponse:
         """List agents (GET /agents)."""
         return self._call("listAgents", (), None, {"limit": limit, "cursor": cursor, "archived": archived}, timeout=timeout)
+
+    def list_learning_audits(self, agent_id: str, *, timeout: float | None = None) -> ListLearningAuditsResponse:
+        """The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits)."""
+        return self._call("listLearningAudits", (agent_id,), None, None, timeout=timeout)
 
     def list_learning_promotions(self, agent_id: str, *, timeout: float | None = None) -> ListLearningPromotionsResponse:
         """Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions)."""
@@ -9198,6 +9362,10 @@ class LocalResource(Group):
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
 
+    def delete_calendar(self, *, timeout: float | None = None) -> None:
+        """Forget this server's calendar (DELETE /settings/calendar)."""
+        return self._call("deleteCalendar", (), None, None, timeout=timeout)
+
     def delete_composio_subscription(self, name: str, *, timeout: float | None = None) -> DeleteComposioSubscriptionResponse:
         """Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription)."""
         return self._call("deleteComposioSubscription", (name,), None, None, timeout=timeout)
@@ -9221,6 +9389,10 @@ class LocalResource(Group):
     def finish_chat_gptsign_in(self, body: FinishChatGPTSignInBody, *, timeout: float | None = None) -> FinishChatGPTSignInResponse:
         """Finish signing in with ChatGPT with the address the sign-in tab ended on (POST /settings/chatgpt/sign-in/finish)."""
         return self._call("finishChatGPTSignIn", (), body, None, timeout=timeout)
+
+    def get_calendar(self, *, timeout: float | None = None) -> GetCalendarResponse:
+        """This server's calendar: its host, name and time zone, never its address (GET /settings/calendar)."""
+        return self._call("getCalendar", (), None, None, timeout=timeout)
 
     def get_chat_gptsign_in(self, *, timeout: float | None = None) -> GetChatGPTSignInResponse:
         """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
@@ -9270,6 +9442,10 @@ class LocalResource(Group):
         """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
         return self._call("rotateComposioSecret", (name,), None, None, timeout=timeout)
 
+    def save_calendar(self, body: SaveCalendarBody, *, timeout: float | None = None) -> SaveCalendarResponse:
+        """Save this server's calendar, its iCal address sealed (PUT /settings/calendar)."""
+        return self._call("saveCalendar", (), body, None, timeout=timeout)
+
     def save_composio_server(self, name: str, body: SaveComposioServerBody, *, timeout: float | None = None) -> SaveComposioServerResponse:
         """Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("saveComposioServer", (name,), body, None, timeout=timeout)
@@ -9289,6 +9465,10 @@ class LocalResource(Group):
     def start_chat_gptsign_in(self, *, timeout: float | None = None) -> StartChatGPTSignInResponse:
         """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""
         return self._call("startChatGPTSignIn", (), None, None, timeout=timeout)
+
+    def test_calendar(self, body: TestCalendarBody | None = None, *, timeout: float | None = None) -> TestCalendarResponse:
+        """Read the calendar and say what it holds (POST /settings/calendar/test)."""
+        return self._call("testCalendar", (), body, None, timeout=timeout)
 
     def test_computer(self, provider: str, *, timeout: float | None = None) -> TestComputerResponse:
         """Test a computer provider's account with its saved keys (POST /computers/{provider}/test)."""
