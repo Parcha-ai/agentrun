@@ -274,7 +274,7 @@ public final class UiDriver {
 	/** An app id in an error's words: its label (Wikipedia, System UI), else "the app (id)". */
 	private String named(String id) {
 		String label = device.apps().label(id);
-		return label != null && !label.isEmpty() ? label : "the app (" + id + ")";
+		return label != null && !label.isEmpty() && !label.equals(id) ? label : "the app (" + id + ")";
 	}
 
 	/** The windows the tree shows, for a not_found: the accessibility tree shows window 3 application "Home" of Launcher. */

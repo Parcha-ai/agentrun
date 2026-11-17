@@ -269,7 +269,8 @@ final class PhoneApps implements Device.Apps {
 		try {
 			PackageManager pm = pm();
 			CharSequence label = pm.getApplicationInfo(id, 0).loadLabel(pm);
-			return label == null || label.length() == 0 ? null : label.toString();
+			// loadLabel falls back to the package name for an app with no label: that is no label.
+			return label == null || label.length() == 0 || label.toString().equals(id) ? null : label.toString();
 		} catch (PackageManager.NameNotFoundException | RuntimeException e) {
 			return null;
 		}

@@ -627,6 +627,10 @@ final class UiTest {
 		String bare = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"org.nolabel\"}}"));
 		yes(bare.startsWith("the app (org.nolabel) has no window on the screen ("), bare);
 		yes(!bare.contains("com."), bare);
+		// Android's loadLabel gives the package name for an app with no label: that is no label either.
+		phone.device.apps.add(new Device.App("org.sameasid", "org.sameasid", "1"));
+		String same = refuses("not_found", () -> phone.call("ui.observe", "{\"target\":{\"app\":\"org.sameasid\"}}"));
+		yes(same.startsWith("the app (org.sameasid) has no window on the screen ("), same);
 	}
 
 	static void testAWindowSitsWhereItsElementsAreThoughTheServicePutsItElsewhere() throws Exception {
