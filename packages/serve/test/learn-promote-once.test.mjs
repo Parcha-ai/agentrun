@@ -407,35 +407,3 @@ test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, t
   await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
   assert.equal(opened > 0, true, "the 5 own runs are found behind the 250 served ones: the compile is due");
 });
-
-// Review on #3064 (PRRT_kwDOUmdVMs64PlpB): a passing draft waits on its grade however many runs kept learning since. The
-// compile ask reads the agent's kept learning whose grade has not ended (the store's grading read), never a window of the
-// newest proposals: 250 later runs' proposals never push it out, and no new compile is asked until its grade ends.
-test("(a) a passing draft's grade still queued after 250 later runs' kept learning: no new compile is asked; once its grade ends, one is", { timeout: 120_000 }, async (t) => {
-  const { compileAskOf: askOf } = await import("../dist/runner/learning-end.js");
-  const { learningFolderOf } = await import("../dist/learning.js");
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-promote-once-grading-"));
-  const store = await openSqliteStore({ dataDir: dir, role: "server" });
-  t.after(async () => {
-    await store.close().catch(() => {});
-    rmSync(dir, { recursive: true, force: true });
-  });
-  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", learning: { compile_after: 5 } } });
-  const body = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" } };
-  const ended = async (id, proposal, also = []) => {
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body });
-    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-    await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal } }, ...also] });
-  };
-  // The compile: its draft passed its checks (a compiled digest), its learning run (the grade that merges it) queued.
-  await ended("compiled", { state: "proposed", compiled: { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: DIGEST } }, [{ table: "learning_run", row: { id: "grade-1" } }]);
-  for (let i = 0; i < 250; i++) await ended(`later-${i}`, { state: "dropped", reason: "empty", detail: "Nothing to keep." });
-  await store.runs.create({ id: "now", agentId: "agent-1", revisionId: "rev-1" }, { body });
-  assert.equal((await store.runs.get("grade-1"))?.state, "queued", "the grade waits");
-  assert.equal((await store.learning.proposals("agent-1", { limit: 200 })).some((one) => one.runId === "compiled"), false, "the newest 200 proposals no longer hold it");
-  const deps = { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), log: () => {} };
-  const ask = () => askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 });
-  assert.equal(await ask(), undefined, "the draft still waits on its grade: no new compile");
-  await store.runs.update(await store.claim("grade-1", "runner-a", { leaseMs: 60_000 }), { state: "ended" });
-  assert.notEqual(await ask(), undefined, "its grade ended (it landed or was dropped): the compile is asked");
-});

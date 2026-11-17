@@ -457,8 +457,8 @@ export async function readSnapshot(ws: Workspace): Promise<Snapshot | undefined>
     throw folderFailure(error);
   }
   const value = JSON.parse(Buffer.from(bytes).toString("utf8")) as Snapshot;
-  if (value?.v !== 1 || !isOidField(value.main) || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid))) throw new Error("the learning folder's snapshot is not one this server reads (v1)");
-  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
+  if (value?.v !== 1 || !isOidField(value.main) || !Array.isArray(value.workflows) || !Array.isArray(value.log) || (value.corrections !== undefined && !isOidField(value.corrections?.oid)) || (value.audits !== undefined && !isOidField(value.audits?.oid))) throw new Error("the learning folder's snapshot is not one this server reads (v1)");
+  return { v: 1, main: value.main, at: value.at, ...(value.corrections ? { corrections: value.corrections } : {}), ...(value.audits ? { audits: value.audits } : {}), workflows: value.workflows, log: value.log, log_more: value.log_more };
 }
 
 /** Bodies already checked, by blob id: an oid names its bytes, so one read is good for every snapshot naming it. */
