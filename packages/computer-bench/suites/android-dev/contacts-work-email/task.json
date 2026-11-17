@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.contacts.work-email",
-  "version": 2,
+  "version": 3,
   "title": "Add an email address with a given label to a contact in Contacts",
   "split": "heldout",
   "tags": ["contacts", "edit", "form", "decoy"],
@@ -54,9 +54,9 @@
     {
       "id": "decoy",
       "kind": "exec",
-      "why": "The decoy still has no email address.",
-      "argv": ["sh", "-c", "{{file:contacts.sh}}", "sh", "emails", "{{p.decoy}} {{nonce}}"],
-      "stdout": { "matches": "^\\s*(No result found\\.)?\\s*$" }
+      "why": "The decoy is still there with its one number, and still has no email address. Reading its number first means an agent that deleted the decoy fails: a deleted contact has no email rows either.",
+      "argv": ["sh", "-c", "sh -c \"$1\" sh phones \"$2\" && sh -c \"$1\" sh emails \"$2\"", "sh", "{{file:contacts.sh}}", "{{p.decoy}} {{nonce}}"],
+      "stdout": { "matches": "^Row: 0 data1=415 555 0131, data2=2\\s*(No result found\\.)?\\s*$" }
     }
   ],
   "teardown": [

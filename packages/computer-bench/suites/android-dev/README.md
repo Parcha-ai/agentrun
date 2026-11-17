@@ -142,7 +142,7 @@ Samsung build), and Settings is `com.android.settings` alone. The Settings oracl
 | android.settings.auto-rotate | Settings | heldout | 6 | `settings get system accelerometer_rotation` |
 | android.clock.alarm-repeat-days | Clock | heldout | 10 | `dumpsys alarm` next alarm clock, as weekday and time |
 | android.contacts.delete-contact | Contacts | heldout | 5 | `content query` of the nonce's contacts: only the kept one left |
-| android.contacts.work-email | Contacts | heldout | 10 | the target's email row (address and type Work/Home/Other), and no email on the decoy |
+| android.contacts.work-email | Contacts | heldout | 10 | the target's email row (address and type Work/Home/Other), and the decoy still there with its number and no email |
 | android.contacts.count-favorites | Contacts | heldout | 4 | answer: the count and the favourites' names; starred count and contact count unchanged |
 | android.files.new-folder | Files | heldout | 7 | `ls -1` of the parent, the sibling folder and the run's folder; the new entry is a folder |
 | android.files.largest-file | Files | heldout | 4 | answer: the largest file's name before any other; the folder unchanged |
