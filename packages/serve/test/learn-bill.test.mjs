@@ -174,14 +174,14 @@ test("billOf: replay spend with no job to join is still booked: an owner who arc
 });
 
 const C = "c".repeat(16);
-const compiled = (digest, cost) => (digest ? { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest } : { workflow: "answer", from_notes: [], attempts: [{ ok: false, errors: [cost.error] }] });
+const compiled = (digest, cost, workflow = "answer") => (digest ? { workflow, from_notes: [], attempts: [{ ok: true, errors: [] }], digest } : { workflow, from_notes: [], attempts: [{ ok: false, errors: [cost.error] }] });
 /** A kept round that looked back: its job's cost, its look-back's (the compile turn's among it) and, when it compiled,
- *  the compile turn's spend and the draft it kept (none when every draft failed its checks). `capped`: the cap refused a
- *  later attempt of the compile, so the round closed no_budget with the turn's spend and no draft at all
- *  (runner/reflect-hook.ts `capped`). */
-const kept = ({ job, look, compile, digest, error, capped = false }) => ({
+ *  the compile turn's spend and the draft it kept (none when every draft failed its checks), of `workflow` ("answer" by
+ *  default). `capped`: the cap refused a later attempt of the compile, so the round closed no_budget with the turn's
+ *  spend and no draft at all (runner/reflect-hook.ts `capped`). */
+const kept = ({ job, look, compile, digest, error, capped = false, workflow }) => ({
   state: "dropped", reason: capped ? "no_budget" : "empty", detail: "kept nothing", answered_at: at(0), job_cost_usd: job, look_back_usd: look,
-  ...(compile === undefined ? {} : { compile_usd: compile, ...(capped ? {} : { compiled: compiled(digest, { error }), ...(digest ? {} : { draft_errors: [error] }) }) }),
+  ...(compile === undefined ? {} : { compile_usd: compile, ...(capped ? {} : { compiled: compiled(digest, { error }, workflow), ...(digest ? {} : { draft_errors: [error] }) }) }),
 });
 
 /** Agent `agent-1` over the A8 split, each run a minute apart:
@@ -312,4 +312,43 @@ test("the bill's holds say what held each: a hold this release's workflow DSL wr
   const read = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(read.bill.holds.map((one) => [one.n, one.by]), [[8, "check"], [9, "dsl"]], JSON.stringify(read.bill.holds));
   assert.equal(read.bill.holds[1].reason, refused.reason);
+});
+
+// r4 (#3087, Greptile PRRT_kwDOUmdVMs64qI6K): a revision is its workflow and its digest, never the digest alone.
+
+test("A8 (4): two workflows whose workflow.json is the same text (one digest): each revision's compile, check and served runs are its own workflow's, and the sums still reconcile with unattributed_usd", async (t) => {
+  const D = "d".repeat(16);
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (id, cost, metrics, { body = LEARNS, round } = {}) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics }, round ? { also: [{ table: "learning_proposals", row: { turn: {}, proposal: round } }] } : undefined);
+  };
+  // "answer" compiled at $0.30 and checked at $0.30; "lookup", the same text, compiled at $0.60 and checked at $0.90.
+  await end("run-01", 1.5, { path: "agent" }, { round: kept({ job: 1, look: 0.5, compile: 0.3, digest: D }) });
+  await end("run-02", 1.7, { path: "agent" }, { round: kept({ job: 1, look: 0.7, compile: 0.6, digest: D, workflow: "lookup" }) });
+  const replay = (workflow) => [{ path: "replay", workflow, workflow_digest: D, replay: { of: "run-01", outcome: "answered" } }, { body: { ...LEARNS, replay: { of: "run-01", workflow, digest: D } } }];
+  await end("replay-a", 0.3, ...replay("answer"));
+  await end("replay-l", 0.9, ...replay("lookup"));
+  const promotedAt = at((minute += 1));
+  // Served in turns: answer, lookup, answer, lookup, ... (K = 3 each), the last two past their K-th.
+  const served = ["answer", "lookup", "answer", "lookup", "answer", "lookup", "answer", "lookup"];
+  for (const [i, workflow] of served.entries()) await end(`run-${String(i + 3).padStart(2, "0")}`, 0.1, { path: "workflow", workflow, workflow_digest: D });
+  const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  const promote = (workflow) => ({ workflow, digest: D, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 1, agreed: 1, alone: 1, of: ["run-01"] } });
+  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [promote("answer"), promote("lookup")] });
+
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.workflow, one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.served, one.attributed_usd, one.unattributed_usd]), [["answer", D, 0.3, 0.3, 0.6, 3, 0.6, 0], ["lookup", D, 0.6, 0.9, 1.5, 3, 1.5, 0]]);
+  assert.equal(cost.bill.unattributed_usd, 0);
+  const all = await v2Of(store, cost.bill);
+  const pick = (id) => [all[id].path, all[id].usd, all[id].learning_usd, all[id].all_in_usd];
+  for (const id of ["run-03", "run-05", "run-07"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0.2, 0.3], `${id} (answer): a third of $0.30 + $0.30`);
+  for (const id of ["run-04", "run-06", "run-08"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0.5, 0.6], `${id} (lookup): a third of $0.60 + $0.90`);
+  for (const id of ["run-09", "run-10"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0, 0.1], `${id}: past its revision's K-th`);
+  assert.deepEqual([pick("run-01"), pick("run-02")], [["agent", 1, 0.2, 1.2], ["agent", 1, 0.1, 1.1]], "each look-back less its own compile turn");
 });

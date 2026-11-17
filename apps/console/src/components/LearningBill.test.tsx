@@ -1,5 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuditLine, BillChart, LearningBill, ServingWorkflow } from "./LearningBill";
 import { BILL, hour } from "@/lib/learningBill.fixture";
@@ -67,6 +68,13 @@ describe("the bill chart", () => {
     expect(host.querySelector("[data-testid=bill-agent]")).toBeNull();
     expect(host.querySelector("[data-testid=bill-legend]")).toBeNull();
   });
+  it("draws a bill of 200k points: its axis top read without spreading every point into one call", () => {
+    // Markup only: 200k table rows as DOM would take minutes; the axis top is read the same way either way.
+    const points = Array.from({ length: 200_000 }, (_, i) => ({ n: i + 1, run_id: `run-${i + 1}`, actual_usd: (i + 1) * 0.5, agent_usd: i + 1 }));
+    const html = renderToStaticMarkup(createElement(BillChart, { bill: { ...BILL, points, break_even: { n: 2, run_id: "run-2" }, booked_usd: 100_000 }, width: 900 }));
+    expect(html).toContain('data-testid="bill-actual"');
+    expect(html).toContain("run-200000");
+  }, 60_000);
 });
 
 describe("the audit line", () => {

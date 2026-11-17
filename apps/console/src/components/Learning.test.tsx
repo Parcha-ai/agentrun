@@ -290,6 +290,20 @@ describe("refreshing learning after external work", () => {
     expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(3);
   });
 
+  it("reads the cost (the bill's) again with each refresh, timed or manual, and once on open", async () => {
+    let tick!: () => void;
+    vi.spyOn(window, "setInterval").mockImplementation((callback) => { tick = callback as () => void; return 123 as unknown as ReturnType<typeof window.setInterval>; });
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    let costs = 0;
+    const cost = async (): Promise<LearningCost> => { costs += 1; return { agent: "refunds", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] } as unknown as LearningCost; };
+    const t = await open(agent(true), { cost });
+    expect(costs).toBe(1);
+    await act(async () => { tick(); }); await settle();
+    expect(costs).toBe(2);
+    await t.click(/^Refresh learning$/);
+    expect(costs).toBe(3);
+  });
+
   it("clears prior-agent drafts and ignores prior-agent background responses after navigation", async () => {
     let release!: (result: AgentLearning) => void;
     let reads = 0;

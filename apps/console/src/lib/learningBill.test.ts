@@ -8,7 +8,7 @@ import type { AuditRow, Bill, Serving } from "./v2";
 // (none while the ledger is unread), and the serving workflow's nodes (the promotions read's `champion`) in words.
 
 const notYet: Bill = { ...BILL, points: BILL.points.slice(0, 4), break_even: null, gap_usd: 0.5, booked_usd: 4.5 };
-const never: Bill = { ...BILL, promoted: null, break_even: null, gap_usd: 0, points: BILL.points.slice(0, 3).map((p) => ({ ...p, agent_usd: p.actual_usd })) };
+const never: Bill = { ...BILL, promoted: null, break_even: null, gap_usd: 0, booked_usd: 3, points: BILL.points.slice(0, 3).map((p) => ({ ...p, agent_usd: p.actual_usd })) };
 
 describe("the bill in words", () => {
   it("says where it breaks even, against the agent for all of it", () => {
@@ -20,6 +20,12 @@ describe("the bill in words", () => {
   it("says no learned workflow serves yet before a promotion", () => {
     expect(billWords(never).headline).toBe("No learned workflow serves yet: the bill is the agent's own, $3.00 over 3 runs");
     expect(billWords(never).marker).toBeNull();
+  });
+  it("says the booked total, a replay after a withheld final job included, never the last point's figure", () => {
+    // run-9 of unknown cost is on neither line; a $0.20 replay after it is booked all the same: $6.80 at run 8 + $0.20.
+    const late: Bill = { ...BILL, points: BILL.points.slice(0, 8), withheld: 1, booked_usd: 7 };
+    expect(billWords(late).headline).toBe("Break-even at run 5: $7.00 booked over 8 runs, $8.00 had the agent done all of it · 1 run of unknown cost on neither line");
+    expect(billWords({ ...never, withheld: 1, booked_usd: 3.2 }).headline).toBe("No learned workflow serves yet: the bill is the agent's own, $3.20 over 3 runs · 1 run of unknown cost on neither line");
   });
   it("names the runs on neither line", () => {
     expect(billWords({ ...BILL, withheld: 2 }).headline).toContain("2 runs of unknown cost on neither line");
