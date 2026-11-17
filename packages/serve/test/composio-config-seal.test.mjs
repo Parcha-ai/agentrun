@@ -9,7 +9,8 @@
 // older server wrote is scrubbed at the start.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
@@ -209,6 +210,7 @@ test("a trigger saved with its key in the clear before this rule is sealed at th
   // The row as a server before this rule kept it: the config whole, no sealed_config.
   const { sealed_config: _, ...source } = made.body.source;
   await s.server.store.triggers.update(made.body.id, { source: { ...source, config: { app_id: "4242", developer_api_key: key } } });
+  await livedWith(s.api, made.body.id);
   await s.server.stop();
   const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl } });
   const read = await again.api("GET", `/triggers/${made.body.id}`);
@@ -313,6 +315,16 @@ test("a template's composio trigger whose key comes from a parameter: the apply'
   assert.ok(!readFileSync(join(server.data, ".idempotency.json"), "utf8").includes(key), "the apply's Idempotency-Key record holds no key");
   assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
 });
+
+/** Trigger `id`'s ordinary life before the upgrade: other triggers made after it share its page, then a pause, a resume
+ *  and renames each a little longer, as a firing's last_run_id and its counts change a row's size. Each rewrites the
+ *  whole row, the key with it, and a row grown past the space it had leaves its old copy in the page's free space. */
+async function livedWith(api, id) {
+  for (const n of [1, 2, 3, 4]) assert.equal((await api("POST", "/triggers", dealTrigger(fakeKey()))).status, 201, `neighbour ${n}`);
+  for (const change of [{ enabled: false }, { enabled: true }, ...[1, 2, 3, 4, 5].map((n) => ({ name: `deals ${"x".repeat(n * 9)}` }))]) {
+    assert.equal((await api("PATCH", `/triggers/${id}`, change)).status, 200);
+  }
+}
 
 /** Trigger `id`'s row rewritten as a server before this rule kept it: the config whole, in the clear, no sealed_config. */
 async function keptInTheClear(store, trigger, key) {
@@ -527,4 +539,59 @@ test("an Idempotency-Key replay of a run create gives back its input as sent, a 
   assert.equal(again.headers.get("idempotent-replayed"), "true");
   assert.equal(again.body.source.config.developer_api_key, MASK, "the trigger create's replay is masked");
   assert.equal(again.body.id, made.body.id);
+});
+
+/** The store's rewrite marker (store/sqlite/store.ts secureRewrite): beside the database file, there while a rewrite's
+ *  old bytes may still be in the store's files. */
+const markerIn = (data) => join(data, "store.sqlite.scrub");
+
+/** A server whose store holds trigger `id`'s key only in free pages: kept in the clear, rewritten by pauses, then masked
+ *  with no scrub after, as a server that died after its rewrite committed leaves it. Its marker is left. */
+async function diedAfterRewrite(t) {
+  const s = await setup(t);
+  const key = fakeKey();
+  const made = await s.api("POST", "/triggers", dealTrigger(key));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  await keptInTheClear(s.server.store, made.body, key);
+  await livedWith(s.api, made.body.id);
+  const masked = (await s.api("GET", `/triggers/${made.body.id}`)).body.source;
+  await s.server.store.triggers.update(made.body.id, { source: masked });
+  await s.server.stop();
+  writeFileSync(markerIn(s.server.data), "");
+  assert.ok(filesUnder(s.server.data).some((path) => readFileSync(path).includes(key)), "the key's old bytes are in the store's free space before the start");
+  return { s, key, made };
+}
+
+test("a rewrite marker left by a server that died after the rewrite committed: the next start clears the old bytes and the marker, though no row is in the clear", async (t) => {
+  const { s, key } = await diedAfterRewrite(t);
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  assert.deepEqual(filesUnder(again.data).filter((path) => readFileSync(path).includes(key)), [], "the start's scrub leaves no copy of the key in any file under the data directory");
+  assert.equal(existsSync(markerIn(again.data)), false, "the marker is cleared once the checkpoint is done");
+  assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
+});
+
+test("a busy checkpoint (a reader in another connection holds the log) keeps the marker and says so by code, and the next start finishes the scrub", async (t) => {
+  const { s, key } = await diedAfterRewrite(t);
+  // Another process's reader: a read transaction held open on the store across the start.
+  const reader = new DatabaseSync(join(s.server.data, "store.sqlite"), { readOnly: true });
+  reader.exec("BEGIN");
+  reader.prepare("SELECT count(*) FROM sqlite_schema").get();
+  const lines = [];
+  let held;
+  try {
+    held = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  } finally {
+    reader.exec("COMMIT");
+    reader.close();
+  }
+  const said = lines.filter((l) => l.includes("store_scrub_not_done"));
+  assert.equal(said.length, 1, `a busy checkpoint is said: ${JSON.stringify(lines.filter((l) => l.includes("store")))}`);
+  assert.match(said[0], /reason=busy/);
+  assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
+  assert.equal(existsSync(markerIn(held.data)), true, "the marker stays for the next start");
+  await held.stop();
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl } });
+  assert.deepEqual(filesUnder(again.data).filter((path) => readFileSync(path).includes(key)), [], "the next start finishes the scrub");
+  assert.equal(existsSync(markerIn(again.data)), false, "and clears the marker");
 });
