@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SignIn } from "@/components/SignIn";
 import { recorded } from "@/fixtures";
-import { signInProblem } from "@/lib/auth";
+import { setupCodeRenewed, signInProblem } from "@/lib/auth";
 import { ClientError } from "@/lib/client";
 
 // The sign-in card in each mode the server's session names (src/fixtures/auth.*), and its refusals as the server sent them.
@@ -21,7 +21,8 @@ export const FirstVisitOnThisMachine: Story = { render: () => <SignIn mode="setu
   { id: "imp-3", name: "field-notes", path: "/work/field-notes", sessions: 1, sources: ["pi"], last_active: new Date(Date.now() - 90 * 86_400_000).toISOString() },
 ] }} onSubmit={async () => null} /> };
 export const FirstVisitCounting: Story = { render: () => <SignIn mode="setup" offer={{ counting: true }} onSubmit={async () => null} /> };
-export const FirstVisitWithCode: Story = { render: () => <SignIn mode="setup" code="" onSubmit={async () => null} /> };
+export const FirstVisitWithCode: Story = { render: () => <SignIn mode="setup" code="" host="agents.example.test" onSubmit={async () => null} onNewCode={async () => setupCodeRenewed("agents.example.test", { printed: true, expires_at: "2026-11-17T12:34:00.000Z" })} /> };
+export const FirstVisitWithCodeOnRender: Story = { render: () => <SignIn mode="setup" code="" host="agentrun-server.onrender.com" onSubmit={async () => null} onNewCode={async () => setupCodeRenewed("agentrun-server.onrender.com", { printed: false, expires_at: "2026-11-17T12:34:00.000Z" })} /> };
 export const PasswordTooShort: Story = { render: () => <SignIn mode="setup" problem={refusal("auth.setup-short")} onSubmit={async () => null} /> };
 export const OwnerAlreadySet: Story = { render: () => <SignIn mode="setup" problem={refusal("auth.setup-again")} onSubmit={async () => null} /> };
 export const NoAccounts: Story = { render: () => <SignIn mode="token_link" /> };

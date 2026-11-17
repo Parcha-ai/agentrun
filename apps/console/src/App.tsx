@@ -44,7 +44,7 @@ import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
-import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { type AuthMode, authMode, newCodeProblem, noAccounts, setupCodeRenewed, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
 import { stepsBack, trackHistory } from "@/lib/back";
@@ -301,6 +301,13 @@ export function App() {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
           return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
+        }
+      }} onNewCode={async () => {
+        try { return setupCodeRenewed(window.location.hostname, await v2.setupCode()); }
+        catch (e) {
+          // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
+          if (e instanceof ClientError && e.status === 403) await readSession().catch(() => {});
+          throw new Error(e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e));
         }
       }} />
     );

@@ -135,6 +135,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     }),
     /** Signs this browser out; every other browser stays signed in. */
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** `POST /v2/setup/code` (a serve extension, before the owner is set, with no credential): has the server print a new
+     *  setup code to its log when the last one is expired or spent, and keeps one still good. Whether one was printed and
+     *  when the code now good runs out; never the code. */
+    setupCode: () => call<{ printed: boolean; expires_at: string }>("POST", "/setup/code", { body: {} }),
     /** Signs out every browser and phone signed in to this server, this one too. */
     signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */

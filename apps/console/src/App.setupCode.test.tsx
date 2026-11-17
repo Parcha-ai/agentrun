@@ -11,7 +11,7 @@ import { App } from "./App";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
 
-const NOTE = "On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.";
+const NOTE = "The server printed it in its log: find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.";
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 async function open(setupCode: boolean, link = "/", refusal = "that is not the setup code in the server's log") {
@@ -88,7 +88,23 @@ describe("App, a first visit at a public address opened with no setup link", () 
     await type(p.host.querySelector('input[aria-label="Password again"]') as HTMLInputElement, "not-a-secret-password");
     await act(async () => { (p.host.querySelector("form") as HTMLFormElement).requestSubmit(); });
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(p.host.querySelector('[role="alert"]')?.textContent).toBe("That setup code expired or was voided after too many wrong tries: a new one is in the server's log (on Render, the Logs tab).");
+    expect(p.host.querySelector('[role="alert"]')?.textContent).toBe("That setup code expired (a code lasts 30 minutes) or was voided after too many wrong tries. The server printed a new one: use the newest “Set up this server:” line in its log (on Render, the Logs tab).");
+  });
+
+  it("Get a new code asks the server for one (POST /v2/setup/code, no password, no code) and says where the new line is and until when it works", async () => {
+    const p = await open(true);
+    const asked: string[] = [];
+    const before = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (new URL(url, "http://serve.test").pathname !== "/v2/setup/code") return before(url, init);
+      asked.push(`${init?.method} ${String(init?.body ?? "")}`);
+      return json(200, { printed: true, expires_at: "2026-11-17T12:34:00.000Z" });
+    });
+    await act(async () => { [...p.host.querySelectorAll("button")].find((b) => b.textContent === "Get a new code")!.click(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(asked).toEqual(["POST {}"]);
+    expect(p.sent).toHaveLength(0);
+    expect(p.host.querySelector('[role="status"]')?.textContent).toBe(`The server printed a new code: it is the newest “Set up this server:” line in the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab). It works once, until ${new Date("2026-11-17T12:34:00.000Z").toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}.`);
   });
 
   it("takes a setup link opened while the session read is still on its way", async () => {
