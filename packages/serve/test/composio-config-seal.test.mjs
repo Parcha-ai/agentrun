@@ -836,8 +836,98 @@ test("a trigger an earlier server kept with a field only its event's schema mark
   assert.equal(read.body.source.config.hub_value, MASK);
   assert.ok(read.body.source.sealed_config.includes("hub_value"));
   assert.equal(s.composio.calls.filter((call) => call.method === "GET" && call.path === `/api/v3/triggers_types/${FORM_EVENT.slug}`).length >= 1, true, "the event's schema is read from Composio");
-  assert.deepEqual(filesUnder(again.data).filter((path) => readFileSync(path).includes(value)), [], "no file under the data directory holds it");
   assert.ok(!lines.some((l) => l.includes(value)), "no log line holds it");
+  // No VACUUM while serving (it would hold every store call and a runner's writes, and needs the store's size again on
+  // disk): the rewrite runs with secure_delete on and leaves the marker, and the next start scrubs before it serves.
+  const deferred = await lineOf(lines, (l) => l.includes("store_scrub_not_done"));
+  assert.match(deferred ?? "", /reason=deferred/, `while serving, the scrub is left to the next start: ${JSON.stringify(lines.filter((l) => l.includes("store")))}`);
+  assert.equal(existsSync(markerIn(again.data)), true, "the marker is left for the next start");
+  await again.stop();
+  const third = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl } });
+  assert.deepEqual(filesUnder(third.data).filter((path) => readFileSync(path).includes(value)), [], "the next start's scrub leaves no file under the data directory holding it");
+  assert.equal(existsSync(markerIn(third.data)), false, "and clears the marker");
+});
+
+test("an address in any scheme that carries a credential is sealed whole: a password, a user part alone, a credential-named query or fragment parameter; one with none stays as it is", async () => {
+  const composio = await import("../dist/trigger-composio.js");
+  const secret = fakeKey();
+  const carrying = [
+    `postgres://app:${secret}@db.example.com:5432/main`,
+    `redis://:${secret}@cache.example.com:6379/0`,
+    `amqp://app:${secret}@mq.example.com/vhost`,
+    `mongodb+srv://app:${secret}@cluster0.example.net/main?retryWrites=true`,
+    `mongodb://app:${secret}@h1.example.com:27017,h2.example.com:27017/main`,
+    `https://${secret}@github.com/acme/repo.git`,
+    `https://hooks.example.com/callback#access_token=${secret}&state=x`,
+  ];
+  const plain = ["postgres://db.example.com:5432/main", "https://hooks.example.com/feed?page=2", "https://hooks.example.com/docs#section-2", "not an address", "mailto:someone"];
+  for (const value of carrying) assert.equal(composio.credentialUrl(value), true, `carries a credential: ${value.replace(secret, "<secret>")}`);
+  for (const value of plain) assert.equal(composio.credentialUrl(value), false, `carries none: ${value}`);
+  const config = { database_url: carrying[0], feed: plain[1], nested: { mongo_uri: carrying[4] } };
+  assert.deepEqual(composio.sealedConfigFields(config), ["database_url"], "sealed at the top level whatever the field's name");
+  assert.deepEqual(composio.configSecrets(config).map((found) => found.name).sort(), ["/nested/mongo_uri", "database_url"], "and found at any depth in a trigger an earlier server kept");
+});
+
+test("a trigger update given the updatedAt it was read at: refused (undefined, nothing written) once the trigger changed or went; written while it is the same", async (t) => {
+  const s = await setup(t);
+  const made = await s.api("POST", "/triggers", dealTrigger(fakeKey()));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  const store = s.server.store;
+  const read = await store.triggers.get(made.body.id);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await store.triggers.update(made.body.id, { name: "renamed meanwhile" });
+  const stale = await store.triggers.update(made.body.id, { name: "from a stale read" }, undefined, { ifUpdatedAt: read.updatedAt });
+  assert.equal(stale, undefined, "an update on a stale read is refused");
+  assert.equal((await store.triggers.get(made.body.id)).name, "renamed meanwhile", "and writes nothing");
+  const fresh = await store.triggers.get(made.body.id);
+  const written = await store.triggers.update(made.body.id, { name: "on a fresh read" }, undefined, { ifUpdatedAt: fresh.updatedAt });
+  assert.equal(written?.name, "on a fresh read", "an update on the current read is written");
+  await store.triggers.remove(made.body.id);
+  assert.equal(await store.triggers.update(made.body.id, { name: "gone" }, undefined, { ifUpdatedAt: written.updatedAt }), undefined, "and one on a trigger since deleted is refused");
+});
+
+test("the after-start seal's rewrite refused because its trigger changed or went meanwhile: the values it sealed for that trigger are removed again, and the log says so without them", async (t) => {
+  const { ComposioTriggers } = await import("../dist/composio-triggers.js");
+  const composio = await startFakeComposio({ triggerTypes: { hubspot: [FORM_EVENT] } });
+  t.after(() => composio.close());
+  const value = fakeKey();
+  const holder = { id: "trg_race", name: "race", enabled: true, updatedAt: 1000, source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu", hub_value: value }, instance_id: "ti_race", hook: "cph_race" } };
+  const rows = new Map();
+  const said = [];
+  const triggers = new ComposioTriggers({
+    control: { baseUrl: composio.baseUrl },
+    sealed: { get: (scope, field) => rows.get(scope)?.[field], set: async (scope, field, given) => void rows.set(scope, { [field]: given }), remove: async (scope) => void rows.delete(scope) },
+    credential: async () => ({ key: composio.apiKey, user: "agentrun-qa", toolkit: "hubspot" }),
+    holders: async () => [holder],
+    say: (fields) => said.push(fields),
+  });
+  const asked = [];
+  await triggers.sealMarked(async (id, _source, updatedAt) => {
+    asked.push({ id, updatedAt, sealed: [...rows.keys()] });
+    return false;
+  }, (work) => work());
+  assert.deepEqual(asked, [{ id: "trg_race", updatedAt: 1000, sealed: [`config:trg_race:hub_value`] }], "the rewrite is asked on the updatedAt the trigger was read at, its value sealed first");
+  assert.equal(rows.size, 0, "a refused rewrite leaves no sealed value behind for the trigger");
+  assert.ok(said.some((f) => f.condition === "composio_config_not_sealed" && f.trigger === "trg_race"), `said: ${JSON.stringify(said.map((f) => f.condition))}`);
+  assert.ok(!said.some((f) => f.condition === "composio_config_sealed"), "never said as sealed");
+  assert.ok(!JSON.stringify(said).includes(value), "no line holds the value");
+});
+
+test("a create answer kept under an Idempotency-Key with a field only its event's schema marks in the clear: once the after-start seal seals the field, the record is masked too, and its replay holds no value", async (t) => {
+  const { s, value, id } = await keptUnmarked(t);
+  // The record as a server before the schema seal kept it: the create's answer with the field in the clear.
+  const body = { name: "form", source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu", hub_value: value } } };
+  const answer = { status: 201, body: { id, ...body }, headers: { location: `/v2/triggers/${id}` } };
+  const { stable } = await import("../dist/validate.js");
+  writeFileSync(join(s.server.data, ".idempotency.json"), JSON.stringify({ version: 1, entries: [[`/triggers\nform-key`, { fingerprint: stable(body), at: Date.now(), answer }]] }), { mode: 0o600 });
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  assert.ok(await lineOf(lines, (l) => l.includes("composio_config_sealed") && l.includes(id)), `sealed after the start: ${JSON.stringify(lines.filter((l) => l.includes("composio")))}`);
+  assert.ok(!readFileSync(join(again.data, ".idempotency.json"), "utf8").includes(value), "the record no longer holds the value");
+  const replay = await again.api("POST", "/triggers", body, { "idempotency-key": "form-key" });
+  assert.equal(replay.headers.get("idempotent-replayed"), "true", "the record still replays");
+  assert.ok(!JSON.stringify(replay.body).includes(value), `its replay holds no value: ${JSON.stringify(replay.body.source?.config)}`);
+  assert.equal(replay.body.source.config.hub_value, MASK);
 });
 
 test("with Composio down, the start still serves, says once by a code that the schemas were not read, and leaves the trigger for the next start", async (t) => {
