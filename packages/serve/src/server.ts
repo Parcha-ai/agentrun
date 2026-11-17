@@ -126,7 +126,7 @@ import { ComposioTriggers } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
-import { privateHostsRoute } from "./mcp-private-hosts.js";
+import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
 import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
@@ -4437,6 +4437,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listens: a hosted container listens on loopback behind its proxy too.
   const localInstall = options.mcpLoopback === true;
   mcpServers.attach(options.publicUrl ?? url, url, localInstall);
+  // Its own addresses, kept in the store for a runner in its own process whose own opt-in lets it reach loopback: its runs
+  // never reach this server's ports there either (mcp-private-hosts.ts saveServerOwn). It listens already: a write that
+  // fails stops the start and lets go of the port, as the start's other stops let go of the store and the locks.
+  await saveServerOwn(store, mcpServers.own).catch(async (error: unknown) => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+    throw error;
+  });
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor

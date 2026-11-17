@@ -1,8 +1,8 @@
 // A runner in its own process (`agentrun-serve runner`, beside a server started with --no-runner, or in a service of its
 // own) takes the operator's loopback opt-in from its own environment alone, as the server takes its own (cli.ts
 // mcpLoopback): started with AGENTRUN_MCP_ALLOW_LOOPBACK=1, its runs reach an MCP server on its loopback; without it they
-// are refused, whatever the server was started with. It never reaches loopback at a server's own port (DEFAULT_PORT, and
-// a loopback AGENTRUN_PUBLIC_URL's). The runner here is composed as runnerMain composes it (startRunnerProcess over
+// are refused, whatever the server was started with. It never reaches loopback at a server's own port (DEFAULT_PORT, a
+// loopback AGENTRUN_PUBLIC_URL's, and the addresses the server kept in the store at its last start). The runner here is composed as runnerMain composes it (startRunnerProcess over
 // runnerLoop, its environment the process's less test switches, with the faux model as --faux sets it). No socket leaves
 // this machine and no real key is used.
 import assert from "node:assert/strict";
@@ -85,6 +85,19 @@ test("a standalone runner with the opt-in never reaches loopback at a server's o
   await standalone(t, server.data, "runner-own-port", { ...OPT_IN, AGENTRUN_PUBLIC_URL: new URL(fake.url).origin });
   assert.match(await answered(server, await run()), /address is refused here/);
   assert.equal(calls(), 0, "nothing sent");
+});
+
+test("a standalone runner with the opt-in never reaches loopback where its server listens, whatever its port: the server keeps its own addresses in the store at its start, and the runner reads them at each claim", { timeout: 120_000 }, async (t) => {
+  const { server, fake, run, calls } = await optedInServer(t);
+  const { MCP_SERVER_OWN_KEY, serverOwn } = await import("../dist/mcp-private-hosts.js");
+  assert.deepEqual(await serverOwn(server.store), [...server.own], "the server kept where it listens");
+  assert.ok(server.own.some((address) => new URL(address).port === String(server.port)), "its own port among them");
+  await standalone(t, server.data, "runner-server-port", OPT_IN);
+  assert.equal(await answered(server, await run()), "The tool said: 5", "another loopback port is reached");
+  // The server started again on the MCP server's port, as a server beside the runner on a port of its own (--port).
+  await server.store.settings.put(MCP_SERVER_OWN_KEY, { own: [new URL(fake.url).origin] });
+  assert.match(await answered(server, await run()), /address is refused here/, "read at the next claim: refused");
+  assert.equal(calls(), 1, "the second call never sent");
 });
 
 test("runnerLoopback: the opt-in from the runner's own environment alone, exactly 1; never at the default server port, nor at a loopback public address's", () => {

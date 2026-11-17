@@ -101,7 +101,7 @@ data directory is (inside the container) clears it and signs every browser out, 
 An MCP server on loopback (a 127.0.0.1 or localhost address) is refused unless AGENTRUN_MCP_ALLOW_LOOPBACK=1 is set at the
 start: set it only on a machine you alone use, since loopback is this machine's other services too. A runner in its own
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
-container), never at port ${DEFAULT_PORT}.
+container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
 \`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
 ~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its

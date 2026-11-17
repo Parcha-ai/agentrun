@@ -202,6 +202,10 @@ export interface AdapterSpecDeps {
    *  mcpLoopback: a run's loopback request (an MCP server's, its authorization server's, a pin's listing, calendar_events') never goes to
    *  their ports, as the server's own requests never do. */
   readonly mcpOwn?: readonly string[];
+  /** More own addresses, read at each claim beside mcpOwn: a standalone runner's (runner/main.ts runnerLoop), the ones
+   *  the server kept in the store at its last start (mcp-private-hosts.ts serverOwn), so a server on any port stays
+   *  refused. Read only when mcpLoopback is set. */
+  readonly mcpOwnOf?: () => Promise<readonly string[]>;
   /** A template eval's fakes, by the agent a run is of (template-eval.ts, from its case: EvalFakes). Only the eval's own
    *  runner, in the eval's process, is given it (runner/beside.ts); no environment variable, flag, setting or API field
    *  maps onto it. Absent, or undefined for a run: none. */
@@ -403,6 +407,8 @@ export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, dep
 
 async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
+  // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
+  const reach = await mcpReachOf(deps);
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
   // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
   // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
@@ -494,7 +500,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) });
+  const mcp = await mcpForClaim({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -704,7 +710,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...(deps.mcpLoopback ? { loopback: true } : {}), ...(deps.mcpOwn ? { own: deps.mcpOwn } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -1180,4 +1186,13 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // it passes spec.lifecycle. The decision providers come from the claim's secrets (claim-secrets.ts). Wired against that
   // seam when it lands; never a second journalSessions + runCap over the one journal (the double-book we closed).
   return tools;
+}
+
+/** What a claim's MCP servers and calendar_events may reach on loopback (mcpForClaim's and buildToolHost's `loopback` and
+ *  `own`): nothing unless mcpLoopback; else loopback, never at mcpOwn's ports nor mcpOwnOf's, read now. Read once per
+ *  claim. */
+export async function mcpReachOf(deps: Pick<AdapterSpecDeps, "mcpLoopback" | "mcpOwn" | "mcpOwnOf">): Promise<{ loopback?: true; own?: readonly string[] }> {
+  if (!deps.mcpLoopback) return {};
+  const own = [...(deps.mcpOwn ?? []), ...((await deps.mcpOwnOf?.()) ?? [])];
+  return { loopback: true, ...(own.length ? { own } : {}) };
 }

@@ -1801,9 +1801,10 @@ variable from its own environment alone, never from the server, the store or the
 `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, its runs reach an MCP server on its own loopback: the machine (or container) that runner
 runs on, which is the server's only when they share one. So each such runner needs the variable and, at the MCP
 server's address, a server or forwarder on its own loopback. Without the variable it is refused, whatever the server
-says. Such a runner never reaches loopback at port 7340 (where a server listens unless `--port` says otherwise), nor at
-its `AGENTRUN_PUBLIC_URL`'s port when that address is on loopback; it says on stderr at its start that it takes the
-variable. For any runner, an MCP server, a refresh's endpoint or a calendar at a refused port is refused unsent, as at a
+says. Such a runner never reaches loopback at a server's own port: 7340 (where a server listens unless `--port` says
+otherwise), its own `AGENTRUN_PUBLIC_URL`'s port when that address is on loopback, and the addresses the server keeps in
+the store at each start (where it listens, whatever its port), read at each claim. Those addresses are all it reads of
+the server; it says on stderr at its start that it takes the variable. For any runner, an MCP server, a refresh's endpoint or a calendar at a refused port is refused unsent, as at a
 save.
 
 An MCP server's URL is shown on every read as its origin and `/…`: its path and query are held as a secret, sent only to
