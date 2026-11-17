@@ -13,7 +13,7 @@ import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -620,8 +620,12 @@ class SqliteStore implements Store {
         await db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
           if (await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? LIMIT 1", agentId)) throw new StoreConstraint(`agent ${agentId} still has runs: each is removed first (runs.remove)`);
-          // A trigger's scopes, firings and conversations go with it (ON DELETE CASCADE).
-          await tx.run("DELETE FROM triggers WHERE agent_id = ?", agentId);
+          // A trigger is never removed with the agent: what it keeps outside its row (a registration upstream, its adapter
+          // settings) goes only through the trigger engine. One made past the delete's listing (it is refused once the
+          // agent is marked, triggers.create; this is read under the agent row's lock, which that refusal takes too)
+          // keeps the agent for the next delete to remove whole.
+          const left = await tx.all<{ id: string }>("SELECT id FROM triggers WHERE agent_id = ? ORDER BY id", agentId);
+          if (left.length) throw new TriggersLeft(agentId, left.map((one) => one.id));
           await tx.run("DELETE FROM learning_proposals WHERE agent_id = ?", agentId);
           await tx.run("DELETE FROM learning WHERE agent_id = ?", agentId);
           await tx.run("DELETE FROM sign_ins WHERE agent_id = ?", agentId);
@@ -678,6 +682,9 @@ class SqliteStore implements Store {
         const row = await db.transaction(async (tx) => {
           // A trigger belongs to an agent the store holds: refused in words, never a bare foreign-key failure.
           if (!(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", t.agentId))) throw new StoreConstraint(`no agent ${t.agentId}: a trigger belongs to an agent the store holds`);
+          // None for an agent being deleted, off too: an off trigger may hold a registration upstream (Composio's) that
+          // the delete, having listed the agent's triggers already, would never remove.
+          await refuseDeleting(tx, t.agentId);
           if (t.enabled) await refuseArchived(tx, t.agentId);
           const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
@@ -693,6 +700,10 @@ class SqliteStore implements Store {
         const row = await db.transaction(async (tx) => {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
+          // Never moved to an agent being deleted, off too, nor turned on for one: read (and its row held) before the
+          // trigger's row is written, in the agent-then-trigger order its archive and its removal take.
+          const to = patch.agentId ?? (await tx.get<{ agent_id: string }>("SELECT agent_id FROM triggers WHERE id = ?", id))?.agent_id;
+          if (to !== undefined && (patch.agentId !== undefined || patch.enabled === true)) await refuseDeleting(tx, to);
           const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ? RETURNING ${TRIGGER_COLUMNS}`, ...params, id);
           // Never left on for an archived agent (turned on, or moved there on): the whole update is undone.
           if (changed?.enabled === 1) await refuseArchived(tx, changed.agent_id);

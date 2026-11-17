@@ -2820,7 +2820,8 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
 1. The agent refuses new runs: its `archived_at` is set (only this delete sets it on such an agent, whose archive route
    is refused) and its triggers are turned off in the same write, so the refusal outlives a restart. From then a run of
    it, an inline run of its reference, a trigger's firing, an SDK run and a message that would open one of its finished
-   runs again are `409 agent_not_runnable`, saying it is being deleted. Each of its runs still going, its learning runs
+   runs again are `409 agent_not_runnable`, saying it is being deleted; so is a new trigger of it (off too), a trigger
+   moved to it or one of its turned on, and a write to its home or its learning. Each of its runs still going, its learning runs
    included, is cancelled as `POST /runs/{id}/cancel` cancels it, and the delete waits until every one has ended.
 2. Its learning is deleted by the learning module, which refuses while learning work of the agent is in flight: `409
    learning_busy`.
@@ -2841,7 +2842,8 @@ refusing runs: send the `DELETE` again. `503` says which thing it owns elsewhere
 registration (Composio failed), a saved sign-in (its vendor failed), its own computer (its provider has not deleted it),
 its Archil disk (Archil failed or was not reached, a run of another agent is on it, or Archil is off on this server
 with a disk still stored on the agent: turn Archil on again first), or a run's folder on a disk its launch named
-(Archil failed, a computer still holds the folder, or Archil is off). A delete stopped
+(Archil failed, a computer still holds the folder, or Archil is off), or a trigger that reached the agent after the
+delete removed its triggers (the next `DELETE` removes it, its registration upstream first). A delete stopped
 part way (a crash) is finished the same way: every step is safe to do again. A server started without the learning
 module's delete answers `501 unsupported_here` and touches nothing. The learning module's delete is not in this release,
 so every deploy (`agentrun-serve`, the image, `compose.yaml` and `render.yaml`) answers `501` for now; no setting turns

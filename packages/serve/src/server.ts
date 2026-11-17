@@ -2023,17 +2023,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       .catch((error: unknown) => log?.(logLine("agent_computer", { agent: agentId, failed: error instanceof Error ? error.message : String(error) })));
   };
   /** The answers kept under idempotency keys (the in-memory map and its file) that `names` picks, by the request's path and
-   *  the answer's body, dropped and the file written again: a deleted agent's and its runs' (agent-delete.ts). */
+   *  the answer's body, dropped and the file written again: a deleted agent's and its runs' (agent-delete.ts). The file is
+   *  written every time, dropped or not: a save that failed before left the file holding answers memory no longer has,
+   *  so a retry that found nothing to drop still writes it (a restart in between reads them from the file again). A
+   *  failed write throws, and the delete stops before the rows that name them go. */
   const forgetKept = async (names: (path: string, body: unknown) => boolean): Promise<void> => {
-    let dropped = false;
-    for (const [slot, one] of idempotency) {
-      if (!names(slot.slice(0, slot.indexOf("\n")), one.answer?.body)) continue;
-      idempotency.delete(slot);
-      dropped = true;
-    }
-    if (dropped) await keep();
+    for (const [slot, one] of idempotency) if (names(slot.slice(0, slot.indexOf("\n")), one.answer?.body)) idempotency.delete(slot);
+    await keep();
   };
   const deleteInTurn = oneAtATime();
+  /** `work`, a write to agent `id`'s home or learning (files a delete removes with the agent's folders, settings it leaves
+   *  to deleteLearning, answers kept under its path), done in the agent's delete turn, the agent read there: a write sent
+   *  while a DELETE runs waits for it, then finds the agent gone (404) or still being deleted (409 agent_not_runnable),
+   *  so nothing is written after the delete passed over it. The request's body is read before, outside the turn. */
+  const agentWrite = <T>(id: string, work: () => Promise<T>): Promise<T> =>
+    deleteInTurn(id, async () => {
+      const entry = await needAgent(id);
+      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      return work();
+    });
   const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
   /** `work`, a thing a deleted agent owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted there
    *  yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again. */
@@ -3831,9 +3839,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const rel = homePath(second!, id, true);
         const bytes = await bytesOf(req);
         // Each write lands whole (the Workspace's write is atomic); of two at once, the last one wins.
-        const home = await homeWorkspace(id, true);
-        await home!.write(rel, bytes).catch(homeRefusal);
-        const written = await entryAt(home!, rel);
+        const written = await agentWrite(id, async () => {
+          const home = await homeWorkspace(id, true);
+          await home!.write(rel, bytes).catch(homeRefusal);
+          return entryAt(home!, rel);
+        });
         if (written?.kind !== "file") throw new ApiError("not_found", "no such file");
         return send(res, 200, viewOf(rel, written));
       }
@@ -4195,7 +4205,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "createLearningBatch": {
         await needAgent(id);
-        const made = await batches.create(id, await bodyOf(req));
+        const body = await bodyOf(req);
+        const made = await agentWrite(id, () => batches.create(id, body));
         return send(res, 202, await batches.read(id, made.id), { location: `/v2/agents/${encodeURIComponent(id)}/learning/batches/${made.id}` });
       }
       case "listLearningBatches":
@@ -4216,11 +4227,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "recordLearningEval": {
         const body = await bodyOf(req);
         await needAgent(id);
-        const answer = await idempotent(req, `/agents/${id}/learning/evals`, body, async () => {
+        const answer = await agentWrite(id, () => idempotent(req, `/agents/${id}/learning/evals`, body, async () => {
           const result = evalOf(body, new Date());
           await recordEval(store, id, result);
           return { status: 201, body: result };
-        });
+        }));
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "getLearningLoop": {
@@ -4265,7 +4276,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
         // What it refuses is what the reads cut: a note shown cut is never saved over the hidden text.
         const refuse = await learningValues(id);
-        const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
+        const written = await agentWrite(id, () => writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) }));
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(refuse);
         const located = written.status === 201 && shown.name(written.file) === written.file;

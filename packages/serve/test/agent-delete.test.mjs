@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -513,4 +514,174 @@ test("a trigger's adapter settings go before its row: a DELETE stopped between t
   assert.equal(done.status, 204, JSON.stringify(done.body));
   assert.deepEqual(await settingsOf(), [], "its settings are gone");
   assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 404, "and its row");
+});
+
+/** A fake Composio holding a GitHub toolkit, and a server whose "gh" MCP server is Composio's (as POST /triggers with a
+ *  composio source needs), with `options`. */
+async function withComposio(t, options) {
+  const composio = await startFakeComposio({
+    toolkits: { github: { no_auth: false, tools: [{ slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "Lists issues." }] } },
+    authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] },
+    active: ["github"],
+  });
+  t.after(() => composio.close());
+  const served = await serve(t, { publicUrl: "https://agentrun.example.com", composioControl: { baseUrl: composio.baseUrl }, ...options });
+  const saved = await served.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "agentrun-qa" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  return { composio, ...served };
+}
+
+/** A Composio trigger's body for agent `agentId`, watching repository `repo` (one registration per repository). */
+const issuesOf = (agentId, repo, extra = {}) => ({
+  name: `issues of ${repo}`,
+  source: { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo } },
+  target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this issue." }, max_cost_usd: 0.5 },
+  ...extra,
+});
+
+/** The refusal of a write to an agent being deleted: 409 agent_not_runnable, in the delete's words. */
+function refusedDeleting(answer, what) {
+  assert.deepEqual([answer.status, answer.body.error?.code], [409, "agent_not_runnable"], `${what}: ${JSON.stringify(answer.body)}`);
+  assert.match(answer.body.error.message, /being deleted/, what);
+}
+
+test("an agent being deleted takes no new trigger, off or on, none moved to it and none of its turned on: 409 agent_not_runnable, nothing registered at Composio", { timeout: 180_000 }, async (t) => {
+  const learning = fakeLearning();
+  learning.busy = true;
+  const { api, composio } = await withComposio(t, { deleteLearning: learning.deleteLearning });
+  const { agentId } = await finishedAgent(api);
+  const other = await api("POST", "/agents", agent("local-1"));
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const own = await api("POST", "/triggers", { name: "nightly", enabled: false, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: agentId, input: { content: "Answer soon." }, max_cost_usd: 0.5 } });
+  const elsewhere = await api("POST", "/triggers", { name: "elsewhere", enabled: false, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: "local-1", input: { content: "Answer soon." }, max_cost_usd: 0.5 } });
+  assert.deepEqual([own.status, elsewhere.status], [201, 201], JSON.stringify([own.body, elsewhere.body]));
+  // Marked, and kept there by its learning's refusal.
+  assert.equal((await api("DELETE", `/agents/${agentId}`)).status, 409);
+  const registered = composio.instances.size;
+  const upserts = () => composio.calls.filter((call) => call.path.endsWith("/upsert")).length;
+  const asked = upserts();
+
+  refusedDeleting(await api("POST", "/triggers", issuesOf(agentId, "agentrun-scratch", { enabled: false })), "a Composio trigger made off");
+  assert.equal(composio.instances.size, registered, "nothing registered at Composio");
+  assert.equal(upserts(), asked, "Composio not even asked: refused before anything is registered");
+  refusedDeleting(await api("POST", "/triggers", issuesOf(agentId, "agentrun-scratch")), "a Composio trigger made on");
+  refusedDeleting(await api("POST", "/triggers", { name: "later", enabled: false, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: agentId, input: { content: "Answer." }, max_cost_usd: 0.5 } }), "a schedule made off");
+  refusedDeleting(await api("PATCH", `/triggers/${elsewhere.body.id}`, { target: { kind: "start_run", agent_id: agentId, input: { content: "Answer." }, max_cost_usd: 0.5 } }), "a trigger moved to it, off");
+  refusedDeleting(await api("PATCH", `/triggers/${own.body.id}`, { enabled: true }), "its trigger turned on");
+  assert.equal(composio.instances.size, registered, "still nothing registered at Composio");
+  assert.deepEqual((await api("GET", "/triggers")).body.triggers.filter((one) => one.target.agent_id === agentId).map((one) => [one.id, one.enabled]), [[own.body.id, false]], "its one trigger, off");
+  assert.equal((await api("PATCH", `/triggers/${own.body.id}`, { name: "renamed" })).status, 200, "an edit that leaves it off still lands");
+
+  learning.busy = false;
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  assert.equal((await api("GET", `/triggers/${elsewhere.body.id}`)).body.target.agent_id, "local-1", "the other agent's trigger is its own still");
+});
+
+test("a trigger that reached the agent after the delete listed its triggers stops the delete: 503 with the agent kept and refusing runs; the next DELETE removes it at Composio, then 204", { timeout: 180_000 }, async (t) => {
+  const learning = fakeLearning();
+  // At in_step_3 (the agent's triggers removed), a trigger raced in: written into the store's file as a create that got
+  // past every check would have written it, already registered at Composio.
+  const race = { done: false };
+  const { api, data, composio } = await withComposio(t, {
+    deleteLearning: learning.deleteLearning,
+    agentDeleteAt: (at, agentId) => {
+      if (at !== "in_step_3" || race.done || !race.trigger) return;
+      race.done = true;
+      const db = new DatabaseSync(join(race.data, "store.sqlite"), { timeout: 10_000 });
+      try {
+        const moved = db.prepare("UPDATE triggers SET agent_id = ?, target = json_set(target, '$.agent_id', ?) WHERE id = ?").run(agentId, agentId, race.trigger);
+        assert.equal(Number(moved.changes), 1);
+      } finally {
+        db.close();
+      }
+    },
+  });
+  race.data = data;
+  const { agentId, runId } = await finishedAgent(api);
+  const { agentId: otherId } = await finishedAgent(api, "10");
+  const made = await api("POST", "/triggers", issuesOf(otherId, "agentrun-late", { enabled: false }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const instance = made.body.source.instance_id;
+  assert.ok(composio.instances.has(instance), "registered at Composio, though off");
+  race.trigger = made.body.id;
+
+  await notYet(api, agentId, undefined, /trigger/);
+  assert.ok(race.done, "the trigger raced in after the listing");
+  assert.equal(rowsOf(data, agentId, [runId]).named, 0, "its run went before the stop");
+  assert.ok(composio.instances.has(instance), "still registered at Composio");
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 200, "the trigger is kept, for the next DELETE to find");
+
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  assert.equal(composio.instances.has(instance), false, "the next DELETE removed it at Composio");
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 404, "and its row");
+  assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
+});
+
+test("a kept answer whose removal failed to save is removed by the next DELETE: after a restart its Idempotency-Key starts a new run, never the deleted one again", { timeout: 180_000 }, async (t) => {
+  const learning = fakeLearning();
+  const first = await serve(t, { deleteLearning: learning.deleteLearning });
+  const made = await first.api("POST", "/runs", inline("What is six times seven?"), { "idempotency-key": "kept-once" });
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  await follow(first.api, made.body.run_id, ["completed"]);
+  const agentId = made.body.agent_id;
+
+  // The kept answers' file cannot be written once: the save of the cleaned answers fails, and the DELETE stops.
+  const blocker = join(first.data, ".idempotency.json.partial");
+  await mkdir(blocker);
+  const stopped = await first.api("DELETE", `/agents/${agentId}`);
+  assert.ok(stopped.status >= 500, `the DELETE stops: ${stopped.status} ${JSON.stringify(stopped.body)}`);
+  assert.equal((await first.api("GET", `/agents/${agentId}`)).status, 200, "the agent is kept");
+  await rm(blocker, { recursive: true });
+
+  const done = await first.api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  await first.stop();
+
+  const { api } = await serve(t, { deleteLearning: learning.deleteLearning, data: first.data });
+  const again = await api("POST", "/runs", inline("What is six times seven?"), { "idempotency-key": "kept-once" });
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.equal(again.headers.get("idempotent-replayed"), null, "not a replay of the deleted run's answer");
+  assert.notEqual(again.body.run_id, made.body.run_id, "a new run");
+  assert.notEqual(again.body.agent_id, agentId, "of a new agent");
+  await follow(api, again.body.run_id, ["completed"]);
+});
+
+test("an agent being deleted takes no write to its home or its learning: 409 agent_not_runnable; one sent while a DELETE runs waits for it and finds the agent gone, nothing of it left", { timeout: 180_000 }, async (t) => {
+  const learning = fakeLearning();
+  learning.busy = true;
+  const gate = { armed: false };
+  const { api, data } = await serve(t, {
+    deleteLearning: learning.deleteLearning,
+    agentDeleteAt: async (at) => {
+      if (at !== "in_step_3" || !gate.armed) return;
+      gate.armed = false;
+      gate.reached();
+      await gate.held;
+    },
+  });
+  const { agentId } = await finishedAgent(api);
+  assert.equal((await api("DELETE", `/agents/${agentId}`)).status, 409, "marked, and kept there by its learning's refusal");
+
+  // A home file's route, its parts joined (as home.test.mjs builds it).
+  const homeFile = (name) => ["/agents", agentId, "home", "files", name].join("/");
+  refusedDeleting(await api("PUT", homeFile("notes.md"), "kept notes"), "a home file");
+  refusedDeleting(await api("POST", `/agents/${agentId}/learning/evals`, { name: "bench", label_source: "people", n: 10, correct: 9 }), "a learning eval");
+  assert.equal((await api("GET", `/agents/${agentId}/home/files`)).body.files?.length ?? 0, 0, "nothing written to its home");
+
+  // A write sent while the DELETE is in step 3: it waits for the DELETE, then finds no agent.
+  learning.busy = false;
+  gate.armed = true;
+  const reached = new Promise((resolve) => (gate.reached = resolve));
+  gate.held = new Promise((resolve) => (gate.release = resolve));
+  const deleting = api("DELETE", `/agents/${agentId}`);
+  await reached;
+  const writing = api("PUT", homeFile("late.md"), "late notes");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  gate.release();
+  const [deleted, written] = await Promise.all([deleting, writing]);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.deepEqual([written.status, written.body.error?.code], [404, "not_found"], JSON.stringify(written.body));
+  assert.ok(!existsSync(join(data, "disk", "agents", agentDir(agentId))), "nothing of the agent is left on the disk");
 });

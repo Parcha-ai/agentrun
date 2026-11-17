@@ -600,6 +600,16 @@ export class AgentDeleting extends Error {
   }
 }
 
+/** An agent's removal refused while a trigger of it is left (Agents.remove): a trigger keeps things outside its row (its
+ *  registration upstream, its adapter settings) that only the trigger engine removes, so its row never goes with the
+ *  agent's. Nothing written. */
+export class TriggersLeft extends Error {
+  override name = "TriggersLeft";
+  constructor(readonly agentId: string, readonly triggerIds: readonly string[]) {
+    super(`agent ${agentId} still has triggers (${triggerIds.join(", ")}): each is removed first, by the trigger engine`);
+  }
+}
+
 /** An inline-agent run whose body differs from the one already stored for its external reference and version: refused,
  *  nothing written (Runs.createInline). A version's body is immutable; a changed body needs a new version. */
 export class ExternalBodyConflict extends Error {
@@ -641,10 +651,10 @@ export interface Agents {
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
    *  there is no such revision. */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
-  /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its triggers
-   *  (their scopes, firings and conversations with them), its learning rows and kept proposals, its sign-ins and their
-   *  tombstones, its revisions and the agent. Only once it has no run left (runs.remove each first): refused while one
-   *  is (StoreConstraint), nothing written. An agent with no row is no write. */
+  /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its learning
+   *  rows and kept proposals, its sign-ins and their tombstones, its revisions and the agent. Only once it has no run and
+   *  no trigger left (runs.remove and the trigger engine's remove each first): refused while a run is (StoreConstraint)
+   *  or a trigger is (TriggersLeft), read under the agent row's lock, nothing written. An agent with no row is no write. */
   remove(agentId: string): Promise<void>;
 }
 
@@ -665,11 +675,12 @@ export interface Triggers {
   all(): Promise<TriggerRow[]>;
   /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
    *  holds is refused (StoreConstraint on trigger_scopes), nothing written; one made on for an archived agent too
-   *  (AgentArchived). */
+   *  (AgentArchived), and one made at all, off too, for an agent being deleted (AgentDeleting). */
   create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
    *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
-   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
+   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written; one that turns it
+   *  on, or moves it at all, to an agent being deleted, too (AgentDeleting). */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[]): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;

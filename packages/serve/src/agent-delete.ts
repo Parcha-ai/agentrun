@@ -20,9 +20,12 @@
 // trigger's registration upstream, a saved sign-in at its vendor, its own computer, its Archil disk, a run's folder on a
 // disk its launch named) is left with the agent's row gone: the record here that names it (for a run's folder, its launch
 // record) is removed only once it is deleted there, and while it is not, the
-// delete stops with 503 unavailable, the agent kept and refusing runs, for the next DELETE to finish.
+// delete stops with 503 unavailable, the agent kept and refusing runs, for the next DELETE to finish. From step 1's mark
+// the agent takes no new trigger, off or on (the trigger engine and the store refuse it), and no write to its home or its
+// learning (the server's, in the delete's turn); a trigger that reached it anyway keeps its row (store TriggersLeft): the
+// same 503, and the next DELETE removes that trigger as it removes the others.
 import { ApiError } from "./errors.js";
-import { FINAL_STATES, type RunState, type Store } from "./store/index.js";
+import { FINAL_STATES, type RunState, type Store, TriggersLeft } from "./store/index.js";
 
 /** The learning module's delete of an agent's learning: idempotent, and refuses (throws) while learning work of the agent
  *  is in flight. Given to the server as its `deleteLearning` option. */
@@ -113,7 +116,14 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
     first = false;
   }
   await host.forgetAgent(agentId);
-  await host.store.agents.remove(agentId);
+  try {
+    await host.store.agents.remove(agentId);
+  } catch (error) {
+    // A trigger that reached the agent after the listing above (the store refuses one once the agent is marked; this is
+    // its backstop): the agent is kept, refusing, for the next DELETE to remove it upstream, its settings, then its row.
+    if (!(error instanceof TriggersLeft)) throw error;
+    throw new ApiError("unavailable", `The agent ${agentId} has ${error.triggerIds.length === 1 ? "a trigger" : "triggers"} made while it was being deleted (${error.triggerIds.join(", ")}), not removed yet. It starts no run meanwhile: send the DELETE again to finish it.`, { details: { triggers: error.triggerIds }, retry_after_ms: 5_000 });
+  }
 }
 
 /** Step 1's second half: each run of the agent not final cancelled once, then read again until every one is final. A run's

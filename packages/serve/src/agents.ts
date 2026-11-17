@@ -37,10 +37,10 @@ export const storeBusy = (error: unknown) => sqliteBusy(error) || error instance
 /** The answer to a request the agent store stayed busy for. */
 export const homeBusy = () => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 
-/** The answer to a run refused because its agent is being deleted (the store's AgentDeleting, read in the transaction
- *  that would start or reopen it). */
+/** The answer to a run, a trigger or a write refused because its agent is being deleted (the store's AgentDeleting, read
+ *  in the transaction that would start or reopen the run or write the trigger; the server's own check for a write). */
 export const agentDeleting = (agentId: string) =>
-  new ApiError("agent_not_runnable", `The agent ${agentId} is being deleted (DELETE /v2/agents/${agentId}): it starts no run and opens none again. Send the DELETE again to finish it.`);
+  new ApiError("agent_not_runnable", `The agent ${agentId} is being deleted (DELETE /v2/agents/${agentId}): it starts no run, opens none again and takes no new trigger or write. Send the DELETE again to finish it.`);
 
 /** What a request's error answers, over HTTP and through an MCP tool alike (server.ts, mcp.ts dispatch): an ApiError as
  *  it is; a busy store home_busy (409, retryable), never 500; a run of an agent being deleted agent_not_runnable (409);

@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
-const { AgentDeleting, Fenced, RunFinal, StoreConstraint } = await import("../dist/store/index.js");
+const { AgentDeleting, Fenced, RunFinal, StoreConstraint, TriggersLeft } = await import("../dist/store/index.js");
 
 const BODY = { instructions: "Answer the question.", tools: [], skills: {} };
 const AGENT = "agent-9";
@@ -49,6 +49,41 @@ test("the delete's mark refuses an external agent's inline run, run and follow-u
   await agentWithRevision(store, "local-1", "rev-local");
   await store.agents.archive("local-1", true);
   assert.equal((await store.runs.create({ id: "run-local", agentId: "local-1", revisionId: "rev-local" })).id, "run-local");
+  // A trigger made off for an archived agent made here stays allowed: nothing deletes that agent's rows.
+  await store.triggers.create(schedule("trig-local", "local-1", false));
+});
+
+/** A schedule trigger `id` of agent `agentId`, on or off. */
+const schedule = (id, agentId, enabled) => ({ id, agentId, name: id, enabled, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: agentId, input: { content: "Answer." } }, nextAt: enabled ? Date.now() + 600_000 : null, catchupWindowS: 0 });
+
+test("the delete's mark refuses a trigger of the agent made, off or on, moved to it or turned on (AgentDeleting), nothing written; agents.remove refuses while a trigger of it is left (TriggersLeft)", async (t) => {
+  const { store } = await storeOn(t);
+  await store.runs.createInline(inline("run-a"));
+  await end(store, "run-a");
+  await store.triggers.create(schedule("trig-own", AGENT, false));
+  await agentWithRevision(store, "other-1", "rev-other");
+  await store.triggers.create(schedule("trig-other", "other-1", false));
+  await store.agents.archive(AGENT, true);
+
+  await assert.rejects(store.triggers.create(schedule("trig-off", AGENT, false)), AgentDeleting, "a trigger of it made off");
+  await assert.rejects(store.triggers.create(schedule("trig-on", AGENT, true)), AgentDeleting, "a trigger of it made on");
+  await assert.rejects(store.triggers.update("trig-other", { agentId: AGENT, target: { kind: "start_run", agent_id: AGENT, input: { content: "Answer." } } }), AgentDeleting, "a trigger moved to it, off");
+  await assert.rejects(store.triggers.update("trig-own", { enabled: true, nextAt: Date.now() + 600_000 }), AgentDeleting, "its trigger turned on");
+  assert.deepEqual((await store.triggers.list(AGENT)).map((one) => [one.id, one.enabled]), [["trig-own", false]], "nothing written");
+  assert.equal((await store.triggers.get("trig-other")).agentId, "other-1");
+  // What the server does with a trigger of it that stays off is still written: its name, its next time.
+  assert.equal((await store.triggers.update("trig-own", { name: "renamed", nextAt: null })).name, "renamed");
+
+  // A trigger that reached it anyway (one the delete's listing missed) keeps the agent: the next delete removes it first.
+  await store.runs.remove("run-a");
+  const left = await store.agents.remove(AGENT).then(() => undefined, (error) => error);
+  assert.ok(TriggersLeft && left instanceof TriggersLeft, `refused with TriggersLeft: ${left}`);
+  assert.deepEqual(left.triggerIds, ["trig-own"]);
+  assert.ok(await store.agents.get(AGENT), "the agent is kept");
+  assert.equal((await store.triggers.list(AGENT)).length, 1, "and its trigger");
+  await store.triggers.remove("trig-own");
+  await store.agents.remove(AGENT);
+  assert.equal(await store.agents.get(AGENT), undefined, "then removed");
 });
 
 test("runs.every names the agent's learning runs; runs.remove refuses a run not final and removes a final one's rows; agents.remove refuses while a run remains, then removes the agent; a late write under a removed run's claim writes nothing", async (t) => {
@@ -85,6 +120,10 @@ test("runs.every names the agent's learning runs; runs.remove refuses a run not 
   await assert.rejects(store.command("run-a", { kind: "steer", body: {} }), RunFinal, "a command for it");
   assert.equal(await store.runs.get("run-a"), undefined, "no row came back");
 
+  // Its trigger is removed by the delete's trigger path (agent-delete.ts), never with the agent's rows.
+  await assert.rejects(store.agents.remove(AGENT), (error) => error?.name === "TriggersLeft", "an agent with a trigger left is not removed");
+  assert.ok(await store.agents.get(AGENT));
+  await store.triggers.remove("trig-9");
   await store.agents.remove(AGENT);
   assert.equal(await store.agents.get(AGENT), undefined, "the agent is gone");
   assert.equal(await store.agents.byExternal(REF), undefined, "and its reference");
