@@ -336,16 +336,19 @@ const digestOfRow = (row: LedgerRow): string | undefined => (typeof metricOf(row
 const micro = (usd: number) => Math.round(usd * 1e6) / 1e6;
 
 /** A compile turn a run's look-back asked (runner/reflect-hook.ts), as its kept round says it: the revision it drafted
- *  (`digest`, null when every draft failed its checks, so it drafted none) and what its turn spent (`usd`, the round's
- *  `compile_usd`: null when unknown; 0 for a round that kept no split, whose look-back holds its compile turn). */
-export type CompileSpend = { readonly workflow: string; readonly digest: string | null; readonly usd: number | null };
+ *  (`digest`, null when every draft failed its checks or the cap stopped the turn, so it drafted none; `workflow` null for
+ *  the latter, which kept no draft's name) and what its turn spent (`usd`, the round's `compile_usd`: null when unknown;
+ *  0 for a round that kept no split, whose look-back holds its compile turn). */
+export type CompileSpend = { readonly workflow: string | null; readonly digest: string | null; readonly usd: number | null };
 
 /** The compile turns run `runId`'s rounds asked, oldest first: none for a run that compiled nothing. */
 async function compilesOf(store: Pick<RunRecords, "learning">, runId: string): Promise<CompileSpend[]> {
-  return (await roundsOf(store, runId)).flatMap((kept) => {
+  return (await roundsOf(store, runId)).flatMap((kept): CompileSpend[] => {
     const row = (kept.proposal ?? {}) as KeptRow;
     const { compiled, draft_errors } = compiledOf(row);
-    if (!compiled) return [];
+    // A compile the cap stopped (runner/reflect-hook.ts `capped`) closed its round with its turn's spend and no draft: no
+    // revision to serve, so its spend is unattributed, never its run's look-back.
+    if (!compiled) return "compile_usd" in row ? [{ workflow: null, digest: null, usd: usdOrNull(row.compile_usd) }] : [];
     const usd = "compile_usd" in row ? usdOrNull(row.compile_usd) : 0;
     return [{ workflow: compiled.workflow, digest: compiled.digest && !draft_errors?.length ? compiled.digest : null, usd }];
   });

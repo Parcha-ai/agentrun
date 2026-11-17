@@ -229,6 +229,8 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
     points.push({ n: at + 1, run_id: run.run_id, actual_usd: actual / 1e6, agent_usd: agent === null ? null : agent / 1e6 });
     diffs.push(agent === null ? Number.NaN : actual - agent);
   });
+  // Replays with no job at all to join (every job run archived, say) are booked all the same.
+  actual += early.reduce((a, b) => a + b, 0);
   const first = promotedAt === null ? -1 : jobs.findIndex((run) => run.started_at >= promotedAt);
   const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: promotedAt! };
   // The booked total against the line at the last point: spend after it (carried to no point) is in.

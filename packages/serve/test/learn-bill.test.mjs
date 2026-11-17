@@ -306,7 +306,8 @@ test("the bill's holds say what held each: a hold this release's workflow DSL wr
   const { DSL_REFUSES } = await import("../dist/runner/promotion.js");
   const store = await ledgerStore(t);
   const { items } = await store.settings.get("learning.promotions.agent-1");
-  const refused = { workflow: "answer", digest: A, at: at(12), decided: "hold", reason: `${DSL_REFUSES}: SCHEMA_UNKNOWN_KEY at root: a key this release does not take`, commit: "c".repeat(40) };
+  // At run-12's start (minute 13): the 9th run that does a job.
+  const refused = { workflow: "answer", digest: A, at: at(13), decided: "hold", reason: `${DSL_REFUSES}: SCHEMA_UNKNOWN_KEY at root: a key this release does not take`, commit: "c".repeat(40) };
   await store.settings.put("learning.promotions.agent-1", { v: 1, items: [...items, refused] });
   const read = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(read.bill.holds.map((one) => [one.n, one.by]), [[8, "check"], [9, "dsl"]], JSON.stringify(read.bill.holds));
