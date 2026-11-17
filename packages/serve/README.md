@@ -340,26 +340,28 @@ while the agent's loop, its log and every key stay on the server, whatever its h
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
 place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
-The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
-(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker. The place is written on the agent's first revision, so its answers
-show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
-"bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
-([background processes](#background-processes)). A definition that
-names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved with no
-place. So is one whose tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
+The box is a new agent's default machine for a shell. A new agentic agent whose definition names no place and no `tools`
+is saved in the Docker box (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, with `["bash",
+"bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]`, so the agent has a shell and can run a
+command in the background ([background processes](#background-processes)). The place is written on the agent's first
+revision, so its answers show it. A definition that names its tools keeps exactly those, an empty list included, and
+gets the box only when one of them runs only there (`bash` or a background tool). One whose tools need no shell (`[]`,
+or `read`, `write`, `web_fetch` and the like) is saved with no place and runs on the runner, so its first run starts at
+once instead of waiting on a container. Where docker is unavailable, a new agent is saved with no place. So is one whose
+tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
 
-`capabilities.places.default_place` is the place a new agent gets here, and where a revision that names no place runs.
-It is worked out again at each run, the same way as at create: an agentic revision with no place runs in the Docker box
-wherever this server has docker now, and on the runner where it does not. A workflow, and a revision whose tools name
-one the box refuses, run on the runner. A save checks a revision with no place against where it would run, so `bash`
+`capabilities.places.default_place` is the place a new agent with a shell gets here, and where a revision that names no
+place and has a shell tool runs. It is worked out again at each run, the same way as at create: an agentic revision with
+no place and a shell tool runs in the Docker box wherever this server has docker now, and on the runner where it does
+not. A workflow, a revision whose tools need no shell, and one whose tools name one the box refuses run on the runner. A save checks a revision with no place against where it would run, so `bash`
 with no place saves where docker is there and is `422` where it is not. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
 unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
 restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
 What a person picks or unticks there is what is sent.
 
-A run runs in its revision's place, else where `default_place` says at that run (a workflow, and a revision whose tools
-name one the box refuses, on the runner). A run request names no place: `POST /agents/{id}/runs`
+A run runs in its revision's place, else where `default_place` says at that run (a workflow, a revision whose tools need
+no shell, and one whose tools name one the box refuses, on the runner). A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
@@ -382,14 +384,13 @@ A definition naming a box this server does not have saves with a warning on `def
 
 With docker on (by default, when `AGENTRUN_BOXES` is not set; or listed in it) and a Docker daemon this server's user
 may use, a run whose place is
-`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
-container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
+`{"mode": "sandbox", "box": "docker"}` gets one container, made when a runner takes the run, before its first model
+request, whatever tools it calls. Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
 run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
 they follow no link anywhere on the way (one pointing inside `work/` included), take only a regular file with one hard
 link, and write through a temporary file renamed over the old one, keeping its mode (a new file is `0644`). A refusal
 says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
-directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
-the first of them.
+directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container.
 `web_fetch`, `web_search` and monid's endpoints stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
@@ -1045,7 +1046,8 @@ A run is refused before it starts, `409 agent_not_runnable`, saying which, for a
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING` (one of those
-levels exactly), else at its harness's own default; it is never off, and a model node that names its own thinking level
+levels exactly), else at its harness's own default; it is never off (pi never asks a model the catalog does not list,
+such as a local one, to stop reasoning: it thinks at its lowest level, its reasoning kept out of the answer), and a model node that names its own thinking level
 keeps it. The level is fixed in the run's launch when it starts, and its metrics name the level its harness ran at: one
 above the harness's highest runs at that highest (Codex and OpenCode stop at `xhigh`). An agentic run whose level is
 `low`, `medium` or `high` also gets a short note on how to work, right after its instructions, on every harness

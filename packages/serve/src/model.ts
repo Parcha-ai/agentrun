@@ -469,7 +469,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // the provider's client per wire, which pi-ai picks by the model's `api`.
   const gatewayModels = ids.map((id) => {
     const cost = priceOf(id);
-    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none.
+    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none,
+    // and so does a model the catalog does not list.
     const thinking = catalogThinking(catalog, id, namedOf.get(id));
     const shared = { id, name: id, provider: MODEL_PROVIDER, reasoning: true, input: ["text", "image"] as ("text" | "image")[], cost, contextWindow: 128_000, maxTokens: 32_000, ...(thinking ? { thinkingLevelMap: thinking } : {}) };
     return wireOf(id) === "anthropic-messages" ? { ...shared, api: "anthropic-messages", baseUrl: base } : { ...shared, api: "openai-responses", baseUrl, compat: { supportsDeveloperRole: false } };
@@ -729,12 +730,16 @@ export async function catalogPrices(): Promise<Map<string, Listed[]>> {
  *  version form: the vendor's entry (the id's segment before it, else `named`); else each level every entry that says
  *  agrees on (gpt-6.1-sol's entries differ on `minimal` alone: openai-codex's asks low), a level they differ on left to
  *  pi-ai's default. None: undefined, pi-ai's defaults. So pi through a gateway at thinking off asks gpt-6.1-sol for no
- *  effort, as its catalog entries say (off: null), not the "none" it refuses. */
+ *  effort, as its catalog entries say (off: null), not the "none" it refuses. A model the catalog does not list (a local
+ *  model, a gateway's own alias) is never asked to stop reasoning either (off: null): pi then thinks at its lowest level,
+ *  so a model that reasons anyway has its reasoning split out of the answer, never written into it. */
 export function catalogThinking(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ThinkingLevelMap | undefined {
   const segments = id.split("/");
   const own = segments.at(-1)!;
   const vendor = segments.length > 1 ? segments.at(-2) : named;
-  const saying = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []).flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
+  const listed = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []);
+  if (!listed.length) return { off: null } as ThinkingLevelMap;
+  const saying = listed.flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
   const vendors = saying.find((entry) => entry.provider === vendor);
   if (vendors) return vendors.map as ThinkingLevelMap;
   const agreed: Record<string, string | null> = {};

@@ -120,7 +120,7 @@ test("a Responses route carries its catalog model's thinking levels, and the ses
   assert.deepEqual(model.thinkingLevelMap, route.like.thinkingLevelMap, "the session's model keeps the route's thinking levels");
 });
 
-test("a gateway's Responses route carries its catalog model's thinking levels too (sol's off null, whole or bare id), and a model the catalog doesn't list keeps pi-ai's defaults", async () => {
+test("a gateway's Responses route carries its catalog model's thinking levels too (sol's off null, whole or bare id), and a model the catalog doesn't list keeps pi-ai's defaults but thinking off (never asked for no reasoning)", async () => {
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:1", AGENT_MODEL_API_KEY: `not-a-secret-${"g"}` };
   const wires = ["anthropic-messages", "openai-responses"];
   for (const id of ["openai/gpt-6.1-sol", "gpt-6.1-sol"]) {
@@ -130,7 +130,7 @@ test("a gateway's Responses route carries its catalog model's thinking levels to
     assert.equal(route.like?.thinkingLevelMap?.high, "high", `${id}: ${JSON.stringify(route.like)}`);
   }
   const unlisted = await routeOf("acme/not-a-listed-model", gateway, "default", wires);
-  assert.equal(unlisted.like?.thinkingLevelMap, undefined, `no catalog entry, no map: ${JSON.stringify(unlisted.like)}`);
+  assert.deepEqual(unlisted.like?.thinkingLevelMap, { off: null }, `no catalog entry: off alone, null: ${JSON.stringify(unlisted.like)}`);
 });
 
 test("a route carries what its catalog model takes as input, on every wire: a text-only model's route says so, an image model's says it takes images", async () => {

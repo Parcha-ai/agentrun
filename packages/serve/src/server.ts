@@ -2230,7 +2230,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
-  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, (tool) => toolOf(tool)?.runnerOnly === true);
+  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, toolOf);
 
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
@@ -2355,18 +2355,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
-   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
-   *  tool the box refuses (browser) keeps the runner. */
+   *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
+   *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
+   *  (browser), keeps the runner. */
   async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body);
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const entry = await agents.create(definition, async (revision) => {
       const saved = await saveable(revision);
       warnings = saved.warnings;
       return saved.stamp;
-    }, "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, template);
+    }, place.mode === "sandbox" ? { place, tools: NEW_AGENT_TOOLS } : undefined, template);
     return { entry, warnings };
   }
 
