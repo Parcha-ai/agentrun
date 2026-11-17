@@ -75,6 +75,14 @@ describe("RunsRequest", () => {
     expect(calls[2].url.searchParams.get("status")).toBe("working");
   });
 
+  it("stands Use your agent and Send request at one height", async () => {
+    await mount({ agentId: "agent one" });
+    const height = (el: Element) => el.className.split(" ").filter((c) => /^h-control-/.test(c));
+    const group = document.querySelector('[role="group"][aria-label="Use your agent options"]')!;
+    expect(height(group)).toEqual(["h-control-md"]);
+    expect(height(button("Send request"))).toEqual(height(group));
+  });
+
   it("copies the exact scoped query for the preferred coding agent", async () => {
     localStorage.setItem(CODING_AGENT_PREFERENCE, "codex-cli");
     const copy = vi.fn(async (_text: string) => {});
