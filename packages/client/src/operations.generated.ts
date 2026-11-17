@@ -1032,7 +1032,7 @@ export type Capabilities = {
     available: boolean;
     reason?: string;
     missing?: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     providers?: Array<string>;
     provider?: string;
     default_provider?: string;

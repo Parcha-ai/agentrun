@@ -6398,7 +6398,7 @@ class _CapabilitiesToolsItemRequired(TypedDict):
     nodes: bool
     calls: bool
     available: bool
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     permission: Literal["allow", "ask", "deny"]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]

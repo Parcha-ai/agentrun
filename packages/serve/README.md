@@ -2775,10 +2775,15 @@ the harness runs on its runner's `adapter(launch, extra)`, and is admitted by th
 adds harnesses and never replaces one. The start of the server, or of a separate runner, is refused, naming the module
 and the id, when a module:
 - gives an id that does not match `^[a-z][a-z0-9-]{0,39}$`;
+- names an id serve's own runs carry: `learning`, `sdk`, `workflow`, `claude-agent-sdk` or `codex-sdk`;
 - names a built-in harness;
 - names an id another module adds;
 - gives an entry that is missing a member;
 - does not resolve.
+
+A module's entry that gives no adapter `facts` runs on the general spec, with pi's tools: capabilities list its id on
+every tool pi runs (`tools[].harnesses`) and on MCP grants (`features.mcp_client.harnesses`), so an agent on it keeps
+its tool choices. One that gives `facts` runs the host tools, as the other built-in harnesses do.
 
 The harnesses a module adds are listed in `capabilities.harnesses` after the built-in ones. Each offer there carries a
 `label` and `promises`:

@@ -200,7 +200,7 @@ export interface components {
       available: boolean;
       reason?: string;
       missing?: string[];
-      harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+      harnesses: string[];
       providers?: string[];
       provider?: string;
       default_provider?: string;
