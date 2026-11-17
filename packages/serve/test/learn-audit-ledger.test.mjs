@@ -538,14 +538,16 @@ test("(r4) a shadow's cap is the served run's cap less what it spent: served cap
 
 test("(r4) a shadow that stops on its cap is `capped`: no verdict, never counted toward the hold (hold_window 1, hold_disagree 1), where an uncapped disagreement holds", { timeout: 300_000 }, async (t) => {
   // The workflow answers these wrong; the agent (and so each shadow) answers 42. Every request is booked at $0.30, and
-  // held first at its worst case at the model's price (8,192 output tokens at $15/M, ~$0.12, more than $0.05).
+  // admitted only when the cap holds its least first: its input and the least answer (1,024 output tokens at $15/M,
+  // over $0.015) at the model's price.
   const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, priced: () => 0.3, submit: (text) => (text.includes("Wrong question") ? WRONG : { answer: 42, sure: true }) });
-  // Its cap leaves $0.05 after the $0.30 it spent: a shadow is started (over a run's smallest cap) and stops at its first request.
-  const served = await w.start("tight-1", "Wrong question one", { max_cost_usd: 0.35 });
+  // Its cap leaves $0.011 after the $0.30 it spent: a shadow is started (over a run's smallest cap, $0.01), and its first
+  // request is refused at that cap.
+  const served = await w.start("tight-1", "Wrong question one", { max_cost_usd: 0.311 });
   assert.deepEqual([served.state, served.metrics?.path, served.costUsd], ["ended", "workflow", 0.3], JSON.stringify(served));
   const shadow = (await w.shadowOf("tight-1")).row;
   const { AUDIT_CAPPED } = await import("../dist/runner/audit.js");
-  assert.equal(readLaunchBody((await w.server.runs.launch(shadow.id)).body).maxCostUsd, 0.05);
+  assert.equal(readLaunchBody((await w.server.runs.launch(shadow.id)).body).maxCostUsd, 0.011);
   assert.equal(shadow.state, "failed", `never parked for a raise: ${JSON.stringify(shadow)}`);
   assert.ok(shadow.summary.startsWith(AUDIT_CAPPED), shadow.summary);
   const next = await w.start("tight-next", "Question 99");

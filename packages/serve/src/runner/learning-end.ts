@@ -205,11 +205,11 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
 }
 
 /** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): its
- *  learning runs' grades and its audit's shadow run (besideOf), for a capped run that learns, the only run whose ends
- *  queue them; none for any other, whose gates read only its own sessions. */
+ *  learning runs' grades and its audit's shadow run (besideOf), for a capped run with a learning start, the only run
+ *  whose ends queue them (one that only uses what its agent learned queues no grade, but may start a shadow); none for any
+ *  other, whose gates read only its own sessions. */
 export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "learning" | "runs">, runId: string): (() => Promise<number | null>) | undefined {
-  const start = learningStartOf(launch);
-  if (launch.maxCostUsd === undefined || !start || start.use) return undefined;
+  if (launch.maxCostUsd === undefined || !learningStartOf(launch)) return undefined;
   return () => besideOf(store, runId);
 }
 

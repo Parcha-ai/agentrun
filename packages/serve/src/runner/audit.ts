@@ -19,7 +19,7 @@
 //   gradeRow: an owner's grade on a run the workflow answered alone is a row too (source grade, agreed = the grade).
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import type { Park } from "@parcha/agentrun-kernel/kernel/cap";
+import { overCapMessage, type Park } from "@parcha/agentrun-kernel/kernel/cap";
 import { auditLoopOf, type AuditLoop } from "../learning-setting.js";
 import { RUN_CAP_MIN_USD } from "../learning-batch.js";
 import { SERVED_PATHS, type RunPath } from "../learning-cost.js";
@@ -91,14 +91,15 @@ export const AUDIT_CAPPED = "the audit stopped on its cap: what its served run's
  *  in AUDIT_CAPPED's words, never parks it. Nobody raises a shadow's cap, which is what its served run's cap left. */
 export const auditPark = (park: Park): Park => (park.outcome === "parked" ? { outcome: "failed", error: `${AUDIT_CAPPED} (${park.words})` } : park);
 
-/** The served run's end-of-run step `step`, its audit started after it (startAudit) on an end the run reached on its own
- *  (a cut run starts none): the learned workflow that served it, read from its journal whatever claim it served on
- *  (servedOf), and, for a capped run, what its cap leaves once this end is counted (auditRoomOf: its job, its look-back,
- *  the grades beside it and the one this end queues). */
+/** The served run's end-of-run step `step` (none for a run that only uses what its agent learned), its audit started
+ *  after it (startAudit) on an end the run reached on its own (a cut run starts none): the learned workflow that served
+ *  it, read from its journal whatever claim it served on (servedOf), and, for a capped run, what its cap leaves once this
+ *  end is counted (auditRoomOf: its job, its look-back, the grades beside it and the one this end queues). A run that
+ *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
 export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch }): EndOfRunTurn | undefined {
-  if (!step) return undefined;
+  if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
   return async (input) => {
-    const rows = await step(input);
+    const rows = step ? await step(input) : undefined;
     if (input.cut === undefined) await auditAtEnd(deps, input.runId, rows?.also ?? []);
     return rows;
   };
@@ -211,8 +212,9 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
       const [servedRow, shadow] = [await store.runs.get(open.run), await store.runs.get(open.shadow_run)];
       // Its shadow is created after its line, at the served run's claim: one missing once the served run ended never ran.
       if ((servedRow && !ended(servedRow)) || (shadow && !ended(shadow))) continue;
-      // One that stopped on its cap (auditPark's words) has no answer: `capped`, with no verdict.
-      const capped = shadow?.state === "failed" && (shadow.summary ?? "").startsWith(AUDIT_CAPPED);
+      // One that stopped on its cap (refused at it, auditPark's words, or ended once its cost passed it, the kernel's
+      // overCapEnd) has no answer: `capped`, with no verdict.
+      const capped = shadow?.state === "failed" && ((shadow.summary ?? "").startsWith(AUDIT_CAPPED) || overCapMessage(shadow.summary) !== undefined);
       rows.push({ at: servedRow?.startedAt ?? 0, row: { run: open.run, shadow_run: open.shadow_run, workflow: open.workflow, digest: open.digest, promoted_at: open.promoted_at, source: "shadow", agreed: null, served_cost: servedRow?.costUsd ?? null, shadow_cost: shadow?.costUsd ?? null, ...(capped ? { capped: true as const } : {}), at: iso(now) } });
     }
     rows.sort((a, b) => a.at - b.at || (a.row.run < b.row.run ? -1 : a.row.run > b.row.run ? 1 : 0));

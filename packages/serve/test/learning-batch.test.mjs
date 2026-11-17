@@ -690,7 +690,7 @@ test("a row whose run's audit shadow still runs stays open and starts no next ro
   // Its figures read three times unsettled, or the batch over without waiting on them.
   await Promise.race([sawOpen, batches.idle(made.id)]);
   const mid = await batches.read("a1", made.id);
-  assert.deepEqual([mid.status, mid.current, mid.finished, mid.rows[0].state, mid.rows[0].total_usd ?? null], ["running", 1, 0, "reviewed", null], JSON.stringify(mid));
+  assert.deepEqual([mid.status, mid.current, mid.finished, mid.rows[0].state, mid.rows[0].total_usd ?? null], ["running", 1, 0, "running", null], JSON.stringify(mid));
   assert.equal(mid.cost_usd, null, "the cost so far is unknown while the shadow runs, never the served part as all");
   assert.equal(host.runs.size, 1, "no next row starts while row 1's all-in is unknown");
   shadowEnded = true;
