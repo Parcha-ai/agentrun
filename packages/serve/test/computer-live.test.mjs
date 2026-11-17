@@ -437,8 +437,9 @@ test("two opens of one computer at once run one after the other: one endpoint le
   assert.deepEqual(more, []);
   // The first open's endpoint is closed, not orphaned: its own page no longer answers 200 (an orphan's still would). Its
   // port is asked for that page, not whether anything listens on it: a freed port can be handed out again at once, to
-  // the second open's listen or another process's, so something may listen there.
-  const page = await fetch(`http://127.0.0.1:${first.port}/v/${first.id}`).then((res) => res.status, () => "refused");
+  // the second open's listen or another process's, so something may listen there. Bounded: another process's server
+  // may never answer, and an orphan of ours answers at once.
+  const page = await fetch(`http://127.0.0.1:${first.port}/v/${first.id}`, { signal: AbortSignal.timeout(5_000) }).then((res) => res.status, () => "refused or no answer");
   assert.notEqual(page, 200, "the first open's endpoint is closed, not orphaned");
   assert.equal(rows[0].port, second.port);
   await a.view.close("ended");
