@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.change-alarm",
-  "version": 2,
+  "version": 3,
   "title": "Move a labelled alarm to a new time in Clock",
   "split": "heldout",
   "tags": ["clock", "edit"],
@@ -65,6 +65,8 @@
     }
   ],
   "oracle": [
+    { "method": "ui.act", "why": "Wait for Clock's window: am start -W can return before it reaches the accessibility tree.", "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "Wait for the alarm's row: the window may still be the splash screen, and a find reads the screen once.", "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "text": "{{label}} {{nonce}}", "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "The alarm's time button (named by the time alone, with Clock's hair space, U+200A, before AM or PM) opens the time picker on its hour dial.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "matches": "^{{t.f12}}:{{t.fmm}}\\s{{t.fap}}$" } } } }], "expect": { "text": "CANCEL", "timeoutMs": 8000 } } },
     { "method": "ui.act", "why": "The hour on the dial (a text node; the picker's own hour field is a button). 12 first: most picks keep the hour, and a press on the hour already shown changes nothing and can't be confirmed.", "params": { "steps": [{ "press": { "find": { "role": "text", "name": { "equals": "12" } } } }, { "press": { "find": { "role": "text", "name": { "equals": "{{t.t12}}" } } } }], "expect": { "text": "{{t.t12}}", "timeoutMs": 5000 } } },
     { "method": "ui.act", "why": "The minutes field, the picker's two-digit button that is not the one-digit hour, turns the dial to minutes.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "matches": "^(?!{{t.t12}}$)\\d\\d$" } } } }], "expect": { "text": "55", "timeoutMs": 5000 } } },

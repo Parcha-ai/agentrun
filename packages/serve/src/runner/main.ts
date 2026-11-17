@@ -20,7 +20,7 @@ import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
 import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_TABLE_ENV } from "../harness-table.js";
-import { maxRunsOf } from "../host.js";
+import { DEFAULT_PORT, maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
@@ -29,7 +29,10 @@ import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, 
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { claimViewOpener } from "../computer-live.js";
-import { runnerLiveOf } from "../live-reach.js";
+import { LOOPBACK as LIVE_LOOPBACK, runnerLiveOf } from "../live-reach.js";
+import { LOOPBACK } from "../mcp-oauth.js";
+import { serverOwn } from "../mcp-private-hosts.js";
+import { MCP_ALLOW_LOOPBACK_ENV } from "../mcp-servers-store.js";
 import { envValue, type KeyEnv } from "../key-meta.js";
 import { fauxComputers } from "../faux-computers.js";
 import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from "../workspace/computer-deps.js";
@@ -169,14 +172,36 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   // mounts by where this process's Docker has the data directory (box-paths.ts), read once; a desktop's or a phone's live
   // view opened with it.
   const computers = runnerComputers(store, runs, sealKey, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH) });
+  const loopback = runnerLoopback(env);
+  if (loopback) process.stderr.write(`agentrun-serve runner: ${MCP_ALLOW_LOOPBACK_ENV}=1: this runner's runs may reach an MCP server on this machine's loopback, never at ${loopback.own.join(" or ")} nor where its server listens\n`);
   const deps = {
     env: runs, data: dataDir, journal: (claim: Parameters<Store["journal"]>[0]) => store.journal(claim), store, sealKey, routeOf,
     computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps,
     // A run's log lines (a sweep that failed) on the runner's stderr, as its
     // warnings are.
     log: (line: string) => void process.stderr.write(`agentrun-serve runner: ${line}\n`),
+    // An MCP server on loopback: reached only when this process's own operator set AGENTRUN_MCP_ALLOW_LOOPBACK=1
+    // (runnerLoopback), never at a server's own port on it.
+    // The server's own addresses, as it kept them in the store at its last start, are read at each claim beside these.
+    ...(loopback ? { mcpLoopback: true, mcpOwn: loopback.own, mcpOwnOf: () => serverOwn(store) } : {}),
   };
   return { createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) }), computers: computers.computerDeps, env: runs };
+}
+
+/** What a runner in its own process may reach on loopback, from its own environment alone, as a server takes its opt-in
+ *  (cli.ts mcpLoopback): with AGENTRUN_MCP_ALLOW_LOOPBACK=1, an MCP server on this machine's loopback (the machine this
+ *  process runs on, its container's in a container), never at `own`: the port a server listens on unless --port says
+ *  otherwise (DEFAULT_PORT) and, when this environment names one on loopback, the port of its public address
+ *  (AGENTRUN_PUBLIC_URL); runnerLoop adds, at each claim, the addresses the server kept in the store at its last start
+ *  (serverOwn), so a run never reaches a server beside this runner through an MCP server's address, whatever its port.
+ *  Undefined without it. The opt-in is never read from the store or the data directory: a runner never inherits
+ *  another process's. */
+export function runnerLoopback(env: NodeJS.ProcessEnv): { readonly own: readonly string[] } | undefined {
+  if (env[MCP_ALLOW_LOOPBACK_ENV] !== "1") return undefined;
+  const own = [`http://${LIVE_LOOPBACK}:${DEFAULT_PORT}`];
+  const pub = URL.parse(env.AGENTRUN_PUBLIC_URL ?? "");
+  if (pub && LOOPBACK.test(pub.hostname)) own.push(pub.origin);
+  return { own };
 }
 
 /** A runner's loop factory with the run's computers it composed and the runs' environment: what the janitor sweeps with. */

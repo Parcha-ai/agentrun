@@ -9,6 +9,10 @@ import type { Store } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { builtinHarness } from "./harness-table.js";
 
+/** The port a server listens on unless --port says otherwise (cli.ts), and the one a standalone runner's loopback reads
+ *  never go to (runner/main.ts runnerLoopback). */
+export const DEFAULT_PORT = 7340;
+
 const MiB = 2 ** 20;
 /** Memory the server keeps for itself, before any run, in MiB. Measured with the runs' (harness-table.ts): the server's anon
  *  3 s after its start, 32 starts at limits of 512M to 2048M, was 58 to 81 MB, with no peak at the start over that;

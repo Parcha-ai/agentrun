@@ -75,11 +75,13 @@ Counts at the pinned revision: **201** tasks.
 | 6: large third-party PDFs | 5 | native/read_paper_1 to 5 (arXiv papers of 780 KB to 4 MB, under their own licences) |
 | 7: emulator-specific targets | 2 | settings/adjust_font_icon_max and _min (font scale 2.0 with density 540, and 0.85 with 356: the emulator's own values) |
 | 3: needs root | 1 | settings/change_wallpaper (the check reads the wallpaper file under /data/system) |
-| **Ported** | **8** | |
+| Passes, but no oracle can be confirmed on the cloud phone | 2 | settings/adjust_brigtness_max and _min (see Dropped) |
+| **Ported** | **6** | |
 
 That's 117 GUI tasks (201 minus the 84 under rule 1), of which 8 pass. Fewer than 10 can be ported faithfully to an
-unrooted phone, so this suite has **8 tasks, 4 dev and 4 heldout**. We didn't bend more tasks into shape. Each
-excluded task fails for the reason in the table, and each of those reasons changes what the task measures.
+unrooted phone, and two of those were dropped, so this suite has **6 tasks, 3 dev and 3 heldout**. We didn't bend
+more tasks into shape. Each excluded task fails for the reason in the table, and each of those reasons changes what
+the task measures.
 
 The buckets were derived by reading the task files as Python syntax trees, never importing or running them. Nothing
 from the clone was run.
@@ -105,40 +107,44 @@ These apply to every task. Each task's `source.changes` lists its own changes.
   - Every state-checked task has an oracle. setup alone fails its checks, and setup plus oracle passes them. This
     was checked against a fake phone (Linux shell, faked `settings`, `cmd`, `am`, `input`, `screencap`). On that
     fake, teardown also left the user's files exactly as they were.
-  - The six tasks done in Settings or Files (brightness max and min, flight mode on and off, bid-file-rename,
-    invoice-receipt-copy) are `"exec": "deny"`, and their oracles do the task through the UI with `ui.act`,
-    `apps.launch` and `input.actions`. They were written against the phone-harness cloud phone (redroid 15) and
-    lean on that image as android-dev's README says: the brightness slider is dragged at its place on that
-    screen, DocumentsUI's selection-bar More options is tapped at (336,48) points, and Copy to goes through the
-    storage root named `redroid15_arm64`. The file oracles search Download by name, since a find sees only what is
+  - The four tasks done in Settings or Files (flight mode on and off, bid-file-rename, invoice-receipt-copy) are
+    `"exec": "deny"`, and their oracles do the task through the UI with `ui.act`, `apps.launch` and
+    `input.actions`. They were written against the phone-harness cloud phone (redroid 15) and lean on that image
+    as android-dev's README says: DocumentsUI's selection-bar More options is tapped at (336,48) points, and Copy to
+    goes through the storage root named `redroid15_arm64`. The file oracles search Download by name, since a find sees only what is
     on screen.
 - **Translation:** Chinese goals are translated, and the translation is marked.
 
 ## Reporting
 
 A number from this suite is not a MobileWorld score. Report it as **"MobileWorld-port, N of 201 tasks (117 GUI),
-our checks"**. N is the number of tasks run (8 today), and you should say which split. Three things differ from the
+our checks"**. N is the number of tasks run (6 today), and you should say which split. Three things differ from the
 source:
 
 - The tasks run on a real unrooted phone rather than their emulator.
 - They're a small GUI-only subset that leaves out every backend, mail, MCP and user-interaction task.
 - The checks are ours.
 
-## Ported (8)
+## Ported (6)
 
 | Split | Folder | Source | What it asks |
 | --- | --- | --- | --- |
 | dev | bid-file-rename | native/bid_file_rename.py:BidFileRenameTask | Rename four bid_ files in Download to bid_1 to bid_4 by date (params: which file is oldest) |
 | dev | take-selfie | native/take_selfie.py:TakeSelfieTask | Take a photo |
-| dev | adjust-brightness-max | settings/adjust_brigtness_max.py:AdjustBrightnessMaximumTask | Brightness to maximum |
 | dev | open-flight-mode | settings/open_flight_mode.py:OpenFlightModeTask | Turn flight mode on |
 | heldout | invoice-receipt-copy | native/invoice_receipt_copy_task.py:InvoiceReceiptCopyTask | Copy November's invoice and receipt PDFs from Download into Finance/invoice |
 | heldout | check-invoice-1 | native/check_invoice_1.py:CheckInvoiceTask1 | Read an invoice PDF and answer the amount due with late interest |
-| heldout | adjust-brightness-min | settings/adjust_brigtness_min.py:AdjustBrightnessMinimumTask | Brightness to minimum |
 | heldout | close-flight-mode | settings/close_flight_mode.py:CloseFlightModeTask | Turn flight mode off |
 
-The split pairs twins across it (brightness max and min, flight mode on and off). It also puts one file task in each
-split, and the two invoice tasks in heldout.
+The split pairs twins across it (flight mode on and off). It also puts one file task in each split, and the two
+invoice tasks in heldout.
+
+### Dropped
+
+- **adjust-brightness-max and adjust-brightness-min** pass the selection rule, but no oracle can be confirmed on the
+  cloud phone. Settings' Brightness level opens SystemUI's brightness dialog, and an act that follows it to SystemUI
+  reads SystemUI's first window in the accessibility tree, the status bar above the dialog. So no act can wait for
+  the dialog before dragging its slider.
 
 ### What the runner needs
 
@@ -155,10 +161,6 @@ split, and the two invoice tasks in heldout.
   - Its invoice is our re-typeset text PDF, not the source's 82 KB LaTeX PDF.
   - The source's printed subtotal (85,100) isn't the sum of its line items (84,100). The check takes both 104,417.70
     (the source's key) and 103,190.70.
-- **adjust-brightness-max and adjust-brightness-min:** the check reads `settings get system screen_brightness`.
-  Phones whose slider writes a wider scale (some Samsung and Xiaomi builds) are covered for max, which takes any
-  value of 255 or more. Min wants 0 or 1. A vendor whose lowest slider position stores a higher value would fail an
-  agent that did the task.
 - **open-flight-mode and close-flight-mode:** these need USB adb (see above).
 - **take-selfie:**
   - A camera probe (`dumpsys media.camera` lists at least one camera device) runs before setup. A phone without one

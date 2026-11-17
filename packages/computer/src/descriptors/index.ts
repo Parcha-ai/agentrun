@@ -7,6 +7,7 @@ import { CLOUDFLARE } from "./cloudflare.js";
 import { DAYTONA } from "./daytona.js";
 import { DOCKER } from "./docker.js";
 import { E2B } from "./e2b.js";
+import { FLY } from "./fly.js";
 import { KERNEL } from "./kernel.js";
 import { LOCAL } from "./local-chrome.js";
 import { MODAL } from "./modal.js";
@@ -14,9 +15,9 @@ import { MORPH } from "./morph.js";
 import { ORGO } from "./orgo.js";
 import { PHONE_HARNESS } from "./phone-harness.js";
 
-export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, MORPH, CLOUDFLARE, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD] as const;
+export const DESCRIPTORS = [DOCKER, DAYTONA, MODAL, E2B, AGENT37, MORPH, CLOUDFLARE, FLY, ORGO, PHONE_HARNESS, BROWSERBASE, KERNEL, LOCAL, BOXD] as const;
 
-export { AGENT37, BOXD, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, KERNEL, LOCAL, MODAL, MORPH, ORGO, PHONE_HARNESS };
+export { AGENT37, BOXD, BROWSERBASE, CLOUDFLARE, DAYTONA, DOCKER, E2B, FLY, KERNEL, LOCAL, MODAL, MORPH, ORGO, PHONE_HARNESS };
 export { AGENT37_BASE_TEMPLATE } from "./agent37.js";
 export { BOXD_DEFAULT_IMAGE } from "./boxd.js";
 export { DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpu, daytonaGpuSnapshot } from "./daytona.js";
