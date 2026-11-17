@@ -669,9 +669,16 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
+/** Whether `listing` was cut of the server's secrets as they are now. A list builds one cut of others again before it
+ *  shows it (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads
+ *  [redacted]), which cutting the built item again could not do. */
+export function cutOfNow(listing: { readonly cut: string }, serverSecrets: readonly string[]): boolean {
+  return listing.cut === secretsDigest(serverSecrets);
+}
+
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now
- *  (`archivedAt`, ms, the run's or its agent's), and, when the server's secrets are no longer those it was cut of, every
- *  string in it cut again of them (redactedOutput), so a secret saved since never shows. */
+ *  (`archivedAt`, ms, the run's or its agent's), and, when the server's secrets moved between its build and this (within
+ *  one list), every string in it cut again of them (redactedOutput), so a secret saved since never shows. */
 export function listedItem(listing: { readonly item: Record<string, unknown>; readonly cut: string }, origin: string, archivedAt: number | null, serverSecrets: readonly string[]): Record<string, unknown> {
   const item = { ...listing.item, console_url: runLink(origin, String(listing.item.run_id)), archived_at: archivedAt === null ? null : iso(archivedAt) };
   return listing.cut === secretsDigest(serverSecrets) ? item : (redactedOutput(item, [...serverSecrets]) as Record<string, unknown>);

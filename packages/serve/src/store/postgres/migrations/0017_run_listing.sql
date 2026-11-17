@@ -54,7 +54,10 @@ DROP TRIGGER IF EXISTS runs_list_parent ON runs;
 CREATE TRIGGER runs_list_parent AFTER UPDATE OF list_mark ON runs
   FOR EACH ROW WHEN (pg_trigger_depth() < 3) EXECUTE FUNCTION run_list_parent();
 
--- A command written, taken or refused, and a learning row written or changed: its run's mark.
+-- A command written, taken or refused, and a learning row written or changed: its run's mark, moved at the commit of the
+-- write's transaction (deferred), still inside it. The run's row is locked only for that moment: a command whose
+-- transaction waits on something else (its launch row) never holds up the run's journal commits, or the run's other
+-- commands, which take their ids in the order they were inserted.
 CREATE OR REPLACE FUNCTION run_list_of_row() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   EXECUTE format('UPDATE %I.runs SET list_mark = list_mark + 1 WHERE id = $1', TG_TABLE_SCHEMA) USING NEW.run_id;
@@ -62,11 +65,14 @@ BEGIN
 END
 $$;
 DROP TRIGGER IF EXISTS commands_list_moved ON commands;
-CREATE TRIGGER commands_list_moved AFTER INSERT ON commands FOR EACH ROW EXECUTE FUNCTION run_list_of_row();
+CREATE CONSTRAINT TRIGGER commands_list_moved AFTER INSERT ON commands DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION run_list_of_row();
 DROP TRIGGER IF EXISTS commands_list_settled ON commands;
-CREATE TRIGGER commands_list_settled AFTER UPDATE OF taken_at, refused ON commands FOR EACH ROW EXECUTE FUNCTION run_list_of_row();
+CREATE CONSTRAINT TRIGGER commands_list_settled AFTER UPDATE OF taken_at, refused ON commands DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION run_list_of_row();
 DROP TRIGGER IF EXISTS learning_list_moved ON learning_proposals;
-CREATE TRIGGER learning_list_moved AFTER INSERT OR UPDATE ON learning_proposals FOR EACH ROW EXECUTE FUNCTION run_list_of_row();
+CREATE CONSTRAINT TRIGGER learning_list_moved AFTER INSERT OR UPDATE ON learning_proposals DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION run_list_of_row();
 
 UPDATE runs SET list_status = CASE
     WHEN state = 'ended' THEN 'completed'

@@ -71,7 +71,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { factsOverStore, listedItem, listingOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { cutOfNow, factsOverStore, listedItem, listingOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { type Lister, startLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
@@ -1223,7 +1223,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let lister: Lister | undefined;
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), and a list cuts a listing again of them (listedItem). A failed run's error words
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (cutOfNow). A failed run's error words
     // name a refused key by the keys and settings, so those listings are built again.
     await lister?.keysChanged();
     env = withPlan(own(withSecrets(base, "all", storedKeys)), plan);
@@ -3001,7 +3001,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const secrets = serverSecrets();
     const runs: Record<string, unknown>[] = [];
     for (const { row, agentArchivedAt, listing, listMark, behind } of page.rows) {
-      const kept = listing === null || behind ? await listNow(row.id, listMark) : listing;
+      // One cut of other secrets (a secret saved since, or the server's own keys at another start) is built again too.
+      const kept = listing === null || behind || !cutOfNow(listing, secrets) ? await listNow(row.id, listMark) : listing;
       // A run whose status moved between the two reads is left off this page, never shown under a status it has left.
       if (kept && (status === null || kept.item.status === status)) runs.push(listedItem(kept, origin, row.archivedAt ?? agentArchivedAt, secrets));
     }
@@ -4465,6 +4466,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // What it refuses is what the reads cut: a note shown cut is never saved over the hidden text.
         const refuse = await learningValues(id);
         const written = await writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) });
+        // A run's list row that read a note held for the owner's OK says what the folder says now, at the next list.
+        await lister?.learningChanged(id);
         // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
         const shown = secretsShown(refuse);
         const located = written.status === 201 && shown.name(written.file) === written.file;
