@@ -42,7 +42,7 @@ test("local: git sees what the snapshot says: main, each blob, the commit's auth
   assert.equal(git(root, ["log", "-1", "--format=%B", "main"]), "learning: run-1: merged\n\nCompiled the job.\n\nRun-Id: run-1");
   assert.equal(git(root, ["log", "-1", "--format=%(trailers:key=Run-Id,valueonly)", "main"]), "run-1");
   assert.equal(git(root, ["status", "--porcelain"]), "", "the working tree is main's, and .agentrun/ is the host's (excluded)");
-  assert.equal(git(root, ["for-each-ref", "refs/agentrun/"]), "", "no temporary ref is left");
+  assert.equal(git(root, ["for-each-ref", "refs/agentrun/"]), `${merged.main} commit\trefs/agentrun/runs/run-1`, "no temporary ref is left; the run's merge is kept under its own ref, so it merges once");
   assert.equal(spawnSync("git", ["-C", root, "config", "--local", "core.worktree"], { encoding: "utf8" }).stdout, "", "no work tree path recorded");
   assert.equal(git(root, ["cat-file", "-p", "main"]).split("\n").find((line) => line.startsWith("parent ")), `parent ${init}`);
 });
