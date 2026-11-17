@@ -607,7 +607,7 @@ test("the setup skill's discovery step names scheduled Claude Code and Codex job
   const f = setupFixture(t, {
     crontab: [
       "ANTHROPIC_API_KEY=private-fixture-key",
-      "PATH=/home/private-fixture-user/.claude/bin:/usr/bin",
+      "PATH=/opt/private-fixture/claude/bin:/usr/bin",
       "# 0 1 * * * claude -p 'a private-fixture-comment'",
       "30 2 * * 1-5 cd /srv/app && OPENAI_API_KEY=private-fixture-inline claude -p 'triage the private-fixture-prompt'",
       "@daily /usr/local/bin/codex exec 'summarise the private-fixture-prompt'",
