@@ -140,9 +140,22 @@ test("COMPUTER_DAYTONA_CONNECT is the provider's connect, and createProvider() p
 	);
 });
 
-test("the run's image on dial is the box image's snapshot, agentrun-archil-<recipe hash>, the one that holds agentrun-dial; a snapshot named still wins", async () => {
+test("createProvider() takes daemonPath, as dial-conformance.mjs gives drift.version's daemon: a dial machine is told that file's sha256, not the environment's daemon's", async () => {
+	const { AttachHub, MemoryMachineTokens } = await import("../dist/index.js");
+	const { createHash } = await import("node:crypto");
+	const drifted = join(dir, "computerd-drifted");
+	writeFileSync(drifted, "a daemon of another version");
+	const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) };
+	const fake = recorder();
+	const provider = createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, [DAYTONA_ENV.connect]: "dial" }, fetch: fake.fetch, dial, daemonPath: drifted });
+	await provider.create({ image: "agentrun-archil-0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId: "r-module-drift" });
+	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
+	assert.equal(post.body.env.AGENTRUN_DAEMON_SHA256, createHash("sha256").update("a daemon of another version").digest("hex"));
+});
+
+test("the run's image on dial is the box image's snapshot, agentrun-box-<recipe hash>, the one that holds agentrun-dial and names it its entrypoint (never a pre-entrypoint agentrun-archil-<hash>); a snapshot named still wins", async () => {
 	const { boxRecipeHash } = await import("../dist/box-image.js");
-	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "dial" } }), `agentrun-archil-${boxRecipeHash()}`);
+	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "dial" } }), `agentrun-box-${boxRecipeHash()}`);
 	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "dial", [DAYTONA_ENV.snapshot]: "mine" } }), "mine");
 	assert.equal(daytonaModule.conformanceImage({ env: { [DAYTONA_ENV.connect]: "exec" } }), "default");
 });

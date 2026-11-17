@@ -143,7 +143,7 @@ const decoder = new TextDecoder();
 const DIAL_NO_GPU = `a Daytona computer that dials this server takes no GPU: ${DAYTONA_GPU_SNAPSHOT} holds no agentrun-dial, and a box/Dockerfile GPU snapshot's dial on Daytona's GPU host, which runs it unprivileged, is not proven; a server whose Daytona connect is exec makes GPU computers`;
 
 /** Why a dial computer is never made from Daytona's default snapshot: it holds no agentrun-dial, so it would never dial. */
-const DIAL_NO_DEFAULT = `a Daytona computer that dials this server starts from a snapshot of box/Dockerfile, which holds agentrun-dial (box/build-daytona.py prints its name, agentrun-archil-<recipe hash>); Daytona's default snapshot has none, so it would never dial`;
+const DIAL_NO_DEFAULT = `a Daytona computer that dials this server starts from a snapshot of box/Dockerfile, which holds agentrun-dial (box/build-daytona.py prints its name, agentrun-box-<recipe hash>); Daytona's default snapshot has none, so it would never dial`;
 
 /**
  * A sandbox's state as the adapter reads a machine's: failed, destroying and asked to destroy are gone (none of them

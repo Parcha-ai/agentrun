@@ -149,6 +149,10 @@ test("each build names what it made, and the Daytona snapshot's name covers ever
   assert.deepEqual(copied, ["install.sh", "agentrun-archil"]);
   const hashed = daytona.match(/for name in \(([^)]*)\)/)?.[1].split(",").map((name) => name.trim().replace(/^"|"$/g, "")).filter(Boolean);
   assert.deepEqual(hashed?.sort(), ["Dockerfile", ...copied].sort());
+  // Daytona runs a snapshot's entrypoint, never the image's CMD: the snapshot names the CMD, under a name no snapshot
+  // built without it holds (agentrun-archil-<hash> was).
+  assert.ok(daytona.includes("entrypoint=cmd,") && daytona.includes('line.startswith("CMD ")'), "the Dockerfile's CMD is the snapshot's entrypoint");
+  assert.ok(daytona.includes('else f"agentrun-box-{digest}"'), "named agentrun-box-<the recipe's hash>");
 });
 
 test("the E2B build makes a template from the same Dockerfile, with the workspace's own e2b SDK, and names it by the recipe's hash, every copied file in it", () => {
@@ -162,7 +166,7 @@ test("the E2B build makes a template from the same Dockerfile, with the workspac
   assert.match(e2b, /fromDockerfile\(/);
   assert.match(e2b, /Template\.build\(/);
   assert.ok(e2b.includes("console.log(`template=${name}`)"), "it prints the template's name, as the other builds print theirs");
-  assert.ok(e2b.includes('const name = "agentrun-archil-" + hash;') && e2b.includes("const hash = recipeHash(here);"), "named agentrun-archil-<the recipe's hash>, as the Daytona snapshot is");
+  assert.ok(e2b.includes('const name = "agentrun-archil-" + hash;') && e2b.includes("const hash = recipeHash(here);"), "named agentrun-archil-<the recipe's hash>");
   assert.ok(!/process\.env\.\w*KEY/.test(e2b.replace(/process\.env\.E2B_API_KEY/g, "")), "the key comes from E2B_API_KEY, the SDK's own, set by the caller for this one command");
 });
 

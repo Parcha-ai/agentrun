@@ -108,12 +108,15 @@ export interface DaytonaModuleOptions {
 	onNote?: DaytonaProviderOptions["onNote"];
 	/** The public server a dial machine dials (COMPUTER_DAYTONA_CONNECT=dial): its process alone gives it (dialKit). */
 	dial?: DaytonaProviderOptions["dial"];
+	/** The daemon binary, over COMPUTER_DAYTONA_DAEMON: dial-conformance.mjs gives drift.version's daemon here. */
+	daemonPath?: DaytonaProviderOptions["daemonPath"];
 }
 
 /** The provider's options: what this module reads from the environment (settingsFromEnv), with the run's bounds. */
-function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial }: DaytonaModuleOptions): DaytonaProviderOptions {
+function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial, daemonPath }: DaytonaModuleOptions): DaytonaProviderOptions {
 	return {
 		...settingsFromEnv(env),
+		...(daemonPath === undefined ? {} : { daemonPath }),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
 		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,
 		...(fetch ? { fetch } : {}),
@@ -126,10 +129,11 @@ function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial
 
 /**
  * The image every computer of the run starts from: COMPUTER_DAYTONA_SNAPSHOT; else on dial the box image's snapshot,
- * agentrun-archil-<recipe hash> (box/build-daytona.py), since only it holds agentrun-dial; else Daytona's default snapshot.
+ * agentrun-box-<recipe hash> (box/build-daytona.py), since only it holds agentrun-dial and runs it; else Daytona's default
+ * snapshot.
  */
 export function conformanceImage({ env = process.env }: Pick<DaytonaModuleOptions, "env"> = {}): string {
-	return env[DAYTONA_ENV.snapshot] || (env[DAYTONA_ENV.connect] === "dial" ? `agentrun-archil-${boxRecipeHash()}` : DAYTONA_DEFAULT_SNAPSHOT);
+	return env[DAYTONA_ENV.snapshot] || (env[DAYTONA_ENV.connect] === "dial" ? `agentrun-box-${boxRecipeHash()}` : DAYTONA_DEFAULT_SNAPSHOT);
 }
 
 /** A dial machine (COMPUTER_DAYTONA_CONNECT=dial) runs its Core inside the public server's process: refused here (dial-only.ts). */

@@ -1625,7 +1625,7 @@ when it runs (`settingsFromEnv`) and passes each to `create()` as the option in 
 `COMPUTER_DAYTONA_USER` (`daemonUser`), `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`) and `COMPUTER_DAYTONA_CONNECT`
 (`connect`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
-Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-archil-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
+Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-box-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
 which serve passes in itself.
 
@@ -1664,7 +1664,7 @@ no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. What ea
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
-  The one that holds `agentrun-dial` is the box image's, `agentrun-archil-<recipe hash>`: `box/build-daytona.py`
+  The one that holds `agentrun-dial` is the box image's, `agentrun-box-<recipe hash>`: `box/build-daytona.py`
   builds it from `box/Dockerfile`, or `POST /snapshots` makes it from the published
   `ghcr.io/parcha-ai/agentrun-box:<recipe hash>` with the same `entrypoint`. The conformance module's run image on
   dial is that name. A snapshot carries its own resources: a create that names one sends none (400 "Cannot specify
@@ -1680,8 +1680,9 @@ no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. What ea
   ([daemon main.go:129-164](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/cmd/daemon/main.go#L129-L164)).
   A snapshot built from a Dockerfile with no ENTRYPOINT gets `sleep infinity`
   ([api snapshot.service.ts:883-901](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/services/snapshot.service.ts#L883-L901)),
-  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. A box snapshot built before it
-  did has no entrypoint, and its sandboxes never dial: build a new one. (The Dockerfile's comment that Daytona runs its
+  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. The box snapshots it built
+  before, `agentrun-archil-<recipe hash>`, have none and never dial, so the snapshot it builds now has a name of its
+  own, `agentrun-box-<recipe hash>`, which no snapshot without the entrypoint holds. (The Dockerfile's comment that Daytona runs its
   CMD is wrong; it stays until the recipe next changes, since editing it changes the hash.)
 - **Outbound https, by tier.** Tier 1 and 2 organizations reach "essential services" alone, and those leave out shared
   hosting domains; Tier 3 and 4 have full access
