@@ -10,6 +10,7 @@
 //   AGENTRUN_IMAGE=<image> node deploy/railway/local-walk.mjs   another (CI: this checkout's, as deploy/walk/smoke.sh built it)
 //   REPORT=<file>                                          the report in that file too
 import { execFileSync } from "node:child_process";
+import { request } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,16 @@ export function dockerRunArgs(service, { name, volume, envFile, image = service.
   const user = env.RAILWAY_RUN_UID ? ["--user", env.RAILWAY_RUN_UID.defaultValue] : [];
   return ["run", "-d", "--name", name, ...user, "--env-file", envFile, "-p", `${LOOPBACK}::${port}`, ...mounts, "--entrypoint", entrypoint, image, ...args];
 }
+
+/** A request as Railway's edge forwards it: over https to the service's domain (Host and X-Forwarded-Proto). fetch can't
+ *  set Host, so node:http. */
+const viaEdge = (port, path, { method = "GET", headers = {}, body } = {}) => new Promise((resolve, reject) => {
+  const req = request({ host: LOOPBACK, port, path, method, headers: { host: DOMAIN, "x-forwarded-proto": "https", ...headers } }, (res) => {
+    let text = "";
+    res.setEncoding("utf8").on("data", (c) => (text += c)).on("end", () => resolve({ status: res.statusCode, json: () => JSON.parse(text) }));
+  });
+  req.on("error", reject).end(body);
+});
 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -85,8 +96,9 @@ async function main() {
     if (!line) throw new Error(`no "Set up this server: ${base}/setup#code=" line in the log`);
     row("setup link at the public URL", "PASS", `the log's line starts "Set up this server: ${base}/setup#code=" (the code not shown)`);
 
-    const setup = await fetch(`${local}/v2/setup`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: env.AGENTRUN_TOKEN, password: randomBytes(18).toString("base64url") }) });
-    const answer = await setup.json().catch(() => ({}));
+    const setup = await viaEdge(hostPort, "/v2/setup", { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: env.AGENTRUN_TOKEN, password: randomBytes(18).toString("base64url") }) });
+    let answer = {};
+    try { answer = setup.json(); } catch {}
     if (setup.status !== 201 || answer.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(answer)}`);
     row("token works as the setup code", "PASS", "POST /v2/setup with AGENTRUN_TOKEN as the code: 201, signed in");
 
