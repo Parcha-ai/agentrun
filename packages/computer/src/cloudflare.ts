@@ -148,8 +148,10 @@ class CloudflareHost implements MachineHost {
 		// check() refused a size past the largest, so one instance holds it.
 		const instance = instanceOf(req.cpus, req.memoryMb) ?? LARGEST;
 		const body = { name: nameOf(req.name), image: req.image, env: req.boot.env, labels: req.labels, instance: instance.name, backstopAt: req.backstopAt };
-		// Only a 429, a refusal that made nothing, is sent again: a create that got no answer may have made a container.
-		const made = (await this.#call("POST", "/v1/computers", { json: body, named: true, retry: (status) => status === 429 }, ctx)) as RelayRow | null;
+		// A 429 made nothing. A 500, 502 or 503 may have made the container, and sending it again is still safe: the relay's
+		// Computer object of this name answers a second create with the first's row and starts nothing twice. A create that
+		// got no answer is not sent again: the adapter deletes the name it asked for.
+		const made = (await this.#call("POST", "/v1/computers", { json: body, named: true, retry: (status) => [429, 500, 502, 503].includes(status) }, ctx)) as RelayRow | null;
 		if (made?.name !== req.name) throw new HostError("vendor", `POST /v1/computers answered another computer: ${show(made?.name)}`);
 		return { id: made.name };
 	}
