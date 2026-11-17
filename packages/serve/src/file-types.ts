@@ -5,6 +5,7 @@ import { extname } from "node:path";
 const TYPES: ReadonlyMap<string, string> = new Map(Object.entries({
   txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
   html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
+  mp4: "video/mp4",
 }));
 /** The types a file is served as in the page (every known type but PDF); any other is a download. */
 export const INLINE_TYPES: ReadonlySet<string> = new Set([...TYPES.values()].filter((type) => type !== "application/pdf"));
