@@ -129,7 +129,7 @@ function decodedScanned(path: string, text: string, refused: (text: string) => b
 
 /** The model node kinds a tier routes (model.ts MODEL_NODES); a decision node (judge, pick, sift) goes to its decision
  *  provider, never a tier. */
-const TIERED_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report"]);
+export const TIERED_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report"]);
 const isNode = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && typeof (value as { node?: unknown }).node === "string";
 /** The state key a step writes (the DSL's writeKeyOf): a report's `report_markdown`, else its `as`, else an agent's,
  *  decide's or extract's label. */

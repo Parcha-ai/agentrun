@@ -33,8 +33,9 @@ const servedWord = (n: number) => `${n} served ${n === 1 ? "run" : "runs"}`;
 /** The chart's card for an agent, read when it shows. `quiet`: under the Learning tab's own empty state, which already
  *  says what to do, so a series under two runs (and a read that failed) shows nothing. */
 /** `promotions`: the agent's promotion records when the page read them (the Learning tab shares one read); else the chart
- *  reads its own. `onCost`: told each answer, for the tab's story. */
-export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost, execution = "hosted" }: { execution?: LearningExecution; v2: Client; agentId: string; on: boolean; quiet?: boolean; promotions?: readonly Promotion[]; onCost?: (cost: LearningCost) => void }) {
+ *  reads its own. `onCost`: told each answer, for the tab's story. `reads`: the page's refreshes (the Learning tab's timed
+ *  and manual ones); each new value reads the cost again. */
+export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost, reads = 0, execution = "hosted" }: { execution?: LearningExecution; v2: Client; agentId: string; on: boolean; quiet?: boolean; promotions?: readonly Promotion[]; onCost?: (cost: LearningCost) => void; reads?: number }) {
   const [data, setData] = useState<LearningCost | null>(null);
   const [own, setOwn] = useState<readonly Promotion[]>([]);
   const records = promotions ?? own;
@@ -50,7 +51,7 @@ export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost,
     // The markers' records: a read that fails draws no marker, never a failed chart.
     if (!promotions) Promise.resolve().then(() => v2.learningPromotions(agentId)).then((r) => { if (live) setOwn(r.promotions); }, () => {});
     return () => { live = false; };
-  }, [v2, agentId, asked, !promotions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [v2, agentId, asked, reads, !promotions]); // eslint-disable-line react-hooks/exhaustive-deps
   if (quiet && (!data || data.runs.filter((r) => r.total_usd !== null).length < 2)) return null;
   if (error && !data) return <ProblemCard problem={problem(error, "the cost per run")} onRetry={() => setAsked((n) => n + 1)} className="" />;
   if (!data) return <Bone className="h-[320px] w-full" />;

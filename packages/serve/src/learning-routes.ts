@@ -268,6 +268,22 @@ export async function workflowRevisions(data: string, agentId: string, name: str
   return { name, ...found };
 }
 
+/** Learned workflow `name`'s text at `digest` (a champion's, as its promotion records name it), read by that digest and
+ *  never by paging the workflow's history: at `commits` (the records' learning commits, newest first), then at main, the
+ *  first commit whose workflow.json is that digest's text, with the commit it was read at. Undefined when none is (no
+ *  main yet, or no commit read holds it). One read-only exec per commit tried (textsAt). */
+export async function workflowAtDigest(data: string, agentId: string, name: string, digest: string, commits: readonly string[]): Promise<{ text: string; commit: string } | undefined> {
+  if (!WORKFLOW_NAME.test(name)) return undefined;
+  const path = `${WORKFLOWS_DIR}/${name}/workflow.json`;
+  return reading(data, agentId, async ({ ws, snapshot }) => {
+    for (const commit of new Set([...commits, snapshot.main])) {
+      const raw = (await textsAt(ws, commit, [path]).catch(() => undefined))?.[path];
+      if (raw !== undefined && createHash("sha256").update(raw).digest("hex").slice(0, 16) === digest) return { text: raw, commit };
+    }
+    return undefined;
+  }, () => undefined);
+}
+
 /** The blob of a draft's `file` on the snapshot's main; undefined when main holds no such file the snapshot names. */
 function blobIn(snapshot: Snapshot | undefined, file: string): string | undefined {
   const place = learnedPlace(file);

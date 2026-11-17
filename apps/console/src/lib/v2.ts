@@ -105,6 +105,13 @@ export type RunLearningRead = Answer<"getRunLearning">;
 /** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
  *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
 export type LearningCost = Answer<"getLearningCost">;
+/** The owner's bill over the series (its `bill`): booked $ only, run after run, against the agent for all of it, with
+ *  where it breaks even and each learned revision's check spend as its served runs carry it. */
+export type Bill = LearningCost["bill"];
+export type BillPoint = Bill["points"][number];
+/** GET /v2/agents/{id}/learning/audits: the audit ledger's rows, oldest first. */
+export type LearningAudits = Answer<"listLearningAudits">;
+export type AuditRow = LearningAudits["audits"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
 export type CostRun = LearningCost["runs"][number];

@@ -52,7 +52,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, runLearningEnd, shadowSpendOf, usedOnly } from "./store-reads/learning.js";
+import { laidOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
@@ -452,14 +452,6 @@ function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(correctionCount(started.section), laid.workflows.length), at };
 }
 
-/** A view's cost with its audit shadow run's (store-reads/learning.ts shadowSpendOf: unknown while it is queued or
- *  running, 0 when none was started) added to `usd` (unknown once either is). */
-function withShadowCost(cost: Record<string, unknown>, shadow: number | null): Record<string, unknown> {
-  if (shadow === 0) return cost;
-  const usd = typeof cost.usd === "number" && shadow !== null ? Math.round((cost.usd + shadow) * 1e6) / 1e6 : null;
-  return { ...cost, usd };
-}
-
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
 function costOfView(run: StoreRun): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
@@ -594,7 +586,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     error,
     review,
     pending,
-    cost: withShadowCost(costOfView(run), (await shadowSpendOf(store, runId)).usd),
+    // Its own spend: an audit's shadow run of it is learning (GET /runs/{id}'s cost.learning_usd), never its cost.usd.
+    cost: costOfView(run),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.

@@ -5,7 +5,8 @@ import { LearningTab, type LearningProps } from "./Learning";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, Corrections, LearnedItem, LearningFile } from "@/lib/learning";
-import type { LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
+import { BILL, EMPTY_BILL, hour } from "@/lib/learningBill.fixture";
+import type { AuditRow, LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
 
 // The agent's Learning tab: its owner's corrections (corrections.md, edited whole on its version), the workflow drafts
 // its runs compiled (approved, retired and restored on their README's version), what runs did not keep and why, the
@@ -49,7 +50,7 @@ type Fake = {
   corrections?: () => Promise<Corrections>; write?: (text: string, etag: string) => Promise<Corrections>;
   read?: (file: string) => Promise<LearningFile>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>;
   update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>;
-  promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost>;
+  promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost>; audits?: AuditRow[];
 };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
@@ -72,6 +73,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     // The loop's reads: none yet unless a test gives them; a failed one leaves its part out.
     learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [], serving: [] })))(),
     learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, completed_runs: 0, compiles: [] })))(),
+    learningAudits: async () => ({ agent: a.agent_id, audits: fake.audits ?? [] }),
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -228,6 +230,20 @@ describe("refreshing learning after external work", () => {
     expect(clear).toHaveBeenCalledWith(123);
     await focus();
     expect(t.calls.filter((call) => call === "learning refunds")).toHaveLength(3);
+  });
+
+  it("reads the cost (the bill's) again with each refresh, timed or manual, and once on open", async () => {
+    let tick!: () => void;
+    vi.spyOn(window, "setInterval").mockImplementation((callback) => { tick = callback as () => void; return 123 as unknown as ReturnType<typeof window.setInterval>; });
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    let costs = 0;
+    const cost = async (): Promise<LearningCost> => { costs += 1; return { agent: "refunds", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] } as unknown as LearningCost; };
+    const t = await open(agent(true), { cost });
+    expect(costs).toBe(1);
+    await act(async () => { tick(); }); await settle();
+    expect(costs).toBe(2);
+    await t.click(/^Refresh learning$/);
+    expect(costs).toBe(3);
   });
 
   it("clears the prior agent's open edit and ignores its background replies after navigation", async () => {
@@ -819,7 +835,7 @@ describe("the loop on the Learning tab", () => {
   });
   it("the cheaper stage: 'about N times cheaper' over the agreement check it passed (N of M agreed, its bar) when the serving check cleared, never 'the same accuracy'; the reason in its place when a run's cost isn't all known", async () => {
     const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
-    const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 80, agent_pct: 100, cleared: true, agreed: 32, alone: 40, agree_min: 0.8 }, ...over }, workflows: [] });
+    const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 80, agent_pct: 100, cleared: true, agreed: 32, alone: 40, agree_min: 0.8 }, ...over }, workflows: [], bill: EMPTY_BILL });
     const t = await open(agent(true), { cost: costOf({}) });
     const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;
     expect(stage.querySelector('[data-testid="stage-cheaper-value"]')!.textContent).toBe("About 7x cheaper");
@@ -908,5 +924,27 @@ describe("learning-loop refresh integration", () => {
     await focus();
     await act(async () => { release(); }); await settle();
     expect(t.text()).toContain(marker);
+  });
+});
+
+describe("the bill", () => {
+  it("shows the booked bill against the agent for all of it, the break-even marker and the audit line, and no equal-cache figure", async () => {
+    const digest = "d".repeat(16);
+    const runs = BILL.points.map((p) => ({ n: p.n, run_id: p.run_id, started_at: hour(p.n), path: p.n < 4 ? "agent" as const : "workflow" as const, workflow: p.n < 4 ? null : "answer", learned_revision: null, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
+    const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
+    const promotions: Promotions = {
+      agent: "refunds",
+      promotions: [{ workflow: "answer", digest, at: hour(4), decided: "promote", reason: "checked", check: { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 10, agreed: 9, alone: 9 } }],
+      serving: [{ workflow: "answer", digest, replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 4, disagreed: 1 }, audits_off: null, not_auditable: 0, champion: null }],
+    };
+    const audits = [true, true, false, true, true].map((agreed, i) => ({ run: `run-${i + 5}`, shadow_run: `audit.run-${i + 5}`, workflow: "answer", digest, promoted_at: hour(4), source: "shadow" as const, agreed, served_cost: 0.1, shadow_cost: 0.4, at: hour(i + 5) }));
+    const t = await open(agent(true), { cost: async () => cost, promotions: async () => promotions, audits });
+    expect(t.host.querySelector("[data-testid=bill-actual]")).not.toBeNull();
+    expect(t.host.querySelector("[data-testid=bill-agent]")).not.toBeNull();
+    expect(t.host.querySelector("[data-testid=bill-break-even]")).not.toBeNull();
+    expect(t.text()).toContain("Break-even at run 5");
+    expect(t.text()).toContain("Last 4 audits: 3 agreed");
+    expect(t.text()).toContain("All time: 4 of 5 agreed");
+    expect(t.text()).not.toMatch(/equal[- ]cache/i);
   });
 });

@@ -65,4 +65,7 @@ for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real comp
  assert.equal(view.body.learning.compiled.digest,kept.proposal.compiled.digest);assert.deepEqual(view.body.learning.draft_errors,[],"the HTTP contract reports no remaining draft errors after correction");
  assert.equal(kept.proposal.job_cost_usd,0.25);assert.ok(Math.abs(kept.proposal.look_back_usd-0.1)<1e-9);
  assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd-0.35)<1e-9,"task plus exactly two learning charges, the two compiler requests");
+ // A8: the run's view says its task's own; the compile turn's spend is its revision's (or the bill's unattributed), never the run's.
+ const read=(await s.api("GET",`/runs/${runId}`)).body;
+ assert.deepEqual([read.cost.usd,read.cost.learning_usd,read.cost.all_in_usd],[0.25,0,0.25],JSON.stringify(read.cost));
 });
