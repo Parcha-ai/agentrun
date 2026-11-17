@@ -747,6 +747,15 @@ async function revisionOf(ask: Pick<ReplayAsk, "folder" | "shown">, records: rea
   return { named: onMain || records.some((one) => one.workflow === name) };
 }
 
+/** The agent runs `name` at `digest` was last checked on: its newest record that names them, a decided
+ *  check's `check.of` or a reservation's `inputs`. A check's reservation leaves the kept history (trimPromotions) while
+ *  its decision stays, so the decision's own list is read first. Undefined when no record names any. */
+function heldInputsOf(records: readonly PromotionRecord[], name: string, digest: string): readonly string[] | undefined {
+  const checked = (one: PromotionRecord) => (one.decided !== "replaying" && one.check?.of?.length ? one.check.of : undefined);
+  const last = records.findLast((one) => one.workflow === name && one.digest === digest && (checked(one) ?? one.inputs)?.length);
+  return last && (checked(last) ?? last.inputs);
+}
+
 /** A check of `name` at `digest` a person asked for: the claim path's check (reserve, startReplay), on `inputs`: `held`,
  *  the agent runs its last check ran on (else, with none, the agent's last compile_after completed runs), or a number,
  *  the agent's newest that many (each a completed run of its own the workflow fits). Its runs end as a claim's do, and it
@@ -763,12 +772,12 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   if (own?.decided === "promote") throw new ReplayRefused("conflict", `${name} at ${digest} is promoted: it serves already. A replay checks a revision that does not serve yet, or was held.`);
   const rival = replayingOf(records, name, digest)[0];
   if (rival) throw new ReplayRefused("conflict", `${name} at ${rival.digest} is replaying: one revision of a workflow is checked at a time, and a running check finishes. Ask again once it ends.`);
-  const last = inputs === "held" ? records.findLast((one) => one.workflow === name && one.digest === digest && one.inputs?.length) : undefined;
+  const last = inputs === "held" ? heldInputsOf(records, name, digest) : undefined;
   // The agent's own numbers (its current revision's definition, the one its replay runs launch on): with no earlier
   // check, its last compile_after completed runs, as the claim's check picks them (startCheck), never the default's.
   const current = (await ask.store.agents.get(ask.agentId).catch(() => undefined))?.currentRevision;
   const loop = current ? await loopOfRevision({ store: ask.store, revisionId: current }) : loopOf(undefined);
-  const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last?.inputs ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loop.compile_after });
+  const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loop.compile_after });
   if (!picked.length) throw new ReplayRefused("conflict", `${name} at ${digest} has no input to replay on: none of ${typeof inputs === "number" ? `the agent's newest ${plural(inputs, "completed run")}` : last ? "the runs it was last checked on" : "the agent's last completed runs"} has an input it fits. Nothing was started.`);
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
   if (!launch.learning || launch.learning.notesOnly) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, notes only, or this server's is off).`);
