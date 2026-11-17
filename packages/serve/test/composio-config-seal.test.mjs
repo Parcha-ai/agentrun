@@ -289,7 +289,7 @@ test("a number an earlier server kept in the clear, at the top level and below i
   await s.server.stop();
   const lines = [];
   const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
-  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 3, "both numbers are sealed at the start, beside the key the create sealed");
+  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 2, "both numbers are sealed at the start (the top-level one in the place of the key the create sealed)");
   assert.deepEqual(filesUnder(again.data).filter((path) => [key, inner].some((n) => readFileSync(path).includes(String(n)))), [], "no file under the data directory holds either's digits");
   assert.ok(!lines.some((l) => [key, inner].some((n) => l.includes(String(n)))), "no log line holds either");
   const left = await again.api("PATCH", `/triggers/${made.body.id}`, { source: { kind: "composio", server: "hs", event: DEAL_STAGE.slug, config: { app_id: "4242", auth: { region: "eu" } } } });

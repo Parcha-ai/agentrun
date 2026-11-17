@@ -2238,22 +2238,29 @@ key, in order, and undoes what it made when a later step fails:
   deleted with the last.
 - The trigger here. Its `source` names what was made: `instance_id` and `hook`.
 
-A config field named like a credential is sealed at the create. That is a field whose value is a string and where a word
-of the name is secret, password, passwd, passphrase, token, credential, apikey, authorization, bearer or cookie, or where
-the last word is key. A create with such a value below the config's top level is refused `422`, naming it. For
-example, HubSpot's deal-stage event takes `{app_id, developer_api_key}`. Composio's trigger schemas mark no field
-secret, so the name decides. The value is kept in the composio source's sealed settings, next to the subscription's
+A config field named like a credential is sealed at the create. That is a field whose value is a string (not empty) or
+a number, and where a word of the name, read as its singular (`tokens` as `token`), is secret, password, passwd,
+passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, authorization, bearer or cookie; where
+connection is followed by string (`connection_string`); or where the last word is key (`api_key`, `api_keys`). The rule
+errs toward sealing: `max_tokens` is sealed too. A field the event's schema marks with `format: "password"` or
+`writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
+such a value below the config's top level is refused `422`, naming it. For example, HubSpot's deal-stage event takes
+`{app_id, developer_api_key}`. Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
+number is sealed as its decimal text and stays a number in what Composio gets; a run's output is cut of that text when
+it is 8 characters or more, as a string's is. The value is kept in the composio source's sealed settings, next to the subscription's
 secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
 `source.sealed_config` names the field. The events list names these fields per event under `sealed`, and the console
 takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
 change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
-The trigger's delete removes the value. A trigger saved by an earlier server with such a value in plain text is answered
+The trigger's delete retires the value into a sealed row until the runs that saw it end. A trigger saved by an earlier server with such a value in plain text is answered
 masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
-and sealed at the next start. On SQLite that rewrite runs with `secure_delete` on, then a `VACUUM` and a WAL checkpoint,
+and sealed at the next start (by its name alone: no schema is read then). On SQLite that rewrite runs with
+`secure_delete` on, then a `VACUUM` and a WAL checkpoint,
 so the store's files keep no copy of the old row: neither the one rewritten nor one an earlier update of the row left in
 free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
-checkpoint is done. A start that finds it (the server stopped mid-way, or a reader in another connection held the
-checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version stays until the
+checkpoint is done. A `VACUUM` held off by another connection's write past the store's busy wait is tried once more
+after a short pause. A start that finds the marker (the server stopped mid-way, or another connection held the
+`VACUUM` or the checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version stays until the
 database vacuums it. The log line names the trigger and the field, never the value.
 
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
