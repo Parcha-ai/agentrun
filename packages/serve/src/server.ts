@@ -1359,8 +1359,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
     const all = await runAllInOverStore(store, runId, own);
     if (!all) return {};
-    // A row cost that is unknown stays as the view says it (its so-far figures beside it); a known one is the job's.
-    return { path: all.path, cost: { ...cost, ...(own === null ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
+    // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
+    // gives): known as it answered even when its look-back's cost is not; the row's while the run is at work.
+    return { path: all.path, cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
