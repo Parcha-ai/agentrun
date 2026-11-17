@@ -240,7 +240,7 @@ page that won't load: they copy that page's whole address into the console. The 
 On **OpenRouter key**, they open https://openrouter.ai/keys, create a key, set its credit limit (a few dollars is
 plenty), and paste it into Settings → Model keys, never into this chat; it works without a restart. Claude Max, Ultra
 and Team plans include monthly API credits: a key from the Claude Console organization linked to the plan, saved
-there, runs the claude-agent harness on them. Pro, Free and Enterprise plans don't include them.
+there, runs the claude-agent harness on them (AgentRun Cloud included). Pro, Free and Enterprise plans don't.
 
 On **Local model**, restart the server (step 3) with `AGENT_MODEL_BASE_URL=http://localhost:11434/v1
 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0` in front of `npx` (LM Studio:
