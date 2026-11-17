@@ -1,4 +1,6 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
 
+The boxd computer provider (packages/computer/src/boxd.ts) was contributed by Michiel Voortman.
+
 This product includes software from vercel-labs/durable-harness (https://github.com/vercel-labs/durable-harness), Copyright 2026 Vercel Inc., licensed under the Apache License 2.0.
