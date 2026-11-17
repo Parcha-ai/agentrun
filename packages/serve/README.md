@@ -1142,16 +1142,15 @@ Custody, as for a per_run MCP server's `mcp_auth`:
 
 **The revoke-at-turn-end contract.** The write that ends a run's turn erases its key, and the run reports the turn
 ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
-tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run look-back
-and compile turns. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
+tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
+turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
 answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
 
 | Spend | With the run's key | Server holds no key, run brought none |
 | --- | --- | --- |
-| The learning run's grade (after the turn) | Not queued: the proposal is dropped `grade_failed`, in words | Skipped in words |
 | A shadow audit, a learned workflow's replay check | Skipped, logged | Skipped, logged |
 | A grade's feedback round (`PUT /runs/{id}/grade`) | A new turn with no key: the server's, else not opened | Not opened; the grade is kept |
-| An owner's replay, learning from a CSV, an SDK run's look-back | Tied to no run's key | 409 or skipped, in words |
+| An owner's replay, an SDK run's compile turn | Tied to no run's key | 409 or skipped, in words |
 | A trigger's firing | Starts a run with no key | 422 `model_key_required` for the firing |
 
 Jev and the other decision providers run on their own keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`,
