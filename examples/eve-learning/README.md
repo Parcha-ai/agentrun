@@ -84,7 +84,7 @@ npm run validate --prefix examples/eve-learning -- --live --resume /tmp/eve-lear
 
 Resume reads every saved native session's finite history and re-fetches its AgentRun run. It verifies one fresh turn, the exact original input, completed native tools and the recorded learning revision; saved answers alone are not trusted. Existing sessions are never resent or replaced. An unfinished session or uncertain submission without a confirmed session id stops the proof. Only stages that were never submitted may start a new task. The saved file is updated in place, preserving the earlier failure and resumption time; add `--output NEW_PATH` to save a separate continuation. A setting already at its intended value is left unchanged.
 
-For deployed eve applications, retain the original channel authentication and pass `EVE_BEARER_TOKEN` to the invocation script if that route requires a bearer credential. Never expose an unauthenticated local development server publicly.
+For deployed eve applications, retain the original channel authentication and pass `EVE_BEARER_TOKEN` to the invocation script if that route requires a bearer credential. Production `eve start` rejects session requests until route authentication is configured, even though health checks are public; follow eve's [route-authentication guide](https://github.com/vercel/eve/blob/main/docs/guides/auth-and-route-protection.md) for an application that has no production route policy yet. Never expose an unauthenticated local development server publicly.
 
 ## Learn and execute a workflow with the original tools
 

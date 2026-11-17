@@ -40,6 +40,8 @@ Set `AGENTRUN_BASE_URL`, `AGENTRUN_API_KEY` and `AGENTRUN_AGENT_ID` in eve's ser
 
 Use a separate AgentRun agent id for separate applications or trust boundaries. One stable id shares its accepted learning across that agent's sessions; it is not a per-user isolation mechanism. Retain your existing eve route authentication and authorization.
 
+Production `eve start` requires authenticated session requests. Keep the application's existing route policy; clients used to test this example must satisfy it too. The example scripts accept `EVE_BEARER_TOKEN` for bearer-authenticated routes. A public health response does not verify session access. See eve's [route-authentication guide](https://github.com/vercel/eve/blob/main/docs/guides/auth-and-route-protection.md).
+
 ## Connect first, then enable learning
 
 Run one ordinary task through eve. The extension registers the agent if necessary and the console shows **Vercel eve**, its actual reported model, the run and available token usage. Run and edit handoffs point back to the original eve application; AgentRun's managed-run endpoint cannot execute an eve agent.
