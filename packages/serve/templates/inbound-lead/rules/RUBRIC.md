@@ -1,7 +1,7 @@
 # Fit rubric
 
-The lead skill reads this file before it scores. The owner may edit it; the owner's corrections arrive as learned notes
-and refine the ICP without editing this file.
+The lead skill reads this file before it scores. The owner may edit it; the owner's corrections arrive under
+`# Learned`, one per line, and refine the ICP without editing this file.
 
 ## 1. Criteria from the ICP
 
@@ -15,8 +15,8 @@ kind and its weight:
   gambling, betting or casino operator", "is an agency", "is a student"), never as its negation ("is not a gambling
   operator"). A disqualifier's weight is 0: it never adds to the score, it only caps it.
 
-Each learned note that states who to sell to, or not, adds a criterion of its kind with `origin: learned` and the note's
-name in `note`. It replaces any ICP criterion it contradicts (drop that one; say so in `reasons_against` or
+Each correction that states who to sell to, or not, adds a criterion of its kind with `origin: learned` and the
+correction quoted in `correction`. It replaces any ICP criterion it contradicts (drop that one; say so in `reasons_against` or
 `reasons_for`).
 
 Keep 3 to 10 criteria. Merge near-duplicates.

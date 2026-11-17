@@ -26,7 +26,7 @@ import { surviveClosedPipes } from "./closed-pipes.js";
 // command, the server and the runner alike.
 surviveClosedPipes();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
@@ -60,11 +60,6 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
                     says learning: true starts from what that agent learned and adds to it; off, no run does
-  --learning-budget BYTES how much of what an agent learned its run's instructions hold (default
-                    AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the index and the
-                    notes changed last, whole, while they fit
-  --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
-                    strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -283,8 +278,6 @@ try {
       documents: { type: "string" },
       "allow-code-nodes": { type: "boolean", default: false },
       learning: { type: "string" },
-      "grade-model": { type: "string" },
-      "learning-budget": { type: "string" },
       "no-runner": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -320,11 +313,6 @@ if (values["faux-browser"] && !values.faux) {
 }
 if (values["faux-github"] && !values.faux) {
   console.error(`--faux-github goes with --faux\n\n${USAGE}`);
-  process.exit(2);
-}
-const budget = values["learning-budget"];
-if (budget !== undefined && !/^\d+$/.test(budget)) {
-  console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
   process.exit(2);
 }
 const data = values.data ?? defaultData();
@@ -375,7 +363,7 @@ try {
     },
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),

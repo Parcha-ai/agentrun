@@ -32,7 +32,7 @@ import { type HarnessEntry, harnessOf } from "../harness-table.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
-import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
+import { learningEndOfRun } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
@@ -376,21 +376,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The revision's own skills laid before they are read, as the pi spec lays them (adapter-run-spec.ts), with the kind's
   // skill of a desktop or a phone (the revision's computer setting), in the harness's skill list beside the revision's.
   const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
-  // A learning run's seed laid as the pi spec lays it (runner/learning-seed.ts), its learned skills then in the skill list
-  // the harness is handed (its native skills, or the prompt's), its learned workflows the ones learned_workflow runs.
+  // A learning run's seed read as the pi spec reads it (runner/learning-seed.ts): its learned workflows, the ones
+  // learned_workflow runs.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
   const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({
-      work: ws.workspace,
-      seed: start.seed,
-      folder: learningFolder,
-      own: Object.keys(revisionRow.skills ?? {}),
-      shown,
-      log,
-      ...(start.notesOnly ? { workflows: false as const } : {}),
-      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
-    })
+    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
@@ -442,9 +433,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // those it would refuse, and is handed the rest), the output schema it answers in (answer-json.ts outputContract, as the
   // pi spec gives it), then the effort guidance.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
-  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
+  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
   const check = await entry.skillCheck?.();
-  const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills, ...(seedLaid?.skills ?? [])], ws.workspace, check, { onDemand: readsFiles(granted) });
+  const { system: instructions, native } = await systemOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills], ws.workspace, check, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
 
   // The run's model (the launch's, pinned at start, else the revision's) and its adapter, as main builds them, on the
@@ -517,7 +508,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped), the model that bills this CLI run priced WITH tiers, strict where the launch says. The loop builds the
   // kernel runCap from these over the run's own sessions; the spec carries no beforeRequest of its own.
-  const besideOf = spentBesideOf(launch, deps.store, claim.runId);
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     // One model per CLI session: every request it sends is the run's model, whatever id its provider names it by. A
@@ -528,8 +518,6 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const tierRoute = tierRoutes.get(by as Tier);
       return tierRoute && tierRoute.model === id ? capModelOfRoute(tierRoute) : undefined;
     },
-    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
-    ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
   };
@@ -655,9 +643,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A typed input's other fields follow its content as one json block (inputMessage).
   const input = await firstMessage(inputMessage(launch.input), ws.workspace);
 
-  // The run's end-of-run step, when it learns, the same as the pi spec's: the reflect-and-propose turn over the run's
-  // store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this claim's
-  // Archil disk — so the proposal is checked against the seed in the run's own Workspace, never this machine's local path.
+  // The run's end-of-run step, when it learns, the same as the pi spec's: the compile turn and the owner's correction over
+  // the run's store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this
+  // claim's Archil disk — so the draft is checked against the seed in the run's own Workspace, never this machine's local path.
   // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
   const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {
     store: deps.store,

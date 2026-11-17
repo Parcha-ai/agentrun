@@ -35,7 +35,7 @@ const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 /** A server with accounts and the owner's session; agent `source` learning, `graded` runs of it ended on the agent's path
  *  and graded right, then the workflow landed on its learning folder's main. */
 async function world(t, { graded = 5 } = {}) {
-  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG"]);
   const server = await serve(t, { learning: "on", accounts: true, openSetup: true });
   const { api, data, port, baseUrl } = server;
   const origin = `http://127.0.0.1:${port}`;

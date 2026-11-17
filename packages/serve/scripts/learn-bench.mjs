@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The learning bench: repeated jobs, learning off vs on, into one JSON results file
-// (learn-bench/results.schema.json, learning-bench/2). On demand and nightly; never on a PR. It calls real models and spends.
+// (learn-bench/results.schema.json, learning-bench/3). On demand and nightly; never on a PR. It calls real models and spends.
 //
 // A job is a folder under learn-bench/ (learn-bench/README.md): job.yaml (template?, parameters, grants, fakes, deny,
 // harnesses, steps [{id, kind: teach|repeat|change|plant}]), steps/<id>/prompt.md and graders/*.md, fixtures/, and, for a
@@ -18,8 +18,8 @@
 // Every agent: the series' harness, the runner place (no box, no shell), the job's `deny` tools set to deny, the model the
 // bench names for the harness. What the runner adds to the graders' pass/fail: cost per run and its trend, the follow rate
 // on repeat steps, the workflow proposal rate after teach steps and the reuse rate (learned_workflow calls), staleness
-// after a change step (did the kept skill and workflow change; did a learned_workflow call pass the change graders), wrong
-// keeps (plant-*.md graders failed after a plant step), and the learning grade's cost.
+// after a change step (did the corrections and the kept workflow change; did a learned_workflow call pass the change
+// graders), wrong keeps (plant-*.md graders failed after a plant step), and the compile turn's cost.
 //
 // The server is this process's own (startServe on a data directory of --data, accounts on, a runner beside it), as the
 // template eval starts one. Models come from this process's environment (AGENT_MODEL_BASE_URL with AGENT_MODEL_API_KEY
@@ -51,7 +51,7 @@ const { inputMessage } = await import(dist("run-manifest.js"));
 // yaml as serve resolves it, so a frozen copy outside the repo reads job.yaml with serve's own parser.
 const { parseDocument } = await import(pathToFileURL(createRequire(join(serveDir, "package.json")).resolve("yaml")).href);
 
-export const SCHEMA = "learning-bench/2";
+export const SCHEMA = "learning-bench/3";
 const KINDS = ["teach", "repeat", "change", "plant"];
 const JOB_FIELDS = ["template", "parameters", "grants", "fakes", "deny", "harnesses", "steps", "reuse"];
 /** When a learning agent of the bench compiles its job: its definition's `learning.compile_after`, completed runs. A job
@@ -62,6 +62,10 @@ export const COMPILE_AFTER = 5;
  *  that step's end and callable from the next. */
 export const REUSE_STEPS = 3;
 const DEFAULT_MODELS = { pi: null, "claude-agent": "anthropic/claude-haiku-5-5" };
+/** The owner's corrections in an agent's learning folder, one list item a line (learn/corrections.ts). */
+const CORRECTIONS_FILE = "corrections.md";
+/** How many corrections a corrections.md holds: its list items, as the server counts them (correctionCount). */
+const correctionLines = (text) => text.split("\n").filter((line) => line.startsWith("- ")).length;
 
 // ---- jobs -------------------------------------------------------------------------------------------------------------
 
@@ -198,26 +202,20 @@ export const ownerHeaders = (owner, etag) => ({ authorization: null, cookie: own
 
 // ---- one series ------------------------------------------------------------------------------------------------------
 
-/** The agent's active learned items now: each name with its text's sha256, and the files waiting for the owner's OK.
- *  Every page of its notes: the view holds the first, and the notes route the rest (next_cursor). */
+/** The agent's learning now: its corrections.md (its lines, and the file's sha256 when it holds any), each active learned
+ *  workflow by name with its text's sha256, and the drafts waiting for the owner's OK. */
 export async function activeOf(api, agentId) {
   const view = ok("reading the agent's learning", await api("GET", `/agents/${q(agentId)}/learning`)) ?? {};
-  const allNotes = [...(view.notes?.items ?? [])];
-  for (let cursor = view.notes?.next_cursor; cursor; ) {
-    const page = ok("reading the agent's notes", await api("GET", `/agents/${q(agentId)}/learning/notes?cursor=${q(cursor)}`)) ?? {};
-    allNotes.push(...(page.items ?? []));
-    cursor = page.next_cursor;
-  }
   const text = async (file) => {
     const got = await api("GET", `/agents/${q(agentId)}/learning/files/${q(file)}`);
     return got.status === 200 ? (typeof got.body === "string" ? got.body : JSON.stringify(got.body)) : "";
   };
-  const notes = {}, skills = {}, workflows = {};
-  for (const n of allNotes) if (n.status === "active") notes[n.file] = sha(n.text ?? "");
-  for (const s of view.skills ?? []) if (s.status === "active") skills[s.name] = sha(await text(s.file));
+  const said = typeof view.corrections === "string" ? view.corrections : "";
+  const corrections = said.trim() ? { [CORRECTIONS_FILE]: sha(said) } : {};
+  const workflows = {};
   for (const w of view.workflows ?? []) if (w.status === "active") workflows[w.name] = sha(await text(w.file));
-  const pending = [...allNotes.filter((n) => n.status === "pending").map((n) => n.file), ...(view.skills ?? []).filter((s) => s.status === "pending").map((s) => s.file), ...(view.workflows ?? []).filter((w) => w.status === "pending").map((w) => w.readme ?? w.file)];
-  return { notes, skills, workflows, pending };
+  const pending = (view.workflows ?? []).filter((w) => w.status === "pending").map((w) => w.readme ?? w.file);
+  return { corrections, correction_lines: correctionLines(said), workflows, pending };
 }
 
 /** A fresh agent of the job's package for `harness`, learning on or off: applied, its triggers deleted, then its
@@ -329,24 +327,20 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
       approvals.push({ file, status: answer.status });
     }
   }
-  const verdictFiles = (learning?.verdict?.items ?? []).map((item) => item.file ?? "");
   // The run's cost (runCost): a known $0 stays $0; unknown from the server's null, or a run that booked no request.
   const usageRow = (() => { const u = rows.findLast((r) => r.kind === "usage")?.usage; return u ? JSON.parse(JSON.stringify(u)) : null; })();
   const tokens = await tokensOf(ctx.store, runId);
   const { total, unpriced: costUnpriced } = runCost(view, usageRow, tokens);
-  // The run's cost split: its job's own turns (what it had cost when the job answered) and its end-of-run learning turn
-  // (what looking back cost), from its kept learning row. A run that did not learn, or did not look back, spent it all on
-  // its job.
+  // The run's cost split: its job's own turns (what it had cost when the job answered) and its end-of-run compile turn,
+  // from its kept learning row (`look_back_usd`, the end-of-run turn's spend). A run that did not learn, or was asked no
+  // compile turn, spent it all on its job.
   const kept = learns ? ((await ctx.store.learning.proposal(runId))?.proposal ?? {}) : {};
   const looked = learns && kept.answered_at !== undefined;
   const work = costUnpriced ? null : looked ? usd(kept.job_cost_usd) : total;
   const reflect = looked ? usd(kept.look_back_usd) : total === null ? null : 0;
-  // The grade's cost as its learning says it: a known $0 stays $0, the server's null is unknown.
-  // A learning that ended with no grade run (dropped before it was proposed: empty, unparsed, the checks) graded nothing: 0.
-  const gradeRan = Boolean(learning?.verdict) || learning?.state === "merged" || learning?.reason === "grader";
-  const gradeRaw = !learning ? null : learning.cost_usd?.grade !== undefined ? usd(learning.cost_usd.grade) : ["merged", "dropped"].includes(learning.state) && !gradeRan ? 0 : null;
 
-  const learned = learning ? { notes: (learning.learned ?? []).map((x) => x.name), skills: (learning.skills ?? []).map((x) => x.name), workflows: (learning.workflows ?? []).map((x) => x.name) } : null;
+  // What this step's learning merged: the lines of its owner's words it added to corrections.md, and its workflow draft.
+  const learned = learning ? { corrections: typeof learning.corrections === "number" ? learning.corrections : 0, workflows: (learning.workflows ?? []).map((x) => x.name) } : null;
   const toolRows = rows.filter((r) => r.kind === "tool_use" && r.agent_label !== "learning" && r.tool_name);
   return {
     id: one.id, kind: one.kind, agent_id: agentId, run_id: runId, status: timedOut ? "timed_out" : view.status, learning_unsettled: learningUnsettled,
@@ -359,11 +353,8 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
     usage: usageRow,
     cost_view: view.cost ?? null, reflect_cost_usd: learns ? reflect : 0, eval_grader_cost_usd: graders.some((g) => g.type === "llm") ? round(graders.reduce((s, g) => s + (g.cost_usd ?? 0), 0)) : null,
     learning: learning ? { state: learning.state ?? null, reason: learning.reason ?? null, detail: learning.detail ?? null } : null,
-    grade_cost_usd: gradeRaw,
-    learned, workflow_proposed: Boolean(learned && (learned.workflows.length || verdictFiles.some((f) => f.startsWith("workflows/")))),
-    // The grader's word on each item it was shown: kept or not, held for the owner's OK, whose idea (origin), the rubric
-    // question it failed, and why. And the text of each item this step's learning kept, as the folder holds it now.
-    verdict: learning?.verdict ? (learning.verdict.items ?? []).map(({ file, keep, pending, origin, question, why }) => ({ file, keep, ...(pending ? { pending: true } : {}), ...(origin ? { origin } : {}), ...(question ? { question } : {}), why })) : null,
+    learned, workflow_proposed: Boolean(learned?.workflows.length),
+    // The text of each file this step's learning merged, as the folder holds it now.
     kept_texts: learns ? await keptTexts(api, agentId, learning) : null,
     // The run's tokens as its end stored them (the run row's metrics: the job's turns and its end-of-run turn); null when
     // the run booked no request (a harness whose usage the server does not see).
@@ -375,12 +366,11 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   };
 }
 
-/** The text of each note, skill and workflow draft a step's learning kept (its learned and pending items), read from the
- *  agent's folder as it is now, by file. */
+/** The text of each file a step's learning merged (corrections.md when it added a line, its workflow draft), read from
+ *  the agent's folder as it is now, by file. */
 async function keptTexts(api, agentId, learning) {
   const files = [
-    ...(learning?.learned ?? []).map((x) => x.file), ...(learning?.pending ?? []).map((x) => x.file),
-    ...(learning?.skills ?? []).map((x) => x.file), ...(learning?.workflows ?? []).map((x) => x.file),
+    ...(learning?.corrections > 0 ? [CORRECTIONS_FILE] : []), ...(learning?.workflows ?? []).map((x) => x.file),
   ].filter((f) => typeof f === "string");
   const out = {};
   for (const file of [...new Set(files)]) {
@@ -461,27 +451,26 @@ function tokensPerPass(steps) {
   return { per_pass: known.length && passes ? Math.round(known.reduce((sum, s) => sum + s.tokens.input + s.tokens.output, 0) / passes) : null, known: known.length };
 }
 
-/** How a series used the workflow it kept (results.schema.json `metrics.reuse`, C3): the step it was first kept at, the
- *  steps after it, those that called learned_workflow and how many of them passed, and tokens per passing step on those
- *  steps against the skill-only steps (a learned skill active, no workflow called: every step after the one that first
- *  learned a skill, the calling ones aside). Null with learning off, or when no workflow was kept. */
-/** The first step after which a `kind` (skills, workflows) was ACTIVE, by its recorded `active_after`: one kept
- *  waiting for the owner's OK (pending, as --no-approve leaves it) is listed as learned but given to no run. -1 for none. */
+/** The first step after which a `kind` (corrections, workflows) was ACTIVE, by its recorded `active_after`: a workflow
+ *  kept waiting for the owner's OK (pending, as --no-approve leaves it) is listed as learned but given to no run. -1 for
+ *  none. */
 const firstActive = (steps, kind) => steps.findIndex((s) => Object.keys(s.active_after?.[kind] ?? {}).length > 0);
 
+/** How a series used the workflow it kept (results.schema.json `metrics.reuse`, C3): the step it was first kept at, the
+ *  steps after it, those that called learned_workflow and how many of them passed, and tokens per passing step on those
+ *  steps against the agent's own steps (no workflow called: every step of the series, the calling ones aside). Null with
+ *  learning off, or when no workflow was kept. */
 function reuseMetrics(steps, learns) {
   if (!learns) return null;
   const kept = firstActive(steps, "workflows");
   if (kept < 0) return null;
   const after = steps.slice(kept + 1);
   const calling = after.filter((s) => s.learned_workflow_calls > 0);
-  // A step had the skill when the step before it left one active.
-  const skillOnly = steps.filter((s, i) => i > 0 && Object.keys(steps[i - 1].active_after?.skills ?? {}).length > 0 && !(s.learned_workflow_calls > 0));
   const withFlow = tokensPerPass(calling);
-  const without = tokensPerPass(skillOnly);
+  const without = tokensPerPass(steps.filter((s) => !(s.learned_workflow_calls > 0)));
   return {
     kept_step: steps[kept].id, steps_after: after.length, call_steps: calling.length, call_passes: calling.filter((s) => s.pass).length,
-    tokens_per_pass_workflow: withFlow.per_pass, tokens_per_pass_skill_only: without.per_pass, workflow_steps_known: withFlow.known, skill_only_steps_known: without.known,
+    tokens_per_pass_workflow: withFlow.per_pass, tokens_per_pass_agent: without.per_pass, workflow_steps_known: withFlow.known, agent_steps_known: without.known,
   };
 }
 
@@ -498,11 +487,11 @@ export function metricsOf(steps, learns) {
     const end = steps.at(-1).active_after;
     const after = steps.slice(i + 1);
     const changeGraders = after.flatMap((x) => x.graders.filter((g) => g.grader.startsWith("change-")));
-    const updated = (kind) => (end && Object.keys(end[kind]).length ? Object.entries(end[kind]).some(([name, digest]) => !before || before[kind][name] !== digest) : null);
+    const updated = (kind) => (end && Object.keys(end[kind] ?? {}).length ? Object.entries(end[kind]).some(([name, digest]) => !before || before[kind]?.[name] !== digest) : null);
     const flowSteps = after.filter((x) => x.learned_workflow_calls > 0);
     staleness.push({
       change_step: s.id, pass_rate_after: rate(after.map((x) => x.pass)), change_graders_pass_rate: rate(changeGraders.map((g) => g.pass)),
-      skill_updated: updated("skills"), workflow_updated: updated("workflows"),
+      corrections_updated: updated("corrections"), workflow_updated: updated("workflows"),
       workflow_follows: flowSteps.length ? flowSteps.every((x) => x.graders.filter((g) => g.grader.startsWith("change-")).every((g) => g.pass)) : null,
     });
   }
@@ -524,9 +513,8 @@ export function metricsOf(steps, learns) {
     cost_trend_usd_per_run: slope(steps.map((s, i) => [i, s.work_cost_usd])),
     cost_first_usd: steps[0]?.work_cost_usd ?? null, cost_last_usd: steps.at(-1)?.work_cost_usd ?? null,
     reflect_cost_per_run_usd: learns ? mean(steps.map((s) => s.reflect_cost_usd)) : null,
-    // What learning adds to each run: its end-of-run turn and its grade, where both are known.
-    // A grade whose cost is unknown counts 0 here: then the overhead is a lower bound, and grade_cost_unknown_steps says so.
-    learning_overhead_usd_per_run: learns ? mean(steps.map((s) => (s.reflect_cost_usd === null ? null : s.reflect_cost_usd + (s.grade_cost_usd ?? 0)))) : null,
+    // What learning adds to each run: its end-of-run compile turn, where known.
+    learning_overhead_usd_per_run: learns ? mean(steps.map((s) => s.reflect_cost_usd)) : null,
     workflow_proposal_rate: learns ? rate(at((s) => s.kind === "teach").map((s) => s.workflow_proposed)) : null,
     reuse_rate: learns && firstFlow >= 0 ? rate(steps.slice(firstFlow + 1).map((s) => s.learned_workflow_calls > 0)) : null,
     reuse: reuseMetrics(steps, learns),
@@ -535,8 +523,6 @@ export function metricsOf(steps, learns) {
     plant_graders: learns && plantAt >= 0 ? plantGraders.length : null,
     plant_ungraded: learns && plantAt >= 0 ? plantChecks.length - plantGraders.length : null,
     ungraded_checks: steps.reduce((n, s) => n + s.graders.filter((g) => g.ungraded).length, 0),
-    grade_cost_usd: learns ? round(steps.reduce((s, x) => s + (x.grade_cost_usd ?? 0), 0)) : null,
-    grade_cost_unknown_steps: learns ? steps.filter((x) => x.learning?.state === "merged" && x.grade_cost_usd === null).length : null,
     eval_grader_cost_usd: steps.some((s) => s.eval_grader_cost_usd !== null) ? round(steps.reduce((s, x) => s + (x.eval_grader_cost_usd ?? 0), 0)) : null,
     approvals: steps.reduce((n, s) => n + (s.approvals?.length ?? 0), 0),
     cost_unknown_steps: steps.filter((s) => s.cost_unpriced).length,
@@ -616,7 +602,7 @@ async function main() {
     const server = await startServer(data, templates);
     const harnessMaxRuns = Object.fromEntries((values["harness-max-runs"] ?? "").split(",").filter(Boolean).map((pair) => { const [h, n] = pair.split("="); return [h, Number(n)]; }));
     const options = { harnessMaxRuns, runsBy: {}, maxUsd: Number(values["max-usd"]), deadline: Date.now() + Number(values["deadline-s"]) * 1000, approve: !values["no-approve"], evalGraderModel: values["eval-grader-model"], runTimeoutMs: Number(values["run-timeout-s"]) * 1000, log: (line) => console.error(line) };
-    const results = { schema: SCHEMA, bench: { sha: process.env.BENCH_SHA ?? "unknown", frozen: process.env.BENCH_FROZEN ? JSON.parse(process.env.BENCH_FROZEN) : {}, models: { pi: models.pi ?? process.env.AGENT_MODEL ?? null, "claude-agent": models["claude-agent"], learning_grader: process.env.AGENTRUN_SERVE_GRADE_MODEL ?? null, eval_grader: options.evalGraderModel ?? null }, caps: { bench_max_usd: options.maxUsd, deadline_s: Number(values["deadline-s"]), harness_max_runs: harnessMaxRuns }, started_at: started, ended_at: null }, hard_stop: null, series: [] };
+    const results = { schema: SCHEMA, bench: { sha: process.env.BENCH_SHA ?? "unknown", frozen: process.env.BENCH_FROZEN ? JSON.parse(process.env.BENCH_FROZEN) : {}, models: { pi: models.pi ?? process.env.AGENT_MODEL ?? null, "claude-agent": models["claude-agent"], eval_grader: options.evalGraderModel ?? null }, caps: { bench_max_usd: options.maxUsd, deadline_s: Number(values["deadline-s"]), harness_max_runs: harnessMaxRuns }, started_at: started, ended_at: null }, hard_stop: null, series: [] };
     const write = () => writeFileSync(join(values.out, "results.json"), `${JSON.stringify(results, null, 1)}\n`);
     try {
       const owner = await ownerOf(server.api, server.base);
@@ -655,28 +641,27 @@ export function render(results) {
   const money = (x) => (x === null || x === undefined ? "-" : `$${x.toFixed(4)}`);
   const yes = (x) => (x === null || x === undefined ? "-" : x ? "yes" : "no");
   const out = [`Learning bench (${results.schema}), build ${String(results.bench?.sha ?? "?").slice(0, 10)}${results.hard_stop ? `, HARD STOP: ${results.hard_stop}` : ""}`, ""];
-  out.push("| Job | Harness | Arm | Steps | Follow (repeat) | Pass (all) | Tokens/pass | Work cost/run | Work cost trend /run | Learning overhead/run | Grade cost | Workflow proposed (teach) | Reuse | After change: graders / skill updated / workflow updated | Wrong keeps |");
-  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  out.push("| Job | Harness | Arm | Steps | Follow (repeat) | Pass (all) | Tokens/pass | Work cost/run | Work cost trend /run | Learning overhead/run | Workflow proposed (teach) | Reuse | After change: graders / corrections updated / workflow updated | Wrong keeps |");
+  out.push("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
   const order = [...results.series].sort((a, b) => `${a.job}${a.harness}${a.arm}`.localeCompare(`${b.job}${b.harness}${b.arm}`));
   for (const s of order) {
     // Counts read from the steps when a results file predates them.
     const repeats = s.steps.filter((x) => x.kind === "repeat");
     const m = { follow_k: repeats.filter((x) => x.pass).length, follow_n: repeats.length, pass_k: s.steps.filter((x) => x.pass).length, pass_n: s.steps.length, ...s.metrics };
-    const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.skill_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
+    const st = (m.staleness ?? []).map((x) => `${x.change_step}: ${pct(x.change_graders_pass_rate)} / ${yes(x.corrections_updated)} / ${yes(x.workflow_updated)}`).join("; ") || "-";
     const trend = m.cost_trend_usd_per_run === null ? "-" : `${m.cost_trend_usd_per_run >= 0 ? "+" : ""}${m.cost_trend_usd_per_run.toFixed(5)}`;
-    const grade = s.arm === "off" ? "-" : `${money(m.grade_cost_usd)}${m.grade_cost_unknown_steps ? ` (+${m.grade_cost_unknown_steps} unknown)` : ""}`;
-    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${m.follow_k ?? "-"}/${m.follow_n ?? "-"} (${pct(m.follow_rate)}) | ${m.pass_k ?? "-"}/${m.pass_n ?? "-"} (${pct(m.pass_rate)}) | ${m.tokens_per_pass ?? (m.tokens_known_steps === 0 ? "unknown" : "-")} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${m.grade_cost_unknown_steps ? "≥" : ""}${money(m.learning_overhead_usd_per_run)} | ${grade} | ${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"}${m.plant_ungraded ? ` (+${m.plant_ungraded} ungraded)` : ""} |`);
+    out.push(`| ${s.job} | ${s.harness} | ${s.arm} | ${s.steps.length} | ${m.follow_k ?? "-"}/${m.follow_n ?? "-"} (${pct(m.follow_rate)}) | ${m.pass_k ?? "-"}/${m.pass_n ?? "-"} (${pct(m.pass_rate)}) | ${m.tokens_per_pass ?? (m.tokens_known_steps === 0 ? "unknown" : "-")} | ${m.cost_unknown_steps === s.steps.length ? "unknown" : money(m.work_cost_per_run_usd)} | ${trend} | ${money(m.learning_overhead_usd_per_run)} |${pct(m.workflow_proposal_rate)} | ${pct(m.reuse_rate)} | ${st} | ${m.wrong_keeps ?? "-"}${m.plant_ungraded ? ` (+${m.plant_ungraded} ungraded)` : ""} |`);
   }
   for (const s of order) {
     const reuse = s.metrics.reuse;
     const toks = (x) => (x === null || x === undefined ? "unknown" : String(x));
     out.push("", `${s.job} / ${s.harness} / ${s.arm}${s.error ? ` (SERIES STOPPED: ${s.error.slice(0, 200)})` : ""}${s.metrics.ungraded_checks ? ` (${s.metrics.ungraded_checks} checks ungraded)` : ""}: graders ${Object.entries(s.metrics.grader_pass_rates ?? {}).map(([g, r]) => `${g} ${pct(r)}`).join(", ")}`);
-    if (reuse) out.push(`${s.job} / ${s.harness} / ${s.arm} reuse: workflow kept at ${reuse.kept_step}; ${reuse.call_steps} of the ${reuse.steps_after} steps after called it, ${reuse.call_passes} passed; tokens per passing step ${toks(reuse.tokens_per_pass_workflow)} with it, ${toks(reuse.tokens_per_pass_skill_only)} skill-only`);
+    if (reuse) out.push(`${s.job} / ${s.harness} / ${s.arm} reuse: workflow kept at ${reuse.kept_step}; ${reuse.call_steps} of the ${reuse.steps_after} steps after called it, ${reuse.call_passes} passed; tokens per passing step ${toks(reuse.tokens_per_pass_workflow)} with it, ${toks(reuse.tokens_per_pass_agent)} without`);
     for (const x of s.steps) {
       const failed = x.graders.filter((g) => !g.pass && !g.ungraded).map((g) => g.grader);
       const ungraded = x.graders.filter((g) => g.ungraded).map((g) => g.grader);
-      const kept = x.learned ? Object.entries(x.learned).filter(([, v]) => v.length).map(([k, v]) => `${k.slice(0, -1)} ${v.join(", ")}`).join("; ") : "";
-      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"} grade=${x.grade_cost_usd === null ? "unknown" : money(x.grade_cost_usd)}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${ungraded.length ? ` ungraded=${ungraded.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
+      const kept = x.learned ? [x.learned.corrections ? `corrections +${x.learned.corrections}` : "", x.learned.workflows.length ? `workflow ${x.learned.workflows.join(", ")}` : ""].filter(Boolean).join("; ") : "";
+      out.push(`  ${x.id} ${x.kind.padEnd(6)} ${x.status.padEnd(10)} ${x.pass ? "pass" : "FAIL"} work=${money(x.work_cost_usd)}${x.learning ? ` reflect=${money(x.reflect_cost_usd)} learning=${x.learning.state ?? "-"}` : ""}${kept ? ` kept=${kept}` : ""}${x.learned_workflow_calls ? ` wf_calls=${x.learned_workflow_calls}` : ""}${failed.length ? ` failed=${failed.join(",")}` : ""}${ungraded.length ? ` ungraded=${ungraded.join(",")}` : ""}${x.error ? ` error=${x.error.slice(0, 160)}` : ""}`);
     }
   }
   return out.join("\n") + "\n";

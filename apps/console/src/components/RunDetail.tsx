@@ -158,7 +158,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
-  // The run's learning, read once and again when it ends: the learned skills and workflows it used, and its grade with the
+  // The run's learning, read once and again when it ends: the learned workflows it used, and its grade with the
   // round it opened. A grade this page sends is kept beside it from the PUT's answer, so a tab switch, a read still
   // pending or one begun before the grade still shows it.
   const { read: learning, grade: runGrade, graded } = useRunLearning(run, view.final, readLearning);

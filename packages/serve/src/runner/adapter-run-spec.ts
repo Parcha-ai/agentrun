@@ -42,7 +42,7 @@ import { outputContract } from "../answer-json.js";
 import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
-import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
+import { learningEndOfRun } from "./learning-end.js";
 import { type LearnedAction, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpCalls, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
@@ -472,26 +472,16 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const start = learningStartOf(launch);
   // The revision's own skills are laid in the run's .agents/skills/ before they are read (main's server start laid them;
   // on the one store the claim does), from the revision row's texts (the body keeps only each file's SHA-256): each
-  // folder not there yet, never over a learned skill or an earlier claim's. A desktop or a phone (the revision's computer
+  // folder not there yet, never over an earlier claim's. A desktop or a phone (the revision's computer
   // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
   const kindSkills = await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
-  // A learning run's seed, read once from its learning folder where the run's place keeps it: its notes in .learning/
-  // and its learned skills beside the revision's own (runner/learning-seed.ts), cut of the server's secrets, the learned
-  // skills then in the skill list the prompt names, its learned workflows the ones its learned_workflow tool runs. Laid
-  // before the run's tools are bound. A learning fault, or a seed that failed (seedFailed), lays nothing.
+  // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
+  // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
+  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
   const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({
-      work: ws.workspace,
-      seed: start.seed,
-      folder: learningFolder,
-      own: Object.keys(revisionRow.skills ?? {}),
-      shown,
-      log,
-      ...(start.notesOnly ? { workflows: false as const } : {}),
-      ...(start.notesLeftOut?.length ? { notesLeftOut: start.notesLeftOut } : {}),
-    })
+    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
 
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
@@ -626,7 +616,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const capModel = capModelOf(route);
   // And each tier's model (tierRoutes, filled below), by the route its request names (its tier's proxy, ModelRequest.route),
   // priced as that route books it: one id the run's model and a tier share is priced apart, never at the other's price.
-  const besideOf = spentBesideOf(launch, deps.store, claim.runId);
   const runCap: RunCapConfig = {
     capUsd: () => launch.maxCostUsd,
     modelOf: (id, by) => {
@@ -634,8 +623,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       const tierRoute = tierRoutes.get(by);
       return tierRoute && tierRoute.model === id ? capModelOf(tierRoute) : undefined;
     },
-    // What its learning runs' grades took beside it, read by every gate with its own sessions (none: it queues none).
-    ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS).
     freeRequests: freeModelRequestsOf(deps.env),
   };
@@ -737,8 +724,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // outputContract, the CLI spec's too), then the effort guidance (the launch's effort, never this process's environment).
   // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
-  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section, start.use === true) : (body.instructions ?? "");
-  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills, ...(seedLaid?.skills ?? [])], ws.workspace, { onDemand: readsFiles(granted) });
+  const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
+  const instructions = await promptOf(laid, [...Object.keys(body.skills ?? {}), ...kindSkills], ws.workspace, { onDemand: readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (EvalFakes.now), else the real one.
   const now = fakes?.now;
@@ -786,9 +773,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const input = await firstMessage(inputMessage(launch.input), ws.workspace);
 
   // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
-  // reflect-and-propose turn over the run's store, asked in the end turn while the claim is held (adapter-loop.ts stepOf).
-  // Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the data directory, Mode 2 the
-  // agent's folder on THIS claim's Archil disk (the proposal is checked against the seed on the disk, never this machine's
+  // compile turn and the owner's correction over the run's store, asked in the end turn while the claim is held
+  // (adapter-loop.ts stepOf). Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the
+  // data directory, Mode 2 the agent's folder on THIS claim's Archil disk (the draft is checked against the seed on the disk, never this machine's
   // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
   // A replay run asks nothing at its end: it is the promotion's, never the agent's to learn from.
   const endOfRun = launch.replay ? undefined : learningEndOfRun(launch, {

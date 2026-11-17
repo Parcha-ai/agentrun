@@ -40,12 +40,12 @@ test("the loop's read: compile turns newest first with their standing, a failed 
     runOf("live", 8, { path: "agent" }, { state: "running" }),
     runOf("archived", 9, { path: "agent" }, { archivedAt: T0 }),
   ];
-  const compiled = { compiled: { workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: D1 } };
+  const compiled = { compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: D1 } };
   const kept = {
-    r1: { compiled: { workflow: "sort-invoice", from_notes: ["vendor-codes", "totals"], attempts: [{ ok: false, errors: ["root: no node"] }, { ok: true, errors: [] }], digest: D1 } },
+    r1: { compiled: { workflow: "sort-invoice", attempts: [{ ok: false, errors: ["root: no node"] }, { ok: true, errors: [] }], digest: D1 } },
     r4: { draft_errors: ["the draft did not parse"] },
-    r5: { compiled: { workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest: "not-a-digest" } },
-    r6: { state: "proposed" },
+    r5: { compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: "not-a-digest" } },
+    r6: { state: "dropped" },
     other: compiled, live: compiled, archived: compiled,
   };
   const promotions = [{ workflow: "sort-invoice", digest: D1, at: new Date(T0).toISOString(), decided: "promote", reason: "as good" }];
@@ -56,7 +56,6 @@ test("the loop's read: compile turns newest first with their standing, a failed 
     ["r4", null, null, null, ["the draft did not parse"]],
     ["r1", "sort-invoice", D1, true, []],
   ], "newest first; a turn with no compile and no draft error is no turn; a digest out of shape is none, so no standing; other agents', live and archived runs are not read");
-  assert.deepEqual(compiles.at(-1).from_notes, ["vendor-codes", "totals"]);
   assert.deepEqual(compiles.at(-1).attempts, [{ ok: false, errors: ["root: no node"] }, { ok: true, errors: [] }]);
 });
 
@@ -64,8 +63,8 @@ test("the loop's read: compile turns newest first with their standing, a failed 
 test("a draft its check had nothing to check it on: its stop's reason is the compile's draft error; a recompile's stop on numbers adds none", async () => {
   const runs = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" })];
   const kept = {
-    r1: { compiled: { workflow: "sort-invoice", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: D1 } },
-    r2: { compiled: { workflow: "sort-invoice", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: D2 } },
+    r1: { compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: D1 } },
+    r2: { compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: D2 } },
   };
   const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const nothing = "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts";
@@ -79,7 +78,7 @@ test("a draft its check had nothing to check it on: its stop's reason is the com
 
 test("each round of a run lists its own compile: a follow-up's round that only kept a note leaves the first round's compile in the feed", async () => {
   const runs = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" })];
-  const compiled = (digest) => ({ compiled: { workflow: "sort-invoice", from_notes: ["vendor-codes"], attempts: [{ ok: true, errors: [] }], digest } });
+  const compiled = (digest) => ({ compiled: { workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest } });
   const kept = {
     // r1 compiled in round 1; a follow-up ended round 2 with a note, then round 3 compiled again, after r2's.
     r1: [{ at: T0 + 10, row: compiled(D1) }, { at: T0 + 20, row: { state: "proposed" } }, { at: T0 + 40, row: compiled(D2) }],

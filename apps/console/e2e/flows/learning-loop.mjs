@@ -1,12 +1,12 @@
 // The self-learning loop told on an agent's Learning tab, in the browser at three widths and both themes, on an invented
-// invoice-sorter agent: notes (two of them compiled into its workflow), a first compile held on its replay, a revised one
-// promoted at run 21, a threshold refit at run 51, a later draft the checks refused. The real view is answered with those
-// notes and the workflow listed; the loop's reads (GET .../learning/cost, .../promotions, .../loop and the workflow's
-// revisions) with invented records. The story strip tells the loop end to end; the cost chart flags each record on its run
-// lettered (P, H, R, F) with the server's own headline and the hand-back rate; the workflow card says the newest revision
-// serves, carries each step's guard on its card and lists where it is unsure; scrubbing back to the refit's source says so;
-// the feed says the refused draft in the checks' own words; a note says what it was compiled into. Nothing past any card's
-// edge and no sideways scroll. E2E_SHOTS=<dir> saves each width and theme, each image stamped "Example data".
+// invoice-sorter agent: two corrections from its owner, a first compile held on its one check, its one recompile
+// promoted at run 21, a later draft the checks refused. The real view is answered with those corrections and the
+// workflow listed; the loop's reads (GET .../learning/cost, .../promotions, .../loop and the workflow's revisions) with
+// invented records. The story strip tells the loop end to end, the cheaper stage saying the agreement check it passed
+// (never "the same accuracy"); the cost chart flags each record on its run lettered (R, H, P) with the server's own
+// headline and the hand-back rate; the workflow card says the newest revision serves; scrubbing back to the first says it
+// was held; the feed says the refused draft in the checks' own words; the corrections card counts the lines. Nothing past
+// any card's edge and no sideways scroll. E2E_SHOTS=<dir> saves each width and theme, each image stamped "Example data".
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { check, markExample } from "../harness.mjs";
@@ -14,59 +14,48 @@ import { check, markExample } from "../harness.mjs";
 const SAMPLE = JSON.parse(readFileSync(new URL("../../src/components/CostPerRun.sample.json", import.meta.url), "utf8"));
 export const WIDTHS = [1440, 820, 390];
 const WF = "sort-invoice";
-/** The story's cheaper headline: the sample's 7.7 (its served runs only) over the serving refit's replay (95% vs 94% on
- *  40), which cleared the bar. */
-const CHEAPER = "About 8x cheaper at the same accuracy";
-const D0 = "c0ffee00c0ffee00", D1 = "a12596c0a12596c0", D2 = "1a48d30c1a48d30c";
+/** The story's cheaper headline: the sample's 7.7 (its served runs only), and the serving check it passed (the sample's
+ *  replay: 38 of 40 agreed, the bar 80%), never "at the same accuracy". */
+const CHEAPER = "About 8x cheaper";
+const PASSED = "Passed the agreement check: 38 of 40 agreed (bar 80%) · served 59 runs, handed back 3";
+const D0 = "c0ffee00c0ffee00", D1 = "a12596c0a12596c0";
 const runAt = (n) => SAMPLE.runs.find((r) => r.n === n);
 const later = (n, minutes) => new Date(Date.parse(runAt(n).started_at) - minutes * 60_000).toISOString();
 
 const schemas = { Answer: { type: "object", required: ["account"], properties: { account: { type: "string" } } } };
-const flow = (threshold, fitted) => ({ v: 2, name: WF, schemas, input: { schemaId: "Answer" }, output: { schemaId: "Answer", path: "account" }, root: { node: "chain", steps: [
+const flow = (steps) => ({ v: 2, name: WF, schemas, input: { schemaId: "Answer" }, output: { schemaId: "Answer", path: "account" }, root: { node: "chain", steps: [
   { node: "extract", label: "read lines", instructions: "Read the invoice's vendor, lines and total.", out: "Answer", as: "lines" },
-  { node: "extract", label: "classify", instructions: "Sort the invoice into a ledger account by vendor.", out: "Answer", as: "account", guard: { signal: "jev", threshold, ...(fitted ? { fit: { w: [2.1], b: -1.2, n: 40 } } : {}) } },
-  { node: "extract", label: "check total", instructions: "Check the total against the lines.", out: "Answer", as: "checked", guard: { signal: "both", threshold: 0.6 } },
-] } });
+  { node: "extract", label: "classify", instructions: "Sort the invoice into a ledger account by vendor.", out: "Answer", as: "account" },
+  { node: "extract", label: "check total", instructions: "Check the total against the lines.", out: "Answer", as: "checked" },
+].slice(0, steps) } });
 const REVISIONS = [
-  { commit: "1".repeat(40), at: later(11, -5), by: { run: runAt(11).run_id }, reason: "Compiled from three notes.", text: JSON.stringify({ ...flow(0.7), root: { node: "chain", steps: flow(0.7).root.steps.slice(0, 2) } }), digest: D0 },
-  { commit: "2".repeat(40), at: later(17, -5), by: { run: runAt(17).run_id }, reason: "Revised after its replay was held: a total check added.", text: JSON.stringify(flow(0.7)), digest: D1 },
-  { commit: "3".repeat(40), at: later(51, 10), by: { user: true }, reason: "Thresholds refit on 40 graded runs.", text: JSON.stringify(flow(0.78, true)), digest: D2 },
+  { commit: "1".repeat(40), at: later(11, -5), by: { run: runAt(11).run_id }, reason: "Compiled from the agent's last 20 runs.", text: JSON.stringify(flow(2)), digest: D0 },
+  { commit: "2".repeat(40), at: later(17, -5), by: { run: runAt(17).run_id }, reason: "Recompiled after its check held it: a total check added.", text: JSON.stringify(flow(3)), digest: D1 },
 ];
-const REPLAY = (n, wf, agent, back) => ({ of: SAMPLE.runs.slice(0, n).map((run) => run.run_id), n, agree: Math.round(n * 0.9), agent_acc: agent, wf_acc: wf, delta: Math.round((wf - agent) * 1000) / 1000, handed_back: back });
+/** A check's record (a promotion record's `check`): its bar, and once decided its numbers on the agent's last 20 runs. */
+const CHECK = (attempt, decided) => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt, ...(decided ? { n: 20, agreed: decided.agreed, alone: decided.alone, of: SAMPLE.runs.slice(0, 20).map((run) => run.run_id), outcomes: { answered: decided.alone, handed_back: 20 - decided.alone, failed: 0, skipped_write: 0 } } : {}) });
 const PROMOTIONS = [
-  { workflow: WF, digest: D0, at: later(12, 10), decided: "replaying", source: "replay", reason: "A new revision replays on the last 20 graded inputs.", runs: [] },
-  { workflow: WF, digest: D0, at: later(14, 10), decided: "hold", source: "replay", reason: "Held: it did worse than the agent on its graded inputs.", replay: REPLAY(20, 0.85, 0.94, 3) },
-  { workflow: WF, digest: D1, at: later(18, 10), decided: "replaying", source: "replay", reason: "A new revision replays on the last 20 graded inputs.", runs: [] },
-  { workflow: WF, digest: D1, at: later(21, 10), decided: "promote", source: "replay", reason: "As good as the agent on its graded inputs.", replay: REPLAY(20, 0.95, 0.94, 2) },
-  { workflow: WF, digest: D2, at: later(51, 10), decided: "promote", source: "refit", reason: "refit sort-invoice's guards over its graded runs (40 rows): classify 0.7 -> 0.78", replay: REPLAY(40, 0.95, 0.94, 3), refit: { from: D1, guards: [{ node: "classify", was: 0.7, threshold: 0.78 }] } },
+  { workflow: WF, digest: D0, at: later(12, 10), decided: "replaying", reason: "checking it on 20 inputs of the agent's last 20 completed runs against its own answers before it serves", check: CHECK(1), runs: [] },
+  { workflow: WF, digest: D0, at: later(14, 10), decided: "hold", reason: "checked on 20 of the agent's inputs: answered 17 alone (85.0%, the bar 70.0%), and 12 of those said what the agent said (70.6%, the bar 80.0%): held", check: CHECK(1, { agreed: 12, alone: 17 }) },
+  { workflow: WF, digest: D1, at: later(18, 10), decided: "replaying", reason: "checking it on 20 inputs of the agent's last 20 completed runs against its own answers before it serves", check: CHECK(2), runs: [] },
+  { workflow: WF, digest: D1, at: later(21, 10), decided: "promote", reason: "checked on 20 of the agent's inputs: answered 18 alone (90.0%, the bar 70.0%), and 17 of those said what the agent said (94.4%, the bar 80.0%): promoted", check: CHECK(2, { agreed: 17, alone: 18 }) },
 ];
-// Each guarded step's runs: p from a fixed walk (no randomness), right or wrong where the workflow answered alone.
-const points = (from, to, threshold, low) => SAMPLE.runs.filter((r) => r.n >= from && r.n <= to && r.path !== "agent").map((r, i) => {
-  const p = r.path === "handed_back" ? (i % 3 === 0 ? null : 0.3 + (i % 4) * 0.08) : Math.min(0.99, 0.72 + ((i * 37) % 27) / 100 - (i % 9 === 0 ? low : 0));
-  const escalated = p === null || p < threshold;
-  return { run_id: r.run_id, p, escalated, correct: r.path === "workflow" && !escalated ? i % 11 !== 5 : null };
-});
-const guard = (digest, node, signal, threshold, from, to, low) => { const ps = points(from, to, threshold, low); return { workflow: WF, digest, node, signal, threshold, runs: ps.length, escalated: ps.filter((p) => p.escalated).length, points: ps }; };
 const LOOP = {
   compiles: [
-    { run_id: runAt(45).run_id, at: later(45, -5), workflow: null, from_notes: ["vendor-codes"], attempts: [{ ok: false, errors: ["/root/steps/1: an extract step's out names a schema the workflow does not define (Account)"] }, { ok: false, errors: ["the dry run handed back on every input: classify never reached 0.78"] }, { ok: false, errors: ["the draft is not JSON: Unexpected token } at 412"] }], digest: null, promoted: null, draft_errors: [], withheld: false },
-    { run_id: runAt(17).run_id, at: later(17, -5), workflow: WF, from_notes: ["vendor-codes", "totals-include-tax", "credit-notes"], attempts: [{ ok: true, errors: [] }], digest: D1, promoted: true, draft_errors: [], withheld: false },
-    { run_id: runAt(11).run_id, at: later(11, -5), workflow: WF, from_notes: ["vendor-codes", "totals-include-tax", "credit-notes"], attempts: [{ ok: false, errors: ["/root/steps/1: a guard needs a label"] }, { ok: true, errors: [] }], digest: D0, promoted: false, draft_errors: [], withheld: false },
+    { run_id: runAt(45).run_id, round: 1, at: later(45, -5), workflow: null, attempts: [{ ok: false, errors: ["/root/steps/1: an extract step's out names a schema the workflow does not define (Account)"] }, { ok: false, errors: ["the dry run failed: /root/steps/2 reads state.total, which no step writes"] }, { ok: false, errors: ["the draft is not JSON: Unexpected token } at 412"] }], digest: null, promoted: null, draft_errors: [], withheld: false },
+    { run_id: runAt(17).run_id, round: 1, at: later(17, -5), workflow: WF, attempts: [{ ok: true, errors: [] }], digest: D1, promoted: true, draft_errors: [], withheld: false },
+    { run_id: runAt(11).run_id, round: 1, at: later(11, -5), workflow: WF, attempts: [{ ok: false, errors: ["/root/steps/1: an extract step needs a label"] }, { ok: true, errors: [] }], digest: D0, promoted: false, draft_errors: [], withheld: false },
   ],
-  guards: [guard(D1, "classify", "jev", 0.7, 18, 50, 0.3), guard(D1, "check total", "both", 0.6, 18, 50, 0.1), guard(D2, "classify", "jev", 0.78, 51, 80, 0.35), guard(D2, "check total", "both", 0.6, 51, 80, 0.05)],
+  completed_runs: 20,
 };
-const fm = (name, description, extra = "") => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n${extra}---\n`;
-const NOTES = [
-  ["vendor-codes", "Vendor codes", "Which ledger account each vendor's invoices go to", "compiled_into: sort-invoice\n", "Acme Paper goes to 6100 Office supplies; Northwind Freight to 6400 Shipping."],
-  ["totals-include-tax", "Totals include tax", "An invoice total is the lines plus tax", "compiled_into: sort-invoice\n", "Check the total against the lines plus the tax line, not the lines alone."],
-  ["credit-notes", "Credit notes", "A negative total is a credit note", "", "A credit note goes to the account of the invoice it credits."],
-].map(([slug, name, description, extra, body]) => ({ file: `${slug}.md`, name, description, type: "reference", status: "active", superseded_by: null, runs: { given: 60, read: 41 }, etag: `"${slug}"`, origin: "run", text: `${fm(name, description, extra)}${body}\n` }));
+/** corrections.md as the owner left it: one correction a line, each given whole to every later run. */
+const CORRECTIONS = "- Acme Paper goes to 6100 Office supplies; Northwind Freight to 6400 Shipping.\n- Check the total against the lines plus the tax line, not the lines alone.\n";
 const ITEM = { name: WF, file: `workflows/${WF}/workflow.json`, readme: `workflows/${WF}/README.md`, description: "Sorts an invoice into its ledger account", status: "active", run: null, bytes: 1400, etag: '"w"' };
 
 /** Each card's box against the page and its own content: text past a card's right edge, and a page wider than the view. */
 function measure() {
   const past = [];
-  for (const card of document.querySelectorAll('[data-testid="loop-story"], [data-testid="cost-per-run"], [aria-label="Learned workflow"], [data-testid="loop-feed"]')) {
+  for (const card of document.querySelectorAll('[data-testid="loop-story"], [data-testid="cost-per-run"], [aria-label="Learned workflow"], [data-testid="loop-feed"], [aria-label="Corrections"]')) {
     const edge = card.getBoundingClientRect().right;
     for (const t of card.querySelectorAll("p, span, h2, h3, li, text")) if (t.getBoundingClientRect().width && t.getBoundingClientRect().right > edge + 1 && !t.closest('[class*="overflow-auto"]')) past.push(`${card.getAttribute("data-testid") ?? card.getAttribute("aria-label")}: "${(t.textContent ?? "").slice(0, 40)}"`);
   }
@@ -81,12 +70,14 @@ export default {
     check(made.status === 201 || made.status === 200, `POST /v2/agents answered ${made.status}: ${JSON.stringify(made.body)}`);
     const id = made.body.agent_id;
     const enc = encodeURIComponent(id);
-    // The real reads first: a fresh agent's loop and promotions read empty.
+    // The real reads first: a fresh agent's loop and promotions read empty, and so do its corrections.
     const fresh = await api("GET", `/agents/${enc}/learning/loop`);
-    check(fresh.status === 200 && fresh.body.compiles.length === 0 && fresh.body.guards.length === 0, `a fresh agent's loop read: ${fresh.status} ${JSON.stringify(fresh.body)}`);
-    await page.route(new RegExp(`/v2/agents/${enc}/learning$`), async (route) => { const real = await (await route.fetch()).json(); route.fulfill({ json: { ...real, notes: { items: NOTES, total: NOTES.length, next_cursor: null }, workflows: [ITEM] } }); });
+    check(fresh.status === 200 && fresh.body.compiles.length === 0 && fresh.body.completed_runs === 0 && !("guards" in fresh.body), `a fresh agent's loop read: ${fresh.status} ${JSON.stringify(fresh.body)}`);
+    const view = await api("GET", `/agents/${enc}/learning`);
+    check(view.status === 200 && view.body.corrections === "" && !("notes" in view.body) && !("skills" in view.body), `a fresh agent's learning read: ${view.status} ${JSON.stringify(view.body)}`);
+    await page.route(new RegExp(`/v2/agents/${enc}/learning$`), async (route) => { const real = await (await route.fetch()).json(); route.fulfill({ json: { ...real, corrections: CORRECTIONS, workflows: [ITEM] } }); });
     await page.route(new RegExp(`/v2/agents/${enc}/learning/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id } }));
-    await page.route(new RegExp(`/v2/agents/${enc}/learning/promotions$`), (route) => route.fulfill({ json: { agent: id, promotions: PROMOTIONS, serving: [{ workflow: WF, digest: D2, replaying: null }] } }));
+    await page.route(new RegExp(`/v2/agents/${enc}/learning/promotions$`), (route) => route.fulfill({ json: { agent: id, promotions: PROMOTIONS, serving: [{ workflow: WF, digest: D1, replaying: null }] } }));
     await page.route(new RegExp(`/v2/agents/${enc}/learning/loop$`), (route) => route.fulfill({ json: { agent: id, ...LOOP } }));
     await page.route(new RegExp(`/v2/agents/${enc}/learning/workflows/${WF}/revisions(\\?.*)?$`), (route) => route.fulfill({ json: { name: WF, revisions: REVISIONS, total: REVISIONS.length, truncated: false } }));
     const shots = process.env.E2E_SHOTS;
@@ -102,21 +93,21 @@ export default {
         await page.reload();
         const story = page.getByTestId("loop-story");
         await story.getByText(CHEAPER).waitFor().catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "learning-loop-failed.png"), fullPage: true }); throw e; });
-        await page.getByRole("region", { name: "Learned workflow" }).getByText("Revision 3 of 3").waitFor();
+        await page.getByRole("region", { name: "Learned workflow" }).getByText("Revision 2 of 2").waitFor();
         await page.evaluate(() => document.fonts.ready);
         check(await page.evaluate((t) => document.documentElement.classList.contains(t), theme), `${at}: the page is not in the ${theme} theme`);
 
         // The story: each stage's value and state.
         const stages = await story.locator("li").evaluateAll((els) => els.map((el) => `${el.getAttribute("data-testid")}=${el.getAttribute("data-state")}:${el.querySelector('[data-testid$="-value"]')?.textContent}`));
-        const replayed = await story.getByTestId("stage-cheaper").textContent();
-        check(/Replay: workflow 95% vs agent 94% on 40 inputs · served 59 runs, handed back 3/.test(replayed ?? ""), `${at}: the cheaper stage says ${replayed}`);
-        check(stages.join("|") === `stage-notes=done:3 notes|stage-compiled=done:${WF}|stage-took_over=done:Run 21|stage-cheaper=done:${CHEAPER}|stage-unsure=watch:5% handed back`, `${at}: the story says ${stages.join("|")}`);
+        const checked = await story.getByTestId("stage-cheaper").textContent();
+        check((checked ?? "").includes(PASSED) && !/same accuracy/.test(checked ?? ""), `${at}: the cheaper stage says ${checked}`);
+        check(stages.join("|") === `stage-corrections=done:2 corrections|stage-compiled=done:${WF}|stage-took_over=done:Run 21|stage-cheaper=done:${CHEAPER}|stage-unsure=watch:5% handed back`, `${at}: the story says ${stages.join("|")}`);
         await shoot(story, `loop-story-${theme}-${width}.png`);
 
         // The cost chart: a flag per record kind on its run, the server's headline with the hand-back rate.
         const cost = page.getByTestId("cost-per-run");
         const flags = await cost.locator('g[data-testid^="marker-"]').evaluateAll((els) => els.map((el) => el.getAttribute("data-testid")));
-        check(flags.join() === "marker-revision,marker-hold,marker-revision,marker-promote,marker-refit", `${at}: the chart's markers are ${flags.join()}`);
+        check(flags.join() === "marker-revision,marker-hold,marker-revision,marker-promote", `${at}: the chart's markers are ${flags.join()}`);
         const headline = await cost.locator("h3 + p").textContent();
         check(/^\$0\.890 a run before takeover, \$0\.116 all-in over 59 served runs after: 7\.7x cheaper · 5% handed back since$/.test(headline ?? ""), `${at}: the headline says ${headline}`);
         await shoot(cost, `loop-cost-${theme}-${width}.png`);
@@ -130,29 +121,27 @@ export default {
         if (width === WIDTHS[0]) await shoot(cost, `loop-cost-${theme}-${width}-flag.png`);
         await page.mouse.move(0, 0);
 
-        // The workflow card: the newest revision serves; each guard on its step's card; where it is unsure.
+        // The workflow card: the newest revision serves, on its check's numbers; no step carries a guard.
         const card = page.getByRole("region", { name: "Learned workflow" });
         // The chip's leading word only: its wording is asserted in learningLoop.test.ts and WorkflowReplay.test.tsx.
         const word = async () => ((await card.getByTestId("standing").locator("span").first().textContent()) ?? "").split(" · ")[0];
         check((await word()) === "Serving", `${at}: the standing says ${await word()}`);
-        const verdicts = await card.locator("svg .verdict").allTextContents();
-        check(verdicts.join() === "jev ≥0.78,self+jev ≥0.60", `${at}: the guards on the graph are ${verdicts.join()}`);
-        check((await card.getByTestId("guard-row").count()) === 2 && (await card.getByTestId("guard-histogram").count()) === 2, `${at}: the unsure list is not two steps with their p`);
+        check((await card.locator("svg .verdict").count()) === 0, `${at}: a step on the graph carries a guard`);
         await shoot(card, `loop-workflow-${theme}-${width}.png`);
-        // Scrubbed back one: the refit's source, replaced in place.
-        await card.getByRole("button", { name: "Previous revision" }).click();
-        check((await word()) === "Refit", `${at}: revision 2 says ${await word()}`);
+        // Scrubbed back one: the first compile, held on its check.
         await card.getByRole("button", { name: "Previous revision" }).click();
         check((await word()) === "Held", `${at}: revision 1 says ${await word()}`);
 
-        // The feed: the refused draft in the checks' words; a note says what it went into.
+        // The feed: the refused draft in the checks' words.
         const feed = page.getByTestId("loop-feed");
         const errors = await feed.getByTestId("draft-errors").first().locator("li").allTextContents();
         check(errors.length === 3 && errors[2] === "Attempt 3: the draft is not JSON: Unexpected token } at 412", `${at}: the feed's draft errors are ${JSON.stringify(errors)}`);
         await shoot(feed, `loop-feed-${theme}-${width}.png`);
-        const noteCard = page.locator('article[aria-label="Vendor codes"]');
-        check(/Compiled into sort-invoice/.test((await noteCard.textContent()) ?? ""), `${at}: the note does not say what it was compiled into`);
-        if (width === WIDTHS[0]) await shoot(noteCard, `loop-note-${theme}-${width}.png`);
+        // The corrections card: the owner's two lines, counted, each given whole to every later run.
+        const corrections = page.getByRole("region", { name: "Corrections" });
+        const said = (await corrections.textContent()) ?? "";
+        check(said.includes("2 corrections. Every later run is given them whole before it starts.") && said.includes("Northwind Freight to 6400 Shipping."), `${at}: the corrections card says ${said}`);
+        if (width === WIDTHS[0]) await shoot(corrections, `loop-corrections-${theme}-${width}.png`);
 
         const m = await page.evaluate(measure);
         for (const t of m.past) wrong.push(`${at}: ${t} runs past its card`);
@@ -173,10 +162,10 @@ export default {
       check(/1 run's cost unknown, 1 known only as at most: how many times cheaper shows once every run's cost is known/.test(said ?? "") && !/\dx cheaper/.test(said ?? ""), `withheld ${width}px: the cheaper stage says ${said}`);
       await shoot(story, `loop-story-withheld-light-${width}.png`);
     }
-    // Early: an agent with one note and no workflow yet says how far it is from a compile.
+    // Early: an agent with one correction and no workflow yet says how far it is from a compile.
     const early = await api("POST", "/agents", { definition: { version: 1, name: "Invoice sorter, new", instructions: "Answer with the ledger account.", harness: "pi", tools: [], skills: [], learning: true } });
     const eid = encodeURIComponent(early.body.agent_id);
-    await page.route(new RegExp(`/v2/agents/${eid}/learning$`), async (route) => { const real = await (await route.fetch()).json(); route.fulfill({ json: { ...real, notes: { items: NOTES.slice(0, 1).map((n) => ({ ...n, text: n.text.replace("compiled_into: sort-invoice\n", "") })), total: 1, next_cursor: null } } }); });
+    await page.route(new RegExp(`/v2/agents/${eid}/learning$`), async (route) => { const real = await (await route.fetch()).json(); route.fulfill({ json: { ...real, corrections: CORRECTIONS.split("\n")[0] + "\n" } }); });
     for (const theme of ["light", "dark"]) {
       await page.evaluate((t) => localStorage.setItem("agentrun.theme", t), theme);
       for (const width of [1440, 390]) {
@@ -185,9 +174,11 @@ export default {
         await page.reload();
         const story = page.getByTestId("loop-story");
         await story.waitFor();
+        const given = await story.getByTestId("stage-corrections").getAttribute("data-state");
+        check(given === "done", `${theme} ${width}px early: the corrections stage is ${given}`);
         const compile = await story.getByTestId("stage-compiled").textContent();
-        // Compile at N (learning: true: compile_after 20): its completed runs alone count, never its notes.
-        check(/Not yet0 of 20 completed runs: a workflow compiles at 20, then is checked once on those runs' inputs against the agent's own answers$/.test(compile ?? "") && !/note/.test(compile ?? ""), `${theme} ${width}px early: the compile stage says ${compile}`);
+        // Compile at N (learning: true: compile_after 20): its completed runs alone count, never its corrections.
+        check(/Not yet0 of 20 completed runs: a workflow compiles at 20, then is checked once on those runs' inputs against the agent's own answers$/.test(compile ?? "") && !/correction/.test(compile ?? ""), `${theme} ${width}px early: the compile stage says ${compile}`);
         await shoot(story, `loop-early-${theme}-${width}.png`);
       }
     }

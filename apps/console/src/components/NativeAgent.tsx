@@ -52,7 +52,8 @@ export function NativeMutationProvider({ children, native }: { children: ReactNo
   return <NativeReadinessContext.Provider value={native}><NativeMutationContext.Provider value={mutations}>{children}</NativeMutationContext.Provider></NativeReadinessContext.Provider>;
 }
 
-/** Native runs use notes/skills only. Off stops both seed delivery and new AgentRun learning, preserving saved history. */
+/** Native runs are given their owner's corrections only. Off stops both seed delivery and new AgentRun learning,
+ *  preserving saved history. */
 export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: Agent; v2: Client; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void }) {
   const native = useContext(NativeReadinessContext) ?? agent.definition.native!;
   const mutations = useNativeMutations();
@@ -70,7 +71,7 @@ export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: 
         if (!checked.connected || checked.state !== "ready" || !checked.capabilities.notes || !checked.capabilities.skills) throw new Error(`Native learning is not ready: ${checked.issues.join("; ") || nativeStateLabel(checked)}. Verify the connection and try again.`);
       }
       const { agent: current, etag } = await v2.getAgent(agent.agent_id);
-      const { unchanged, ...body } = editBody(current, { learning: next ? "notes" : false }, next ? "Native self-improvement on" : "Native self-improvement off");
+      const { unchanged, ...body } = editBody(current, { learning: next }, next ? "Native self-improvement on" : "Native self-improvement off");
       onAgent?.(unchanged ? current : (await v2.updateDefinition(agent.agent_id, body, etag)).agent);
       setConfirm(false);
     } catch (e) { setError(problemOf(e)); }
@@ -78,14 +79,14 @@ export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: 
   };
   return <div className="space-y-3">
     <div className="flex items-center gap-3"><h3 id={`native-learning-${agent.agent_id}`} className="min-w-0 flex-1 text-body font-semibold">Self-improving: {on ? "On" : "Off"}</h3><Switch labelledBy={`native-learning-${agent.agent_id}`} checked={on} busy={busy} disabled={mutations.busy || !!agent.archived_at || (!on && (!available || learning !== "on"))} onChange={(next) => next ? setConfirm(true) : void save(false)} /></div>
-    <p className="text-small text-muted-foreground">{on ? "On supplies approved notes and skills, then checks proposals after each job. Learned workflows are unavailable." : "Off neither supplies nor creates AgentRun learning. Saved learning stays available. Native memory behavior is unchanged."}</p>
+    <p className="text-small text-muted-foreground">{on ? "On gives each job your corrections, and keeps a correction you give with a grade. Learned workflows are unavailable." : "Off neither supplies nor creates AgentRun learning. Saved learning stays available. Native memory behavior is unchanged."}</p>
     {learning !== "on" && <Banner tone="warning">{learning === "off" ? "This server has learning turned off." : learning === null ? "This server does not expose learning." : "Checking this server's learning support."}</Banner>}
     {!available && <p className="text-small text-warning-text">Verify a connected native launch with notes and skills support before enabling self-improvement.</p>}
     {error && !confirm && <Banner tone="error">{error}</Banner>}
     <Dialog open={confirm} onClose={() => { if (!busy) { setConfirm(false); setError(null); } }} title="Enable self-improvement?" description="AgentRun reuses the runtime's local sign-in."
       footer={<><Button size="sm" disabled={busy || mutations.busy} onClick={() => { setConfirm(false); setError(null); }}>Cancel</Button><Button size="sm" variant="solid" disabled={busy || mutations.busy} aria-busy={busy} onClick={() => void save(true)}>{busy ? "Enabling…" : "Enable self-improvement"}</Button></>}>
-      <p className="text-body">Reflection and grading incur additional native model usage after jobs. Task usage and learning usage are recorded separately; dollar cost may be unknown. Native spend caps are unavailable, so AgentRun cannot promise a dollar limit. Verification checks native authentication and compatibility before the policy is saved; it starts no paid task.</p>
-      <p className="mt-3 text-body">Accepted notes and skills become active automatically. Risky proposals wait for owner review in Dojo. Existing tests, a rubric or task feedback can help measure outcomes; passing a grader alone does not prove an improvement.</p>
+      <p className="text-body">Task usage and learning usage are recorded separately; dollar cost may be unknown. Native spend caps are unavailable, so AgentRun cannot promise a dollar limit. Verification checks native authentication and compatibility before the policy is saved; it starts no paid task.</p>
+      <p className="mt-3 text-body">Each later job is given your corrections whole. Edit them on the Learning tab.</p>
       {error && <Banner tone="error" className="mt-3">{error}</Banner>}
     </Dialog>
   </div>;

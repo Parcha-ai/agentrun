@@ -16,7 +16,7 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
       <div className={cn("flex gap-4", quiet ? "items-center" : "items-start")}>
         <div className="min-w-0 flex-1">
           <p id={id} className="text-lead font-semibold">Learns from its runs</p>
-          {!quiet && <p className="mt-0.5 text-body text-muted-foreground">After each run, it looks back and keeps a short note when something will help next time; later runs read them first.</p>}
+          {!quiet && <p className="mt-0.5 text-body text-muted-foreground">Every later run is given your corrections first, and a job it does again compiles into a workflow it can run as one step.</p>}
         </div>
         <Switch checked={checked} onChange={onChange} busy={busy} disabled={disabled} labelledBy={id} />
       </div>
@@ -33,10 +33,9 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
 export function LearningField({ fields, onFields, saved, server, error, warning }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: LearningSetting; server?: "on" | "off"; error?: string; warning?: string }) {
   const value = fields.learning ?? saved;
   const on = learningOn(value);
-  // Full learning, as the definition says it: true, or an object of the loop's numbers (on, with those set), which
-  // choosing full again keeps.
+  // On, as the definition says it: true, or an object of the loop's numbers (on, with those set), which turning it on
+  // again keeps.
   const full: LearningSetting = typeof saved === "object" ? saved : true;
-  const kindOf = (setting: LearningSetting | undefined) => (setting === "notes" ? "notes" : learningOn(setting) ? "full" : undefined);
   // A value equal to the saved one is no change of the form's, so choosing back what was saved makes no new revision.
   // Back to a saved setting is sent as that value (an undefined key would read as removing the field); off on an agent
   // that never said stays undefined, saying nothing.
@@ -44,18 +43,7 @@ export function LearningField({ fields, onFields, saved, server, error, warning 
   return (
     <div>
       <div className="mb-2"><span className="caps text-small font-semibold">Learning</span></div>
-      <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server}
-        onChange={(next) => pick(next ? (saved === "notes" ? "notes" : full) : false)} />
-      {on && (
-        <fieldset aria-label="What it learns" className="mt-2 space-y-2">
-          {([["full", "Notes, skills and workflows", "Once a job repeats, it can learn it as a workflow and run it as one step."], ["notes", "Notes and skills only", "It never runs a learned workflow, and is never asked to draft one."]] as const).map(([kind, label, note]) => (
-            <label key={kind} className={cn("flex items-start gap-3 border px-3 py-2.5", kindOf(value) === kind && "border-foreground")}>
-              <input type="radio" name="learning-kind" className="mt-1 accent-primary" checked={kindOf(value) === kind} onChange={() => pick(kind === "full" ? full : "notes")} />
-              <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
-            </label>
-          ))}
-        </fieldset>
-      )}
+      <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server} onChange={(next) => pick(next ? full : false)} />
       {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}
       {warning && <p className="mt-2 font-mono text-small text-warning-text">{warning}</p>}
     </div>

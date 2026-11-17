@@ -1,130 +1,97 @@
-// The learning lane's end-of-run turn on the runner (loop-contract.ts EndOfRunTurn), the server's rules moved
-// (learning-run.ts reflectSkip, reflect, closeLearning; propose.ts proposeRun's checks through `check`): whether a run
-// looks back, its prompt, how its turn ended, and the rows that keep its learning beside the run's end. A proposal is
-// kept with the turn that gave it (learning_proposals) and queues one learning run (learning_run) that grades and merges
-// it; a learning dropped at any step is kept with its reason and words, and queues none. What the run must never learn
-// (`refuse`: the host's secrets and what it was handed, its sign-in pointer among them) is refused by the checks, and cut
-// from everything the hook keeps; a run whose list can't be read learns nothing.
+// The learning lane's end-of-run step on the runner (loop-contract.ts EndOfRunTurn): what a run that learns keeps
+// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning folder:
+//   - its owner's feedback (a grade's words, a message after its first), appended to corrections.md as one line, with
+//     no model turn;
+//   - its compile turn (learn/compile.ts), when one is due: the job written as a workflow, or a revision of a held one,
+//     checked (`checkDraft`: the workflow checks, its dry run, the secret and hidden-character refusals) and committed
+//     directly, with the compiled record on the run's learning. A compile whose drafts all failed is recorded on the
+//     agent's promotion records (compile once: `compileFailed`), never silent.
+// How it ended is kept beside the run's end (learning_proposals): merged with what it wrote, or dropped with its reason
+// and words. What the run must never learn (`refuse`: the host's secrets and what it was handed, its sign-in pointer
+// among them) is refused by the checks and cut from everything the step keeps; a run whose list can't be read learns
+// nothing.
 import { cutStrings } from "../key-refusal.js";
-import { DRY_RUN_FAILED, reflectAgain, reflectDryRun, reflectPrompt, redactSecrets } from "../learn/index.js";
-import { type CompileAsk, type CompiledRecord, compileTurn, UNNAMED } from "../learn/compile.js";
+import { type Problem, redactSecrets } from "../learn/index.js";
+import { type CompileAsk, type CompiledRecord, compileTurn, type DraftChecked } from "../learn/compile.js";
+import type { LearnedFile } from "../learning.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 
-/** How long a run's end-of-run turn may take before it is aborted and the run ends without it. */
-export const REFLECT_TIMEOUT_MS = 5 * 60_000;
-/** The folder of a run's copy of what its agent learned, relative to its work: what the prompt names. */
-const LEARNED_DIR = ".learning";
 /** A turn the spend cap refused (the cap's refusal words, cap.ts CAP_REFUSAL_PREFIX). */
 export const CAP_REFUSAL = /^spend_cap_reached(?: \([^)]*\))?: /;
 
-/** What a run's turn answered, and what the person and a trigger said in the run (learning.ts Turn). */
-export interface ReflectTurn {
-  readonly answer: string;
-  readonly asked: readonly string[];
-  readonly triggered?: readonly { readonly source: string; readonly text: string }[];
-}
+/** A draft the checks passed, as it is committed: its files whole, the README held for its owner's OK when it calls an
+ *  unpriced tool (`held`), and the commit a revision was read at (`bases`, its conflict base). */
+export type DraftCommit = {
+  readonly name: string;
+  readonly files: readonly { readonly path: string; readonly text: string }[];
+  readonly held?: readonly string[];
+  readonly bases?: Readonly<Record<string, string>>;
+};
 
-/** What the checks made of a turn (propose.ts Proposed), with the proposal they kept. */
-export type Checked =
-  | { readonly state: "proposed"; readonly notes: number; readonly skills: number; readonly workflows: number; readonly left?: readonly unknown[]; readonly proposal: unknown }
-  | { readonly state: "dropped"; readonly reason: "empty" }
-  | { readonly state: "dropped"; readonly reason: "unparsed"; readonly detail: string }
-  | { readonly state: "dropped"; readonly reason: "checker"; readonly problems: readonly { readonly rule: string; readonly path?: string }[] };
+/** What a merge landed: the commit, or why it did not. */
+export type Committed = { readonly ok: true; readonly commit: string } | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
 
-/** What the hook reads of the run and the host. */
+/** What the step reads of the run and the host. */
 export interface ReflectDeps {
-  /** Whether the run's job gave nothing new to look back on: its only tool work was its learned workflows, each of them
-   *  answering, with no error, no refused call, no approval and nothing said after its first message. Such a run is not
-   *  asked its end-of-run turn (no model request, nothing spent looking back), and its learning is dropped `empty` in
-   *  said.onlyWorkflow's words. Absent, or a read that throws: every run is asked. */
+  /** Whether the run's job gave nothing new to learn from: its only tool work was its learned workflows, each answering,
+   *  with nothing said after its first message. Such a run compiles nothing unless a compile is due, and its learning is
+   *  dropped `empty` in said.onlyWorkflow's words. Absent, or a read that throws: none. */
   readonly nothingNew?: (runId: string) => Promise<boolean>;
-  /** For a job that compiles workflows: whether the run carries its owner's feedback (learning-end.ts ownerSaid: a grade's
-   *  words, or a message after its first). A run without it is not asked its look-back (no model request, $0 looking
-   *  back), and its compile turn, when one is due, is asked alone; with nothing due its learning is dropped `empty` in
-   *  said.noFeedback's words. Absent (a notes job), or a read that throws: the run is asked its look-back. */
-  readonly ownerSaid?: (runId: string) => Promise<boolean>;
-  /** The run's facts for reflectSkip: whether it learns, a person's cancel, its cap reached, its cap, its cost so far as a
-   *  person is shown it (`costUsd`, kept as the job's), and under a cap its spend as the cap's gates read it (`spentUsd`,
-   *  learning-end.ts capSpendOf: a request with no price of its own at its held figure; null: unknown). */
+  /** The run's facts: whether it learns, a person's cancel, its cap reached, its cap, its cost so far as a person is shown
+   *  it (`costUsd`, kept as the job's), and under a cap its spend as the cap's gates read it (`spentUsd`; null: unknown). */
   readonly facts: (runId: string) => Promise<{ learns: boolean; cancelled?: boolean; capReached?: boolean; costUsd: number | null } & ({ capUsd?: undefined } | { capUsd: number; spentUsd: number | null })>;
-  /** The prompt's facts: how many notes the run started from. */
-  readonly promptFacts: (runId: string, agentId: string) => Promise<{ active: number }>;
-  /** The compile turn's facts (learn/compile.ts CompileAsk), read once the look-back's answer is checked, `refuse` cut
-   *  from what they quote: undefined when the run compiles nothing (its job not due, a notes-only agent, a workflow
-   *  that answered). Absent, or a read that throws: no compile turn. */
-  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[] }) => Promise<CompileAsk | undefined>;
+  /** What the run's owner said of it: a grade's words, and each message they sent after its first, in order. */
+  readonly feedback: (runId: string) => Promise<readonly string[]>;
+  /** Why the owner's words would be refused as a line of corrections.md on main now (learn/commit.ts correctionRefused);
+   *  empty when they would be taken. */
+  readonly correctionRefused: (input: { agentId: string; text: string; refuse: readonly string[] }) => Promise<readonly Problem[]>;
+  /** The compile turn's facts (learn/compile.ts CompileAsk), `refuse` cut from what they quote: undefined when the run
+   *  compiles nothing (its job not due, a workflow that answered). Absent, or a read that throws: no compile turn. */
+  readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => Promise<CompileAsk | undefined>;
   /** Compile once: a compile turn whose drafts all failed their checks (one answered, none passed) is the compile's
    *  attempt, kept on a promotion record (learning-end.ts recordDraftFailed) that compileFacts reads. Absent: none kept. */
   readonly compileFailed?: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => Promise<void>;
   /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
   readonly compileDeadlineMs?: number;
-  /** What the person said in the run, and a trigger's input, as the checks and the grader read them. */
-  readonly asked: (runId: string) => Promise<{ asked: readonly string[]; triggered?: ReflectTurn["triggered"] }>;
-  /** Every value the run must never learn (learning-run.ts refused): the host's secrets and what the run was handed, its
-   *  sign-in pointer among them; `unreadable` when what it was handed can't be read back, and the run learns nothing.
-   *  Absent, none. */
+  /** One compile draft through the checks (learning-end.ts checkDraftOf): its errors, else what is committed and its
+   *  digest. `revised`: a revision's workflow and the commit of main it was read at, its conflict base. */
+  readonly checkDraft: (input: { runId: string; agentId: string; draft: { name: string; text: string }; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<DraftChecked<DraftCommit>>;
+  /** The round's merge on the agent's learning folder (learning-end.ts commitDirect): its draft and its owner's
+   *  correction, one commit by the run. */
+  readonly commit: (input: { runId: string; agentId: string; round: number; draft?: DraftCommit; correction?: string; refuse: readonly string[] }) => Promise<Committed>;
+  /** Every value the run must never learn: the host's secrets and what the run was handed, its sign-in pointer among
+   *  them; `unreadable` when what it was handed can't be read back, and the run learns nothing. Absent, none. */
   readonly refuse?: (runId: string) => Promise<readonly string[] | "unreadable">;
-  /** proposeRun's checks over the turn, against the seed the run started from, refusing `refuse`. `revised`: in the
-   *  compile turn's checks, the workflow it revises from main's text and the commit of main it was first asked at (its
-   *  CompileAsk's `base`, as the turn's first ask kept it), that workflow's conflict base. */
-  readonly check: (input: { runId: string; agentId: string; turn: ReflectTurn; outcome: "completed" | "failed"; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<Checked>;
-  /** A new run's id, for the learning run. */
-  readonly newRunId: () => string;
-  /** The grade model the server names (learning.ts gradeModelOf: --grade-model, AGENTRUN_SERVE_GRADE_MODEL, else
-   *  AGENT_MODEL_STRONG), carried on the learning run's launch; none, the agent's own model grades it, as main's. */
-  readonly gradeModel?: string;
-  /** The turn's deadline. Default REFLECT_TIMEOUT_MS. Its re-ask is inside it. */
-  readonly deadlineMs?: number;
-  /** For tests: the clock the turn's deadline is measured by. Default Date.now. */
+  /** For tests: the clock. Default Date.now. */
   readonly now?: () => number;
-  /** The cap the learning run's grade runs under, read once the turn closed (learning-end.ts gradeCapOf): what the run's
-   *  cap leaves once everything the run spent is counted, carried on the learning run's launch as its own cap, so the
-   *  grade never takes the run past its cap. Null when what the run spent under its cap is unknown: the grade is not
-   *  run, said so (said.gradeUnknownSpend). Undefined for an uncapped run: its grade is capped by nothing. */
-  readonly gradeCap?: (runId: string) => Promise<number | null | undefined>;
   /** Which end of the run this is: 1, its first (the default); an end after a follow-up opened the run again is the next
-   *  round, asked anew (its prompt says it looked back before), kept as a proposal of its own beside the earlier rounds'
-   *  (every row the hook gives carries it), graded and merged by a learning run of its own. */
+   *  round, kept beside the earlier rounds' (every row the step gives carries it), with a merge of its own. */
   readonly round?: number;
-  /** A later round's: what the round before it kept of the run's spend (its job's and its look-back's), so the follow-up's
-   *  own share, between that look-back and this one, is kept apart (`follow_up_usd`); and whether it was asked its turn
-   *  (`looked`: a round cut before it was asked says nothing of looking back before). */
-  readonly before?: { readonly job_cost_usd?: number | null; readonly look_back_usd?: number | null; readonly looked?: boolean };
 }
 
-/** A learning dropped before its turn answered: kept with its reason and words, beside the end. */
-const droppedRow = (turn: ReflectTurn | null, reason: string, detail: string, extra: object = {}): AlsoRow => ({ table: "learning_proposals", row: { turn, proposal: { ...extra, state: "dropped", reason, detail } } });
+/** A learning kept beside the run's end: its state, reason and words, and what it wrote. */
+const keptRow = (proposal: Record<string, unknown>): AlsoRow => ({ table: "learning_proposals", row: { turn: null, proposal } });
+const dropped = (reason: string, detail: string, extra: object = {}): AlsoRow => keptRow({ ...extra, state: "dropped", reason, detail });
 
-/** A kept-learning row with every string in it cut of `refuse` in every form and of every secret-shaped run
- *  (learn/secrets.ts redactSecrets, as proposeRun cuts what the person said), with an empty list too: the turn as it
- *  answered, and the proposal's words. A proposal the checks kept holds none of them already (unstorable refuses it
- *  whole). */
+/** A kept row with every string in it cut of `refuse` in every form and of every secret-shaped run (learn/secrets.ts
+ *  redactSecrets), with an empty list too. */
 const cutRow = (row: AlsoRow, refuse: readonly string[]): AlsoRow =>
   row.table === "learning_proposals" ? { table: row.table, row: cutStrings(row.row, (text) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY)) as typeof row.row } : row;
 
-/** The first workflow draft the checks left out of `checked` because its dry run failed (learn/skills.ts DRY_RUN_FAILED):
- *  its path and the check's words; undefined when none was. */
-function dryRunFailure(checked: Checked): { path: string; detail: string } | undefined {
-  const problems = (checked.state === "proposed" ? checked.left ?? [] : checked.state === "dropped" && checked.reason === "checker" ? checked.problems : []) as readonly { rule?: unknown; path?: unknown; detail?: unknown }[];
-  const found = problems.find((problem) => problem?.rule === "workflow" && typeof problem.path === "string" && typeof problem.detail === "string" && problem.detail.startsWith(DRY_RUN_FAILED));
-  return found ? { path: found.path as string, detail: found.detail as string } : undefined;
-}
-
 /** `rows` with round `round` on each learning row (none on a run's first, round 1). */
 const roundOf = (rows: { readonly also: readonly AlsoRow[] } | undefined, round: number): { readonly also: readonly AlsoRow[] } | undefined =>
-  !rows || round === 1 ? rows : { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" || row.table === "learning_run" ? ({ ...row, row: { ...row.row, round } } as AlsoRow) : row)) };
+  !rows || round === 1 ? rows : { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? ({ ...row, row: { ...row.row, round } } as AlsoRow) : row)) };
 
-/** The end-of-run turn for runs that learn. */
+/** The end-of-run step for runs that learn. */
 export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
   const round = deps.round ?? 1;
   const hook: EndOfRunTurn = async (input) => {
     const facts = await deps.facts(input.runId);
     if (!facts.learns) return undefined;
     const now = deps.now ?? Date.now;
-    // When the job answered and what it cost (learning-run.ts setLearning "reflecting"): as the turn starts, the run's
-    // spend so far is the job's. A turn an earlier claim asked first (cut by a crash or a lost claim) reads that ask's,
-    // which it kept with its prompt (the ask's `kept`): what the earlier attempt spent is the look-back's, never the job's.
+    // When the job answered and what it cost: as the step starts, the run's spend so far is the job's. A compile turn an
+    // earlier claim asked first (cut by a crash or a lost claim) reads that ask's, which it kept with its prompt.
     let answeredAt = new Date(now()).toISOString();
     let job = facts.costUsd;
     const firstAsk = (kept: EndOfRunKept | undefined): boolean => {
@@ -132,190 +99,102 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       [answeredAt, job] = [kept.answered_at, kept.job_cost_usd];
       return true;
     };
-    // A look-back already started (its first ask's figures on the record, keptOf), read before any skip or cut: one this
-    // claim closes without asking still keeps when the job answered, its cost, and what looking back spent since.
     const begun = firstAsk(input.keptOf?.(round));
-    // A later round's: the follow-up's own spend, the run's spend now less what the round before it kept (its job's and
-    // its look-back's), unknown when any is.
-    const earlier = deps.before;
-    const followUp = () => (round === 1 ? {} : { follow_up_usd: job === null || typeof earlier?.job_cost_usd !== "number" || typeof earlier.look_back_usd !== "number" ? null : Math.max(0, Math.round((job - earlier.job_cost_usd - earlier.look_back_usd) * 1e9) / 1e9) });
-    // closeLearning: what looking back cost, the run's spend once the turn closed (its re-ask included) less the job's,
-    // unknown when either is. Kept with every end the turn reaches from here, beside when the job answered and its cost.
-    const looked = async (rows: { readonly also: readonly AlsoRow[] }) => {
+    // What the step's model turns cost: the run's spend once it closed less the job's, unknown when either is. Kept with
+    // every end once a compile turn was asked; 0 for an end that asked none.
+    let asked = begun;
+    const spent = async () => {
+      if (!asked) return { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 };
       const total = (await deps.facts(input.runId)).costUsd;
-      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9), ...followUp() };
-      return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
+      return { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9) };
     };
-    // A run cut or skipped here asks nothing: its drop alone, or with looked's figures when its look-back had started.
-    const unasked = async (row: AlsoRow) => (begun ? looked({ also: [row] }) : { also: [row] });
-    // closeLearning for a run cut before it could look back: a person's stop, before or during the turn, or a fault.
-    if (input.cut === "stopped") return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
-    if (input.cut === "stopped-looking") return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelledLooking)));
-    if (input.cut === "faulted") return unasked(droppedRow(null, "crashed", said.stopped(STOPPED.crashed)));
-    // reflectSkip: the cap keeps no reserve; a run its cap stopped has no room left, and one whose spend is unknown
-    // cannot be kept within its cap.
-    if (facts.cancelled) return unasked(droppedRow(null, "cancelled", said.stopped(STOPPED.cancelled)));
-    if (facts.capReached) return unasked(droppedRow(null, "no_budget", said.noBudget));
-    if (facts.capUsd !== undefined && facts.spentUsd === null) return unasked(droppedRow(null, "unknown_cost", said.unknownCost));
-    // A job that only ran its learned workflows, each answering, with nothing said after its first message, gave nothing
-    // new to learn: it is not asked its look-back (no model request), and unless a compile is due (a held revision of
-    // its workflow, asked while its champion serves) looking back cost nothing, $0 whether or not the job's own cost is
-    // known. Its words are the server's own.
-    const workflowOnly = input.outcome === "completed" && deps.nothingNew !== undefined && (await deps.nothingNew(input.runId).catch(() => false));
-    // A run of a job that compiles workflows with no word from its owner is not asked its look-back either (ownerSaid):
-    // its job's trace is what a compile reads, and a look-back on every agent run cost more than the run. The same way:
-    // its compile turn, when due, asked alone, else $0 looking back.
-    const unheard = !workflowOnly && deps.ownerSaid !== undefined && !(await deps.ownerSaid(input.runId).catch(() => true));
-    const alone = workflowOnly || unheard;
-    const notAsked = workflowOnly ? said.onlyWorkflow : said.noFeedback;
-    const onlyWorkflow = () => ({ also: [droppedRow(null, "empty", notAsked, { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0, ...followUp() })] });
-    if (alone && !deps.compileFacts) return onlyWorkflow();
-    // What the run must never learn, read once, before it is asked anything: a run whose list can't be read learns
-    // nothing, never over a shorter one.
+    // A person's stop, before or during the step, or a fault: nothing kept.
+    if (input.cut === "stopped" || facts.cancelled) return { also: [dropped("cancelled", said.stopped(STOPPED.cancelled))] };
+    if (input.cut === "stopped-looking") return { also: [dropped("cancelled", said.stopped(STOPPED.cancelledLooking))] };
+    if (input.cut === "faulted") return { also: [dropped("crashed", said.stopped(STOPPED.crashed))] };
+    // What the run must never learn, read once, before anything: a run whose list can't be read learns nothing, never
+    // over a shorter one.
     const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "unreadable" as const) : [];
-    const refuse = read === "unreadable" ? [] : read;
-    // The compile turn's facts (learn/compile.ts), read once: a run not looked back on with none due ends here, as above.
-    const compileOf = async () => (deps.compileFacts && read !== "unreadable" ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse }).catch(() => undefined) : undefined);
-    const early = alone ? await compileOf() : undefined;
-    // None due now, but a compile request this run already asked and kept (a crash cut it, another run merged a workflow
-    // since) was paid: its cost stays the look-back's, as every other cut's does (`begun`), never the task's.
-    if (alone && !early) return begun ? unasked(droppedRow(null, "empty", notAsked)) : onlyWorkflow();
-    // Every end from here closes through this one function: looked's timings first, then the cut LAST, over every
-    // string the kept rows hold, whatever looked adds now or later.
-    const close = async (rows: AlsoRow[]) => ({ also: (await looked({ also: rows })).also.map((row) => cutRow(row, refuse)) });
-    if (read === "unreadable") return close([droppedRow(null, "propose_failed", said.stopped(STOPPED.refuseUnread))]);
-    const deadlineMs = deps.deadlineMs ?? REFLECT_TIMEOUT_MS;
-    const started = now();
-    const ask = { origin: "reflect", ...(round > 1 ? { round } : {}) } as const;
-    let heard: Awaited<ReturnType<ReflectDeps["asked"]>> = { asked: [] };
-    const turnOf = (answer: string): ReflectTurn => ({ answer, asked: [...heard.asked], ...(heard.triggered?.length ? { triggered: heard.triggered } : {}) });
-    const checkOf = async (turn: ReflectTurn, revised?: { workflow: string; base: string }): Promise<Checked | undefined> => {
-      try {
-        return await deps.check({ runId: input.runId, agentId: input.agentId, turn, outcome: input.outcome, refuse, ...(revised ? { revised } : {}) });
-      } catch {
-        return undefined;
-      }
-    };
-    // The look-back: asked of every run but a workflow-only one or one its owner said nothing on, whose compile turn is
-    // asked alone, from no answer of its own: nothing the look-back kept goes with its draft.
-    let turn: ReflectTurn | null = null;
-    let checked: Checked = { state: "dropped", reason: "empty" };
-    if (alone) heard = await deps.asked(input.runId);
-    else {
-      const { active } = await deps.promptFacts(input.runId, input.agentId);
-      const end = await input.ask(reflectPrompt({ dir: LEARNED_DIR, active, ...(round > 1 && deps.before?.looked !== false ? { later: true } : {}) }), { ...ask, deadlineMs, keep: { answered_at: answeredAt, job_cost_usd: job } });
-      firstAsk(end.kept);
-      // closeLearning: how the turn ended.
-      if ("timedOut" in end) return close([droppedRow(null, "reflect_timeout", said.stopped(STOPPED.timedOut))]);
-      if ("failed" in end) return close([CAP_REFUSAL.test(end.failed.message) ? droppedRow(null, "no_budget", said.noBudget) : droppedRow(null, "reflect_failed", said.stopped(STOPPED.failed))]);
-      heard = await deps.asked(input.runId);
-      turn = turnOf(end.answer);
-      const first = await checkOf(turn);
-      if (!first) return close([droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))]);
-      checked = first;
-    }
-    // An answer the parser refused is asked for again once, in the same turn, saying why in the parser's own words: the
-    // second answer is checked as the first was, and refused again it is dropped as before. Never a third time, and only
-    // within the turn's own deadline; a re-ask that times out or fails leaves the first answer's drop.
-    if (checked.state === "dropped" && checked.reason === "unparsed") {
-      const left = deadlineMs - (now() - started);
-      const again = left > 0 ? await input.ask(reflectAgain(checked.detail), { ...ask, deadlineMs: left, again: true }) : undefined;
-      if (again && "ended" in again) {
-        turn = turnOf(again.answer);
-        const second = await checkOf(turn);
-        if (!second) return close([droppedRow(turn, "propose_failed", said.stopped(STOPPED.notChecked))]);
-        checked = second;
-      }
-    } else {
-      // A workflow draft the checks left out because its dry run failed is asked for again once, in the same turn and
-      // within its deadline, saying which draft and why: the second answer stands only when the checks keep it and no
-      // draft in it still fails its dry run, else the first answer's, that draft left out, stands (a repair that failed
-      // never costs a note the first answer kept). Never a third time (a turn asks again once, for either reason).
-      const dry = dryRunFailure(checked);
-      const left = deadlineMs - (now() - started);
-      const again = dry && left > 0 ? await input.ask(reflectDryRun(dry.path, dry.detail), { ...ask, deadlineMs: left, again: true }) : undefined;
-      if (again && "ended" in again) {
-        const second = turnOf(again.answer);
-        const kept = await checkOf(second);
-        if (kept?.state === "proposed" && !dryRunFailure(kept)) {
-          turn = second;
-          checked = kept;
-        }
-      }
-    }
-    // The compile turn (learn/compile.ts): the job as a learned workflow, or a revision of one, checked as a draft is,
-    // its refusals sent back up to COMPILE_RETRIES times. A draft that passed goes in the proposal beside the notes; one
-    // that never did is never silent: its errors go with the learning, and its problems to its end.
-    const compile = alone ? early : await compileOf();
+    if (read === "unreadable") return { also: [dropped("reflect_failed", said.stopped(STOPPED.refuseUnread))] };
+    const refuse = read;
+    const close = async (row: AlsoRow) => ({ also: [cutRow(row.table === "learning_proposals" ? keptRow({ ...(row.row.proposal as object), ...(await spent()) }) : row, refuse)] });
+    // The owner's words: one line of corrections.md, checked against main now so a refused one never holds a draft back.
+    const words = (await deps.feedback(input.runId).catch(() => [] as string[])).map((text) => text.trim()).filter(Boolean);
+    const correction = words.length ? words.join(" ") : undefined;
+    const refusedCorrection = correction === undefined ? [] : await deps.correctionRefused({ agentId: input.agentId, text: correction, refuse }).catch((): Problem[] => [{ rule: "encoding", detail: "the owner's correction could not be checked" }]);
+    const taken = correction !== undefined && !refusedCorrection.length ? correction : undefined;
+    // The compile turn, when one is due and the run's cap has room: a cap it reached, or a spend under it that is unknown,
+    // asks no model turn (the cap keeps no reserve).
+    const noRoom = facts.capReached ? "no_budget" : facts.capUsd !== undefined && facts.spentUsd === null ? "unknown_cost" : undefined;
+    const workflowOnly = input.outcome === "completed" && deps.nothingNew !== undefined && (await deps.nothingNew(input.runId).catch(() => false));
+    const compile = !noRoom && deps.compileFacts ? await deps.compileFacts({ runId: input.runId, agentId: input.agentId, outcome: input.outcome, refuse, round }).catch(() => undefined) : undefined;
+    let draft: DraftCommit | undefined;
     let compiled: { record: CompiledRecord; draft_errors?: string[] } | undefined;
+    // A draft the checks refused: their problems by rule (a draft never answered refused nothing).
+    let draftProblems: Problem[] = [];
     if (compile) {
-      // A compile turn asked alone (no look-back) is the round's first ask: it keeps the job's figures
-      // with its prompt as the look-back's does, and a turn an earlier claim asked first answers with that ask's (`kept`),
-      // so a restart mid compile never moves what the earlier attempt spent compiling into the job's. Each attempt keeps
-      // the figures as they stand once the attempts before it answered (an earlier claim's, when it asked first).
-      // A revision of main's text keeps the commit of main it was read at (`compile_base`) with each attempt the same way:
-      // an attempt an earlier claim asked answers with that claim's commit, never the one this claim read (main may have
-      // moved since: another run's change to the workflow), and the attempts after it keep that one too. It is the revised
-      // workflow's conflict base in every check of the turn, so an answer written over an older main never overwrites a
-      // change made after it.
+      // A revision of main's text keeps the commit of main it was read at (`compile_base`) with each attempt: an attempt
+      // an earlier claim asked answers with that claim's commit, never the one this claim read (main may have moved
+      // since), and it is the revised workflow's conflict base in every check of the turn.
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
-      /** An attempt the cap refused, or whose spend took the run past it: the learning is dropped as the look-back's is. */
       let capped = false;
-      const result = await compileTurn<Checked>({
+      const result = await compileTurn<DraftCommit>({
         ask: async (prompt, attempt, left) => {
-          const keep: Record<string, string | number | null> = { ...(alone ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...(revised ? { compile_base: revised.base } : {}) };
-          const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...(Object.keys(keep).length ? { keep } : {}) });
-          if ("failed" in said_ && CAP_REFUSAL.test(said_.failed.message)) capped = true;
-          if (alone) firstAsk(said_.kept);
-          const base = said_.kept?.compile_base;
+          asked = true;
+          const keep: Record<string, string | number | null> = { answered_at: answeredAt, job_cost_usd: job, ...(revised ? { compile_base: revised.base } : {}) };
+          const answer = await input.ask(prompt, { origin: "reflect", ...(round > 1 ? { round } : {}), deadlineMs: left, step: `compile-${attempt}`, keep });
+          if ("failed" in answer && CAP_REFUSAL.test(answer.failed.message)) capped = true;
+          firstAsk(answer.kept);
+          const base = answer.kept?.compile_base;
           if (revised && typeof base === "string") revised = { ...revised, base };
-          return "ended" in said_ ? { answer: said_.answer } : undefined;
+          return "ended" in answer ? { answer: answer.answer } : undefined;
         },
         compile,
         refuse,
-        // The look-back's own answer, when the checks kept it: its notes and skills go on with the draft.
-        answer: checked.state === "proposed" && turn ? turn.answer : "",
-        check: (answer) => checkOf(turnOf(answer), revised),
+        check: (one) => deps.checkDraft({ runId: input.runId, agentId: input.agentId, draft: one, refuse, ...(revised ? { revised } : {}) }),
         ...(deps.compileDeadlineMs !== undefined ? { deadlineMs: deps.compileDeadlineMs } : {}),
         now,
       });
-      // closeLearning, as the look-back's turn when the cap has no room: the learning is dropped no_budget, never graded
-      // on a cap it has passed or cannot fit.
-      if (capped) return close([droppedRow(turn, "no_budget", said.noBudget)]);
-      if (result.kept?.checked.state === "proposed") {
-        const { workflow, from_notes } = result.record!;
-        turn = turnOf(result.kept.answer);
-        checked = { ...result.kept.checked, proposal: { ...(result.kept.checked.proposal as object), compiled: { workflow, from_notes } } };
+      if (capped && !result.kept) {
+        if (!taken) return close(dropped("no_budget", said.noBudget));
+      } else if (result.kept) {
+        draft = result.kept;
         compiled = { record: result.record! };
       } else if (result.record) {
-        const named = result.record.workflow !== UNNAMED ? { path: `workflows/${result.record.workflow}/workflow.json` } : {};
-        const problems = result.draftErrors.map((detail) => ({ rule: "workflow" as const, ...named, detail }));
-        // Beside what the look-back kept, as what the checks left out; in place of a look-back that kept nothing, as the
-        // checks' drop; beside the checks' own drop, with it. A look-back whose answer could not be read keeps its reason,
-        // the draft's errors beside it.
-        checked = checked.state === "proposed" ? { ...checked, left: [...(checked.left ?? []), ...problems] }
-          : checked.reason === "empty" ? { state: "dropped", reason: "checker", problems }
-          : checked.reason === "checker" ? { ...checked, problems: [...checked.problems, ...problems] }
-          : checked;
         compiled = { record: result.record, draft_errors: result.draftErrors };
+        // Each error names its file already (checkDraftOf); one with no rule behind it (an answer the compile could not
+        // read) is the workflow's.
+        if (result.drafted) draftProblems = result.draftProblems ?? result.draftErrors.map((detail) => ({ rule: "workflow" as const, detail }));
         // Compile once: its failed drafts are the compile's attempt, on record before the learning closes.
         if (result.drafted && deps.compileFailed) await deps.compileFailed({ runId: input.runId, agentId: input.agentId, compile, workflow: result.record.workflow, errors: result.draftErrors }).catch(() => undefined);
       }
     }
     const compiledFields = compiled ? { compiled: compiled.record, ...(compiled.draft_errors?.length ? { draft_errors: compiled.draft_errors } : {}) } : {};
-    if (checked.state === "dropped") {
-      const detail = checked.reason === "empty" ? (alone ? notAsked : said.empty) : checked.reason === "unparsed" ? said.unparsed : said.checker(checked.problems as never);
-      return close([droppedRow(turn, checked.reason, detail, { ...checked, ...compiledFields })]);
+    if (draft || taken !== undefined) {
+      const done = await deps.commit({ runId: input.runId, agentId: input.agentId, round, ...(draft ? { draft } : {}), ...(taken !== undefined ? { correction: taken } : {}), refuse }).catch((error): Committed => ({ ok: false, reason: "unavailable", problems: [{ rule: "encoding", detail: error instanceof Error ? error.message : String(error) }] }));
+      if (done.ok) {
+        const readme = draft?.files.find((file) => file.path.endsWith("/README.md"));
+        const json = draft?.files.find((file) => file.path.endsWith("/workflow.json"));
+        const workflows: LearnedFile[] = draft && json ? [{ file: json.path, name: draft.name, ...(readme && draft.held?.includes(readme.path) ? { pending: true as const } : {}) }] : [];
+        const problems = [...refusedCorrection, ...draftProblems];
+        return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(taken !== undefined ? { corrections: 1 } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, taken !== undefined ? 1 : 0, problems) }));
+      }
+      if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
+      return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }
-    // The learning run's cap: what the run's cap leaves now its look-back is spent, read after the checks. A spend under
-    // the cap that is unknown (or a read that fails, never no cap) queues no grade: none could be kept within the cap, and
-    // the words say the spend is unknown, never that the cap has no room (learning-end.ts capSpendOf's rule).
-    const capUsd = deps.gradeCap ? await deps.gradeCap(input.runId).catch(() => null) : undefined;
-    if (capUsd === null) return close([droppedRow(turn, "unknown_cost", said.gradeUnknownSpend)]);
-    return close([
-      { table: "learning_proposals", row: { turn, proposal: { ...checked, ...compiledFields, detail: said.proposed(checked.notes, checked.skills, checked.workflows) } } },
-      { table: "learning_run", row: { id: deps.newRunId(), ...(deps.gradeModel ? { model: deps.gradeModel } : {}), ...(capUsd !== undefined ? { capUsd } : {}) } },
-    ]);
+    if (refusedCorrection.length) return close(dropped("checker", correctionWords(refusedCorrection), { problems: [...refusedCorrection, ...draftProblems], ...compiledFields }));
+    if (draftProblems.length) return close(dropped("checker", said.checker(draftProblems), { problems: draftProblems, ...compiledFields }));
+    // A compile turn that never answered refused nothing: it failed, its attempts kept.
+    if (compiled && !draft && compiled.draft_errors?.length) return close(dropped("reflect_failed", said.stopped(STOPPED.unanswered), compiledFields));
+    if (noRoom && compile === undefined && deps.compileFacts) return close(dropped(noRoom, noRoom === "no_budget" ? said.noBudget : said.unknownCost));
+    return close(dropped("empty", workflowOnly ? said.onlyWorkflow : said.empty, compiledFields));
   };
   return async (input) => roundOf(await hook(input), round);
+}
+
+/** Why a correction (or a merge) was refused, in a person's words: the cap's own sentence when the cap refused it, else
+ *  the checks'. */
+function correctionWords(problems: readonly Problem[]): string {
+  const cap = problems.find((problem) => problem.rule === "too_large" && problem.path === "corrections.md");
+  return cap ? said.correctionsFull(cap.detail) : problems.length ? said.checker(problems) : said.stopped(STOPPED.notChecked);
 }

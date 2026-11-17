@@ -24,22 +24,20 @@ export type CostLooked = { answered_at?: string; job_cost_usd?: number | null; l
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
 
 /** A run's own cost and what learning added for it, from its row's cost (`rowUsd`: the job, its look-back and any turn a
- *  person asked of it after), what it kept as it answered (`looked`, none for a run that did not look back) and what its
- *  grade spent (`gradeUsd`: its learning run's cost once that run ended, stopped or failed, 0 while it runs or when there
- *  is none, null when unknown):
+ *  person asked of it after) and what it kept as it answered (`looked`, none for a run that did not look back):
  *  - `cost_usd`: the job's own $: its row's cost less its look-back, never under what it had cost when it answered (a
  *    later turn's spend is the job's too); its row's cost for a run that did not look back;
- *  - `learning_usd`: what learning cost for it: its look-back and its grade, 0 for a run that does not learn; null when
- *    either is unknown (a grade that failed or was stopped mid-ask spent what no one knows);
+ *  - `learning_usd`: what learning cost for it: its look-back (its compile turn), 0 for a run that does not learn; null
+ *    when unknown (a turn stopped mid-ask spent what no one knows);
  *  - `total_usd`: their sum, the run's all-in $; null when either is. */
-export function runCostOf(rowUsd: number | null, looked: CostLooked | null, gradeUsd: number | null = 0): { cost_usd: number | null; learning_usd: number | null; total_usd: number | null } {
+export function runCostOf(rowUsd: number | null, looked: CostLooked | null): { cost_usd: number | null; learning_usd: number | null; total_usd: number | null } {
   const answered = looked?.answered_at !== undefined;
   const asAnswered = answered ? (looked!.job_cost_usd ?? null) : rowUsd;
   const back = answered ? (looked!.look_back_usd ?? null) : 0;
   // What the row holds past the answer and its look-back is a later turn's spend, unknown once the row's cost is; with the
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !answered || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
-  const spent = back === null || gradeUsd === null ? null : back + gradeUsd;
+  const spent = back;
   return { cost_usd: job === null ? null : usd(job), learning_usd: spent === null ? null : usd(spent), total_usd: job === null || spent === null ? null : usd(job + spent) };
 }
 

@@ -141,7 +141,6 @@ export interface components {
     regions: components["Region"][];
     limits: components["Limits"];
     learning: {
-      grade_model: string | null;
       pending: true;
       approve: boolean;
       approve_needs?: "password";
@@ -439,7 +438,7 @@ export interface components {
       } | undefined;
     };
     approvals?: "ask" | "never";
-    learning?: true | false | "notes" | {
+    learning?: boolean | {
       compile_after?: number;
       agree_min?: number;
       alone_min?: number;
@@ -467,7 +466,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict";
   ExternalRef: {
     source: string;
     kind: string;
@@ -842,36 +841,14 @@ export interface components {
       };
     };
     learning?: {
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
       at: string;
-      given?: {
-        file: string;
-        name: string;
-      }[];
-      read?: {
-        file: string;
-        name: string;
-      }[];
-      learned?: {
-        file: string;
-        name: string;
-        supersedes: string[];
-      }[];
-      skills?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
       workflows?: {
         file: string;
         name: string;
         pending?: true;
-      }[];
-      pending?: {
-        file: string;
-        name: string;
       }[];
     } | null;
     review?: {
@@ -1068,35 +1045,13 @@ export interface components {
     effort?: components["Effort"];
     error?: components["RunError"] | null;
     learning?: {
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
-      given?: {
-        file: string;
-        name: string;
-      }[];
-      read?: {
-        file: string;
-        name: string;
-      }[];
-      learned?: {
-        file: string;
-        name: string;
-        supersedes: string[];
-      }[];
-      skills?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
       workflows?: {
         file: string;
         name: string;
         pending?: true;
-      }[];
-      pending?: {
-        file: string;
-        name: string;
       }[];
     } | null;
     review?: {
@@ -1266,8 +1221,8 @@ export interface components {
     tool_input?: Record<string, unknown>;
     tool_result_text?: string | null;
     learning?: {
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
     };
   };
@@ -1394,68 +1349,6 @@ export interface operations {
       };
     };
   };
-  cancelLearningBatch: {
-    body: never;
-    answer: {
-      id: string;
-      agent_id: string;
-      created_at: string;
-      ended_at: string | null;
-      status: "running" | "completed" | "cancelled" | "stopped";
-      stopped: "cap" | "cost_unknown" | "learning_off" | null;
-      inputs: string[];
-      answer: string;
-      answer_field: string | null;
-      effort: string | null;
-      max_cost_usd: number;
-      total: number;
-      finished: number;
-      right: number;
-      wrong: number;
-      failed: number;
-      spent_usd: number;
-      unknown_cost_rows: number;
-      paths: {
-        agent: number;
-        handed_back: number;
-        workflow: number;
-      };
-      lessons: {
-        notes: string[];
-        skills: string[];
-        workflows: string[];
-      };
-      revisions: {
-        row: number;
-        commit: string | null;
-        workflows: string[];
-      }[];
-      cost_usd: number | null;
-      remaining_usd: number | null;
-      current: number | null;
-      rows: {
-        n: number;
-        state: "pending" | "running" | "done" | "failed";
-        reference: string;
-        run_id?: string;
-        answer?: string | null;
-        right?: boolean;
-        reviewed?: boolean;
-        path?: "agent" | "handed_back" | "workflow";
-        cost_usd?: number | null;
-        learning_usd?: number | null;
-        total_usd?: number | null;
-        learned?: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        merged?: string | null;
-        error?: string;
-      }[];
-      error?: string;
-    };
-  };
   cancelRun: {
     body: never;
     answer: components["CancelResult"];
@@ -1558,75 +1451,6 @@ export interface operations {
   createInlineRun: {
     body: components["RunCreateInline"];
     answer: components["Run"];
-  };
-  createLearningBatch: {
-    body: {
-      inputs: string[];
-      answer: string;
-      rows: Record<string, string>[];
-      max_cost_usd: number;
-      answer_field?: string;
-      effort?: string;
-    };
-    answer: {
-      id: string;
-      agent_id: string;
-      created_at: string;
-      ended_at: string | null;
-      status: "running" | "completed" | "cancelled" | "stopped";
-      stopped: "cap" | "cost_unknown" | "learning_off" | null;
-      inputs: string[];
-      answer: string;
-      answer_field: string | null;
-      effort: string | null;
-      max_cost_usd: number;
-      total: number;
-      finished: number;
-      right: number;
-      wrong: number;
-      failed: number;
-      spent_usd: number;
-      unknown_cost_rows: number;
-      paths: {
-        agent: number;
-        handed_back: number;
-        workflow: number;
-      };
-      lessons: {
-        notes: string[];
-        skills: string[];
-        workflows: string[];
-      };
-      revisions: {
-        row: number;
-        commit: string | null;
-        workflows: string[];
-      }[];
-      cost_usd: number | null;
-      remaining_usd: number | null;
-      current: number | null;
-      rows: {
-        n: number;
-        state: "pending" | "running" | "done" | "failed";
-        reference: string;
-        run_id?: string;
-        answer?: string | null;
-        right?: boolean;
-        reviewed?: boolean;
-        path?: "agent" | "handed_back" | "workflow";
-        cost_usd?: number | null;
-        learning_usd?: number | null;
-        total_usd?: number | null;
-        learned?: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        merged?: string | null;
-        error?: string;
-      }[];
-      error?: string;
-    };
   };
   createPairing: {
     body: never;
@@ -2212,57 +2036,7 @@ export interface operations {
     answer: {
       agent: string;
       main: string | null;
-      index: string;
-      notes: {
-        items: {
-          file: string;
-          name: string;
-          description: string;
-          type: "user" | "feedback" | "project" | "reference";
-          status: "active" | "superseded" | "retired" | "pending";
-          origin: "you" | "run";
-          superseded_by: string | null;
-          text: string;
-          etag: string;
-          runs: {
-            given: number;
-            read: number;
-          };
-          retired?: {
-            at: string;
-            by: "person" | "run" | "host";
-            from?: "active" | "pending";
-            why?: "unreadable";
-          };
-          last_change?: {
-            kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-            by: "person" | "run";
-            at: string;
-          };
-        }[];
-        total: number;
-        next_cursor: string | null;
-      };
-      skills: {
-        name: string;
-        file: string;
-        description: string;
-        status: "active" | "pending" | "retired";
-        run: string | null;
-        bytes: number;
-        etag: string;
-        retired?: {
-          at: string;
-          by: "person" | "run" | "host";
-          from?: "active" | "pending";
-          why?: "unreadable";
-        };
-        last_change?: {
-          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-          by: "person" | "run";
-          at: string;
-        };
-      }[];
+      corrections: string;
       workflows: {
         name: string;
         file: string;
@@ -2279,7 +2053,7 @@ export interface operations {
           why?: "unreadable";
         };
         last_change?: {
-          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
+          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned";
           by: "person" | "run";
           at: string;
         };
@@ -2435,66 +2209,12 @@ export interface operations {
       reason?: string;
     };
   };
-  getLearningBatch: {
+  getLearningCorrections: {
     body: never;
     answer: {
-      id: string;
-      agent_id: string;
-      created_at: string;
-      ended_at: string | null;
-      status: "running" | "completed" | "cancelled" | "stopped";
-      stopped: "cap" | "cost_unknown" | "learning_off" | null;
-      inputs: string[];
-      answer: string;
-      answer_field: string | null;
-      effort: string | null;
-      max_cost_usd: number;
-      total: number;
-      finished: number;
-      right: number;
-      wrong: number;
-      failed: number;
-      spent_usd: number;
-      unknown_cost_rows: number;
-      paths: {
-        agent: number;
-        handed_back: number;
-        workflow: number;
-      };
-      lessons: {
-        notes: string[];
-        skills: string[];
-        workflows: string[];
-      };
-      revisions: {
-        row: number;
-        commit: string | null;
-        workflows: string[];
-      }[];
-      cost_usd: number | null;
-      remaining_usd: number | null;
-      current: number | null;
-      rows: {
-        n: number;
-        state: "pending" | "running" | "done" | "failed";
-        reference: string;
-        run_id?: string;
-        answer?: string | null;
-        right?: boolean;
-        reviewed?: boolean;
-        path?: "agent" | "handed_back" | "workflow";
-        cost_usd?: number | null;
-        learning_usd?: number | null;
-        total_usd?: number | null;
-        learned?: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        merged?: string | null;
-        error?: string;
-      }[];
-      error?: string;
+      text: string;
+      etag: string;
+      cap_bytes: 2048;
     };
   };
   getLearningCost: {
@@ -2572,7 +2292,6 @@ export interface operations {
         round: number;
         at: string;
         workflow: string | null;
-        from_notes: string[];
         attempts: {
           ok: boolean;
           errors: string[];
@@ -2872,28 +2591,18 @@ export interface operations {
     body: never;
     answer: {
       run: string;
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
       at: string;
       seed: string | null;
       merged: string | null;
-      pending: {
+      workflows: {
         file: string;
         name: string;
+        pending?: true;
       }[];
-      verdict: {
-        merge: boolean;
-        reason: string;
-        items: {
-          file: string;
-          keep: boolean;
-          pending?: true;
-          origin?: "you" | "run";
-          question?: string;
-          why: string;
-        }[];
-      } | null;
+      corrections: number;
       problems: {
         rule: string;
         path?: string;
@@ -2901,7 +2610,6 @@ export interface operations {
       }[];
       compiled: {
         workflow: string;
-        from_notes: string[];
         attempts: {
           ok: boolean;
           errors: string[];
@@ -2910,51 +2618,13 @@ export interface operations {
         promoted: boolean | null;
       } | null;
       draft_errors: string[];
-      cost_usd: {
-        grade: number | null;
-      };
-      tokens: {
-        grade: {
-          input: number;
-          cache_read: number;
-          cache_write: number;
-          output: number;
-        } | null;
-      };
       used: {
-        skills: {
-          name: string;
-          read: boolean;
-        }[];
         workflows: {
           name: string;
           calls: number;
           failed: number;
         }[];
       };
-      given?: {
-        file: string;
-        name: string;
-      }[];
-      read?: {
-        file: string;
-        name: string;
-      }[];
-      learned?: {
-        file: string;
-        name: string;
-        supersedes: string[];
-      }[];
-      skills?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
-      workflows?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
       graded?: {
         run_id: string;
         correct: boolean;
@@ -2963,7 +2633,7 @@ export interface operations {
         path: "agent" | "handed_back" | "workflow" | "replay";
         workflow: string | null;
         workflow_digest: string | null;
-        feedback: "look_back" | null;
+        feedback: "correction" | null;
         feedback_status: "running" | "ended" | "not_run" | null;
       };
     } | null;
@@ -3372,7 +3042,7 @@ export interface operations {
       path: "agent" | "handed_back" | "workflow" | "replay";
       workflow: string | null;
       workflow_digest: string | null;
-      feedback: "look_back" | null;
+      feedback: "correction" | null;
       expected?: Record<string, unknown>;
     };
   };
@@ -3785,81 +3455,6 @@ export interface operations {
       truncated: boolean;
     };
   };
-  listLearningBatches: {
-    body: never;
-    answer: {
-      batches: {
-        id: string;
-        agent_id: string;
-        created_at: string;
-        ended_at: string | null;
-        status: "running" | "completed" | "cancelled" | "stopped";
-        stopped: "cap" | "cost_unknown" | "learning_off" | null;
-        inputs: string[];
-        answer: string;
-        answer_field: string | null;
-        effort: string | null;
-        max_cost_usd: number;
-        total: number;
-        finished: number;
-        right: number;
-        wrong: number;
-        failed: number;
-        spent_usd: number;
-        unknown_cost_rows: number;
-        paths: {
-          agent: number;
-          handed_back: number;
-          workflow: number;
-        };
-        lessons: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        revisions: {
-          row: number;
-          commit: string | null;
-          workflows: string[];
-        }[];
-        cost_usd: number | null;
-        remaining_usd: number | null;
-        error?: string;
-      }[];
-    };
-  };
-  listLearningEvals: {
-    body: never;
-    answer: {
-      agent: string;
-      latest: {
-        id: string;
-        name: string;
-        n: number;
-        correct: number;
-        label_source: string | null;
-        cost_per_task_usd: number | null;
-        baseline_cost_per_task_usd: number | null;
-        learned_revision: string | null;
-        accuracy: number;
-        ci: number[];
-        recorded_at: string;
-      } | null;
-      evals: {
-        id: string;
-        name: string;
-        n: number;
-        correct: number;
-        label_source: string | null;
-        cost_per_task_usd: number | null;
-        baseline_cost_per_task_usd: number | null;
-        learned_revision: string | null;
-        accuracy: number;
-        ci: number[];
-        recorded_at: string;
-      }[];
-    };
-  };
   listLearningLog: {
     body: never;
     answer: {
@@ -3874,39 +3469,6 @@ export interface operations {
         at: string;
         reason: string;
         files: string[];
-      }[];
-      total: number;
-      next_cursor: string | null;
-    };
-  };
-  listLearningNotes: {
-    body: never;
-    answer: {
-      items: {
-        file: string;
-        name: string;
-        description: string;
-        type: "user" | "feedback" | "project" | "reference";
-        status: "active" | "superseded" | "retired" | "pending";
-        origin: "you" | "run";
-        superseded_by: string | null;
-        text: string;
-        etag: string;
-        runs: {
-          given: number;
-          read: number;
-        };
-        retired?: {
-          at: string;
-          by: "person" | "run" | "host";
-          from?: "active" | "pending";
-          why?: "unreadable";
-        };
-        last_change?: {
-          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-          by: "person" | "run";
-          at: string;
-        };
       }[];
       total: number;
       next_cursor: string | null;
@@ -4491,11 +4053,15 @@ export interface operations {
       }[];
     };
   };
-  promoteLearnedWorkflow: {
+  putLearningCorrections: {
     body: {
-      name?: string;
+      text: string;
     };
-    answer: components["Agent"];
+    answer: {
+      text: string;
+      etag: string;
+      cap_bytes: 2048;
+    };
   };
   putMcpPrivateHosts: {
     body: {
@@ -4809,30 +4375,6 @@ export interface operations {
       } | {
         ok: "duplicate";
       })[];
-    };
-  };
-  recordLearningEval: {
-    body: {
-      name: string;
-      n: number;
-      correct: number;
-      label_source?: string | null;
-      cost_per_task_usd?: number | null;
-      baseline_cost_per_task_usd?: number | null;
-      learned_revision?: string | null;
-    };
-    answer: {
-      id: string;
-      name: string;
-      n: number;
-      correct: number;
-      label_source: string | null;
-      cost_per_task_usd: number | null;
-      baseline_cost_per_task_usd: number | null;
-      learned_revision: string | null;
-      accuracy: number;
-      ci: number[];
-      recorded_at: string;
     };
   };
   redeliverWebhook: {
@@ -5338,10 +4880,6 @@ export interface operations {
         enabled: boolean;
         revision: string | null;
         context: string;
-        skills: {
-          name: string;
-          files: Record<string, string>;
-        }[];
         workflows: {
           name: string;
           workflow: string;
@@ -5820,11 +5358,5 @@ export interface operations {
       content_type?: string | null;
       unreadable?: true;
     };
-  };
-  writeLearningFile: {
-    body: {
-      text: string;
-    };
-    answer: never;
   };
 }

@@ -11,9 +11,9 @@ test('native binding stays in ordinary revisions through learning edits; no impo
  t.after(async()=>{await store.close();await rm(data,{recursive:true,force:true});});
  const entry=await createAgent(store,{definition:{id:'native-fixture',name:'Native fixture',instructions:'',harness:'codex',native,learning:false},skills:{}});
  assert.deepEqual(entry.revision.body.native,native);
- const edited=await commitAgent(store,entry,{definition:{instructions:'',learning:'notes'}});
+ const edited=await commitAgent(store,entry,{definition:{instructions:'',learning:true}});
  assert.deepEqual(edited.revision.body.native,native);
- assert.equal(edited.revision.body.learning,'notes');
+ assert.equal(edited.revision.body.learning,true);
  assert.deepEqual(definitionOf(edited.agent,edited.revision,edited.version).native,native);
  assert.equal(edited.agent.externalRef,null);
 });

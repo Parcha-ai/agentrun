@@ -139,7 +139,8 @@ test("a draft holding a value the host keeps secret, or a hidden character, is r
 test("the owner's feedback appends one line to corrections.md on main, with no model turn", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
   await w.start({ feedback: "Answer  in\ttables from now on.", script: [{ say: "The job's answer." }, { say: "Noted." }] });
-  assert.equal(w.onMain("corrections.md"), "- Answer in tables from now on.\n");
+  // git() gives its output trimmed: the file is this one line.
+  assert.equal(w.onMain("corrections.md"), "- Answer in tables from now on.");
   assert.match(git(w.repo(), ["log", "-1", "--format=%B", "main"]), /Run-Id: run-1/);
   assert.equal(w.requests.length, 2, "the job's two answers, no learning turn");
   const kept = await w.server.learning.proposal("run-1");
@@ -160,7 +161,7 @@ test("feedback holding a value the host keeps secret is refused: corrections.md 
 test("feedback that would take corrections.md past its cap is refused with the cap's words; the file stays as it was", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
   await seedOf(w.dir, "agent-1");
-  const full = `${Array.from({ length: 40 }, (_, i) => `- Rule ${String(i).padStart(2, "0")}: keep every answer short and plain.`).join("\n")}\n`;
+  const full = `${Array.from({ length: 44 }, (_, i) => `- Rule ${String(i).padStart(2, "0")}: keep every answer short and plain.`).join("\n")}\n`;
   const folder = learningFolderOf(w.dir, "agent-1");
   try {
     const done = await learningCommit(folder.workspace, { kind: "merge", runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: full }] });
@@ -170,7 +171,7 @@ test("feedback that would take corrections.md past its cap is refused with the c
   }
   assert.ok(Buffer.byteLength(full) < 2048 && Buffer.byteLength(full) > 2000, `setup: ${Buffer.byteLength(full)} bytes`);
   await w.start({ feedback: "One more rule that does not fit.", script: [{ say: "The job's answer." }, { say: "Noted." }] });
-  assert.equal(w.onMain("corrections.md"), full, "unchanged");
+  assert.equal(w.onMain("corrections.md"), full.trimEnd(), "unchanged (git() trims its output)");
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "dropped", JSON.stringify(kept?.proposal));
   assert.match(kept.proposal.detail, /corrections\.md .*2048 bytes/, kept.proposal.detail);

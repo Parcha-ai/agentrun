@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { draftProblems } from "../dist/learn/skills.js";
-import { checkProposal } from "../dist/learn/check.js";
-import { reflectPrompt } from "../dist/learn/reflect.js";
+import { draftProblems } from "../dist/learn/workflow-draft.js";
+import { checkDraft } from "../dist/learn/check.js";
 import { compilePrompt, compileReference } from "../dist/learn/compile.js";
 import { said } from "../dist/learning-words.js";
 import { serve } from "./support.mjs";
@@ -14,11 +13,8 @@ const tool = { name: "mcp:backend/status", description: "Read release status.", 
 const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
 const modelFlow = { v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "extract", label: "answer", out: "Answer", as: "answer", instructions: "Report readiness." } };
 
-test("look-back keeps no workflow; SDK compilation delegates explicitly while managed compilation retains workflow-first guidance", () => {
-  const facts = { dir: "learned", active: 0 };
-  const reflect = reflectPrompt(facts);
-  assert.match(reflect, /Keep no workflow here/); assert.doesNotMatch(reflect, /runs first/);
-  const compile = (workflowAdapters) => compilePrompt({ mode: "new", reference: compileReference(dsl, { tools: [tool.name], judges: false, ...(workflowAdapters !== undefined ? { workflowAdapters } : {}) }), notes: [], traces: [], tools: [tool.name], judges: false, ...(workflowAdapters !== undefined ? { workflowAdapters } : {}) });
+test("SDK compilation delegates explicitly while managed compilation retains workflow-first guidance", () => {
+  const compile = (workflowAdapters) => compilePrompt({ mode: "new", reference: compileReference(dsl, { tools: [tool.name], judges: false, ...(workflowAdapters !== undefined ? { workflowAdapters } : {}) }), traces: [], tools: [tool.name], judges: false, ...(workflowAdapters !== undefined ? { workflowAdapters } : {}) });
   for (const adapters of [[], ["runNode"]]) {
     const prompt = compile(adapters);
     assert.doesNotMatch(prompt, /on later runs it runs first|runs on the agent's model/);
@@ -41,21 +37,21 @@ test("SDK workflows reject model nodes without the backend adapter, including ne
 
 
 const toolFlow = { ...modelFlow, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } };
-test("SDK proposal checks refuse automatic tool retries, including nested workflows, while managed retries remain valid", () => {
+test("SDK draft checks refuse automatic tool retries, including nested workflows, while managed retries remain valid", () => {
   for (const attempts of [1, 2]) {
     const call = { ...toolFlow, root: { ...toolFlow.root, retry: { attempts } } };
     const nested = { ...modelFlow, root: { node: "workflow", label: "nested", workflow: call, input: {}, out: "Answer", as: "answer" } };
     for (const flow of [call, nested]) {
       assert.deepEqual(draftProblems(dsl, JSON.stringify(flow), [tool.name]), [], "the managed host supports its existing retry contract");
       const path = "workflows/status/workflow.json";
-      const proposal = { base: { files: [], active: [] }, outcome: "completed", tools: [tool.name], dsl,
+      const draft = { tools: [tool.name], dsl,
         dryRuns: { [path]: { status: "passed" } }, changes: [
           { path, status: "added", bytes: Buffer.from(JSON.stringify(flow)) },
           { path: "workflows/status/README.md", status: "added", bytes: Buffer.from("---\nname: status\ndescription: Read release status.\n---\n") },
         ] };
-      assert.equal(checkProposal(proposal).ok, true, "managed promotion keeps its retry contract");
-      const checked = checkProposal({ ...proposal, workflowAdapters: [] });
-      assert.equal(checked.ok, attempts === 1, "an SDK proposal must remain runnable even after a passing dry run");
+      assert.deepEqual(checkDraft(draft), [], "managed promotion keeps its retry contract");
+      const checked = checkDraft({ ...draft, workflowAdapters: [] });
+      assert.equal(checked.length === 0, attempts === 1, "an SDK draft must remain runnable even after a passing dry run");
       const problems = draftProblems(dsl, JSON.stringify(flow), [tool.name], {}, {}, undefined, []);
       if (attempts === 1) assert.deepEqual(problems, []);
       else assert.match(JSON.stringify(problems), /automatic retries/);
@@ -133,14 +129,14 @@ test("SDK static node limits count nested chains and composed workflows before p
     assert.equal(dsl.inspectWorkflow(flow).nodes.length, count, "the real engine counts every structural wrapper and composed root");
     assert.deepEqual(draftProblems(dsl, text, [tool.name]), [], "managed workflow admission retains its existing limits");
     const path = "workflows/status/workflow.json";
-    const proposal = { base: { files: [], active: [] }, outcome: "completed", tools: [tool.name], dsl,
+    const draft = { tools: [tool.name], dsl,
       dryRuns: { [path]: { status: "passed" } }, changes: [
         { path, status: "added", bytes: Buffer.from(text) },
         { path: "workflows/status/README.md", status: "added", bytes: Buffer.from("---\nname: status\ndescription: Read release status.\n---\n") },
       ] };
-    assert.equal(checkProposal(proposal).ok, true, "the managed host can still promote this workflow");
-    const checked = checkProposal({ ...proposal, workflowAdapters: [] });
-    assert.equal(checked.ok, count <= 128, "an SDK proposal cannot override static bridge admission with a passing dry run");
+    assert.deepEqual(checkDraft(draft), [], "the managed host can still promote this workflow");
+    const checked = checkDraft({ ...draft, workflowAdapters: [] });
+    assert.equal(checked.length === 0, count <= 128, "an SDK draft cannot override static bridge admission with a passing dry run");
     const problems = draftProblems(dsl, text, [tool.name], {}, {}, undefined, []);
     if (count === 128) assert.deepEqual(problems, []);
     else assert.match(JSON.stringify(problems), /128.*node|node.*128/i);
@@ -167,7 +163,7 @@ test("SDK workflow manifests opt in while learning Off remains Off; malformed an
   const start = (patch, key) => api("POST", "/agents/sdk-workflows/sdk-runs", { ...body, ...patch }, { "Idempotency-Key": key });
   const started = await start({}, "bridge-off");
   assert.equal(started.status, 201, JSON.stringify(started.body));
-  assert.deepEqual(started.body.learning, { enabled: false, revision: null, context: "", skills: [], workflows: [] });
+  assert.deepEqual(started.body.learning, { enabled: false, revision: null, context: "", workflows: [] });
   for (const [patch, key] of [
     [{ workflow_tools: [{ ...tool, name: "mcp:backend/*" }] }, "wildcard"],
     [{ workflow_tools: [tool, tool] }, "duplicate"],
@@ -224,7 +220,7 @@ async function waitLearning(sdk, path) {
 for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true], ["claude-agent-sdk", false]]) test(`${runtime}${priced ? "" : " with an unpriced tool"} learns a workflow through the ordinary cadence and pins it for the next backend run`, { timeout: 90_000 }, async (t) => {
   const { client, follow } = await import("./support.mjs");
   const { SdkRuns } = await import("../dist/sdk/runs.js");
-  const server = await serve(t, { faux: new URL("./fixtures/sdk-workflow-model.mjs", import.meta.url).pathname, gradeModel: "anthropic/claude-sonnet-4-5" });
+  const server = await serve(t, { faux: new URL("./fixtures/sdk-workflow-model.mjs", import.meta.url).pathname });
   const { api, store, data } = server;
   const id = `workflow-${runtime}`;
   // Its definition compiles at 5 completed runs (learning.compile_after): run 4 is its fifth.
@@ -235,7 +231,7 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
   for (let n = 0; n <= 4; n++) {
     const result = await start(n === 0 ? "Teach release status: follow the backend status procedure for future releases." : `Check release status ${n}.`, `workflow-${n}`);
     assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.deepEqual(result.body.learning.workflows, [], "a draft is not executable before its separate grade");
+    assert.deepEqual(result.body.learning.workflows, [], "no workflow is learned yet");
     const sdk = client(server.baseUrl, result.body.token), path = `/sdk-runs/${result.body.run_id}`;
     assert.equal((await sdk("POST", `${path}/events`, { sequence: 1, events: [
       { type: "tool", id: "status", name: tool.name, status: "started", input: { release: "current" } },
@@ -244,15 +240,15 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
     assert.equal((await sdk("POST", `${path}/complete`, { status: "completed", answer: '{"ready":true}' })).status, 200);
     await follow(api, result.body.run_id, ["completed"]);
     learned = await waitLearning(sdk, path);
-    // An SDK task carries no owner feedback, so a run of this workflow job is never asked its look-back: runs 0-3 learn
-    // nothing, and run 4 is asked the compile alone, as the cadence has it.
+    // An SDK task carries no owner feedback, so a run of this workflow job keeps nothing until its compile is due: runs
+    // 0-3 learn nothing, and run 4 is asked the compile alone, as the cadence has it.
     if (n === 4) assert.equal(learned.learning.state, "merged", JSON.stringify(learned));
-    else assert.deepEqual([learned.learning.state, learned.learning.detail], ["dropped", said.noFeedback], JSON.stringify(learned));
+    else assert.deepEqual([learned.learning.state, learned.learning.detail], ["dropped", said.empty], JSON.stringify(learned));
   }
   const next = await start("Check release readiness.", "next-workflow");
   assert.equal(next.status, 201, JSON.stringify(next.body));
   if (!priced) {
-    assert.deepEqual(next.body.learning.workflows, [], "unpriced calls remain unavailable despite a keep verdict");
+    assert.deepEqual(next.body.learning.workflows, [], "unpriced calls remain unavailable: the draft waits for its owner's OK");
     const listed = (await api("GET", `/agents/${id}/learning`)).body;
     assert.equal(listed.workflows[0].status, "pending", JSON.stringify(listed));
     assert.equal((await client(server.baseUrl, next.body.token)("POST", `/agents/${id}/learning/files/${encodeURIComponent(listed.workflows[0].readme)}/approve`, {})).status, 403, "run token cannot approve its own workflow");
@@ -263,16 +259,15 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
   assert.equal(JSON.parse(next.body.learning.workflows[0].workflow).root.tool, tool.name);
   const launch = (await store.runs.launch(next.body.run_id)).body;
   assert.deepEqual(launch.learning.workflows, ["release-status"]);
-  assert.equal(launch.learning.notesOnly, undefined);
   // Delivery is pinned and remains identical on idempotent retries, even when owner changes learning for future runs.
-  await api("PUT", `/agents/${id}/definition`, { definition: { instructions: body.instructions, learning: "notes" } });
+  await api("PUT", `/agents/${id}/definition`, { definition: { instructions: body.instructions, learning: false } });
   assert.deepEqual((await start("Check release readiness.", "next-workflow")).body.learning.workflows, next.body.learning.workflows);
-  const notes = await start("Check release readiness.", "notes-only");
-  assert.deepEqual(notes.body.learning.workflows, []);
+  const off = await start("Check release readiness.", "learning-off");
+  assert.deepEqual(off.body.learning.workflows, []);
   await api("PUT", `/agents/${id}/definition`, { definition: { instructions: body.instructions, learning: true } });
   const incompatible = await start("Check release readiness.", "denied", { workflow_tools: [{ ...tool, permission: "deny" }] });
   assert.deepEqual(incompatible.body.learning.workflows, []);
   const protectedNow = new SdkRuns(store, data, server.token, () => ["mcp:backend/status"]);
   await assert.rejects(protectedNow.receipt(next.body.run_id, "https://console.example"), (error) => error.code === "unavailable");
-  for (const receipt of [next.body, notes.body, incompatible.body]) await client(server.baseUrl, receipt.token)("POST", `/sdk-runs/${receipt.run_id}/complete`, { status: "cancelled", answer: "" });
+  for (const receipt of [next.body, off.body, incompatible.body]) await client(server.baseUrl, receipt.token)("POST", `/sdk-runs/${receipt.run_id}/complete`, { status: "cancelled", answer: "" });
 });

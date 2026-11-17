@@ -22,12 +22,12 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { labelsOf } from "./run-labels.js";
 import { harnessOfBody } from "./harness.js";
 import { redacted, redactedOutput } from "./key-refusal.js";
-import { chooseWorkflows, LEARNING_BUDGET, learnedParts, type LearningMode, learnsOf, type NoteUsed, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
+import { chooseWorkflows, learnedSection, type LearningMode, learnsOf, RUN_LEARNING_USE, type Seed, type Shown } from "./learning.js";
 import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
-import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
+import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { AnswerTaken, ExternalBodyConflict, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
@@ -467,15 +467,10 @@ export interface StartDeps {
   /** The agent's learning seed, read now (learning-run.ts seedFor): the learning commit a run starts from, or a reason it
    *  could not be read. Only read for a run that learns. */
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
-  /** The learning budget in bytes (learning.ts LEARNING_BUDGET), for which notes fit a run's # Learned section. */
-  readonly learningBudget?: number;
-  /** The model the server names to grade what a run proposes (learning.ts gradeModelOf), put on each learning start; none,
-   *  the agent's own grades it. */
-  readonly gradeModel?: string;
   /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
    *  repository. Absent: the agent is bound to none. */
   boundRepos?(agentId: string): Promise<RepoBinding>;
-  /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the notes a run is given. */
+  /** The host's secrets as they are shown now (learning-run.ts shown), for cutting the corrections a run is given. */
   shown?(): Shown;
 }
 
@@ -495,43 +490,30 @@ export interface StartOptions {
 /** A no-op redactor, when the server gives none: no secret is cut (the switch wires the real shown for a learning run). */
 const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () => false };
 
-/** The run's learning start as the old start decided it (learning-run.ts onStart): undefined when the run does not learn (the
- *  server's learning off, a workflow revision, or its revision does not say learning), else the notes its # Learned section
- *  names and the # Learned text (learnedParts, the one decision the runner puts in the prompt), the seed sha it starts
- *  from and the count of all the seed's notes before the budget picked `given` (seedNotes) — or given empty, seed null and no
- *  seedNotes when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
- *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. */
-export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, input: unknown, use = false): Promise<{ given: NoteUsed[]; seed: string | null; section: string; seedNotes?: number; notesLeftOut?: string[]; skills?: string[]; workflows?: string[]; notesOnly?: true; gradeModel?: string; seedFailed?: SeedFailed; use?: true } | undefined> {
-  // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps nothing
-  // (no grade model: nothing is graded); the server's learning off still gives it nothing.
+/** The run's learning start: undefined when the run does not learn (the server's learning off, a workflow revision, or
+ *  its revision does not say learning), else the seed sha it starts from, its # Learned text (its owner's corrections,
+ *  learnedSection: the one text the runner puts in the prompt) and the learned workflows it may be answered by — or seed
+ *  null when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
+ *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. `noWorkflows`:
+ *  a run never answered by a learned workflow nor asked to draft one (a native run's, an SDK run's with no workflow
+ *  binding). `model`: an SDK run's compile model. */
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model }: { use?: boolean; noWorkflows?: boolean; model?: string } = {}): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
+  // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps
+  // nothing; the server's learning off still gives it nothing.
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
-  // `learning: "notes"`: its notes and skills, never a learned workflow (none offered, none asked for at its end).
-  const notesOnly = rbody.learning === "notes" || nativeOf(revision.body) ? { notesOnly: true as const } : {};
   if (!learns || !deps.seedFor) return undefined;
-  const grade = use ? { use: true as const } : deps.gradeModel ? { gradeModel: deps.gradeModel } : {};
+  const flows = noWorkflows || nativeOf(revision.body) ? { noWorkflows: true as const } : {};
+  const own = { ...flows, ...(use ? { use: true as const } : {}), ...(model ? { model } : {}) };
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
-  if (!("seed" in seeded)) return { given: [], seed: null, section: "", seedFailed: "unreadable", ...notesOnly, ...grade };
+  if (!("seed" in seeded)) return { seed: null, section: "", seedFailed: "unreadable", ...own };
   try {
-    // The run's input goes to the note selector (learning.ts NoteSelector; byRelevance, the default, scores the notes by it).
-    const options = { budget: deps.learningBudget ?? LEARNING_BUDGET, read: Array.isArray(rbody.tools) && rbody.tools.includes("read"), shown: deps.shown ? deps.shown() : noShown, run: { input } };
-    // The notes and the # Learned text are the old start's one decision (learnedParts: one choice of the note selector), so
-    // the runner lays exactly this section for exactly these notes and reads no learning folder. seedNotes is the whole
-    // seed's note count, before the budget narrowed `given` (as the old seed_notes was).
-    const { section, given, left } = learnedParts(seeded.seed, options);
-    // The notes the section names in no way, over the budget: the claim says them in the run's log (learning-seed.ts).
-    const notesLeftOut = left.map((note) => options.shown.name(note.file));
-    // The learned skills the seed offers the run, by name: each with its files (one over a run's skill budget at all is held
-    // by its size and never laid) and no host secret in it, as chooseSkills leaves them out. The claim lays them; the
-    // agent's impact counts the runs each served.
-    const skills = (seeded.seed.skills ?? []).flatMap(({ name, files }) => (files && !options.shown.holds(name) && !Object.entries(files).some(([path, text]) => options.shown.holds(path) || options.shown.holds(text)) ? [name] : []));
-    // The learned workflows its learned_workflow tool runs, by name, as the claim chooses them (chooseWorkflows): what the
-    // agent's impact counts a run as started from, beside its notes and skills.
-    const workflows = notesOnly.notesOnly ? [] : chooseWorkflows(seeded.seed, options.shown).flows.map(({ name }) => name);
-    return { given: given.map(({ file, name }) => ({ file, name })), seed: seeded.seed.sha, section: section ?? "", seedNotes: Object.keys(seeded.seed.notes).length, ...(notesLeftOut.length ? { notesLeftOut } : {}), ...(skills.length ? { skills } : {}), ...(workflows.length ? { workflows } : {}), ...notesOnly, ...grade };
+    const shown = deps.shown ? deps.shown() : noShown;
+    const workflows = flows.noWorkflows ? [] : chooseWorkflows(seeded.seed, shown).flows.map(({ name }) => name);
+    return { seed: seeded.seed.sha, section: learnedSection(seeded.seed, shown), ...(workflows.length ? { workflows } : {}), ...own };
   } catch {
-    return { given: [], seed: null, section: "", seedFailed: "not_copied", ...notesOnly, ...grade };
+    return { seed: null, section: "", seedFailed: "not_copied", ...own };
   }
 }
 
@@ -690,11 +672,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
   // The run's model, resolved once, at start (the runner reads launch.model only).
   const model = await deps.modelOf(entry, revision);
-  // The run's learning start, decided here as the old start did (learning-run.ts onStart): a run learns when the server's
-  // learning is on and its revision says so; then its seed is read now and the notes its # Learned section names (learnedParts,
-  // the one decision) are pinned in the launch for the runner to put in the prompt. A seed that cannot be read starts it with
-  // nothing (given empty, seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, input, body.learning === RUN_LEARNING_USE);
+  // The run's learning start, decided here: a run learns when the server's learning is on and its revision says so; then
+  // its seed is read now and its # Learned text pinned in the launch for the runner to put in the prompt. A seed that
+  // cannot be read starts it with nothing (seed null); the end state is the runner's.
+  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE });
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;

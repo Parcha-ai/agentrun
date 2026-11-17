@@ -27,10 +27,11 @@ test("a grade with words appends one line to corrections.md, with no model turn;
   await ended(api, runId);
   const graded = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: "Answer in tables from now on." });
   assert.equal(graded.status, 200, JSON.stringify(graded.body));
-  assert.equal(graded.body.feedback, "corrections", JSON.stringify(graded.body));
+  assert.equal(graded.body.feedback, "correction", JSON.stringify(graded.body));
   const { view } = await ended(api, runId);
   assert.equal(view.learning?.state, "merged", JSON.stringify(view.learning));
-  assert.equal(git(repoOf(data, "keeper"), ["show", "main:corrections.md"]), "- Answer in tables from now on.\n");
+  // git() gives its output trimmed: the file is this one line.
+  assert.equal(git(repoOf(data, "keeper"), ["show", "main:corrections.md"]), "- Answer in tables from now on.");
   const got = await read(api);
   assert.equal(got.status, 200, JSON.stringify(got.body));
   assert.deepEqual([got.body.text, got.body.cap_bytes], ["- Answer in tables from now on.\n", 2048]);
@@ -62,6 +63,6 @@ test("GET and PUT corrections over v2: replaced whole under If-Match; over the c
   const hidden = await put(api, `- Be${HIDDEN} brief.\n`, now);
   assert.equal(hidden.status, 422, JSON.stringify(hidden.body));
   assert.match(JSON.stringify(hidden.body), /a character a reader does not see/);
-  assert.equal(git(repoOf(data, "keeper"), ["show", "main:corrections.md"]), "- Be brief.\n", "only the one write landed");
+  assert.equal(git(repoOf(data, "keeper"), ["show", "main:corrections.md"]), "- Be brief.", "only the one write landed (git() trims its output)");
   assert.equal((await read(api)).body.text, "- Be brief.\n");
 });

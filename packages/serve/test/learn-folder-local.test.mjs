@@ -24,6 +24,7 @@ const git = (root, args) => {
   assert.equal(out.status, 0, out.stderr);
   return out.stdout.trim();
 };
+const README = "---\nname: weekly-report\ndescription: Lays out the weekly report; use when asked for it\n---\n";
 
 folderSuite("local", async () => ({ ws: localWorkspace(folder()) }));
 
@@ -33,13 +34,12 @@ test("local: git sees what the snapshot says: main, each blob, the commit's auth
   const init = await learningInit(ws);
   assert.equal(git(root, ["rev-parse", "main"]), init);
   assert.equal(git(root, ["log", "-1", "--format=%an <%ae>%n%s", "main"]), "agentrun-serve <serve@agentrun.invalid>\nhost: the agent's learning folder");
-  const text = "---\nname: Check units\ndescription: Convert every amount\n---\nBody.\n";
-  const merged = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-1", reason: "Each note is general." }, writes: [{ path: "check-units.md", text }, { path: "MEMORY.md", text: "- [Check units](check-units.md) — Convert every amount\n" }] });
+  const merged = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-1", reason: "Compiled the job." }, writes: [{ path: "corrections.md", text: "- Be brief.\n" }, { path: "workflows/weekly-report/README.md", text: README }, { path: "workflows/weekly-report/workflow.json", text: "{\"v\":2}\n" }] });
   const snapshot = await readSnapshot(ws);
   assert.equal(git(root, ["rev-parse", "main"]), merged.main);
-  assert.equal(git(root, ["rev-parse", "main:check-units.md"]), snapshot.notes[0].oid);
-  assert.equal(git(root, ["rev-parse", "main:MEMORY.md"]), snapshot.index.oid);
-  assert.equal(git(root, ["log", "-1", "--format=%B", "main"]), "learning: run-1: merged\n\nEach note is general.\n\nRun-Id: run-1");
+  assert.equal(git(root, ["rev-parse", "main:corrections.md"]), snapshot.corrections.oid);
+  assert.equal(git(root, ["rev-parse", "main:workflows/weekly-report/README.md"]), snapshot.workflows[0].oid);
+  assert.equal(git(root, ["log", "-1", "--format=%B", "main"]), "learning: run-1: merged\n\nCompiled the job.\n\nRun-Id: run-1");
   assert.equal(git(root, ["log", "-1", "--format=%(trailers:key=Run-Id,valueonly)", "main"]), "run-1");
   assert.equal(git(root, ["status", "--porcelain"]), "", "the working tree is main's, and .agentrun/ is the host's (excluded)");
   assert.equal(git(root, ["for-each-ref", "refs/agentrun/"]), "", "no temporary ref is left");
@@ -47,23 +47,24 @@ test("local: git sees what the snapshot says: main, each blob, the commit's auth
   assert.equal(git(root, ["cat-file", "-p", "main"]).split("\n").find((line) => line.startsWith("parent ")), `parent ${init}`);
 });
 
-test("local: a symbolic link where the script would write is refused before main moves: a MEMORY.md planted as one before the first commit, or a folder on a note's way; nothing is written where it points", async () => {
+test("local: a symbolic link where the script would write is refused before main moves: a corrections.md planted as one, or a folder on a draft's way; nothing is written where it points", async () => {
   const outside = folder();
   writeFileSync(join(outside, "kept"), "kept\n");
   const root = folder();
-  symlinkSync(join(outside, "kept"), join(root, "MEMORY.md"));
   const ws = localWorkspace(root);
-  await assert.rejects(learningInit(ws), /a link in the learning folder at MEMORY\.md can't be followed/);
-  assert.equal(readFileSync(join(outside, "kept"), "utf8"), "kept\n", "nothing written through the link");
-  assert.equal(spawnSync("git", ["-C", root, "rev-parse", "-q", "--verify", "refs/heads/main"], { encoding: "utf8" }).stdout, "", "no main");
-  assert.equal(await readSnapshot(ws), undefined, "no snapshot");
-  // A skill's folder planted as a link: a merge writing into it is refused, main and the snapshot as they were.
-  rmSync(join(root, "MEMORY.md"));
   await learningInit(ws);
   const before = await readSnapshot(ws);
-  mkdirSync(join(root, "skills"));
-  symlinkSync(outside, join(root, "skills", "weekly-report"));
-  await assert.rejects(commitChange(ws, before, { by: { run: "run-l", reason: "A skill." }, writes: [{ path: "skills/weekly-report/SKILL.md", text: "---\nname: weekly-report\ndescription: d\n---\n" }] }), /a link in the learning folder at skills\/weekly-report can't be followed/);
+  // corrections.md planted as a link: a merge appending to it is refused.
+  symlinkSync(join(outside, "kept"), join(root, "corrections.md"));
+  await assert.rejects(commitChange(ws, before, { by: { run: "run-c", reason: "A correction." }, writes: [{ path: "corrections.md", text: "- Be brief.\n" }] }), /a link in the learning folder at corrections\.md can't be followed/);
+  assert.equal(readFileSync(join(outside, "kept"), "utf8"), "kept\n", "nothing written through the link");
+  assert.deepEqual(await readSnapshot(ws), before);
+  assert.equal(git(root, ["rev-parse", "main"]), before.main);
+  rmSync(join(root, "corrections.md"));
+  // A draft's folder planted as a link: a merge writing into it is refused, main and the snapshot as they were.
+  mkdirSync(join(root, "workflows"));
+  symlinkSync(outside, join(root, "workflows", "weekly-report"));
+  await assert.rejects(commitChange(ws, before, { by: { run: "run-l", reason: "A draft." }, writes: [{ path: "workflows/weekly-report/README.md", text: README }, { path: "workflows/weekly-report/workflow.json", text: "{}\n" }] }), /a link in the learning folder at workflows\/weekly-report can't be followed/);
   assert.deepEqual(await readSnapshot(ws), before);
   assert.equal(git(root, ["rev-parse", "main"]), before.main);
   assert.deepEqual(readdirSync(outside), ["kept"]);

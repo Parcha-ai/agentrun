@@ -108,7 +108,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.learning !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: only an agentic run reflects on its work.", `Remove ${at}.learning.`));
     else {
-      // true learns notes, skills and workflows, "notes" notes and skills alone; an object is on, with the loop's numbers.
+      // true learns (corrections and workflows); an object is on, with the loop's numbers.
       const wrong = learningSettingIssue(d.learning, `${at}.learning`);
       if (wrong) out.push(issue(`${at}.learning`, "wrong_type", wrong));
     }

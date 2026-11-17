@@ -1049,106 +1049,11 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "batch"
+      "corrections"
     ],
-    "operationId": "getLearningBatch",
+    "operationId": "getLearningCorrections",
     "method": "GET",
-    "path": "/agents/{agent_id}/learning/batches/{batch_id}",
-    "pathParams": [
-      "agent_id",
-      "batch_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took"
-  },
-  {
-    "command": [
-      "learning",
-      "batch-cancel"
-    ],
-    "operationId": "cancelLearningBatch",
-    "method": "POST",
-    "path": "/agents/{agent_id}/learning/batches/{batch_id}/cancel",
-    "pathParams": [
-      "agent_id",
-      "batch_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Cancel a running learning batch"
-  },
-  {
-    "command": [
-      "learning",
-      "batch-start"
-    ],
-    "operationId": "createLearningBatch",
-    "method": "POST",
-    "path": "/agents/{agent_id}/learning/batches",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [
-      {
-        "name": "answer",
-        "type": "string",
-        "required": true,
-        "description": "The column holding the reference answer."
-      },
-      {
-        "name": "max_cost_usd",
-        "type": "number",
-        "required": true,
-        "description": "Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped."
-      },
-      {
-        "name": "answer_field",
-        "type": "string",
-        "required": false,
-        "description": "A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer."
-      },
-      {
-        "name": "effort",
-        "type": "string",
-        "required": false,
-        "description": "The runs' effort, as a run's."
-      }
-    ],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each"
-  },
-  {
-    "command": [
-      "learning",
-      "batches"
-    ],
-    "operationId": "listLearningBatches",
-    "method": "GET",
-    "path": "/agents/{agent_id}/learning/batches",
+    "path": "/agents/{agent_id}/learning/corrections",
     "pathParams": [
       "agent_id"
     ],
@@ -1161,7 +1066,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "The agent's learning batches, latest first"
+    "summary": "The agent's corrections.md on main, with its ETag"
   },
   {
     "command": [
@@ -1205,28 +1110,6 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "evals"
-    ],
-    "operationId": "listLearningEvals",
-    "method": "GET",
-    "path": "/agents/{agent_id}/learning/evals",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "The agent's eval records: the latest, and every one kept, newest first"
-  },
-  {
-    "command": [
-      "learning",
       "get"
     ],
     "operationId": "getAgentLearning",
@@ -1244,7 +1127,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "What the agent has learned: its index, notes, log of changes and counts"
+    "summary": "What the agent has learned: its corrections, workflow drafts, log of changes and counts"
   },
   {
     "command": [
@@ -1284,53 +1167,6 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "notes"
-    ],
-    "operationId": "listLearningNotes",
-    "method": "GET",
-    "path": "/agents/{agent_id}/learning/notes",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [
-      {
-        "name": "cursor",
-        "type": "string",
-        "required": false,
-        "description": "`next_cursor` from the previous page: opaque, read at the commit the first page was."
-      },
-      {
-        "name": "limit",
-        "type": "integer",
-        "required": false,
-        "description": "At most 200."
-      },
-      {
-        "name": "status",
-        "type": "string",
-        "enum": [
-          "active",
-          "superseded",
-          "retired",
-          "pending"
-        ],
-        "required": false,
-        "description": "Only notes with this status."
-      }
-    ],
-    "headers": [],
-    "bodyFlags": [],
-    "hasBody": false,
-    "bodyRequired": false,
-    "bodyTypes": [],
-    "secretBody": false,
-    "raw": false,
-    "summary": "A page of the agent's notes"
-  },
-  {
-    "command": [
-      "learning",
       "read"
     ],
     "operationId": "readLearningFile",
@@ -1349,81 +1185,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag"
-  },
-  {
-    "command": [
-      "learning",
-      "record-eval"
-    ],
-    "operationId": "recordLearningEval",
-    "method": "POST",
-    "path": "/agents/{agent_id}/learning/evals",
-    "pathParams": [
-      "agent_id"
-    ],
-    "multiSegment": [],
-    "query": [],
-    "headers": [
-      {
-        "name": "Idempotency-Key",
-        "type": "string",
-        "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
-      }
-    ],
-    "bodyFlags": [
-      {
-        "name": "name",
-        "type": "string",
-        "required": true,
-        "description": "What ran the test, one line: a bench's name and set, a script's."
-      },
-      {
-        "name": "n",
-        "type": "integer",
-        "required": true,
-        "description": "The held-out jobs the test counted: jobs the agent never learned from."
-      },
-      {
-        "name": "correct",
-        "type": "integer",
-        "required": true,
-        "description": "How many of the `n` jobs the agent with what it learned got right: 0 to `n`."
-      },
-      {
-        "name": "label_source",
-        "type": "string",
-        "required": false,
-        "description": "Where the right answers came from, one line; null (or absent) when not said."
-      },
-      {
-        "name": "cost_per_task_usd",
-        "type": "number",
-        "required": false,
-        "description": "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted."
-      },
-      {
-        "name": "baseline_cost_per_task_usd",
-        "type": "number",
-        "required": false,
-        "description": "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted."
-      },
-      {
-        "name": "learned_revision",
-        "type": "string",
-        "required": false,
-        "description": "The learning folder's commit the test ran from; null (or absent) when not said."
-      }
-    ],
-    "hasBody": true,
-    "bodyRequired": true,
-    "bodyTypes": [
-      "application/json"
-    ],
-    "secretBody": false,
-    "raw": false,
-    "summary": "Record a held-out test of the agent: its counts and the cost a task, with learning and by hand"
+    "summary": "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag"
   },
   {
     "command": [
@@ -1469,7 +1231,7 @@ export const COMMANDS = [
         "name": "If-Match",
         "type": "string",
         "required": false,
-        "description": "The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412."
+        "description": "The file's ETag, as a GET answered it: the write lands only on that version, else 412."
       }
     ],
     "bodyFlags": [],
@@ -1478,7 +1240,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": true,
-    "summary": "Retire a note, a skill or a workflow draft: out of every later run, kept in history"
+    "summary": "Retire a workflow draft: out of every later run, kept in history"
   },
   {
     "command": [
@@ -1513,14 +1275,13 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
-      "write"
+      "write-corrections"
     ],
-    "operationId": "writeLearningFile",
+    "operationId": "putLearningCorrections",
     "method": "PUT",
-    "path": "/agents/{agent_id}/learning/files/{file}",
+    "path": "/agents/{agent_id}/learning/corrections",
     "pathParams": [
-      "agent_id",
-      "file"
+      "agent_id"
     ],
     "multiSegment": [],
     "query": [],
@@ -1528,14 +1289,8 @@ export const COMMANDS = [
       {
         "name": "If-Match",
         "type": "string",
-        "required": false,
-        "description": "The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412."
-      },
-      {
-        "name": "If-None-Match",
-        "type": "string",
-        "required": false,
-        "description": "`*`: create the note, only if the name is not taken, else 412."
+        "required": true,
+        "description": "The file's ETag, as a GET answered it: the write lands only on that version, else 412."
       }
     ],
     "bodyFlags": [
@@ -1543,7 +1298,7 @@ export const COMMANDS = [
         "name": "text",
         "type": "string",
         "required": true,
-        "description": "The note's whole text, front matter included."
+        "description": "corrections.md's whole text."
       }
     ],
     "hasBody": true,
@@ -1554,8 +1309,8 @@ export const COMMANDS = [
       "application/json"
     ],
     "secretBody": false,
-    "raw": true,
-    "summary": "Edit a note (If-Match) or create one (If-None-Match: *)"
+    "raw": false,
+    "summary": "Replace the agent's corrections.md (If-Match)"
   },
   {
     "command": [
@@ -2298,7 +2053,7 @@ export const COMMANDS = [
           "use"
         ],
         "required": false,
-        "description": "`use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
+        "description": "`use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
       },
       {
         "name": "repo",
@@ -2822,7 +2577,7 @@ export const COMMANDS = [
           "use"
         ],
         "required": false,
-        "description": "`use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
+        "description": "`use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else."
       },
       {
         "name": "repo",

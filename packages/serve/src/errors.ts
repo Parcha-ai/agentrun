@@ -70,9 +70,6 @@ export const ERROR_STATUS = {
   // A run of an agent given inline (POST /runs) under a version of its source already run here with another definition: a
   // version's definition never changes here, so the source publishes a new version.
   external_body_conflict: 409,
-  // A learned workflow made into an agent of its own while it waits for its owner's OK or is retired: only an active one
-  // is (learning-routes.ts promotable).
-  learned_not_active: 409,
   // A replay its owner asked of a learned workflow's revision that cannot start now (runner/promotion.ts askReplay): one
   // replays already, another revision of it replays, it is promoted, or no graded input fits it.
   replay_conflict: 409,

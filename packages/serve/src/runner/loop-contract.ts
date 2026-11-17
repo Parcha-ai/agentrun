@@ -25,9 +25,8 @@ export type EndOfRunAnswer = ({ readonly ended: true; readonly answer: string } 
 
 /**
  * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
- * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
- * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
- * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * loop writes the run's end. `ask` sends one more turn through the run's own session (the compile turn's attempts),
+ * its origin `reflect`, aborted at `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
  * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
  * id is one per run, so its model is asked once).
  */

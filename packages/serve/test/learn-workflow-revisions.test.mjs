@@ -39,7 +39,7 @@ test("a learned workflow's revisions: oldest first with the text each had, by ru
   const v2 = answerFlow("Answer the question, in whole numbers.");
   const v3 = { ...v2, root: { node: "chain", steps: [...v2.root.steps, { node: "extract", label: "check", instructions: "Check it.", out: "Answer", as: "answer" }] } };
   const first = await commit(data, id, { [path]: JSON_OF(v1), "workflows/answer/README.md": README("answer") }, "learning: run-1: merged\n\nIt does the job again.\n\nRun-Id: run-1");
-  await commit(data, id, { "other.md": "---\nname: Other\ndescription: another note\ntype: reference\n---\nx\n" }, "learning: run-2: merged\n\nRun-Id: run-2");
+  await commit(data, id, { "corrections.md": "- Answer in whole numbers.\n" }, "learning: run-2: merged\n\nRun-Id: run-2");
   const second = await commit(data, id, { [path]: JSON_OF(v2) }, "learning: run-3: merged\n\nThe instruction said whole numbers.\n\nRun-Id: run-3");
   await commit(data, id, { "workflows/answer/README.md": `${README("answer")}retired\n` }, "learning: retired by a person: workflows/answer/README.md\n\nChanged-By: user");
   const third = await commit(data, id, { [path]: JSON_OF(v3) }, "learning: edited by a person: workflows/answer/workflow.json\n\nChanged-By: user");
@@ -48,7 +48,7 @@ test("a learned workflow's revisions: oldest first with the text each had, by ru
   const all = await read();
   assert.equal(all.status, 200, JSON.stringify(all.body));
   assert.deepEqual(schemaProblems(doc, schema, all.body), []);
-  assert.deepEqual(all.body.revisions.map((r) => [r.commit, r.by, r.text && JSON.parse(r.text)]), [[first, { run: "run-1" }, v1], [second, { run: "run-3" }, v2], [third, { user: true }, v3]], "oldest first; the README commit and the other note's commit are no revisions");
+  assert.deepEqual(all.body.revisions.map((r) => [r.commit, r.by, r.text && JSON.parse(r.text)]), [[first, { run: "run-1" }, v1], [second, { run: "run-3" }, v2], [third, { user: true }, v3]], "oldest first; the README commit and the corrections commit are no revisions");
   assert.deepEqual([all.body.name, all.body.total, all.body.truncated], ["answer", 3, false]);
   // Each revision's digest is its file's (workflow-first.ts workflowDigest): what runs' metrics and promotion records name it by.
   assert.deepEqual(all.body.revisions.map((r) => r.digest), all.body.revisions.map((r) => createHash("sha256").update(r.text).digest("hex").slice(0, 16)));

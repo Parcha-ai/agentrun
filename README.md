@@ -206,41 +206,35 @@ cost, by day, by harness and by tool.
 
 ## Agents that learn the work
 
-Turn it on with `"learning": true` in an agent's definition. At the end of every run, the agent gets one more turn to
-say what it would keep. AgentRun checks it, grades it, and commits the keepers to the agent's own git folder. The next
-run starts from there.
+Turn it on with `"learning": true` in an agent's definition. An agent learns two things, both kept in its own git
+folder, and every run starts from that folder's `main`.
 
 ```mermaid
 flowchart LR
     start["Run starts from<br/>the agent's main"] --> work["Run does the job"]
-    work --> propose["Last turn proposes<br/>notes, a skill, a workflow"]
-    propose --> check["Code checks,<br/>then one grader"]
+    work --> fin["Run's end: your words to corrections.md,<br/>a workflow draft when one is due"]
+    fin --> check["Code checks,<br/>then one replay check"]
     check -->|kept| commit["Commit to main"]
     commit --> start
 ```
 
-- **Notes** are short markdown files, one fact each, in Claude Code's memory format.
-- **Skills** are how to do a job again, and only a run that finished the job can write one.
-- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once a
-  learned skill has served 3 runs, the next run is asked for that job as a workflow draft, and a draft is dry-run
-  before it's kept: no model is asked and no tool runs.
+- **Corrections** are your words. A grade's words, or a message you send after a run's first answer, become one line
+  of the agent's `corrections.md` at that run's end. Every later run is given the file whole, under `# Learned`.
+- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once the
+  agent has 20 completed runs (`learning: { "compile_after": 20 }` is the default), one run's end compiles the job into
+  a workflow draft. Code checks the draft and dry-runs it (no model is asked and no tool runs), then it is replayed
+  once on those runs' inputs and serves only when it answers enough of them alone and agrees with the agent's answers.
 
-The agent's **Learning** tab shows every note, skill and workflow and the log of changes, and each run shows which
-notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire` and the note's
-ETag. Git keeps the history, so a retired note can come back.
+The agent's **Learning** tab shows its corrections, its workflows and the log of changes. Edit the corrections there,
+or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history.
 
 <details>
-<summary>What gets kept, and what gets dropped</summary>
+<summary>What gets kept, and what gets refused</summary>
 
-Each agent has a learning folder: plain git with one branch, `main`. A run reads the index of active notes in its
-instructions and gets the learned skills beside its own. Code checks every proposal first. An item that breaks a rule of
-its own (a size or count limit, its name, its shape) is left out and the rest goes on. A secret or a hidden character
-anywhere in the answer, a file outside the folder, a deletion or a full index drops the whole answer, since no item of
-it can be trusted. Then one grader judges what it says, and AgentRun commits what passes. A risky rule waits for your
-OK. A rule the run found in a page or a pasted email, or a note that holds an account number, is dropped.
-
-Once an agent's notes outgrow the learning budget, each run gets the ones that bear on its first message, whole, and a
-line for each of the rest. A run that only ran a learned workflow isn't asked what to keep.
+Each agent has a learning folder: plain git with one branch, `main`. Over a cap a write is refused whole, never cut:
+2048 bytes for `corrections.md`, 16384 for a draft's `workflow.json`, 1024 for its README. A secret or a secret's
+shape in a correction or a draft refuses it too. A held draft gets one revision, shown the inputs it disagreed on;
+held again, it stops, and nothing compiles again until you act.
 
 </details>
 

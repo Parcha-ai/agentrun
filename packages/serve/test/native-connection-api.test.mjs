@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve, follow, journalOf, withEnv } from './support.mjs';
 import {nativeFixture} from './native-fixtures/setup.mjs';
-import {nativeSourceInstructions} from '../dist/runner/native-loop.js';
 test('connect existing project is idempotent and normal learning edits retain its native reference', async t=>{
  const project=await mkdtemp(join(tmpdir(),'agentrun-native-api-')); t.after(()=>rm(project,{recursive:true,force:true}));
  await writeFile(join(project,'AGENTS.md'),'Keep the original project instructions.\n');
@@ -15,10 +14,10 @@ test('connect existing project is idempotent and normal learning edits retain it
  const id=first.body.agent.agent_id;
  const connectedRevision=first.body.agent.revision;assert.equal(typeof connectedRevision,'string');
  assert.equal((await connect()).body.agent.agent_id,id);
- const edited=await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:'notes'}});
+ const edited=await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:true}});
  assert.equal(edited.status,200,JSON.stringify(edited.body));
  assert.equal(edited.body.definition.native.project,project);
- assert.equal(edited.body.definition.learning,'notes');
+ assert.equal(edited.body.definition.learning,true);
  const unchanged={...edited.body.definition.native,selector:{...edited.body.definition.native.selector}};
  assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',native:Object.fromEntries(Object.entries(unchanged).reverse())}})).status,200,'native equality is semantic, not object key order');
  assert.equal((await api('POST','/agents',{definition:{id:'forged',instructions:'',native:unchanged}})).status,422,'generic create cannot introduce a native host binding');
@@ -55,7 +54,6 @@ for(const imports of [true,false])test(`Claude ${imports?'imported':'direct AGEN
  assert.equal((await follow(api,run,['completed','failed'])).last.status,'completed');
  const snapshot=journalOf(data,run).find(row=>row.kind==='agentrun.native.instructions').data;
  assert.match(snapshot.incomplete,/Claude.*(import|policy)/i);assert.equal(snapshot.claudePolicySourcesChecked,true);
- await assert.rejects(nativeSourceInstructions(store,run),/Claude.*(import|policy)/i);
  const calls=(await f.calls()).filter(call=>call.args.includes('--print'));
  assert.equal(calls.length,1);assert.equal(calls[0].cwd,f.project);
  if(imports)assert.equal(await readFile(policy,'utf8'),'@AGENTS.md');assert.equal(await readFile(imported,'utf8'),'Never remove the owner review gate.');

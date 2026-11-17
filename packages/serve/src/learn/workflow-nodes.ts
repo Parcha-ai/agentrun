@@ -1,4 +1,4 @@
-// The one walk over a learned workflow's nodes (learn/skills.ts callNodes): only the
+// The one walk over a learned workflow's nodes (learn/workflow-draft.ts callNodes): only the
 // workflow's node positions, never an object in a call's args, a schema or any other data, however it is shaped.
 
 /** One node of a workflow document, with the prefix the DSL puts on its step's name when it runs: `parent/` for each

@@ -68,7 +68,7 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
  *  credential (named `keyName`). The proxy knows a request by `authorization: Bearer <key>`: on Messages that header is set
  *  on the model, since pi-ai's Anthropic client sends its key as x-api-key, which the proxy does not forward; on Responses
  *  pi-ai sends the key as that bearer token itself. The one client every runner caller of a session proxy builds: pi's
- *  sessions, the learning grader, a workflow's model nodes. Each request's images are checked as they are attached
+ *  sessions and a workflow's model nodes. Each request's images are checked as they are attached
  *  (attach-images.ts): one a provider would refuse goes as a text saying why. */
 export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: SessionLike; reasoning: boolean }): ReturnType<typeof createProvider> {
   return createProvider({

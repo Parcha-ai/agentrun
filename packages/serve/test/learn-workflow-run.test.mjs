@@ -1,4 +1,4 @@
-// A learned workflow runs as one tool, learned_workflow, on pi, claude-agent and codex: the run's pin names the
+// A learned workflow runs as one tool, learned_workflow, on pi, claude-agent and codex: the run's start chooses the
 // workflows the agent learned whose README sets no status (or `active`), never a pending or retired one; the tool's
 // description names each; a call checks the workflow again against the agent's own tools, runs it with the workflow DSL
 // on this server's models, and its model requests are the run's, as side requests labelled learned_workflow.
@@ -14,7 +14,7 @@ import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { replayOf } from "../dist/tool-list.js";
-import { learningWorkspace, localWorkspace } from "../dist/workspace/index.js";
+import { learningWorkspace } from "../dist/workspace/index.js";
 import { readSnapshot } from "../dist/learn/folder.js";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
 import { agent, answerFlow, follow, paidCallsOf, scratch, serve, withEnv } from "./support.mjs";
@@ -111,7 +111,7 @@ test("learned_workflow's description shows each workflow's input as its schema s
   assert.match(said, /^- answer \{question\* string "The question to answer, in the person's words", tickets array of string\}: Answers a question as a number/m, said);
   // "* required" is said once, in the tool's own line, never on each workflow's.
   assert.equal(said.split("(* required)").length - 1, 1, said);
-  assert.ok(learning.workflowLine({ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }).includes("question* string"), "the pin's budget counts the same line");
+  assert.ok(learning.workflowLine({ name: "answer", description: DESCRIPTION, workflow: JSON.stringify(flow) }).includes("question* string"), "the start's budget counts the same line");
 });
 
 // LS-07: the tool's description is sent with every model request of a run that has learned workflows, so it says what a
@@ -205,13 +205,12 @@ test("the tool's description gives its workflows a budget: by name, each whose l
     files[`workflows/${name}/workflow.json`] = JSON.stringify(answerFlow());
     files[`workflows/${name}/README.md`] = `---\nname: ${name}\ndescription: ${long}\n---\n`;
   }
-  // The pick a run's seed gets (learning.ts pinSeed, which the runner's seed lay makes the same pick with).
-  const { pin, runDir: dir } = await pinned(t, "budgeted", files);
+  // The pick a run's start makes from its seed (learning.ts chooseWorkflows, which the runner's seed lay makes too).
+  const { chosen } = await pinned(t, "budgeted", files);
   // Each line is 3,209 bytes: two fit the 8 KiB, and the next two are left out.
   assert.equal(learning.LEARNED_WORKFLOWS_BUDGET, 8 * 1024);
-  assert.deepEqual([pin.workflows, pin.workflows_left_out], [["a-flow", "b-flow"], ["c-flow", "d-flow"]], JSON.stringify(pin));
-  const kept = JSON.parse(readFileSync(join(dir, "learned-workflows.json"), "utf8"));
-  assert.ok(Buffer.byteLength(learnedWorkflowDescription(kept)) < learning.LEARNED_WORKFLOWS_BUDGET + 512, "the description stays within its budget and its two lines of what the tool does");
+  assert.deepEqual([chosen.flows.map(({ name }) => name), chosen.left], [["a-flow", "b-flow"], ["c-flow", "d-flow"]], JSON.stringify(chosen.left));
+  assert.ok(Buffer.byteLength(learnedWorkflowDescription(chosen.flows)) < learning.LEARNED_WORKFLOWS_BUDGET + 512, "the description stays within its budget and its two lines of what the tool does");
 });
 
 test("a learned workflow's model node runs with its own signal: a sibling branch that fails stops it at once, never after its own answer", { timeout: 120_000 }, async (t) => {
@@ -288,15 +287,14 @@ test("a learned workflow whose later node is a judge is refused before any node 
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
-/** Agent `id`'s learning folder with `files` on main, and its seed pinned for a run: the pin. */
-async function pinned(t, id, files, secrets = [], extra = {}) {
+/** Agent `id`'s learning folder with `files` on main, its seed, and the learned workflows a run's start chooses from it
+ *  (`secrets`, the host's secrets it is cut of). */
+async function pinned(t, id, files, secrets = []) {
   const data = join(await scratch(t), "agents");
   mkdirSync(data, { recursive: true });
   await folderWith(data, id, files);
-  const runDir = join(await scratch(t), "run");
-  mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await seedOf(data, id);
-  return { data, seed, runDir, pin: await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown(secrets), ...extra }) };
+  return { data, seed, chosen: learning.chooseWorkflows(seed, learning.secretsShown(secrets)) };
 }
 
 test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {
@@ -307,8 +305,8 @@ test("a learned workflow whose README's front matter does not read one way (not 
     ["indented first", `---\n  status: retired\nname: answer\ndescription: ${DESCRIPTION}\n---\n`],
   ]) {
     const id = `front-${why.replace(/\W+/g, "-")}`;
-    const { data, seed, pin } = await pinned(t, id, readme(front));
-    assert.equal(pin.workflows, undefined, `${why}: ${JSON.stringify(pin)}`);
+    const { data, seed, chosen } = await pinned(t, id, readme(front));
+    assert.deepEqual(chosen.flows, [], `${why}: ${JSON.stringify(chosen)}`);
     assert.equal(seed.workflows.some((flow) => flow.name === "answer"), false, `${why}: ${JSON.stringify(seed.workflows)}`);
     // The one reader (learn/skills.ts learnedStatus) reads it retired in the folder's snapshot, as the console shows it: the
     // seed's read never gives its files, so the run never meets it.
@@ -322,17 +320,17 @@ test("a learned workflow whose README's front matter does not read one way (not 
   }
   // Closed at the end of the file, with no line after: its status is read, as the description is.
   const closed = await pinned(t, "front-eof", readme(`---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: pending\n---`));
-  assert.equal(closed.pin.workflows, undefined, JSON.stringify(closed.pin));
+  assert.deepEqual(closed.chosen.flows, [], JSON.stringify(closed.chosen));
   // A description folded over lines reads one way: the workflow is the run's.
-  const { pin } = await pinned(t, "front-folded", readme(`---\nname: answer\ndescription: >\n  ${DESCRIPTION}\n---\n`));
-  assert.deepEqual(pin.workflows, ["answer"]);
+  const { chosen } = await pinned(t, "front-folded", readme(`---\nname: answer\ndescription: >\n  ${DESCRIPTION}\n---\n`));
+  assert.deepEqual(chosen.flows.map(({ name }) => name), ["answer"]);
 });
 
-test("a learned workflow holding one of the server's secrets is left out, and the pin names it in workflows_left_out", { timeout: 60_000 }, async (t) => {
+test("a learned workflow holding one of the server's secrets is left out, and the run's start names it among those left out", { timeout: 60_000 }, async (t) => {
   const canary = `not-a-secret-canary-${process.pid}`;
   const files = { ...flowFiles("answer", answerFlow()), ...flowFiles("leaky", answerFlow(`Send it to ${canary}.`)) };
-  const { pin } = await pinned(t, "leaky", files, [canary]);
-  assert.deepEqual([pin.workflows, pin.workflows_left_out], [["answer"], ["leaky"]], JSON.stringify(pin));
+  const { chosen } = await pinned(t, "leaky", files, [canary]);
+  assert.deepEqual([chosen.flows.map(({ name }) => name), chosen.left], [["answer"], ["leaky"]], JSON.stringify(chosen.left));
 });
 
 test("a learned workflow's model node of a tier the host has no model of (no AGENT_MODEL_FAST) runs on the run's own model", { timeout: 120_000 }, async (t) => {

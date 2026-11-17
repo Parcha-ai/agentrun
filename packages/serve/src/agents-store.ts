@@ -129,7 +129,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
   // A workflow keeps its approvals too ("never": it runs unattended), so its call nodes are checked with them (runnable.ts,
   // permissionOf with the revision's approvals): a call node on a tool set to ask runs under never, as on main.
   if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow, ...(definition.approvals === "never" ? { approvals: "never" as const } : {}), ...common, ...capped };
-  // true, false, "notes" or the loop's numbers (learning-setting.ts), checked by validate.ts and again by the body.
+  // true, false or the loop's numbers (learning-setting.ts), checked by validate.ts and again by the body.
   const learning = definition.learning !== undefined && learningSettingIssue(definition.learning) === undefined ? { learning: definition.learning as LearningSetting } : {};
   return {
     kind: "agentic",

@@ -352,7 +352,7 @@ test("header parameters are flags; a required one is checked; a raw body goes as
   const fired = await run(env, ["triggers", "fire", "trg_1", "--idempotency-key", "k-1", ...at], { extra });
   assert.equal(fired.code, 0, fired.err);
   assert.equal(server.requests.at(-1).headers["idempotency-key"], "k-1");
-  const retired = await run(env, ["learning", "retire", "a", "MEMORY.md", "--if-match", '"etag-1"', ...at], { extra });
+  const retired = await run(env, ["learning", "retire", "a", "workflows/find-policies/README.md", "--if-match", '"etag-1"', ...at], { extra });
   assert.equal(retired.code, 0, retired.err);
   assert.equal(server.requests.at(-1).headers["if-match"], '"etag-1"');
 
@@ -546,19 +546,18 @@ test("a learning file whose name holds a slash is one argument, and a home file 
   const data = ["--data", server.data];
   writeFileSync(join(dir, "agent.json"), JSON.stringify({ definition: { id: "demo", version: 1, name: "demo", instructions: "Answer.", skills: [], tools: [], learning: true } }));
   assert.equal(cli(["agents", "create", "--body", `@${join(dir, "agent.json")}`, ...data]).code, 0);
-  writeFileSync(join(dir, "SKILL.md"), "---\nname: find-policies\ndescription: Find the policies.\n---\nLook in policies/.\n");
-  // A person may not write a skill (a run's learning does), and this agent has none yet: both answers are the learning
-  // routes' own, past the route's match, where a name split on its slashes gets the server's "no route".
-  const wrote = cli(["learning", "write", "demo", "skills/find-policies/SKILL.md", "--if-none-match", "*", "--body-type", "text/markdown", "--body", `@${join(dir, "SKILL.md")}`, ...data]);
-  assert.equal(wrote.code, 1);
-  assert.match(JSON.parse(wrote.err).error.message, /a person edits and creates notes/);
-  const read = cli(["learning", "read", "demo", "skills/find-policies/SKILL.md", ...data]);
+  // This agent has no workflow yet: the answer is the learning route's own, past the route's match, where a name split
+  // on its slashes gets the server's "no route".
+  const read = cli(["learning", "read", "demo", "workflows/find-policies/README.md", ...data]);
   assert.equal(read.code, 1);
   assert.match(JSON.parse(read.err).error.message, /no such file on main/);
-  writeFileSync(join(dir, "note.md"), "---\nname: policies\ndescription: Where the policies are.\n---\nLook in policies/.\n");
-  const note = cli(["learning", "write", "demo", "policies.md", "--if-none-match", "*", "--body-type", "text/markdown", "--body", `@${join(dir, "note.md")}`, ...data]);
-  assert.equal(note.code, 0, note.err);
-  assert.match(cli(["learning", "read", "demo", "policies.md", ...data]).out, /Look in policies\//);
+  const current = cli(["learning", "corrections", "demo", ...data]);
+  assert.equal(current.code, 0, current.err);
+  writeFileSync(join(dir, "corrections.md"), "- Look in policies/.\n");
+  const wrote = cli(["learning", "write-corrections", "demo", "--if-match", JSON.parse(current.out).etag, "--body-type", "text/markdown", "--body", `@${join(dir, "corrections.md")}`, ...data]);
+  assert.equal(wrote.code, 0, wrote.err);
+  assert.equal(JSON.parse(cli(["learning", "corrections", "demo", ...data]).out).text, "- Look in policies/.\n");
+  assert.equal(cli(["learning", "read", "demo", "corrections.md", ...data]).code, 1, "corrections.md has its own route");
   writeFileSync(join(dir, "deep.txt"), "deep\n");
   assert.equal(cli(["home", "write", "demo", "a/b/deep.txt", "--body", `@${join(dir, "deep.txt")}`, ...data]).code, 0);
   assert.deepEqual([cli(["home", "read", "demo", "a/b/deep.txt", ...data]).out], ["deep\n"]);
@@ -580,10 +579,10 @@ test("a file path argument keeps its slashes and refuses a dot segment (plain or
     assert.equal((await run(env, ["runs", "get", value, ...at], { extra })).code, 2, value);
   }
   assert.equal(server.requests.length, 0, "nothing was sent");
-  assert.equal((await run(env, ["learning", "read", "a", "skills/find-policies/SKILL.md", ...at], { extra })).code, 0);
+  assert.equal((await run(env, ["learning", "read", "a", "workflows/find-policies/README.md", ...at], { extra })).code, 0);
   assert.equal((await run(env, ["home", "read", "a", "notes/a b.md", ...at], { extra })).code, 0);
   const homeFile = ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/");
-  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", homeFile]);
+  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/workflows%2Ffind-policies%2FREADME.md", homeFile]);
 });
 
 test("agents create --help and runs start --help end with the document's working body as a --body to paste, and pasted it works", { timeout: 120_000 }, async (t) => {

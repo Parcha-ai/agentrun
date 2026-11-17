@@ -2,10 +2,10 @@
 // learning, and how the run's next end reads it. The run's path is who wrote its final answer, so a grade never makes
 // the agent answer the job again:
 //   - a run its learned workflow answered alone (path `workflow`), graded right or wrong: the grade is kept and nothing else happens: no round, no turn, $0. One wrong answer is one sample;
-//   - a run the agent finished (path `agent` or `handed_back`) graded with words (`label`): a look-back round on them
-//     (#2579's later round, notes). The run opens again on it: the grade's words are on its record, the agent is asked no
-//     turn of the job's, and the run goes straight to its end-of-run turn, which reads the words. Its spend is learning
-//     spend.
+//   - a run the agent finished (path `agent` or `handed_back`) graded with words (`label`): a correction round on them.
+//     The run opens again on it: the grade's words are on its record, the agent is asked no turn of the job's, and the
+//     run goes straight to its end-of-run step, which appends the words to corrections.md as one line (and compiles, when
+//     a compile is due). Its spend is learning spend.
 // A grade with neither asks for nothing more. The server writes the round's steer (server.ts gradeRun, runs.reopen); the
 // adapter loop takes it (adapter-loop.ts steer: a FEEDBACK entry, no turn), and the end-of-run step reads it
 // (learning-end.ts: heard, never "nothing new"; adapter-loop.ts askEndOfRun: feedbackAsk before the prompt).
@@ -16,7 +16,7 @@ import { type Command, RunFinal, type Store } from "../store/store.js";
 import { KINDS } from "./journal-kinds.js";
 import { commandRequest } from "./loop.js";
 
-export const FEEDBACK_ROUNDS = ["look_back"] as const;
+export const FEEDBACK_ROUNDS = ["correction"] as const;
 export type FeedbackRound = (typeof FEEDBACK_ROUNDS)[number];
 
 /** A feedback round, as its steer's body carries it (`feedback`) and its FEEDBACK entry keeps it: the round, whether the
@@ -27,11 +27,11 @@ export interface FeedbackData {
   readonly text: string;
 }
 
-/** What a grade asks for: `look_back` for a graded run the agent finished when the grade has words, else none
+/** What a grade asks for: `correction` for a graded run the agent finished when the grade has words, else none
  *  (undefined): a run its learned workflow answered alone opens none, right or wrong (its grade is kept). A replay run
  *  is never graded. */
 export function feedbackRoundOf(grade: { readonly path: RunPath }, label: string | undefined): FeedbackRound | undefined {
-  return (grade.path === "agent" || grade.path === "handed_back") && label ? "look_back" : undefined;
+  return (grade.path === "agent" || grade.path === "handed_back") && label ? "correction" : undefined;
 }
 
 /** The feedback round a steer's body asks for (`body.feedback`, the server's own: server.ts gradeRun writes it, and the

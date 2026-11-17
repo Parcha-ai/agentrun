@@ -7,7 +7,6 @@ import { join } from 'node:path';
 import { readFile, readdir } from 'node:fs/promises';
 import { serve, follow } from './support.mjs';
 import { nativeFixture } from './native-fixtures/setup.mjs';
-import { nativeSourceInstructions } from '../dist/runner/native-loop.js';
 import { journalEntries } from '../dist/runner/journal-reader.js';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 
@@ -107,8 +106,7 @@ for (const runtime of ['claude-code', 'codex']) for (const incomplete of [false,
  for (const field of ['codexConfigurationChecked', 'claudeConfigurationChecked', 'claudePolicySourcesChecked']) assert.equal(snapshot[field], prepared[0].instructions[field]);
  if (incomplete) {
   assert.ok(snapshot.incomplete);assert.equal(configuration.capabilities.notes, false);assert.equal(configuration.capabilities.skills, false);
-  await assert.rejects(nativeSourceInstructions(s.store, runId), /incomplete/i);
- } else assert.equal(await nativeSourceInstructions(s.store, runId), snapshot.text);
+ }
  const evidence = snapshot.text;
  const processInput = JSON.stringify(await f.calls()) + await readFile(inputLog, 'utf8');
  assert.equal((await s.store.runs.get(runId)).revisionId, pinnedRevision);
@@ -156,7 +154,7 @@ async function preparedLearning(t, runtime, mode) {
  const agentId = imported.body.agent_id;
  await call('/poll', { worker_id: 'eligibility-worker' });
  const pinned = 'PINNED: keep release approvals.' + (mode === 'truncated' ? 'Saved policy requires owner review of every release.\n'.repeat(750) : '');
- assert.equal((await s.api('PUT', `/agents/${agentId}/definition`, { definition: { instructions: pinned, learning: mode === 'off' ? false : 'notes' } })).status, 200);
+ assert.equal((await s.api('PUT', `/agents/${agentId}/definition`, { definition: { instructions: pinned, learning: mode === 'off' ? false : true } })).status, 200);
  // Discovery/import admitted complete policy. Preparation sees the later source
  // state; truncation happens only after its complete snapshot gains saved text.
  if (['incomplete', 'use', 'off', 'failed'].includes(mode)) {
@@ -164,8 +162,6 @@ async function preparedLearning(t, runtime, mode) {
   else { await f.put(join(f.env.CODEX_HOME, 'config.toml'), 'model_instructions_file = "policy.md"\n'); await f.put(join(f.env.CODEX_HOME, 'policy.md'), 'Require owner review.'); }
  }
  if (mode === 'truncated') await f.put(policy, 'SOURCE: preserve owner review.\n' + 'Source policy requires owner review of every release.\n'.repeat(750));
- const note = '---\nname: Owner report format\ndescription: A requested status report label\ntype: user\n---\nStart release reports with Launch state, then the current status.\n';
- const verdict = JSON.stringify({ merge: false, reason: 'Inspect complete policy learning without promoting fixture material.', items: [{ file: 'release-label.md', decision: 'drop', question: 'General', why: 'This test checks learning eligibility.' }] });
  worker = (async () => { while (!stopped) {
   const polled = await call('/poll', { worker_id: 'eligibility-worker' }); assert.equal(polled.status, 200, JSON.stringify(polled.body));
   for (const command of polled.body.commands) {
@@ -175,11 +171,9 @@ async function preparedLearning(t, runtime, mode) {
     if (mode === 'capabilities') result.target.capabilities = { ...result.target.capabilities, notes: false, skills: false };
     prepared.push(result);
    }
-   if (command.type === 'send' && command.payload.reflection) result.answer = '```note release-label.md\n' + note + '```';
-   if (command.type === 'grade') result.answer = verdict;
    const events = source.events.slice(start).map(row => row.event);
    if (events.length) assert.equal((await call(`/commands/${command.command_id}/events`, { lease_token: command.lease_token, sequence: 0, events })).status, 200);
-   const failed = mode === 'failed' && command.type === 'send' && !command.payload.reflection;
+   const failed = mode === 'failed' && command.type === 'send';
    assert.equal((await call(`/commands/${command.command_id}/complete`, { lease_token: command.lease_token, ...(failed ? { error: 'Scripted source task failed.' } : { result }) })).status, 200);
   }
   await pause(10);
@@ -194,23 +188,22 @@ async function preparedLearning(t, runtime, mode) {
  if (mode === 'truncated') { assert.equal(prepared[0].instructions.truncated, false); assert.equal(prepared[0].instructions.incomplete, undefined); assert.equal(snapshot.truncated, true, 'ordinary policy prose plus the pinned instructions really exceeds the final evidence bound'); }
  if (mode === 'incomplete') assert.ok(snapshot.incomplete);
  assert.equal(prepared.length, 1);
- assert.equal(seen.filter(row => row.type === 'send' && !row.payload.reflection).length, 1, 'the ordinary native task is dispatched exactly once');
- assert.equal(seen.filter(row => row.type === 'send' && row.payload.reflection).length, mode === 'complete' ? 1 : 0, 'unavailable policy must be refused before any reflection request reaches the source');
+ assert.equal(seen.filter(row => row.type === 'send').length, 1, 'the ordinary native task is dispatched exactly once, and no end-of-run turn reaches the source');
  if (mode === 'complete') {
+  // Complete policy reaches the ordinary end-of-run step: no owner words and no workflow, so nothing is kept.
   for (const by = Date.now() + 10_000;;) {
    const learning = (await s.api('GET', `/runs/${runId}/learning`)).body;
    if (learning.state === 'dropped') break;
    assert.ok(Date.now() < by, JSON.stringify(learning)); await pause(25);
   }
-  assert.equal(seen.filter(row => row.type === 'grade').length, 1, 'complete policy still reaches the ordinary isolated grader');
+  assert.equal((await s.store.learning.proposal(runId))?.proposal?.reason, 'empty');
  } else {
-  assert.equal(seen.filter(row => row.type === 'grade').length, 0);
   const kept = await s.store.learning.proposal(runId);
   if (['incomplete', 'truncated', 'failed', 'capabilities'].includes(mode)) {
    const learning = (await s.api('GET', `/runs/${runId}/learning`)).body;
    assert.deepEqual([last.learning?.state, learning?.state], ['dropped', 'dropped'], 'both terminal views settle unavailable learning instead of remaining seeded');
    assert.ok(kept); assert.equal(kept.turn, null); assert.equal(kept.proposal.state, 'dropped'); assert.equal(kept.proposal.reason, 'checker');
-   assert.match(kept.proposal.detail, /self-improvement.*skipped/i); assert.equal(kept.learningRunId ?? null, null, 'an unasked drop queues no grading run');
+   assert.match(kept.proposal.detail, /self-improvement.*skipped/i);
   } else assert.equal(kept, undefined, 'off/use keep their existing no-proposal behavior');
  }
  const skip = rows.filter(row => row.kind === 'agentrun.phase' && /self-improvement.*skipped/i.test(row.data.summary));
@@ -220,10 +213,10 @@ async function preparedLearning(t, runtime, mode) {
  } else assert.equal(skip.length, 0, 'complete/off/use behavior acquires no new skip reason');
  assert.ok(seen.find(row => row.type === 'open').payload.context.includes('PINNED: keep release approvals.'), 'saved task context remains in the native open');
  const calls = (await f.calls()).filter(row => row.args.includes('--print') || row.args.includes('exec'));
- assert.equal(calls.length, mode === 'complete' ? 3 : 1, 'actual scripted native task/reflection/grade invocation count agrees with the leased commands');
- if (runtime === 'codex') assert.equal(last.cost.usd, null, 'unknown native job cost stays unknown when reflection is skipped');
+ assert.equal(calls.length, 1, 'the one scripted native task invocation agrees with the leased commands');
+ if (runtime === 'codex') assert.equal(last.cost.usd, null, 'unknown native job cost stays unknown');
  return { rows, last };
 }
 
-for (const runtime of ['claude-code', 'codex']) for (const mode of ['incomplete', 'truncated', 'complete']) test(`prepared policy ${runtime} ${mode} gates automatic learning before reflection`, { timeout: 60_000 }, t => preparedLearning(t, runtime, mode));
-for (const mode of ['use', 'off', 'failed', 'capabilities']) test(`prepared policy codex ${mode} gates automatic learning before reflection`, { timeout: 60_000 }, t => preparedLearning(t, 'codex', mode));
+for (const runtime of ['claude-code', 'codex']) for (const mode of ['incomplete', 'truncated', 'complete']) test(`prepared policy ${runtime} ${mode} gates automatic learning at the run's end`, { timeout: 60_000 }, t => preparedLearning(t, runtime, mode));
+for (const mode of ['use', 'off', 'failed', 'capabilities']) test(`prepared policy codex ${mode} gates automatic learning at the run's end`, { timeout: 60_000 }, t => preparedLearning(t, 'codex', mode));

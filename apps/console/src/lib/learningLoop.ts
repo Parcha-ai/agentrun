@@ -1,4 +1,4 @@
-// The self-learning loop as the Learning tab tells it: the agent learned notes, compiled them into a workflow, the
+// The self-learning loop as the Learning tab tells it: the agent was given its owner's corrections, compiled its job into a workflow, the
 // workflow took over (promoted by one check on the inputs of the agent's own runs), and runs got cheaper, with how often
 // it handed back. The arithmetic here reads the server's records only (GET .../learning/cost, .../promotions,
 // .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
@@ -109,30 +109,18 @@ export function replayLine(record: Promotion): string {
   return `Checked on ${c.n} ${c.n === 1 ? "input" : "inputs"} of the agent's own runs: ${alone} answered alone (${pctOf(alone / c.n)}, ${pctOf(c.alone_min)} needed), ${agreed} of those said what the agent said (${alone ? pctOf(agreed / alone) : "0%"}, ${pctOf(c.agree_min)} needed)${c.outcomes?.handed_back ? `, ${c.outcomes.handed_back} handed back` : ""}`;
 }
 
-/** The workflow a note was compiled into, from its front matter (`compiled_into: <workflow>`): null when none. */
-export function compiledInto(text: string): string | null {
-  const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
-  if (!head) return null;
-  const line = head[1]!.split(/\r?\n/).find((l) => /^compiled_into\s*:/.test(l));
-  const value = line?.replace(/^compiled_into\s*:\s*/, "").trim().replace(/^["']|["']$/g, "");
-  return value ? value : null;
-}
-
 /** Where the loop stands, as the story strip says it: each stage's state and its words, and what happens next. */
-export type Stage = { key: "notes" | "compiled" | "took_over" | "cheaper" | "unsure"; title: string; value: string; detail: string; state: "done" | "now" | "later" | "warn" | "watch" };
+export type Stage = { key: "corrections" | "compiled" | "took_over" | "cheaper" | "unsure"; title: string; value: string; detail: string; state: "done" | "now" | "later" | "warn" | "watch" };
 export function storyOf(input: {
-  notes: number; compiledNotes: number; runs: number; workflows: { name: string; status: string }[];
+  /** The lines of corrections.md: its owner's corrections, given whole to every later run. */
+  corrections: number; runs: number; workflows: { name: string; status: string }[];
   cost: LearningCost | null; promotions: readonly Promotion[]; serving: readonly Serving[]; loop: LearningLoop | null;
-  /** The agent's learning: `notes` keeps notes and never compiles (the runner skips the compile turn), so the story
-   *  promises no workflow, takeover or cheaper runs it will never get. */
-  mode?: "full" | "notes";
-  /** Native runs learn notes/skills; SDK workflows run only through their backend-owned bridge. */
+  /** Native runs are given the corrections alone; SDK workflows run only through their backend-owned bridge. */
   execution?: "hosted" | "native" | "sdk";
   /** The completed runs its job compiles at (compileAfterOf the definition's `learning`). */
   compileAfter?: number;
 }): Stage[] {
-  const { notes, compiledNotes, runs, workflows, cost, promotions, serving, loop, mode = "full", execution = "hosted", compileAfter = COMPILE_AFTER_DEFAULT } = input;
-  const notesOnly = mode === "notes";
+  const { corrections, runs, workflows, cost, promotions, serving, loop, execution = "hosted", compileAfter = COMPILE_AFTER_DEFAULT } = input;
   const active = workflows.filter((w) => w.status === "active");
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
   // The newest compile that wrote a workflow the checks passed (a later refused draft says so in the feed).
@@ -150,26 +138,24 @@ export function storyOf(input: {
   const servingLine = stoppedLine ? (challenger ? `${stoppedLine}; ${challenger}` : stoppedLine) : champion && challenger ? `revision ${champion.slice(0, 7)} serves; ${challenger}` : null;
   const stages: Stage[] = [];
   stages.push({
-    key: "notes", title: "Learned", value: notes === 1 ? "1 note" : `${notes} notes`,
-    detail: compiledNotes ? `${compiledNotes} compiled into a workflow` : notes ? "kept from its runs, read by every later run" : "none yet: a run keeps what it learns at its end",
-    state: notes ? "done" : "now",
+    key: "corrections", title: "Corrections", value: corrections === 1 ? "1 correction" : `${corrections} corrections`,
+    detail: corrections ? "yours, given whole to every later run" : "none yet: grade a run with a correction, or write one here",
+    state: corrections ? "done" : "now",
   });
   if (execution === "native") {
-    stages.push({ key: "compiled", title: "Learning", value: "Notes and skills", detail: "Native runs receive accepted notes and skills; learned workflows are unavailable.", state: "later" });
+    stages.push({ key: "compiled", title: "Learning", value: "Corrections", detail: "Native runs are given your corrections; learned workflows are unavailable.", state: "later" });
     return stages;
   }
   if (active.length || (lastCompile && lastCompile.digest)) {
     const name = active[0]?.name ?? lastCompile?.workflow ?? "a workflow";
-    stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `from ${lastCompile.from_notes.length} ${lastCompile.from_notes.length === 1 ? "note" : "notes"}, ${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
+    stages.push({ key: "compiled", title: "Compiled", value: name, detail: lastCompile ? `${lastCompile.attempts.length} ${lastCompile.attempts.length === 1 ? "attempt" : "attempts"}` : "a learned workflow", state: "done" });
   } else if (failedCompile) {
     stages.push({ key: "compiled", title: "Compile", value: "Draft failed", detail: `${failedCompile.attempts.length} ${failedCompile.attempts.length === 1 ? "attempt" : "attempts"}, the checks refused it: it tries again on a later run`, state: "warn" });
-  } else if (notesOnly) {
-    stages.push({ key: "compiled", title: "Compile", value: "Notes only", detail: `this agent learns notes only: no workflow compiles from them. Full learning compiles one at ${compileAfter} completed runs`, state: "later" });
   } else {
     stages.push({ key: "compiled", title: "Compile", value: "Not yet", detail: execution === "sdk" ? `With workflow learning and backend tool bindings, compilation starts at ${compileAfter} completed runs` : `${Math.min(runs, compileAfter)} of ${compileAfter} completed runs: a workflow compiles at ${compileAfter}, then is checked once on those runs' inputs against the agent's own answers`, state: runs ? "now" : "later" });
   }
   if (execution === "sdk") {
-    if (!notesOnly) stages.push({ key: "took_over", title: "Use workflow", value: "Backend decides", detail: "Your backend keeps launching each run. The SDK can call accepted workflows through MCP with explicitly bound tools.", state: active.length ? "now" : "later" });
+    stages.push({ key: "took_over", title: "Use workflow", value: "Backend decides", detail: "Your backend keeps launching each run. The SDK can call accepted workflows through MCP with explicitly bound tools.", state: active.length ? "now" : "later" });
     return stages;
   }
   if (s?.takeover) {
@@ -180,7 +166,7 @@ export function storyOf(input: {
       const st = standingOf(newest, { serving: champion });
       stages.push({ key: "took_over", title: "Take over", value: st.word, detail: newest.decided === "replaying" ? "being checked on the inputs of the agent's own runs before it serves; the agent takes the runs meanwhile" : replayLine(newest), state: newest.decided === "hold" ? "warn" : "now" });
     }
-  } else if (!notesOnly) {
+  } else {
     stages.push({ key: "took_over", title: "Take over", value: "Not yet", detail: "a compiled workflow is checked once on the inputs of the agent's own runs, then serves first when it clears the check's bar", state: "later" });
   }
   if (s?.takeover && s.withheld) {
@@ -198,7 +184,7 @@ export function storyOf(input: {
   } else if (s?.after) {
     // Served runs exist; what is missing is the agent's own priced runs before the takeover to set them against.
     stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${dollars(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served; no priced agent runs before takeover to compare with`, state: "now" });
-  } else if (!notesOnly) {
+  } else {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "no served runs yet: once a workflow takes over, the all-in cost of the runs it serves against before (replays are checks, not served runs)", state: "later" });
   }
   if (back) {

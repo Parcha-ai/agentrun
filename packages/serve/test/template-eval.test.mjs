@@ -571,7 +571,7 @@ test("readCases refuses a now that is not a date and time with its offset, and a
   await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
 });
 
-test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
+test("a correction seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
 });
