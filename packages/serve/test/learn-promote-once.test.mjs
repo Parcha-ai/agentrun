@@ -61,8 +61,8 @@ const FIRST = answerFlow();
 const DIGEST = workflowDigest({ workflow: JSON.stringify(FIRST) });
 const DIGEST_2 = workflowDigest({ workflow: JSON.stringify(answerFlow(REVISED)) });
 
-/** A compile answer whose draft fails its dry run (its answer's state is never written): the compile is kept as tried,
- *  so the agent's next runs count it compiled lately, and no draft ever lands from the faux model. */
+/** A compile answer whose draft fails its dry run (its answer's state is never written): the compile's failure is on a
+ *  promotion record, and no draft ever lands from the faux model. */
 const BROKEN_DRAFT = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify({ ...FIRST, root: { node: "chain", steps: [{ ...FIRST.root.steps[0], as: "other" }] } })}\n\`\`\`\``;
 
 const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
@@ -87,14 +87,17 @@ const until = async (done, what, ms = 60_000) => {
 /** An agent of `learning` whose `prior` earlier runs (questions "Question 0" … , oldest first) ended on its own path
  *  before `flows` landed in its learning folder (none: nothing lands), a runner claiming every run from its stored
  *  launch. The agent answers AGENT_SAYS; the workflow's node submits `submit(requestText)` ({answer: 42, sure: true}
- *  by default); a compile ask is answered with BROKEN_DRAFT. */
-async function world(t, { learning, prior = 0, flows = [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }], submit } = {}) {
+ *  by default); a compile ask is answered with BROKEN_DRAFT. `landsRevision`: the revision ask is refused instead (its
+ *  turn ends before it answers: no draft of it failed its checks), for a test that lands the revision itself, as a
+ *  graded recompile merges it. */
+async function world(t, { learning, prior = 0, flows = [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }], submit, landsRevision = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-promote-once-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : compileAskOf(body) ? BROKEN_DRAFT : AGENT_SAYS),
+    refuse: ({ body }) => (landsRevision && compileAskOf(body).startsWith("One more turn: revise") ? { message: "the test lands this revision itself" } : undefined),
   });
   let runner;
   t.after(async () => {
@@ -163,16 +166,22 @@ async function landRevision(dir, workflow, runId) {
 
 const decisions = async (server) => (await promotionsOf(server.settings, "agent-1")).map(({ digest, decided }) => [digest, decided]);
 
-test("(a, e) compile_after 5 on the definition: runs 1-4 compile nothing, run 5 is asked its compile", { timeout: 180_000 }, async (t) => {
+// Compile once: a draft that fails its checks is the compile's attempt, on a promotion record (a hold naming the failed
+// check, nothing checked). The first earns the one recompile, as a check's hold does; the recompile's failure stops.
+test("(a, e) compile_after 5 on the definition: runs 1-4 compile nothing, run 5 is asked its one compile, run 6 its one recompile, then none", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 5 }, flows: [] });
   const asked = [];
-  for (let i = 1; i <= 5; i++) {
+  for (let i = 1; i <= 8; i++) {
     const row = await w.start(`run-${i}`, `Question ${i}`);
     assert.equal(row.state, "ended", JSON.stringify(row));
     asked.push(w.asks.get(`run-${i}`).length > 0);
   }
-  assert.deepEqual(asked, [false, false, false, false, true], "compiled at the 5th completed run");
-  assert.ok(w.asks.get("run-5")[0].startsWith("One more turn: write this agent's job as a learned workflow."), w.asks.get("run-5")[0].slice(0, 200));
+  assert.deepEqual(asked, [false, false, false, false, true, true, false, false], "compiled at the 5th completed run, its one recompile at the 6th, never again");
+  for (const id of ["run-5", "run-6"]) assert.ok(w.asks.get(id)[0].startsWith("One more turn: write this agent's job as a learned workflow."), w.asks.get(id)[0].slice(0, 200));
+  const records = await promotionsOf(w.server.settings, "agent-1");
+  assert.deepEqual(records.map(({ workflow, decided, check }) => [workflow, decided, check?.attempt, check?.n, check?.stopped ?? false]), [["answer", "hold", 1, 0, false], ["answer", "hold", 2, 0, true]], JSON.stringify(records));
+  for (const { reason } of records) assert.match(reason, /^its draft failed its checks: .+/, reason);
+  assert.notEqual(records[0].digest, records[1].digest, "each compile's failure is its own record");
 });
 
 test("(a) learning true: the default compile_after is 20, not an earlier count of notes or runs", { timeout: 180_000 }, async (t) => {
@@ -237,7 +246,7 @@ test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is 
 const twice = (fixed) => (text) => (text.includes("exactly") && fixed ? { answer: 42, sure: true } : /Question [13]\b/.test(text) ? { answer: 41, sure: true } : /Question 2\b/.test(text) ? { answer: 42, sure: false } : { answer: 42, sure: true });
 
 test("(c) under the bar: held, the next run is asked one revision with the inputs it disagreed on as data, and the revision's check promotes it", { timeout: 240_000 }, async (t) => {
-  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(true) });
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(true), landsRevision: true });
   await w.start("run-1", "Question 10");
   await w.replaysEnded(5);
   // The check is in: 4 of 5 alone (80%), 2 of those as the agent said (50%, under 80%): held, and this run is the
@@ -257,7 +266,7 @@ test("(c) under the bar: held, the next run is asked one revision with the input
   assert.ok(fence, ask.slice(0, 2000));
   for (const part of ["Question 1?", "Question 2?", "Question 3?", `The draft's answer: ${JSON.stringify({ answer: 41, sure: true })}`, "The draft handed it back", `Your answer: ${AGENT_SAYS}`]) assert.ok(fence.includes(part), part);
   for (const agreed of ["Question 0?", "Question 4?"]) assert.ok(!fence.includes(agreed), `${agreed}: an input it agreed on is not among them`);
-  // The revision lands (the faux model's own draft never passes its dry run): its one check runs on the next run.
+  // The revision lands (the test lands it; the faux model refused the ask): its one check runs on the next run.
   await landRevision(w.dir, answerFlow(REVISED), "run-2");
   const third = await w.start("run-3", "Question 12");
   assert.equal(third.metrics?.path, "agent");
@@ -270,7 +279,7 @@ test("(c) under the bar: held, the next run is asked one revision with the input
 });
 
 test("(c, d) the revision's check holds it too: stopped, its numbers on the record, and no run after it compiles anything", { timeout: 300_000 }, async (t) => {
-  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(false) });
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(false), landsRevision: true });
   await w.start("run-1", "Question 10");
   await w.replaysEnded(5);
   await w.start("run-2", "Question 11");
@@ -287,7 +296,7 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
   assert.deepEqual([stopped.check.attempt, stopped.check.stopped, stopped.check.n, stopped.check.alone, stopped.check.agreed], [2, true, 5, 4, 3]);
   assert.deepEqual(stopped.check.of, ["run-2", "run-1", "prior-4", "prior-3", "prior-2"]);
   assert.match(stopped.reason, /held, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts$/);
-  // Past the quiet window of the last compile (run-2's), every run is still the agent's and asks no compile.
+  // Every run after the stop is still the agent's and asks no compile.
   for (let i = 5; i <= 8; i++) {
     const row = await w.start(`run-${i}`, `Question ${10 + i}`);
     assert.equal(row.metrics?.path, "agent", JSON.stringify(row.metrics));
