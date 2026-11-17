@@ -940,6 +940,64 @@ This document.
 
 Route: `GET /openapi.json`.
 
+## service
+
+### `agentrun service install`
+
+Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login.
+
+Route: none, it runs on this machine.
+
+- `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340)
+- `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
+
+### `agentrun service logs`
+
+Print the service's log, ~/.agentrun/logs/agentrun.log.
+
+Route: none, it runs on this machine.
+
+- `--lines N` (string, this CLI's own): how many of its last lines (default 50)
+- `--follow` (boolean, this CLI's own): and keep printing what comes (-f)
+
+### `agentrun service restart`
+
+Restart the service and wait until it answers.
+
+Route: none, it runs on this machine.
+
+### `agentrun service start`
+
+Start the service and wait until it answers.
+
+Route: none, it runs on this machine.
+
+### `agentrun service status`
+
+Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed).
+
+Route: none, it runs on this machine.
+
+### `agentrun service stop`
+
+Stop the service (it starts again at the next login).
+
+Route: none, it runs on this machine.
+
+### `agentrun service uninstall`
+
+Stop the service and remove it; the data directory stays.
+
+Route: none, it runs on this machine.
+
+### `agentrun service upgrade`
+
+Install another version with the installer, then restart the service on it.
+
+Route: none, it runs on this machine.
+
+- `--version V` (string, this CLI's own): the version or npm tag (default: latest)
+
 ## skill
 
 ### `agentrun skill install`
@@ -963,6 +1021,14 @@ Route: `GET /stats`.
 - `--from STRING` (string): Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
 - `--to STRING` (string): Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
 - `--agent STRING` (string): One agent's runs.
+
+## stop
+
+### `agentrun stop`
+
+Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running).
+
+Route: none, it runs on this machine.
 
 ## template
 

@@ -11,6 +11,7 @@
     "bin",
     "lib",
     "skills",
+    "install.sh",
     "README.md",
     "LICENSE",
     "NOTICE"
