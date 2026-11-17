@@ -307,7 +307,7 @@ test("a grader that never answers is cut off at its bound: the run's learning is
 test("GET /v2/usage books a run's tool charge as tools and a grade as learning, beside the runs' tokens: by meter, agent and day the lines sum to the same total", { timeout: 180_000 }, async (t) => {
   const saved = ["not-a-secret", "monid", randomBytes(6).toString("hex")].join("-");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid.jsonl"), AGENTRUN_TEST_FAUX_MONID_ACCEPTS: createHash("sha256").update(saved).digest("hex") }, ["MONID_API_KEY", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
-  const { api, data } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
+  const { api, data, store } = await serve(t, { learning: "on", faux: LEARN, harnessTable: fauxTable(FAUX_HARNESS), fauxMonid: FAUX_MONID });
   // A learning run on pi, graded and merged: its grade's cost is the learning ledger's.
   await made(api, learner("learner", { plan: PLAN }));
   const learnt = await started(api, "learner");
@@ -320,8 +320,11 @@ test("GET /v2/usage books a run's tool charge as tools and a grade as learning, 
   await made(api, agent("enrich", { harness: "claude-agent", instructions: "Run monid's /person/enrich on Ada.", tools: ["monid:faux/person/enrich"], tool_settings: { "monid:faux/person/enrich": { permission: "allow" } } }));
   const enriched = await started(api, "enrich", "hi");
   await follow(api, enriched, ["completed"], { deadlineMs: 55_000 });
-  const cost = async (runId) => (await api("GET", `/runs/${runId}`)).body.cost.usd;
+  // Each run's own sessions' spend (its job and its look-back), as usage books it under tokens: its row's. GET /runs/{id}
+  // `cost.usd` is the job's alone (A8); the enrich run does not learn, so the two are one there.
+  const cost = async (runId) => (await store.runs.get(runId)).costUsd;
   const [learnerRun, enrichRun] = [await cost(learnt), await cost(enriched)];
+  assert.equal((await api("GET", `/runs/${enriched}`)).body.cost.usd, enrichRun, "a run that does not learn: its view's cost is its row's");
   assert.equal(enrichRun, 0.005, "two requests and monid's charge");
   const round = (v) => Math.round(v * 1e6) / 1e6;
   const usage = async (group) => (await api("GET", `/usage?group_by=${group}`)).body;
