@@ -30,9 +30,11 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, get as httpGet } from "node:http";
+import { get as httpsGet } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { ATTACH_HELLO_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, DAEMON_PATH, descriptorOf, hostedDaemonPath, isProviderId, providerModule } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
@@ -179,14 +181,30 @@ function answer(res, status, body, headers = {}) {
 /** The header this process's GET /v2/health carries: its run's id, which no other process answers with. */
 const RUN_HEADER = "x-dial-conformance-run";
 
+/** One GET of `url` on a new connection, closed after it (no keep-alive agent): its status and RUN_HEADER. */
+function askOnce(url, signal) {
+	return new Promise((done, fail) => {
+		const get = url.startsWith("https:") ? httpsGet : httpGet;
+		const req = get(url, { agent: false, headers: { "cache-control": "no-store" }, timeout: 10_000, ...(signal ? { signal } : {}) }, (res) => {
+			res.on("error", fail);
+			res.on("end", () => done({ status: res.statusCode, run: res.headers[RUN_HEADER] }));
+			res.resume();
+		});
+		req.on("timeout", () => req.destroy(new Error("no answer within 10 s")));
+		req.on("error", fail);
+	});
+}
+
 /**
  * Resolves once `publicUrl`'s GET /v2/health is answered by this process (its run's id in RUN_HEADER) `times` times in a
  * row, asked every `every` ms; throws after `within` ms. A host that swaps instances (Render's deploy: the new process
  * listens while the old still holds the address) reaches another process first, and a machine that dials it then is
  * refused its token there (11-17: a Cloudflare container dialed 14 s after its create, the address still reached the
- * previous deploy, the machine was answered 401 and the whole of Core failed on "create did not answer").
+ * previous deploy, the machine was answered 401 and the whole of Core failed on "create did not answer"). Each ask is
+ * on a connection of its own (`ask`), as a machine's dial is: a host may pick its instance per connection, and a kept-alive
+ * one would go on reaching the process it first reached. `signal` stops an ask in flight and the wait between asks.
  */
-export async function reachesThisRun(publicUrl, run, signal, { within = 600_000, every = 1_000, times = 3, fetch = globalThis.fetch } = {}) {
+export async function reachesThisRun(publicUrl, run, signal, { within = 600_000, every = 1_000, times = 3, ask = askOnce } = {}) {
 	const url = `${publicUrl.replace(/\/+$/, "")}/v2/health`;
 	const start = Date.now();
 	let row = 0;
@@ -196,9 +214,8 @@ export async function reachesThisRun(publicUrl, run, signal, { within = 600_000,
 		signal?.throwIfAborted();
 		if (Date.now() - start > within) throw new Error(`${url} did not reach this process within ${Math.round(within / 1000)} s (last: ${last}): the machines would dial another, so nothing was created`);
 		try {
-			const res = await fetch(url, { headers: { "cache-control": "no-store" }, signal: AbortSignal.timeout(10_000) });
-			await res.arrayBuffer();
-			const mine = res.headers.get(RUN_HEADER) === run;
+			const res = await ask(url, signal);
+			const mine = res.run === run;
 			last = mine ? "this process" : `${res.status} from another process`;
 			if (!mine && other++ === 0) say(`${url} reaches another process (a host still swapping instances); waiting until it reaches this one`);
 			row = mine ? row + 1 : 0;
@@ -207,7 +224,7 @@ export async function reachesThisRun(publicUrl, run, signal, { within = 600_000,
 			last = error instanceof Error ? error.message : String(error);
 			row = 0;
 		}
-		if (row < times) await new Promise((done) => setTimeout(done, every));
+		if (row < times) await delay(every, undefined, signal ? { signal } : {});
 	}
 	say(`${url} reaches this process (${times} answers in a row, after ${Math.round((Date.now() - start) / 1000)} s and ${other} answers from another)`);
 }
