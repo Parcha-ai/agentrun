@@ -5,8 +5,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -205,5 +207,36 @@ func TestConnectableSocketsNamesTheThreeHeaviestFoldersOfAStoppedWalkMostFirst(t
 	want := fmt.Sprintf("(most under %s 5, %s 4, %s 3)", filepath.Join(root, "b"), filepath.Join(root, "c"), filepath.Join(root, "d"))
 	if len(search.Incomplete) != 1 || !strings.HasSuffix(search.Incomplete[0], want) {
 		t.Fatalf("Incomplete = %q; want the stopped walk to end %q: the three heaviest, most first, and not a (2 entries)", search.Incomplete, want)
+	}
+}
+
+// cloudflare-dial-live-10 (11-17): Cloudflare's runtime mounts proc and sysfs at /run/cloudchamber, about 58,000 entries,
+// and the walk of /run stopped at its 50,000 budget, so isolation.vendor-agent failed on a search with no socket left in
+// it. A test cannot mount proc in a temp folder, but a Linux box has /proc and /sys: walked as roots with a budget of 10
+// entries, each is skipped at once, named with its filesystem, and the search is whole.
+func TestConnectableSocketsDoesNotGoIntoProcOrSysfsAndSaysSo(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("proc and sysfs are Linux's")
+	}
+	for _, fs := range []struct {
+		root, name string
+		magic      int64
+	}{{"/proc", "proc", 0x9fa0}, {"/sys", "sysfs", 0x62656572}} {
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(fs.root, &st); err != nil || int64(st.Type) != fs.magic {
+			if fs.name == "proc" {
+				t.Fatalf("/proc is not proc here (statfs: %v, type %#x)", err, st.Type)
+			}
+			t.Logf("%s is not %s here; not tried", fs.root, fs.name)
+			continue
+		}
+		search := probe.ConnectableSockets([]string{fs.root}, table(t, ""), probe.SocketBounds{Entries: 10, Depth: 8}, 2*time.Second)
+		want := fs.root + " (" + fs.name + ")"
+		if len(search.Skipped) != 1 || search.Skipped[0] != want {
+			t.Fatalf("Skipped = %q; want [%q]", search.Skipped, want)
+		}
+		if len(search.Incomplete) != 0 {
+			t.Fatalf("Incomplete = %q; want none: a skipped %s costs the budget nothing", search.Incomplete, fs.name)
+		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -33,11 +34,29 @@ type Socket struct {
 	Type string `json:"type"`
 }
 
-// SocketSearch is what ConnectableSockets found: the sockets, and, for each root it could not search whole, why, in
-// words. A search with any Incomplete is no proof that nothing else is reachable.
+// SocketSearch is what ConnectableSockets found: the sockets; for each root it could not search whole, why, in words;
+// and the folders it did not go into because no socket can be a file there (Skipped, each with its filesystem). A
+// search with any Incomplete is no proof that nothing else is reachable; Skipped takes nothing from the proof.
 type SocketSearch struct {
 	Sockets    []Socket `json:"sockets"`
 	Incomplete []string `json:"incomplete"`
+	Skipped    []string `json:"skipped"`
+}
+
+// socketless are the filesystems no unix socket can be a file of, by statfs's magic number: the kernel's views of its
+// processes (proc: a process's fd entries are links, which the walk never follows) and of its devices (sysfs). A
+// container runtime may mount them inside a searched root: Cloudflare's mounts both at /run/cloudchamber, about 58,000
+// entries, which filled the 50,000-entry budget of /run before (cloudflare-run-measure-1, 11-17; the only socket in /run
+// there was computerd's own).
+var socketless = map[int64]string{0x9fa0: "proc", 0x62656572: "sysfs"}
+
+// socketlessFS names the filesystem of the folder at path when no socket can be a file of it, else "".
+func socketlessFS(path string) string {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return ""
+	}
+	return socketless[int64(st.Type)]
 }
 
 // The socket types a connect is tried with, each by Go's network name and the name reported.
@@ -49,7 +68,8 @@ var socketTypes = []struct{ network, name string }{{"unix", "stream"}, {"unixgra
 // is in no folder: the network namespace holds it, so every program in the namespace reaches it, and the table alone
 // names it. Each is tried with a connect of each type, bounded by timeout, at once; the real paths and names of those
 // that accept, with the type, sorted. A root whose walk reached a bound, and a table that could not be read, are named
-// in Incomplete.
+// in Incomplete. A folder of a filesystem no socket can be a file of (socketless: proc, sysfs) is not gone into, and is
+// named in Skipped.
 func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, timeout time.Duration) SocketSearch {
 	candidates := map[string]bool{}
 	add := func(path string) {
@@ -62,6 +82,7 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 		}
 	}
 	incomplete := []string{}
+	skipped := []string{}
 	seen := map[string]bool{}
 	for _, root := range roots {
 		real, err := filepath.EvalSymlinks(root)
@@ -83,6 +104,12 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 			}
 			if rel, err := filepath.Rel(real, path); err == nil && rel != "." {
 				under[filepath.Join(real, strings.SplitN(rel, string(filepath.Separator), 2)[0])]++
+			}
+			if entry.IsDir() {
+				if name := socketlessFS(path); name != "" {
+					skipped = append(skipped, fmt.Sprintf("%s (%s)", path, name))
+					return filepath.SkipDir
+				}
 			}
 			if entry.IsDir() && path != real && strings.Count(path, string(filepath.Separator))-base >= bounds.Depth {
 				tooDeep = true
@@ -134,7 +161,7 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 	}
 	wg.Wait()
 	sort.Slice(sockets, func(i, j int) bool { return sockets[i].Path < sockets[j].Path })
-	return SocketSearch{Sockets: sockets, Incomplete: incomplete}
+	return SocketSearch{Sockets: sockets, Incomplete: incomplete, Skipped: skipped}
 }
 
 // heaviest names the n paths with the most entries walked below them, most first, each with its count, so a walk that
