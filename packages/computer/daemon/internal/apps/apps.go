@@ -185,7 +185,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 	g.mu.Lock()
 	g.launched[e.ID] = append(g.launched[e.ID], launch{id: started.ID, pid: started.Pid})
 	g.mu.Unlock()
-	tree := treeOf(started.Pid)
+	tree := treeOf(started.Pid, g.table.Guard(started.ID))
 	deadline := time.Now().Add(g.window)
 	for {
 		now, err := g.look()

@@ -496,6 +496,16 @@ func (p *proc) release() {
 	}
 }
 
+// Guard is the pid of the guard process id runs under (process.start's own, not on the wire), or 0 when id is not in
+// the table.
+func (t *Table) Guard(id string) int {
+	p, err := t.get(id)
+	if err != nil {
+		return 0
+	}
+	return p.g.GuardPid()
+}
+
 func (t *Table) get(id string) (*proc, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

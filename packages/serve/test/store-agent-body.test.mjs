@@ -65,7 +65,7 @@ test("a revision's computer keeps a sandbox's gpu, {type, count}: a GPU type nam
     assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", gpu } }), refused(/gpu is not \{type, count\}/), JSON.stringify(gpu));
   }
   assert.deepEqual(bodyOf({ ...A, computer: { gpu: { type: "H100", count: 1 }, image: "cuda", provider: "daytona", kind: "sandbox" } }).body.computer, { kind: "sandbox", provider: "daytona", image: "cuda", gpu: { type: "H100", count: 1 } }, "an image and GPUs both kept, in the body's order");
-  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", region: "earth" } }), refused(/not \{kind, provider\?, image\?, gpu\?, persistent\?, surface\?, exec\?\}/));
+  assert.throws(() => bodyOf({ ...A, computer: { kind: "sandbox", provider: "daytona", region: "earth" } }), refused(/not \{kind, provider\?, image\?, gpu\?, persistent\?, surface\?, exec\?, record\?\}/));
 });
 
 test("a revision's computer keeps persistent, a boolean; anything else is refused, and none named keeps none", () => {
@@ -84,6 +84,15 @@ test("a revision's computer keeps surface (code or tools) and exec (a boolean); 
   }
   for (const exec of ["no", 0, null]) {
     assert.throws(() => bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b", exec } }), refused(/exec a boolean/), JSON.stringify(exec));
+  }
+});
+
+test("a revision's computer keeps record, a boolean; anything else is refused, and none named keeps none", () => {
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "phone", provider: "phone-harness", record: true } }).body.computer, { kind: "phone", provider: "phone-harness", record: true });
+  assert.deepEqual(bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b", record: false } }).body.computer, { kind: "desktop", provider: "e2b", record: false });
+  assert.equal("record" in bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b" } }).body.computer, false);
+  for (const record of ["yes", 1, null]) {
+    assert.throws(() => bodyOf({ ...A, computer: { kind: "desktop", provider: "e2b", record } }), refused(/record a boolean/), JSON.stringify(record));
   }
 });
 

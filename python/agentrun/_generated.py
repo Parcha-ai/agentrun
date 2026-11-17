@@ -1202,6 +1202,7 @@ class DefinitionComputer(_DefinitionComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionComputerGpu(TypedDict):
@@ -1672,6 +1673,7 @@ class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
 
 
 class DefinitionInputComputerGpu(TypedDict):
