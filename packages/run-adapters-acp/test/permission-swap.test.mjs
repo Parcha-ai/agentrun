@@ -53,3 +53,33 @@ for (const load of [true, false]) {
     assert.equal(said, 'ran Run make deploy');
   });
 }
+
+// The same request in an earlier turn of the same agent process: the parked one's id is the open turn's own, so the
+// runner that picks the run up maps the agent's next ask to it, and the person's approval answers it.
+test('a permission parked after the same request in an earlier turn maps to the same call after a swap', async (t) => {
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const store = memorySessionStore();
+  const deploy = { native: 'execute', title: 'Run make deploy', input: { command: 'make deploy' } };
+  const recipe = fakeRecipe(dir, { script: [deploy, { say: 'deployed once' }, deploy, { sayLastResult: true }], style: 'cursor', load: true, http: true, nativeLog });
+  const asked = [];
+  let parking = false;
+  const first = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), parking ? { park: true } : 'allow') });
+  await first.session.send('deploy it');
+  assert.equal((await first.session.turnEnd()).status, 'completed');
+  parking = true;
+  await first.session.send('deploy it again');
+  await until(() => asked.length === 2, 'the gate to be asked in the second turn');
+  first.stop(new Error('the run parked'));
+  await first.session.turnEnd().catch(() => undefined);
+  const parked = asked[1].callId;
+  assert.notEqual(parked, asked[0].callId, "each turn's request is its own call");
+
+  const second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), call.callId === parked ? 'allow' : { deny: `not ${call.callId}` }) });
+  assert.equal(second.session.state, 'open_turn');
+  await second.session.recover();
+  const end = await second.session.turnEnd();
+  assert.equal(end.status, 'completed', end.error);
+  assert.deepEqual(asked.slice(2).map((c) => c.callId), [parked], "the agent's next ask maps to the parked call");
+  assert.deepEqual(lines(nativeLog), ['Run make deploy', 'Run make deploy'], 'approved, the second deploy ran once');
+});

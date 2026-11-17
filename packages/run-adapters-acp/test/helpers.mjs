@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
-import { journalRecords } from '@parcha/agentrun-kernel/process';
+import { journalRecords, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { acpAdapter } from '@parcha/agentrun-harness-acp';
 
@@ -83,6 +83,11 @@ export async function stateOf(store, key = 's1') {
 /** What stream `name` of the session's journal holds, in order. */
 export async function streamRecords(store, name, key = 's1') {
   return journalRecords(await stateOf(store, key), name).map((record) => record.data);
+}
+
+/** The session's transcript entries (messages and turn ends), in order. */
+export async function transcript(store, key = 's1') {
+  return transcriptOf(await stateOf(store, key)).map((record) => record.data);
 }
 
 /** The intents of tool `name`'s calls among the session's effects. */

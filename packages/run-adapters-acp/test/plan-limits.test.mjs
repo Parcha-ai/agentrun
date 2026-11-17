@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { ACP_CODES } from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, tool } from './helpers.mjs';
+import { fakeEvents, fakeRecipe, openSession, scratch, tool, until } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const plan = (maxTurns, maxToolCalls) => ({ billing: { kind: 'plan', maxTurns, maxToolCalls } });
@@ -52,4 +52,29 @@ test('a plan-billed run refuses an agent permission request past the limit, neve
   assert.match(end.error ?? '', new RegExp(`^${ACP_CODES.toolCallLimit}: `));
   assert.deepEqual(asked.map((c) => c.tool), ['read'], 'the native call never reached the gate');
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind ?? e.outcome), ['reject_once']);
+});
+
+// An agent that ignores session/cancel past the limit (it goes on thinking, on the owner's plan): the adapter waits a
+// bounded time, then ends the agent's process, and the turn ends on the limit's named reason.
+test('a plan-billed agent that ignores the cancel at the call limit is stopped within a bounded wait', async (t) => {
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'read' }, { call: 'read' }, { hang: true }], ignoreCancel: true }, plan(10, 1));
+  const { session } = await openSession(t, recipe, { tools: [tool('read', () => 'read', 'safe')] });
+  const started = Date.now();
+  await session.send('go');
+  let timer;
+  const end = await Promise.race([session.turnEnd(), new Promise((resolve) => (timer = setTimeout(() => resolve({ status: 'still running' }), 20_000)))]).finally(() => clearTimeout(timer));
+  assert.equal(end.status, 'failed', `the turn ended (after ${Date.now() - started} ms)`);
+  assert.match(end.error ?? '', new RegExp(`^${ACP_CODES.toolCallLimit}: `), end.error);
+  const events = fakeEvents(recipe);
+  assert.ok(events.some((e) => e.type === 'cancel'), 'a cancel was sent first');
+  assert.ok(events.some((e) => e.type === 'hang'), 'the agent went on past it');
+  const pid = events.find((e) => e.type === 'start').pid;
+  await until(() => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  }, "the agent's process to end", 10_000);
 });

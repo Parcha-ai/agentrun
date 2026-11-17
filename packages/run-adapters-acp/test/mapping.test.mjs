@@ -159,6 +159,44 @@ test('with no load, a new agent process gets the conversation so far as a contex
   assert.equal(prompts[1].text.at(-1), 'second');
 });
 
+test("a context note carries each earlier call's input and result, each cut to a bound that says so", async (t) => {
+  const store = memorySessionStore();
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'lookup', args: { q: 'the input' } }, { call: 'fail' }, { say: 'one' }, { sayLastResult: true }], load: false, http: false });
+  const long = `found it ${'y'.repeat(10_000)}`;
+  const tools = [tool('lookup', () => long), { ...tool('fail', () => ''), call: async () => ({ text: 'the tool broke', isError: true }) }];
+  const first = await openSession(t, recipe, { store, tools });
+  await first.session.send('go');
+  assert.equal((await first.session.turnEnd()).status, 'completed');
+  await first.session.close();
+  const second = await openSession(t, recipe, { store, tools });
+  await second.session.send('second');
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  const note = fakeEvents(recipe).filter((e) => e.type === 'prompt')[1].text[0];
+  assert.match(note, /^\[Context\]/);
+  assert.match(note, /- lookup\(\{"q":"the input"\}\), call call_0: completed\. Its result:\n {4}found it y/, note.slice(0, 600));
+  assert.match(note, /… \[\d+ more characters\]/, 'a long result is cut and says so');
+  assert.ok(note.length < 8_000, `the note is bounded: ${note.length} characters`);
+  assert.match(note, /- fail\(\{\}\), call call_1: failed: the tool broke/);
+});
+
+test('a stop while the proxy starts closes the proxy that comes back and never starts the agent', async (t) => {
+  const recipe = fakeRecipe(scratch(), { script: [{ say: 'never' }] }, { billing: { kind: 'proxy' } });
+  let give;
+  let closed = 0;
+  const proxy = () => new Promise((resolve) => (give = () => resolve({ env: { FAKE_PROXY: '1' }, close: async () => void (closed += 1) })));
+  const { session, stop } = await openSession(t, recipe, { options: { proxy } });
+  await session.send('go');
+  await until(() => give, 'the proxy to be asked for');
+  stop(new Error('the run let go'));
+  // The proxy comes back after the stop's clean-up is done.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  give();
+  await session.turnEnd().catch(() => undefined);
+  await until(() => closed === 1, 'the proxy to be closed', 5_000).catch(() => undefined);
+  assert.equal(closed, 1, 'the proxy that came back after the stop was closed');
+  assert.equal(fakeEvents(recipe).some((e) => e.type === 'start'), false, 'the agent was never started');
+});
+
 test("the session's instructions go as the system prompt the agent advertises, else ahead of the first prompt", async (t) => {
   const withSystem = fakeRecipe(scratch(), { script: [{ say: 'ok' }], systemPrompt: true });
   const a = await openSession(t, withSystem, { system: ['Be brief.'] });

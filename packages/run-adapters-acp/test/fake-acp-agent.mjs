@@ -12,7 +12,10 @@
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
 //   nativeLog: a file each native call that runs appends its title to;
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
-//   systemPrompt: advertise sessionCapabilities.systemPrompt.
+//   systemPrompt: advertise sessionCapabilities.systemPrompt;
+//   ignoreCancel: log session/cancel and go on as if it never came (an agent that keeps spending);
+//   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open.
+// A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -189,7 +192,14 @@ async function takeTurn(client, session, prompt, signal) {
       said({ type: "mcp", tool: s.call, toolCallId: id });
       let answer;
       try {
-        answer = await session.mcp.request("tools/call", { name: s.call, arguments: args, _meta: { progressToken: id } }, signal);
+        if (config.keepMcpOnCancel) {
+          // The prompt's answer does not wait for the call: a cancel ends the turn with the MCP request still open.
+          const call = session.mcp.request("tools/call", { name: s.call, arguments: args, _meta: { progressToken: id } });
+          call.catch(() => {});
+          const cancelled = new Promise((resolve) => (signal.aborted ? resolve("cancelled") : signal.addEventListener("abort", () => resolve("cancelled"), { once: true })));
+          answer = await Promise.race([call, cancelled]);
+          if (answer === "cancelled") return { stopReason: "cancelled" };
+        } else answer = await session.mcp.request("tools/call", { name: s.call, arguments: args, _meta: { progressToken: id } }, signal);
       } catch (error) {
         entry.status = "failed";
         save(session);
@@ -224,6 +234,11 @@ async function takeTurn(client, session, prompt, signal) {
       // Cursor reports a refused call completed: the client must never trust it.
       await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: style === "cursor" ? "completed" : entry.status });
       continue;
+    }
+    if ("hang" in s) {
+      said({ type: "hang" });
+      await new Promise((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", resolve, { once: true })));
+      return { stopReason: "cancelled" };
     }
     let words;
     if ("say" in s) words = s.say;
@@ -285,7 +300,7 @@ const app = agent({ name: "fake-acp" })
   })
   .onNotification("session/cancel", ({ params }) => {
     said({ type: "cancel", sessionId: params.sessionId });
-    sessions.get(params.sessionId)?.turn?.abort(new Error("cancelled"));
+    if (!config.ignoreCancel) sessions.get(params.sessionId)?.turn?.abort(new Error("cancelled"));
   });
 
 const connection = app.connect(ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)));
