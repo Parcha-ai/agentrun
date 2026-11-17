@@ -90,4 +90,5 @@ no request or run waits on the disk.
 
 - A server with `--no-runner` counts no runs: separate runner processes send nothing.
 - A data directory that does not outlive its container gets a new id at each start.
+- A restart that overlaps a run's end can count a few runs short. The count is sent as a range.
 - Use of the packages as a library, with no server, is not counted.

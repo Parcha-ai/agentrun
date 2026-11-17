@@ -1,7 +1,7 @@
 // The server's anonymous usage counts (telemetry.ts, docs/telemetry.md): what turns them off, that the start which first
 // could send prints the notice and sends nothing, and that an event holds the listed fields and nothing else.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
@@ -148,6 +148,21 @@ test("ends that come together are all kept by the time close answers, each write
   for (let i = 0; i < 50; i++) assert.equal(t.runEnded("ended"), undefined);
   await t.close();
   assert.equal(JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8")).runs, 50);
+  // Each write went through a temporary file of its own and left none behind.
+  assert.deepEqual(await readdir(data), [TELEMETRY_FILE]);
+});
+
+test("two servers on one data directory, one still stopping: every write is whole and neither leaves a temporary file", async () => {
+  const data = await scratch();
+  const r = receiver();
+  await start(data, r).close();
+  const old = start(data, r);
+  const next = start(data, r);
+  for (let i = 0; i < 20; i++) (old.runEnded("ended"), next.runEnded("ended"));
+  await Promise.all([old.close(), next.close()]);
+  const kept = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8"));
+  assert.equal(kept.runs, 20);
+  assert.deepEqual(await readdir(data), [TELEMETRY_FILE]);
 });
 
 test("a receiver that fails or never answers costs the server nothing", async () => {

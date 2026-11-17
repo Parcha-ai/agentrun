@@ -9,8 +9,9 @@
 // in memory and written behind it, one write at a time, so no request or run waits on the disk.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { writeDurableSync, writeWhole } from "./server-fs.js";
+import { tempOf, writeDurableSync } from "./server-fs.js";
 
 /** Where events go: PostHog's capture route, behind this project's own name. */
 export const TELEMETRY_URL = "https://telemetry.agentrun.ai/i/v0/e/";
@@ -132,6 +133,18 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   };
   // Every later write (a run's end) goes behind the caller: one at a time, the latest state each time, so ends that come
   // together make one write and none waits on the disk. A write that fails is dropped; the next end writes again.
+  // Each goes through a temporary file of its own: a server that takes this data directory while this one still stops
+  // never shares one with it. The two can still each write the file whole, last one kept, so a restart that overlaps a
+  // run's end may count a few runs short: the count is sent as a range, and nothing else is kept here.
+  const whole = async (): Promise<void> => {
+    const temp = tempOf(file);
+    try {
+      await writeFile(temp, text(), { mode: 0o600 });
+      await rename(temp, file);
+    } catch {
+      await unlink(temp).catch(() => {});
+    }
+  };
   let stale = false;
   let writing: Promise<void> | undefined;
   const keepLater = (): void => {
@@ -139,7 +152,7 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     writing ??= (async () => {
       while (stale) {
         stale = false;
-        await writeWhole(file, text()).catch(() => {});
+        await whole();
       }
       writing = undefined;
     })();
