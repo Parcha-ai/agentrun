@@ -604,6 +604,7 @@ test("the setup skill names a hosted cloud session before the question, and its 
   const f = setupFixture(t, {});
   const quiet = Object.fromEntries(["CLAUDE_CODE_REMOTE", "CODESPACES", "GITPOD_WORKSPACE_ID", "SSH_CONNECTION", "DISPLAY", "WAYLAND_DISPLAY"].map((name) => [name, ""]));
   const run = f.run(check, { ...quiet, CLAUDE_CODE_REMOTE: "private-fixture-true", SSH_CONNECTION: "private-fixture 22" });
+  assert.equal(run.status, 0, `a check that finds nothing more still succeeds: ${run.stderr}`);
   const lines = run.stdout.split("\n").filter((line) => line.startsWith("set: "));
   assert.deepEqual(lines, ["set: CLAUDE_CODE_REMOTE", "set: SSH_CONNECTION"], "each signal set, by name");
   assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no value is printed");
