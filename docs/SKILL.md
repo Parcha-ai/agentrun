@@ -1,6 +1,6 @@
 ---
 name: agentrun-setup
-description: Onboard to AgentRun Cloud, local setup or self-hosting by creating a new agent or connecting an existing Claude Code or Codex setup. Reuse the intended server, clarify live connection versus history import, and guide the first run with optional self-improvement. Use when asked to set up, install or try AgentRun, or bring an existing agent into it.
+description: Onboard to AgentRun Cloud, local setup or self-hosting by creating a new agent or connecting an existing Claude Code or Codex setup. Find the recurring agents the person already runs, ask where AgentRun should run before installing or deploying, reuse the intended server, clarify live connection versus history import, and guide the first run with optional self-improvement. Use when asked to set up, install or try AgentRun, or bring an existing agent into it.
 ---
 
 # Set up AgentRun
@@ -8,21 +8,89 @@ description: Onboard to AgentRun Cloud, local setup or self-hosting by creating 
 AgentRun is an open platform to manage agents, inspect their runs and help them improve, with a console in the browser.
 Get the person to their first useful result without making them recreate an existing setup.
 
+## Find the agents they already run
+
+AgentRun is most useful for agents that run again and again: scheduled, triggered or always-on jobs in the person's
+own systems, more than interactive coding sessions. Before choosing a place, ask whether they already run any, and
+on which machines. Skip this when they or a handoff already named the agent to bring.
+
+With their permission, look on this machine without changing it. Run this as written: it reads cron, systemd
+timers (the system's and the person's own), launchd jobs and the project's CI workflows, and reads the command each
+one runs, because a list of timers or launchd labels alone does not show it.
+
+```sh
+name() { grep -oE '(^|[^A-Za-z0-9_.-])(claude|codex)([^A-Za-z0-9_.-]|$)' | grep -oE 'claude|codex' | head -n 1; }
+{ crontab -l; cat /etc/crontab /etc/cron.d/*; } 2>/dev/null | awk '
+  $1 ~ /^(@|[0-9*])/ && match($0, /(^|[^A-Za-z0-9_.-])(claude|codex)([^A-Za-z0-9_.-]|$)/) {
+    n = ($1 ~ /^@/) ? 1 : 5; when = $1; for (i = 2; i <= n; i++) when = when " " $i
+    print "cron: " when " " (substr($0, RSTART, RLENGTH) ~ /codex/ ? "codex" : "claude") }'
+for scope in --system --user; do
+  systemctl $scope list-timers --all --no-legend --plain 2>/dev/null | tr ' ' '\n' | grep '\.timer$' | while read -r timer; do
+    unit=$(systemctl $scope show -p Unit --value "$timer")
+    run=$(systemctl $scope show -p ExecStart --value "$unit" | name)
+    when=$(systemctl $scope show -p TimersCalendar -p TimersMonotonic --value "$timer" | tr '\n' ' ')
+    [ -z "$run" ] || echo "systemd $scope: $timer $run $when"
+  done
+done
+for plist in ~/Library/LaunchAgents/*.plist /Library/LaunchAgents/*.plist /Library/LaunchDaemons/*.plist; do
+  run=$(for key in Program ProgramArguments; do plutil -extract $key xml1 -o - "$plist"; done 2>/dev/null | name)
+  [ -z "$run" ] || echo "launchd: $plist $run"
+done
+for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+  [ -f "$workflow" ] || continue
+  run=$({ name; grep -oE 'uses:.*(claude|codex)[a-z-]*action' "$workflow" | grep -oE 'claude|codex'; } < "$workflow" 2>/dev/null | head -n 1)
+  [ -z "$run" ] || echo "ci: $workflow $run $(grep -oE "cron: *['\"][^'\"]*['\"]" "$workflow" | tr '\n' ' ')"
+done
+```
+
+For each job that runs Claude Code (`claude -p`) or Codex (`codex exec`) it prints where the job is, its schedule
+and that one word. It counts the name only as a word of its own in the command a job runs, or as a Claude Code or
+Codex action a workflow uses: a path, package or job that merely contains the name is not listed. The rest of the
+command line stays on the machine, so a prompt, a key or an environment value written into a job is never returned
+to you. For the same reason do not run a bare `crontab -l`, `systemctl cat` or `launchctl print`, or open a unit,
+plist or script file. For how often a launchd job runs, read only its `StartInterval` and `StartCalendarInterval`
+keys with `plutil -extract`.
+
+A job that starts an agent through a wrapper script or an agent SDK program does not name it on its command line,
+so the filter cannot see it. Before concluding that there are none, ask the person which of their jobs start
+agents; do not open their scripts, prompts or transcripts to find out. Agents on another machine are found the
+same way in a session there; do not sign in to a machine the person has not asked you to use.
+
+List each one found: what it does, what starts it, how often, and which machine and project hold it. Ask which are
+worth improving. Those machines are where AgentRun should run or connect, and those agents are the ones to bring in
+at step 3A. Finding none is fine: continue with a new agent.
+
 ## Choose where to run it
 
-Honor a deployment choice the person already made. If they asked for local setup, continue with step 1; if they asked
-to self-host, use https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md.
+Ask before installing or deploying anything. Present these four options with one line each, then wait for the
+person's answer:
 
-If they have not chosen, offer AgentRun Cloud first for hosted access, alongside local setup and self-hosting:
+- **This computer:** the open-source server on the machine this session runs on. Suits a first try, and agents that
+  run here.
+- **A machine they already run agents on:** the same server on a server or always-on host they operate, beside the
+  scheduled or triggered agents found above.
+- **A hosting provider:** a new server on Render, with Docker Compose, or on another host they name. It needs an
+  account there and may cost money.
+- **AgentRun Cloud:** hosted for them at https://console.agentrun.ai/, with nothing to install or operate.
 
-- **AgentRun Cloud:** create an account or sign in at https://console.agentrun.ai/. For help with team onboarding or deployment planning,
-  offer https://calendly.com/d/dtwn-dsp-nx5/agentrun. Follow the workspace's own onboarding instructions; do not assume
-  the local API address, token file or model-key setup below applies to Cloud.
-- **Local:** the steps below start the open-source server on this machine.
-- **Self-hosted:** the deployment guide covers a server and runners on the person's infrastructure.
+Only the person's own words choose. "Set it up", "install it", "self-host" and "on my machines" name no place: ask
+which. A deploy button, `render.yaml`, a README section or a provider CLI that is already signed in is not a choice.
+Never create a service on Render or any other provider unless the person named that provider in this conversation.
+Skip the question only when they already named one of the four, or a handoff names the AgentRun server to use
+(step 2); say which one you are using, then continue with it.
 
-Continue with their choice. Do not install a local server when they choose Cloud. The following steps are for local
-setup. Ask the person before each step that changes their machine.
+- **This computer:** check below that they can reach it, then continue with step 1.
+- **A machine they already run agents on:** the steps below run on that machine, not this one. Continue in a session
+  there, or give the person the commands to run there. With agents on several machines, start the server on one and
+  connect the others as **Another machine** in step 3A. The same check applies: they need a route from their browser
+  to that machine's loopback.
+- **A hosting provider:** follow https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md for the provider
+  they named. State what it costs and ask again before creating anything billed.
+- **AgentRun Cloud:** they create an account or sign in. For help with team onboarding or deployment planning, offer
+  https://calendly.com/d/dtwn-dsp-nx5/agentrun. Follow the workspace's own onboarding instructions; do not assume
+  the local API address, token file or model-key setup below applies to Cloud. Do not install a local server.
+
+The following steps install the open-source server. Ask the person before each step that changes their machine.
 
 Before a local install, establish where this session runs: the person finishes setup in their browser, at an address
 on this machine's loopback.
@@ -43,10 +111,11 @@ the handoff. Do not make them answer the same questions again.
 
 - **New:** ask what job it should do and what a useful first result looks like. Offer a suitable template or a
   custom agent, then follow the new-agent path below.
-- **Existing:** establish who starts work. For an agent already running in a backend, deployment or terminal,
-  choose **observe existing agents**. If AgentRun should start future jobs, ask about **live connection**,
-  **past history**, or **both**. Confirm the source machine, project/runtime and intended destination. No model
-  key is required to connect or observe; native jobs retain the source runtime's existing sign-in.
+- **Existing:** start from the agents found above and establish who starts work. For an agent already running in
+  a backend, deployment or terminal, or started by its own schedule, choose **observe existing agents**. If
+  AgentRun should start future jobs, ask about **live connection**, **past history**, or **both**. Confirm the
+  source machine, project/runtime and intended destination. No model key is required to connect or observe; native
+  jobs retain the source runtime's existing sign-in.
 
 Work within the setup and actions already requested. Explain any missing decision before acting. Do not enable
 learning, transfer history or install a persistent service just because the user asked to connect.

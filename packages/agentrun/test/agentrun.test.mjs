@@ -564,6 +564,26 @@ function setupRecipe(source = false) {
   assert.ok(step, "the skill has its server-start recipe");
   return step;
 }
+// Setup once deployed to a hosting provider the person never chose. The skill asks where before anything is installed
+// or deployed, with the machines they already run agents on as a choice of their own, and looks for those agents first.
+test("the setup skill asks where AgentRun should run before installing or deploying, and names no host unasked", () => {
+  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
+  const section = (title) => skill.split(/^## /m).find((part) => part.startsWith(`${title}\n`)) ?? "";
+  const where = section("Choose where to run it");
+  const [, ask, ...rest] = where.split("\n\n");
+  assert.match(ask, /^Ask before installing or deploying anything\./, "the question comes first");
+  assert.match(ask, /wait for the\s+person's answer/, "it waits for the answer");
+  assert.deepEqual([...rest[0].matchAll(/^- \*\*(.+?):\*\*/gm)].map((m) => m[1]),
+    ["This computer", "A machine they already run agents on", "A hosting provider", "AgentRun Cloud"], "the four places, in order");
+  assert.match(where, /Never create a service on Render or any other provider unless the person named that provider/);
+  assert.doesNotMatch(where, /offer AgentRun Cloud first|Honor a deployment choice/, "no place is preferred or inferred");
+  const found = section("Find the agents they already run");
+  assert.ok(skill.indexOf("## Find the agents they already run") < skill.indexOf("## Choose where to run it"), "existing agents are found before a place is chosen");
+  for (const look of ["crontab -l", "list-timers", "LaunchAgents", ".github/workflows", "claude -p", "codex exec"]) assert.ok(found.includes(look), look);
+  assert.match(found, /With their permission, look on this machine without changing it/);
+  assert.match(found, /ask the person which of their jobs start\s+agents/, "a job the filter cannot see is asked about, not assumed absent");
+  assert.ok(skill.indexOf("## Choose where to run it") < skill.indexOf("npx @parcha/agentrun --no-open"), "the question precedes the install recipe");
+});
 function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
   mkdirSync(join(dir, "fake"));
@@ -574,8 +594,71 @@ function setupFixture(t, commands) {
     }
     rmSync(dir, { recursive: true, force: true });
   });
-  return { dir, run: (step) => spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } }) };
+  return { dir, run: (step, env = {}) => spawnSync("sh", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 20_000, env: { ...process.env, ...env, PATH: `${join(dir, "fake")}:${process.env.PATH}` } }) };
 }
+// A scheduled job carries its prompt, and often a key, on its command line, so a bare `crontab -l` hands both to the
+// assistant. A timer or launchd listing shows no command at all, so a job could not be told from any other. The skill's
+// discovery step reads each job's command on the machine and returns the schedule and the runtime's name, nothing else.
+test("the setup skill's discovery step names scheduled Claude Code and Codex jobs without returning their prompts, keys or environment", (t) => {
+  const skill = readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
+  const step = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]).find((block) => block.includes("crontab -l"));
+  assert.ok(step, "the skill has its discovery step");
+  const exec = (program, words) => `echo '{ path=${program} ; argv[]=${program} ${words} ; ignore_errors=no ; }'`;
+  const f = setupFixture(t, {
+    crontab: [
+      "ANTHROPIC_API_KEY=private-fixture-key",
+      "PATH=/opt/private-fixture/claude/bin:/usr/bin",
+      "# 0 1 * * * claude -p 'a private-fixture-comment'",
+      "30 2 * * 1-5 cd /srv/app && OPENAI_API_KEY=private-fixture-inline claude -p 'triage the private-fixture-prompt'",
+      "@daily /usr/local/bin/codex exec 'summarise the private-fixture-prompt'",
+      "15 4 * * * /usr/local/bin/backup --to private-fixture-bucket",
+    ].map((line) => `echo "${line}"`).join("\n"),
+    systemctl: `case "$*" in
+  "--user list-timers"*) echo "Mon 2026-01-05 03:00:00 UTC 5h left - - nightly-review.timer nightly-review.service" ;;
+  "--system list-timers"*) echo "Mon 2026-01-05 00:00:00 UTC 2h left - - logrotate.timer logrotate.service" ;;
+  *"-p Unit --value nightly-review.timer") echo nightly-review.service ;;
+  *"-p Unit --value logrotate.timer") echo logrotate.service ;;
+  "--user show -p ExecStart --value nightly-review.service") ${exec("/usr/local/bin/codex", "exec review the private-fixture-prompt")} ;;
+  *"-p ExecStart --value logrotate.service") ${exec("/usr/sbin/logrotate", "/etc/private-fixture.conf")} ;;
+  "--user show -p TimersCalendar"*"nightly-review.timer") echo "{ OnCalendar=*-*-* 03:00:00 ; next_elapse=n/a }" ;;
+esac`,
+    // Only the two keys that hold a job's command are asked for, so no other key's value is ever read.
+    plutil: `test "$1 $3 $4 $5" = "-extract xml1 -o -" || exit 2
+case "$2 $6" in
+  "ProgramArguments "*/triage.plist) echo "<array><string>/opt/bin/claude</string><string>-p</string><string>the private-fixture-prompt</string></array>" ;;
+  "Program "*/sync.plist) echo "<string>/usr/bin/private-fixture-claude-sync</string>" ;;
+  "Program "*|"ProgramArguments "*) exit 1 ;;
+  *) echo "<dict><key>KEY</key><string>claude private-fixture-key</string></dict>" ;;
+esac`,
+    // The system's crontabs are this fixture's, not the machine's: a job the developer really runs never reaches the result.
+    cat: `case "$1" in
+  /etc/cron*) echo "SHELL=/bin/sh"; echo "0 5 * * * root /usr/local/bin/codex exec 'audit the private-fixture-prompt'"; echo "17 * * * * root cd / && run-parts --report /etc/private-fixture.hourly" ;;
+  *) exec /bin/cat "$@" ;;
+esac`,
+  });
+  for (const name of ["triage", "sync"]) {
+    mkdirSync(join(f.dir, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(f.dir, "Library", "LaunchAgents", `${name}.plist`), "");
+  }
+  mkdirSync(join(f.dir, ".github", "workflows"), { recursive: true });
+  const workflow = (name, cron, job) => writeFileSync(join(f.dir, ".github", "workflows", name), `on:\n  schedule:\n    - cron: '${cron}'\njobs:\n  job:\n${job}`);
+  workflow("nightly.yml", "0 6 * * *", "    steps:\n      - run: claude -p 'review with the private-fixture-prompt'\n        env:\n          KEY: private-fixture-key\n");
+  workflow("review.yaml", "0 8 * * 1", "    steps:\n      - uses: example/codex-action@v1\n        with:\n          prompt: the private-fixture-prompt\n");
+  // A workflow that only contains a runtime's name, as a test matrix of packages does, schedules no agent.
+  workflow("lint.yaml", "0 7 * * *", "    strategy:\n      matrix:\n        package: [private-fixture-harness-claude, private-fixture-harness-codex]\n    steps:\n      - run: npm run private-fixture-lint\n");
+  const run = f.run(step, { HOME: f.dir });
+  assert.deepEqual([run.status, run.stderr], [0, ""], "it ends quietly");
+  assert.deepEqual(run.stdout.split("\n").filter(Boolean), [
+    "cron: 30 2 * * 1-5 claude",
+    "cron: @daily codex",
+    "cron: 0 5 * * * codex",
+    "systemd --user: nightly-review.timer codex { OnCalendar=*-*-* 03:00:00 ; next_elapse=n/a } ",
+    `launchd: ${join(f.dir, "Library", "LaunchAgents", "triage.plist")} claude`,
+    "ci: .github/workflows/nightly.yml claude cron: '0 6 * * *' ",
+    "ci: .github/workflows/review.yaml codex cron: '0 8 * * 1' ",
+  ], "each agent job with its schedule and runtime; no other job, and none that only contains a runtime's name");
+  assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no prompt, key, environment value or unrelated job is returned");
+});
 for (const source of [false, true]) test(`the ${source ? "source-server" : "setup"} skill's start step reports failure promptly and preserves its error in a private log`, { timeout: 30_000 }, (t) => {
     const log = source ? "serve.log" : "agentrun.log";
     const commands = { npm: "exit 0", [source ? "node" : "npx"]: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
