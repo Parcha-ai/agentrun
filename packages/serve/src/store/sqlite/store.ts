@@ -1042,7 +1042,7 @@ class SqliteStore implements Store {
         return { count: Number(row?.count ?? 0), live: Number(row?.live ?? 0) };
       },
       // The rows whose listing is behind, by the three ways one falls behind, each over its own partial index.
-      behind: async ({ limit }) => {
+      behind: async ({ limit, offset = 0 }) => {
         const n = clock();
         const held = heldAt(n.sql);
         const rows = await db.all<{ id: string; mark: number; held: number }>(
@@ -1050,14 +1050,14 @@ class SqliteStore implements Store {
              SELECT id, list_mark, started_at, ${held} AS held FROM runs WHERE listing_mark < list_mark
              UNION SELECT id, list_mark, started_at, ${held} AS held FROM runs WHERE listing_live = 1 AND NOT ${held}
              UNION SELECT id, list_mark, started_at, ${held} AS held FROM runs WHERE listing_until IS NOT NULL AND listing_until <= ${n.sql}
-           ) AS behind ORDER BY held, started_at DESC, id DESC LIMIT ?`,
-          ...n.params, ...n.params, ...n.params, ...n.params, ...n.params, limit,
+           ) AS behind ORDER BY held, started_at DESC, id DESC LIMIT ? OFFSET ?`,
+          ...n.params, ...n.params, ...n.params, ...n.params, ...n.params, limit, offset,
         );
         return rows.map((row) => ({ id: row.id, mark: Number(row.mark), held: Boolean(Number(row.held)) }));
       },
       putListing: async (runId, mark, { item, cut, status, live, until, flags }) => {
         const [result] = await db.write([{
-          sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND listing_mark <= ? RETURNING id",
+          sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND list_mark = ? RETURNING id",
           params: [json({ item, cut }), status, mark, live ? 1 : 0, until, flags, runId, mark],
         }]);
         return (result?.rows.length ?? 0) > 0;

@@ -172,6 +172,44 @@ test("the server's lister starts once the server knows its own address: a store 
   }
 });
 
+test("the lister builds every run it may, past a pass's worth of runs whose views fail to build: those wait for their retry, never holding up the rows after them", { timeout: 120_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  // 120 runs: 40 completed, 40 failed, 40 working, none built.
+  await storeOf(data, 120, 2);
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(() => store.close());
+  const { startLister } = await import("../dist/run-listing.js");
+  // The 40 runs the lister reaches first (newest of those no runner holds) cannot be read: more than one pass reads.
+  const first = (await store.runs.behind({ limit: 40 })).map(({ id }) => id);
+  const unreadable = new Set(first);
+  const runs = new Proxy(store.runs, { get: (target, key) => (key === "get" ? (id) => (unreadable.has(id) ? Promise.reject(new Error(`${id} cannot be read`)) : target.get(id)) : Reflect.get(target, key)) });
+  const broken = new Proxy(store, { get: (target, key) => (key === "runs" ? runs : typeof target[key] === "function" ? target[key].bind(target) : Reflect.get(target, key)) });
+  const failures = [];
+  const lister = startLister(broken, () => ({ origin: "http://127.0.0.1:7340", serverSecrets: () => [] }), { idleMs: Infinity, log: (line) => failures.push(line) });
+  t.after(() => lister.stop());
+  await lister.settled();
+  assert.equal(failures.length, 40, "each unreadable run failed once");
+  const left = (await store.runs.behind({ limit: 200 })).filter(({ held }) => !held).map(({ id }) => id);
+  assert.deepEqual(left.sort(), [...first].sort(), "every run no runner holds is built but the unreadable ones");
+});
+
+test("a status filter finds every run still going whose listing was never built, however many: none is left off for the lister to reach later", { timeout: 300_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  // 156 runs: 52 completed, 52 failed and 52 claimed and working, none of whose listings is built (no lister runs here),
+  // so no working run's row has a status yet: more than a list builds at once.
+  await storeOf(data, 156, 2);
+  const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  const working = await everyItem(api, "/runs?status=working");
+  assert.equal(working.length, 52, "status=working lists every working run");
+  assert.ok(working.every((item) => item.status === "working"));
+});
+
 test("a journal commit alone, with the run's row as it was, puts the run's listing behind, so a list shows what it stored", { timeout: 60_000 }, async (t) => {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -194,6 +232,30 @@ test("a journal commit alone, with the run's row as it was, puts the run's listi
   assert.notDeepEqual(listedItem(built.listing, deps.origin, null, []), now, "the commit moved what the run's read shows");
   assert.equal((await listed()).behind, true, "the commit put the run's listing behind, so the next list builds it again");
   assert.deepEqual(listedItem(await listingOverStore(store, "run-1", deps), deps.origin, null, []), now, "built again, it lists as the run's read");
+});
+
+test("a listing built before a write that settled its run is never written over the status that write gave the row: the run stays listed as completed", { timeout: 60_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = await openSqliteStore({ dataDir: join(dir, "agents"), role: "server" });
+  t.after(() => store.close());
+  const deps = { origin: "http://127.0.0.1:7340", serverSecrets: () => [] };
+  await store.agents.create({ id: "one", name: "one" }, { id: "rev-one", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "one", revisionId: "rev-one" });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 3_600_000 });
+  await commitWrites(store.journal(claim), [{ type: "conversation", value: { id: 1 } }], BACKGROUND_CONTEXT);
+  const listed = async () => (await store.runs.listed({ archived: false, limit: 50 })).rows[0];
+  // A build reads the mark, then the run's view (not yet over); the run ends before the build writes.
+  const { listMark } = await listed();
+  const stale = await listingOverStore(store, "run-1", deps);
+  assert.notEqual(stale.status, "completed");
+  await store.runs.update(claim, { state: "ended", costUsd: 0.01 });
+  assert.equal((await listed()).listStatus, "completed", "the write that ended the run set its row's status");
+  assert.equal(await store.runs.putListing("run-1", listMark, stale), false, "a listing built before that write is not written");
+  const after = await listed();
+  assert.equal(after.listStatus, "completed", "the row's status is the ended run's");
+  assert.equal(after.behind, true, "the listing is still behind, so the next build writes the ended run's");
+  assert.deepEqual((await store.runs.listed({ archived: false, status: "completed", limit: 50 })).rows.map(({ row }) => row.id), ["run-1"], "status=completed finds it");
 });
 
 /** Counts the store calls each GET of a runs list makes, and the rows its reads hand back: every call on a store connection

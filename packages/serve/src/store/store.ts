@@ -788,10 +788,13 @@ export interface Runs {
   /** Up to `limit` runs whose listing is behind, the runs no runner holds first, then newest first: built never, or before
    *  the latest write that moved what the run's view shows (listing_mark < list_mark), or built while a runner held it and
    *  that claim has run out on the store's clock, or past the time it goes stale by the clock (listing_until). `mark`:
-   *  the run's list_mark now, the mark its listing is built at. `held`: a runner holds its claim now. */
-  behind(options: { limit: number }): Promise<{ readonly id: string; readonly mark: number; readonly held: boolean }[]>;
-  /** Writes run `runId`'s listing as built at `mark` (behind's): kept only when no listing built at a later mark is there
-   *  already. True when it was written. */
+   *  the run's list_mark now, the mark its listing is built at. `held`: a runner holds its claim now. `offset`: that many
+   *  of them passed over first (those the caller chose not to build yet). */
+  behind(options: { limit: number; offset?: number }): Promise<{ readonly id: string; readonly mark: number; readonly held: boolean }[]>;
+  /** Writes run `runId`'s listing as built at `mark` (behind's or listed's, read before the build read the view): only
+   *  while the row's list_mark is still `mark`. A write that moved the mark meanwhile (a run settled, its list_status set
+   *  by that write) keeps the row as that write left it, behind, so the next build writes what the run shows now. True
+   *  when it was written. */
   putListing(runId: string, mark: number, listing: RunListing): Promise<boolean>;
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
    *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */

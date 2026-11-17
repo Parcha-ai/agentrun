@@ -86,7 +86,7 @@ docker run -v agentrun-data:/data --env-file agentrun.env ghcr.io/parcha-ai/agen
 The image's default command, for one container on its own (above), is
 `server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`. It starts the server with those options
 and `--no-runner`, and one runner on the same data once the server answers `GET /v2/health`. The runner takes the
-server's `--data`, `--drain-timeout`, `--max-runs` (as `--loops`) and `--faux`. Each process has its own store
+server's `--data`, `--drain-timeout`, `--max-runs` (as `--loops`), `--faux` and each `--harness-module`. Each process has its own store
 connection, so a busy runner never holds up the API. A `docker stop` reaches both, and each drains as it does on its
 own. If either exits, the other stops and the container exits non-zero, so a restart policy starts both again.
 

@@ -97,8 +97,9 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
  *  journal's commits (store/journal/storage.ts), its row's state, claim, cost and end (runs_list_moved), its commands
  *  (commands_list_moved), its learning's rows (learning_list_moved), and its learning run's or audit's own moves
  *  (runs_list_parent). The server rebuilds a listing from the run's view (store-view.ts listingOverStore, run-listing.ts)
- *  and writes it with the mark it read before it built (`listing_mark`), so a write that lands meanwhile leaves the row
- *  behind (listing_mark < list_mark) and it is built again: a crash between a write and its listing leaves a row that says
+ *  and writes it with the mark it read before it built (`listing_mark`), only while list_mark is still that mark: a write
+ *  that lands meanwhile keeps the row as it left it (its list_status too), behind (listing_mark < list_mark), and it is
+ *  built again: a crash between a write and its listing leaves a row that says
  *  it is behind, never one that says it is current. `listing` is the list item without the parts read when it is listed
  *  (console_url, archived_at); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
  *  held the run when it was built (its status reads otherwise once that claim runs out); `listing_until` when it goes stale

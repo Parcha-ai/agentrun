@@ -942,8 +942,8 @@ function cursorOf(value: string | null): number {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError("bad_request", "cursor is not one this server gave");
   return offset;
 }
-/** Most runs still going whose listing is behind that a status-filtered list builds before it reads its page (server.ts
- *  runsPage): the lister builds the rest, never a list. */
+/** How many runs still going whose listing is behind a status-filtered list reads at once before it builds them all and
+ *  reads its page (runsPage). */
 const UNLISTED_AT_ONCE = 50;
 const nextCursor = (offset: number, total: number) => (offset < total ? Buffer.from(String(offset)).toString("base64url") : null);
 function limitOf(value: string | null): number {
@@ -2977,15 +2977,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
-    // back, and shown as built: for a status filter, first each run still going whose listing is behind (its row's
-    // list_status may say what it was; a settled run's says what it is, from the write that settled it), at most
-    // UNLISTED_AT_ONCE; then any row of the page. With nothing running, none is behind: two reads, whatever the runs.
+    // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
+    // list_status may say what it was, or nothing; a settled run's says what it is, from the write that settled it), all
+    // of them read before any is built, UNLISTED_AT_ONCE to a read, so the page's offset counts the rows as they now stand;
+    // then any row of the page. With nothing running, none is behind: two reads, whatever the runs. The runs still going
+    // are all a filter builds beside its page, and the lister builds them too, so only a list soon after an upgrade
+    // builds many.
     const listNow = async (runId: string, mark: number) => {
       const listing = await listingOverStore(store, runId, vd);
       if (listing) await store.runs.putListing(runId, mark, listing);
       return listing;
     };
-    if (status !== null) for (const { row, listMark } of (await store.runs.listed({ ...where, going: true, limit: UNLISTED_AT_ONCE })).rows) await listNow(row.id, listMark);
+    if (status !== null) {
+      const going: { id: string; mark: number }[] = [];
+      for (let at = 0; ; at += UNLISTED_AT_ONCE) {
+        const read = await store.runs.listed({ ...where, going: true, limit: UNLISTED_AT_ONCE, offset: at });
+        going.push(...read.rows.map(({ row, listMark }) => ({ id: row.id, mark: listMark })));
+        if (!read.more) break;
+      }
+      for (const { id, mark } of going) await listNow(id, mark);
+    }
     const page = await store.runs.listed({ ...where, ...(status !== null ? { status } : {}), limit, offset });
     const secrets = serverSecrets();
     const runs: Record<string, unknown>[] = [];

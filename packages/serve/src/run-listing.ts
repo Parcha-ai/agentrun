@@ -16,7 +16,7 @@ import type { Store } from "./store/store.js";
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { listingOverStore, type ViewDeps } from "./store-view.js";
 
-/** Most rows a pass reads. */
+/** Most rows one read of a pass reads. */
 const PASS_ROWS = 32;
 /** How often an idle lister looks again (ms). */
 export const LISTER_IDLE_MS = 400;
@@ -68,32 +68,43 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
       folders.set(agentId, statuses);
       await store.runs.relist({ flags: LISTING_HELD, agentId });
     }
+    // PASS_ROWS rows at a time, until a read builds one or none is left. A row passed over (a held run built within its
+    // rebuild time, a run whose view failed to build and waits for its retry, one written meanwhile) stays behind, so
+    // the next read starts after every row passed over so far: such rows never hold up the rows after them.
     let count = 0;
-    for (const { id, mark, held } of await store.runs.behind({ limit: PASS_ROWS })) {
-      if (closing) break;
-      const last = built.get(id);
-      if (held && last && now() - last.at < Math.max(HELD_REBUILD_MS, 4 * last.ms)) continue;
-      // A run whose view failed to build is tried again after FAILED_RETRY_MS, never holding up the rows after it.
-      if ((failed.get(id) ?? -Infinity) > now() - FAILED_RETRY_MS) continue;
-      const start = now();
-      let listing: Awaited<ReturnType<typeof listingOverStore>>;
-      try {
-        listing = await listingOverStore(store, id, deps);
-        if (listing) await store.runs.putListing(id, mark, listing);
-        failed.delete(id);
-      } catch (error) {
-        failed.set(id, now());
-        say("run_listing_unbuilt", error);
-        continue;
+    let passed = 0;
+    for (;;) {
+      const rows = await store.runs.behind({ limit: PASS_ROWS, offset: passed });
+      for (const { id, mark, held } of rows) {
+        if (closing) break;
+        const last = built.get(id);
+        if ((held && last && now() - last.at < Math.max(HELD_REBUILD_MS, 4 * last.ms)) || (failed.get(id) ?? -Infinity) > now() - FAILED_RETRY_MS) {
+          passed++;
+          continue;
+        }
+        const start = now();
+        let listing: Awaited<ReturnType<typeof listingOverStore>>;
+        let written = false;
+        try {
+          listing = await listingOverStore(store, id, deps);
+          if (listing) written = await store.runs.putListing(id, mark, listing);
+          failed.delete(id);
+        } catch (error) {
+          failed.set(id, now());
+          say("run_listing_unbuilt", error);
+          passed++;
+          continue;
+        }
+        if (!written) passed++;
+        if (!listing) continue;
+        count++;
+        if (held) built.set(id, { at: now(), ms: now() - start });
+        else built.delete(id);
+        const agentId = String(listing.item.agent_id);
+        if (listing.flags & LISTING_HELD && !folders.has(agentId)) folders.set(agentId, await deps.statuses?.(agentId));
       }
-      if (!listing) continue;
-      count++;
-      if (held) built.set(id, { at: now(), ms: now() - start });
-      else built.delete(id);
-      const agentId = String(listing.item.agent_id);
-      if (listing.flags & LISTING_HELD && !folders.has(agentId)) folders.set(agentId, await deps.statuses?.(agentId));
+      if (closing || count > 0 || rows.length < PASS_ROWS) return count;
     }
-    return count;
   }
 
   /** A pass after the one under way: one at a time, whoever asks. */

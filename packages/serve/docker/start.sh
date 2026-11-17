@@ -11,7 +11,7 @@
 # API's reads behind them. Apart, each has its own.
 #
 # server-and-runner needs --data D and --port N among the options. The runner takes the server's --data, its --faux, its
-# --drain-timeout and its --max-runs (as --loops). With --no-runner among them the server starts alone. The runner never
+# --drain-timeout, its --max-runs (as --loops) and each --harness-module. With --no-runner among them the server starts alone. The runner never
 # sets the store up and refuses one the server has not, so it starts once the server answers GET /v2/health on its
 # --port (on loopback when --listen is 0.0.0.0, ::, or not given; else at the --listen address); a server that has not
 # answered in 300 s ends the container.
@@ -137,11 +137,26 @@ watch() {
   echo "ended $name $code" >&9
 }
 
+# OPTION...: the server's options. The runner takes each --harness-module among them, in order: a run of the owner's own
+# harness is run by the runner, which loads its module there.
 start_runner() {
-  set -- runner --data "$data"
-  [ -z "$drain" ] || set -- "$@" --drain-timeout "$drain"
-  [ -z "$loops" ] || set -- "$@" --loops "$loops"
-  [ -z "$faux" ] || set -- "$@" --faux "$faux"
+  module=
+  for arg do
+    shift
+    if [ -n "$module" ]; then
+      set -- "$@" --harness-module "$arg"
+      module=
+      continue
+    fi
+    case $arg in
+      --harness-module) module=1 ;;
+      --harness-module=*) set -- "$@" --harness-module "${arg#*=}" ;;
+    esac
+  done
+  [ -z "$faux" ] || set -- --faux "$faux" "$@"
+  [ -z "$loops" ] || set -- --loops "$loops" "$@"
+  [ -z "$drain" ] || set -- --drain-timeout "$drain" "$@"
+  set -- runner --data "$data" "$@"
   (watch runner node "$cli" "$@") &
   runner=starting
 }
@@ -201,7 +216,7 @@ while [ "$server" != ended ] || { [ "$runner" != ended ] && [ "$runner" != none 
       ended_alone "$name" "$value"
       ;;
     healthy)
-      [ -n "$stopping" ] || [ "$runner" != waiting ] || start_runner
+      [ -n "$stopping" ] || [ "$runner" != waiting ] || start_runner "$@"
       ;;
     unhealthy)
       [ -n "$stopping" ] || { say "the server did not answer $health within 300 s, so the container stops"; outcome=1; runner=none; stop; }
