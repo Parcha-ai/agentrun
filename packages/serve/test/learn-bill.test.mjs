@@ -91,6 +91,23 @@ test("amortize: a revision's spend over its first K served runs to the micro-dol
   assert.equal(unknown.unattributed_usd, null);
 });
 
+test("A8 (5): spend under a micro-dollar is booked as the usage row books it: the bill's points, total and gap, and a revision's split, never rounded to the micro-dollar", () => {
+  // Two TypeSafe decisions at 120 tokens x $0.042/M each: $0.00001008 a run.
+  const runs = [1, 2].map((n) => ({ ...row(n, "agent", n, 0.00001008), total_usd: 0.00001008 }));
+  const bill = billOf(runs, null);
+  assert.deepEqual(bill.points.map((point) => point.actual_usd), [0.00001008, 0.00002016]);
+  assert.equal(bill.booked_usd, 0.00002016);
+  assert.equal(bill.baseline.mean_usd, 0.00001, "a mean is a quotient, rounded to the micro-dollar");
+  assert.equal(bill.gap_usd, 0.00000016, "the booked total less the line, to the sub-micro-dollar");
+  // $0.0000105 over K = 2: whole micro-dollars split ($0.000005 each), the half micro-dollar left on the K-th run.
+  const revision = { workflow: "answer", digest: A, spend_usd: 0.0000105, k: 2, state: "serving" };
+  const served = ["run-06", "run-07"].map((run_id) => ({ run_id, workflow: "answer", digest: A }));
+  const one = amortize([revision], served.slice(0, 1));
+  assert.deepEqual([[...one.shares], one.revisions[0].attributed_usd, one.unattributed_usd], [[["run-06", 0.000005]], 0.000005, 0.0000055]);
+  const both = amortize([revision], served);
+  assert.deepEqual([[...both.shares], both.revisions[0].attributed_usd, both.unattributed_usd], [[["run-06", 0.000005], ["run-07", 0.0000055]], 0.0000105, 0]);
+});
+
 const LEARNS = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } };
 
 /** Agent `agent-1` on the store, its runs as SERIES has them: each started a minute apart, ended at its cost with its
