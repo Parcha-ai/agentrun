@@ -1,10 +1,12 @@
-// A run's video of its desktop's or phone's screen, where the agent's setting asks for one (computer.record: true,
-// computer-setting.ts). The claim (workspace/computer-for-claim.ts) starts it once the computer is attached, beside the
-// live view, and stops it at the computer's release, the run's end or its park.
+// A run's video of its desktop's, phone's or browser's screen, where the agent's setting asks for one (computer.record:
+// true, computer-setting.ts). The claim (workspace/computer-for-claim.ts) starts it once the computer is attached, beside
+// the live view, and stops it at the computer's release, the run's end or its park; a browser's, each session's from its
+// launch to its release (tools.ts), named by the session's computer.
 //
 // It is a second watch of the computer's screen (the provider's watch, on a connection of its own), so it records with no
 // viewer open, and neither the live viewer's frames and acks nor the agent ever wait on it: each frame is acked as it
-// comes. Frames go to one ffmpeg per recorded computer, piped in (image2pipe), each stamped as ffmpeg reads it, so the
+// comes. A browser's is the run's live view's one CDP screencast of the session, shared with its viewer (browserWatch),
+// whose frames come as the page changes. Frames go to one ffmpeg per recorded computer, piped in (image2pipe), each stamped as ffmpeg reads it, so the
 // video's frame rate is the screen's own (a screen that does not change adds nothing). At most RECORDING_LIMITS.fps frames
 // a second are written: one that comes sooner waits in a one-frame slot, and a newer one replaces it (thinned). While
 // ffmpeg has not taken the frame before, a newer one replaces the one waiting too (dropped): the encoder falling behind
@@ -27,6 +29,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { Result, ScreenFrame, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import type { LiveViewHost } from "@parcha/pi-browser/live-view";
 import { commandOnPath } from "./host-command.js";
 
 /** The program that encodes the video. */
@@ -57,7 +60,32 @@ export interface Recording {
 }
 
 /** The computer's watch, bound to its ref (provider.watch): the recorder gives the handlers and the signal. */
-export type RecordWatch = (handlers: ScreenWatchHandlers, options: WatchOptions) => Promise<Result<ScreenWatch>>;
+export type RecordWatch = (handlers: ScreenWatchHandlers, options: WatchOptions) => Promise<Result<Pick<ScreenWatch, "close">>>;
+
+/** Browser session `tag`'s screen as the recorder watches it: the run's live view's screencast of it (pi-browser's
+ *  LiveViewHost.watch), which the live view acks; JPEG frames of the page's size. */
+export const browserWatch = (view: Pick<LiveViewHost, "watch">, tag: string): RecordWatch => async (handlers) => {
+  let seq = 0;
+  const unwatch = view.watch(tag, {
+    frame: (bytes, { w, h }) => handlers.frame({ seq: ++seq, format: "jpeg", bytes, width: w, height: h, frameWidth: w, frameHeight: h }, () => undefined),
+    ended: () => handlers.ended({ code: "unreachable", message: "the browser's DevTools socket closed" }),
+  });
+  return unwatch ? { ok: true, value: { close: async () => unwatch() } } : { ok: false, error: { code: "unreachable", message: "the browser session has no live view" } };
+};
+
+/** A run's browser sessions' recordings, each by its tag, where its claim records (ClaimBrowser.record): the answer is
+ *  told session `id` under `tag` at its launch or its reopening, which starts its own (named by its computer, `id`) and
+ *  ends the one before it under that tag, and null at its release, which ends it. With no `record`, nothing. */
+export function sessionRecordings(view: Pick<LiveViewHost, "watch">, record: ((id: string, watch: RecordWatch) => Recording) | undefined): (tag: string, id: string | null) => Promise<void> {
+  const held = new Map<string, { id: string; recording: Recording }>();
+  return async (tag, id) => {
+    const before = held.get(tag);
+    if (before?.id === id) return;
+    if (record && id !== null) held.set(tag, { id, recording: record(id, browserWatch(view, tag)) });
+    else held.delete(tag);
+    await before?.recording.stop("released");
+  };
+}
 
 export type RecordInput = {
   readonly watch: RecordWatch;
@@ -65,7 +93,7 @@ export type RecordInput = {
   readonly folder: string;
   /** The computer's ref id: its file's name. */
   readonly tag: string;
-  readonly kind: "desktop" | "phone";
+  readonly kind: "desktop" | "phone" | "browser";
   /** A line on the run's timeline. */
   readonly say: (words: string) => void;
   /** For tests: the program run in ffmpeg's place, the bounds, and where a line for the operator goes (default stderr). */
@@ -131,7 +159,7 @@ export function startRecording(input: RecordInput): Recording {
   const gap = 1000 / limits.fps;
   const abort = new AbortController();
   const files: string[] = [];
-  let watch: ScreenWatch | undefined;
+  let watch: Pick<ScreenWatch, "close"> | undefined;
   let part: Part | undefined;
   /** The newest switch of files (switchPart): bounded, and awaited by the recording's end. */
   let switching: Promise<void> | undefined;

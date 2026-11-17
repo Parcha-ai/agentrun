@@ -749,7 +749,9 @@ one computer that it keeps between runs, instead of a fresh one for each run:
   account never take each other's. The janitor deletes an agent's computer only once its agent no longer wants it.
 
 **A video of each run.** `computer: {"kind": "desktop", "provider": "e2b", "record": true}` records the computer's
-screen during each of the agent's runs. Off by default; a desktop or a phone only (another kind is 422).
+screen during each of the agent's runs. Off by default; a desktop, a phone or a browser (a sandbox is 422). A browser's is
+each session's page, one file per session (its computer), from the live view's own screencast of it, which the viewer
+shares: frames come as the page changes.
 
 - **It shows everything on the screen.** That includes what a person types while they have taken over the computer, and
   any password, key or private page shown on it. Pixels can't be redacted. Turn it on only for an agent whose screen
@@ -1405,7 +1407,8 @@ saying why. Kernel's browsers run headless, and keep no downloads, so a run on K
 run's process over its pipe, as the rest do. A session's custody (its lease, its tag, what it was
 doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
 page it reads is filed under the run's `work/evidence/`, each read in a file of its own (`0001-browser_read.md`, ...),
-reads at once included. There is no recording. The owner watches the browser live, takes it over and hands it back, and
+reads at once included. No vendor records it; an agent whose browser computer says `record: true` gets its own video
+of each session ([A video of each run](#computers)). The owner watches the browser live, takes it over and hands it back, and
 the agent can ask them to (below). When the run is let go (its work done, or a SIGTERM)
 the sessions it still holds are released at their vendor. An agent's browser stays signed in from one run to the next
 ([saved sign-ins](#saved-sign-ins)).
