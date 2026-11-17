@@ -172,8 +172,9 @@ capabilities again and confirm `models.ready`.
 ## 5. Create the first agent and run it
 
 Check `npx --yes @parcha/agentrun@0.4 agents list` first. If a `release-notes` agent is there, read it with
-`agents get release-notes` and reuse it only when it is this one, with no tools; describe what it actually has.
-Otherwise, with the person's OK, create a small agent with no tools:
+`agents get release-notes` and reuse it only when it is this one, with no tools; describe what it actually has. If a
+different agent already has that id, use the first free one of `release-notes-2`, `release-notes-3` and so on, in both
+commands below. Otherwise, with the person's OK, create a small agent with no tools:
 
 ```sh
 npx --yes @parcha/agentrun@0.4 agents create --body '{"definition":{"id":"release-notes","name":"Release notes","harness":"pi","max_cost_usd":0.25,"instructions":"Write concise release notes from the changes you are given. Group them under Added, Changed and Fixed. Do not invent changes."}}'
