@@ -392,7 +392,7 @@ computer:
 | Kind | What the agent can do | Providers |
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
-| `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B |
+| `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
 | `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |

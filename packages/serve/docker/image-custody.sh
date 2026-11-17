@@ -11,8 +11,7 @@ set -eu
 image=${1:?usage: image-custody.sh <image> [docker run arguments...]}
 shift
 name="agentrun-image-custody-$$"
-# Short, each value its own: every secret set at once goes over the launcher's pipe, which holds 4096 bytes for sure, and
-# the list grows with pi-ai's providers. The token's is the API's, 32 characters or more.
+# Each value its own. The token's is the API's, 32 characters or more.
 canary="nak-$$-$(date +%s)"
 cleanup() { docker rm -f -v "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM

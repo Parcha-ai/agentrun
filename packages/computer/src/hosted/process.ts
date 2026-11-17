@@ -51,6 +51,21 @@ export const pause = (ms: number, signal?: AbortSignal) =>
 		else signal?.addEventListener("abort", finish, { once: true });
 	});
 
+/**
+ * done() asked until it answers a value, pollMs apart: for an image build's waits (a build machine, a snapshot), all
+ * held to one end (epoch ms). Past the end is a timeout, the caller's abort aborted, each a HostError in words; an
+ * abort is read before each ask, so a cancelled caller is never answered a value it would act on.
+ */
+export async function until<T>(what: string, { end, pollMs, signal }: { end: number; pollMs: number; signal?: AbortSignal | undefined }, done: () => Promise<T | undefined>): Promise<T> {
+	for (;;) {
+		if (signal?.aborted) throw new HostError("aborted", `the wait for ${what} was aborted`);
+		const value = await done();
+		if (value !== undefined) return value;
+		if (Date.now() > end) throw new HostError("timeout", `${what} was not ready by ${new Date(end).toISOString()}`);
+		await pause(pollMs, signal);
+	}
+}
+
 /** A signal that aborts with the caller's, or once ms pass. */
 export const bounded = (ms: number, signal?: AbortSignal): AbortSignal => (signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms));
 
@@ -209,6 +224,17 @@ export async function runToExit(host: MachineHost, id: string, argv: readonly st
 		return result.error.code === "timeout" ? fail("timeout", `${what} did not end within ${seconds(ms)}`) : result;
 	}
 	return result;
+}
+
+/**
+ * One step of an image build: argv run to its end as runToExit runs it, and anything but exit 0 thrown, a HostError
+ * (vendor) with the last of what it printed, so the build fails in the step's own words.
+ */
+export async function runChecked(host: MachineHost, id: string, argv: readonly string[], options: { ms: number; signal?: AbortSignal | undefined; what: string }): Promise<RunResult> {
+	const { ms, signal, what } = options;
+	const ran = orThrow(await runToExit(host, id, argv, { ms, ...(signal ? { signal } : {}), what }));
+	if (ran.exitCode !== 0) throw new HostError("vendor", `${what} exited with ${ran.exitCode}: ${`${ran.stderr} ${ran.stdout}`.trim().slice(-300)}`);
+	return ran;
 }
 
 /** A piece of the upload: 192 KiB, which base64 writes as 256 KiB of text, padded at the file's end alone. */

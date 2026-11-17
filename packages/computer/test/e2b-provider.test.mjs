@@ -741,7 +741,7 @@ test("E2B's descriptor declares the connect setting, with no default of its own:
 test("the conformance module reads COMPUTER_E2B_CONNECT as connect, and its dialKit refuses in words: this process is no public server", () => {
 	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY, [ENV.connect]: "dial" }), { apiKey: KEY, connect: "dial" });
 	assert.equal(ENV.connect, "COMPUTER_E2B_CONNECT");
-	assert.throws(() => dialKit(), /an E2B machine on dial dials the server that minted its token, and this process is no public server: run its Core suite from the public server's process \(packages\/serve\/scripts\/dial-conformance\.mjs --provider e2b with COMPUTER_E2B_CONNECT=dial\)/);
+	assert.throws(() => dialKit(), /E2B's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider e2b with COMPUTER_E2B_CONNECT=dial inside a server the internet reaches at AGENTRUN_PUBLIC_URL/);
 });
 
 test("the conformance module's run image on dial is the box template, the one that holds agentrun-dial; a template named still wins", async () => {

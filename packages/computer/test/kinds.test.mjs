@@ -116,6 +116,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.modal.prepareImage, extra.modal.local], [true, undefined]);
 	// E2B starts its sandboxes and desktops from the box image's public template; its computers are remote.
 	assert.deepEqual([extra.e2b.prepareImage, extra.e2b.local], [true, undefined]);
+	// boxd builds its desktop snapshot in the key's org before the first create; its computers are remote.
+	assert.deepEqual([extra.boxd.prepareImage, extra.boxd.local], [true, undefined]);
 	// Morph starts its instances from the box image as a snapshot it builds in the key's account; its computers are remote.
 	assert.deepEqual([extra.morph.prepareImage, extra.morph.local], [true, undefined]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
@@ -135,9 +137,11 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
+	// Cloudflare's containers start from the box image its relay was deployed FROM, which the relay's health names.
+	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (id !== "modal" && id !== "e2b") assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b", "morph"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
@@ -177,7 +181,8 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
-		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE, desktop: all.BOXD_DEFAULT_IMAGE },
+		// A desktop has none: it starts from the snapshot prepareImage() builds.
+		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE },
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -281,6 +286,7 @@ const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTime
 /** boxd's SDK slice: a client whose every machines call fails the test. */
 const BOXD_SDK = class {
 	machines = { ...Object.fromEntries(["create", "get", "list", "delete", "streamExec", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, () => assert.fail(`machines.${name} was called`)])), files: { upload: () => assert.fail("machines.files.upload was called") } };
+	snapshots = Object.fromEntries(["create", "get"].map((name) => [name, () => assert.fail(`snapshots.${name} was called`)]));
 };
 /** ssh2's Client slice for Agent37 and Morph, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
