@@ -12,7 +12,7 @@ import { isNativeRuntime } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -146,7 +146,7 @@ import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
-import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -1660,10 +1660,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
+  // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
+  // never the body, nor a bare digest of it, since a body can hold a credential (a composio trigger's config) and a short
+  // or guessable one could be found from a bare digest by hashing guesses. A trigger create's answer is kept as a read
+  // answers it (replayed). Entries live IDEMPOTENCY_TTL_S (a day), so one an older server wrote (the body itself as its
+  // fingerprint, a composio key in its answer) can outlive an upgrade: the start rewrites each (below, after the trigger
+  // engine), and says how many alone.
+  const fingerprintKey = createHmac("sha256", sealKey).update("agentrun-serve idempotency fingerprint").digest();
+  const fingerprintOf = (text: string) => createHmac("sha256", fingerprintKey).update(text).digest("hex");
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
+  /** A kept answer as its replay sends it, by the route its key was used on: a trigger create's (POST /triggers) with its
+   *  source as a read answers it now (shownTrigger); every other route's as it was, a run's input above all. */
+  const replayed = (path: string, body: unknown): unknown => (path === "/triggers" ? shownTrigger(body) : body);
   const keptFile = join(data, IDEMPOTENCY_FILE);
   const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
   const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
+  /** How many entries the file held that the start did not keep (expired, or never answered): the file is written again
+   *  without them at the start, so no body an older server kept stays on disk past it. */
+  const keptDropped = (kept?.entries?.length ?? 0) - idempotency.size;
   // A failed save rejects only its own caller: the next save starts from a settled chain and writes every kept key.
   let saving: Promise<void> = Promise.resolve();
   const keep = () =>
@@ -1796,6 +1810,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  // A composio trigger kept with a credential of its config in the clear (saved before the config was sealed) is sealed
+  // before the first request: no answer shows it from this start on.
+  // All of it under the store's secureRewrite, so no file of the store keeps the rows' old bytes (the key): when it can't
+  // finish the scrub (a reader held the log back), it is said by a code alone and the next start finishes it.
+  const sealing = options.store ?? store;
+  const sealKept = () => composioTriggers.sealKept(async (id, source) => void (await sealing.triggers.update(id, { source })));
+  await (sealing === store && store.secureRewrite ? store.secureRewrite(sealKept) : sealKept().then((rewritten) => ({ rewritten, left: undefined })))
+    .then(({ left }) => {
+      if (!left) return;
+      const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
+  // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
+  {
+    let scrubbed = 0;
+    for (const [slot, v] of idempotency) {
+      const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
+      const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
+      if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
+      idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
+      scrubbed++;
+    }
+    if (scrubbed || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    if (scrubbed) {
+      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    }
+  }
   /** What a save refused while Composio triggers use the server says to do once they are gone (composio-triggers.ts inUse). */
   const SAVE_AFTER_TRIGGERS = "then save the server again";
   /** What a save over a preset server left at Composio (ComposioDropped), removed there with the key it was made with, in
@@ -2034,7 +2080,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key === undefined) return work();
     if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Idempotency-Key is 1 to 255 characters");
     const slot = `${path}\n${key}`;
-    const fingerprint = stable(body);
+    const text = stable(body);
+    const fingerprint = fingerprintOf(text);
     const now = Date.now();
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
     const known = idempotency.get(slot);
@@ -2046,7 +2093,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
     try {
-      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(fingerprint) });
+      // The run's origin keeps the SHA-256 it always has: a run the store made under a key before this start compares to it.
+      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(text) });
     } catch (error) {
       idempotency.delete(slot);
       throw error;
@@ -2054,7 +2102,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
     // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
     // then: the store keeps its run under the key's origin.
-    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
+    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: replayed(path, answer.body), headers: answer.headers ?? {} } });
     await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
     return answer;
   }
