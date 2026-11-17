@@ -19,8 +19,14 @@ test("with no random bytes to name a temporary file, a display copy is skipped a
   const bin = join(dir, "bin");
   const work = join(dir, "work");
   await Promise.all([bin, work, join(dir, "tmp")].map((d) => mkdir(d)));
+  // Each name once, the first directory's: a name already linked is skipped by name, never by existsSync, which follows
+  // the link and reads a dangling one (a runner image's broken /usr/bin entry) as absent, so the second link threw EEXIST.
+  const linked = new Set();
   for (const from of ["/usr/bin", "/bin"]) {
-    for (const name of readdirSync(from)) if (name !== "od" && !existsSync(join(bin, name))) symlinkSync(join(from, name), join(bin, name));
+    for (const name of readdirSync(from)) if (name !== "od" && !linked.has(name)) {
+      linked.add(name);
+      symlinkSync(join(from, name), join(bin, name));
+    }
   }
   // An od that reads nothing and fails, having planted a FIFO at `.put.<pid>.` for itself and each parent, in the
   // directory the copy runs in.

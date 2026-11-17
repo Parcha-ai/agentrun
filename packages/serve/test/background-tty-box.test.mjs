@@ -19,8 +19,14 @@ test("a box with no script refuses tty: true in plain words, and makes nothing; 
   const bin = join(dir, "bin");
   const work = join(dir, "work");
   await Promise.all([bin, work, join(dir, "tmp")].map((d) => import("node:fs/promises").then((fs) => fs.mkdir(d))));
+  // Each name once, the first directory's: a name already linked is skipped by name, never by existsSync, which follows
+  // the link and reads a dangling one (a runner image's broken /usr/bin entry) as absent, so the second link threw EEXIST.
+  const linked = new Set();
   for (const from of ["/usr/bin", "/bin"]) {
-    for (const name of readdirSync(from)) if (name !== "script" && !existsSync(join(bin, name))) symlinkSync(join(from, name), join(bin, name));
+    for (const name of readdirSync(from)) if (name !== "script" && !linked.has(name)) {
+      linked.add(name);
+      symlinkSync(join(from, name), join(bin, name));
+    }
   }
   const local = new NodeExecutionEnv({ cwd: work });
   const env = { cwd: work, exec: (command, options, context) => local.exec(command, { ...options, env: { PATH: bin, TMPDIR: join(dir, "tmp") }, inheritEnv: false }, context) };
@@ -40,8 +46,14 @@ test("a box whose script is not util-linux's (busybox's takes no -e and always e
   const bin = join(dir, "bin");
   const work = join(dir, "work");
   await Promise.all([bin, work, join(dir, "tmp")].map((d) => import("node:fs/promises").then((fs) => fs.mkdir(d))));
+  // Each name once, the first directory's: a name already linked is skipped by name, never by existsSync, which follows
+  // the link and reads a dangling one (a runner image's broken /usr/bin entry) as absent, so the second link threw EEXIST.
+  const linked = new Set();
   for (const from of ["/usr/bin", "/bin"]) {
-    for (const name of readdirSync(from)) if (name !== "script" && !existsSync(join(bin, name))) symlinkSync(join(from, name), join(bin, name));
+    for (const name of readdirSync(from)) if (name !== "script" && !linked.has(name)) {
+      linked.add(name);
+      symlinkSync(join(from, name), join(bin, name));
+    }
   }
   // A stand-in for busybox 1.36's script, as its source answers: getopt "ac:fqt::" refuses -e (and --version) with its
   // usage, and a session it runs always ends with EXIT_SUCCESS.
