@@ -33,11 +33,78 @@ type Socket struct {
 	Type string `json:"type"`
 }
 
-// SocketSearch is what ConnectableSockets found: the sockets, and, for each root it could not search whole, why, in
-// words. A search with any Incomplete is no proof that nothing else is reachable.
+// SocketSearch is what ConnectableSockets found: the sockets; for each root it could not search whole, why, in words;
+// and the folders it did not go into because no socket can be a file there (Skipped, each with its filesystem). A
+// search with any Incomplete is no proof that nothing else is reachable; Skipped takes nothing from the proof.
 type SocketSearch struct {
 	Sockets    []Socket `json:"sockets"`
 	Incomplete []string `json:"incomplete"`
+	Skipped    []string `json:"skipped"`
+}
+
+// socketless are the filesystems, by the type the mount table names, that no unix socket can be a file of: the kernel's
+// own views (of its processes, devices, control groups, tracing, security modules, BPF objects, configuration, crash
+// records, binary formats, FUSE connections, and autofs's trigger points), none of which can make a socket's file. A
+// container runtime may mount them inside a searched root: Cloudflare's mounts proc and sysfs at /run/cloudchamber,
+// about 58,000 entries, which filled the 50,000-entry budget of /run before (cloudflare-run-measure-1, 11-17; the only
+// socket in /run there was computerd's own).
+var socketless = map[string]bool{
+	"proc": true, "sysfs": true, "cgroup": true, "cgroup2": true, "debugfs": true, "tracefs": true, "securityfs": true,
+	"bpf": true, "configfs": true, "pstore": true, "binfmt_misc": true, "fusectl": true, "autofs": true,
+}
+
+// readMounts is the mount table at path (/proc/self/mountinfo's form): each mount point, by its path, with the type of
+// the mount on top there. nil when it cannot be read: then no folder is skipped.
+func readMounts(path string) map[string]string {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	mounts := map[string]string{}
+	for _, line := range strings.Split(string(text), "\n") {
+		fields := strings.Fields(line)
+		for i := 6; i+1 < len(fields); i++ {
+			if fields[i] == "-" && len(fields) > 4 {
+				mounts[unescapeMount(fields[4])] = fields[i+1] // a later line is mounted over an earlier one
+				break
+			}
+		}
+	}
+	return mounts
+}
+
+// unescapeMount undoes the kernel's octal escapes of a mount point (\040 a space, \011 a tab, \012 a newline, \134 a
+// backslash).
+func unescapeMount(path string) string {
+	for _, pair := range [][2]string{{`\040`, " "}, {`\011`, "\t"}, {`\012`, "\n"}, {`\134`, `\`}} {
+		path = strings.ReplaceAll(path, pair[0], pair[1])
+	}
+	return path
+}
+
+// mountsBelow are the mounts strictly below the folder at path that a socket can be a file of, and that no other such
+// mount below path holds: walking each of them reaches the rest.
+func mountsBelow(mounts map[string]string, path string) []string {
+	path = strings.TrimSuffix(path, string(filepath.Separator))
+	below := map[string]bool{}
+	for point, kind := range mounts {
+		if strings.HasPrefix(point, path+string(filepath.Separator)) && !socketless[kind] {
+			below[point] = true
+		}
+	}
+	// Each folder above a mount, up to path, is looked up: a sorted list would put a/sub after a-b, not right after a.
+	outer := []string{}
+	for point := range below {
+		held := false
+		for up := filepath.Dir(point); len(up) > len(path) && !held; up = filepath.Dir(up) {
+			held = below[up]
+		}
+		if !held {
+			outer = append(outer, point)
+		}
+	}
+	sort.Strings(outer)
+	return outer
 }
 
 // The socket types a connect is tried with, each by Go's network name and the name reported.
@@ -49,8 +116,10 @@ var socketTypes = []struct{ network, name string }{{"unix", "stream"}, {"unixgra
 // is in no folder: the network namespace holds it, so every program in the namespace reaches it, and the table alone
 // names it. Each is tried with a connect of each type, bounded by timeout, at once; the real paths and names of those
 // that accept, with the type, sorted. A root whose walk reached a bound, and a table that could not be read, are named
-// in Incomplete.
-func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, timeout time.Duration) SocketSearch {
+// in Incomplete. A mount point, by the mount table at mountinfo (/proc/self/mountinfo), of a filesystem no socket can
+// be a file of (socketless: proc, sysfs and the kernel's other views) is not gone into, and is named in Skipped; a mount
+// below it that can hold a socket is walked still, within the same root's bounds.
+func ConnectableSockets(roots []string, netUnix, mountinfo string, bounds SocketBounds, timeout time.Duration) SocketSearch {
 	candidates := map[string]bool{}
 	add := func(path string) {
 		real, err := filepath.EvalSymlinks(path)
@@ -62,6 +131,8 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 		}
 	}
 	incomplete := []string{}
+	skipped := []string{}
+	mounts := readMounts(mountinfo)
 	seen := map[string]bool{}
 	for _, root := range roots {
 		real, err := filepath.EvalSymlinks(root)
@@ -72,7 +143,8 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 		base := strings.Count(real, string(filepath.Separator))
 		entries, tooDeep, stopped := 0, false, false
 		under := map[string]int{} // entries walked below each folder or file at the root's top level
-		_ = filepath.WalkDir(real, func(path string, entry fs.DirEntry, err error) error {
+		pending := []string{real} // the root, then the mounts below a skipped folder
+		visit := func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return nil // unreadable: skipped, as a program could not reach in either
 			}
@@ -84,6 +156,11 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 			if rel, err := filepath.Rel(real, path); err == nil && rel != "." {
 				under[filepath.Join(real, strings.SplitN(rel, string(filepath.Separator), 2)[0])]++
 			}
+			if kind, ok := mounts[path]; ok && entry.IsDir() && socketless[kind] {
+				skipped = append(skipped, fmt.Sprintf("%s (%s)", path, kind))
+				pending = append(pending, mountsBelow(mounts, path)...)
+				return filepath.SkipDir
+			}
 			if entry.IsDir() && path != real && strings.Count(path, string(filepath.Separator))-base >= bounds.Depth {
 				tooDeep = true
 				return filepath.SkipDir
@@ -92,7 +169,12 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 				add(path)
 			}
 			return nil
-		})
+		}
+		for len(pending) > 0 && !stopped {
+			next := pending[0]
+			pending = pending[1:]
+			_ = filepath.WalkDir(next, visit)
+		}
 		switch {
 		case stopped:
 			incomplete = append(incomplete, fmt.Sprintf("%s: the walk stopped after %d entries, its budget (most under %s)", real, bounds.Entries, heaviest(under, 3)))
@@ -134,7 +216,7 @@ func ConnectableSockets(roots []string, netUnix string, bounds SocketBounds, tim
 	}
 	wg.Wait()
 	sort.Slice(sockets, func(i, j int) bool { return sockets[i].Path < sockets[j].Path })
-	return SocketSearch{Sockets: sockets, Incomplete: incomplete}
+	return SocketSearch{Sockets: sockets, Incomplete: incomplete, Skipped: skipped}
 }
 
 // heaviest names the n paths with the most entries walked below them, most first, each with its count, so a walk that

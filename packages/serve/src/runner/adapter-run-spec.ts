@@ -2,13 +2,15 @@
 // workspace, its computer, its tools, its model route, its spend cap and its end metrics — built here instead, from the
 // run's launch record and its revision, and handed to the kernel's adapter loop (adapter-loop.ts) as one AdapterRunSpec.
 // The dispatch switch (dispatch.ts resolve) runs a pi run on `createAdapterLoop((claim, run) =>
-// adapterRunSpecFromLaunch(launch, run, deps, claim))`.
+// adapterRunSpecFromLaunch(launch, run, deps, claim, runner))`, and so does a harness a module adds with no adapter facts
+// of its own: the session's adapter is the run's runner's (RunnerHarness.adapter), pi's for a pi run.
 //
 // The one ledger (B2c): pi's model requests go through the session's proxy, booked by the runner's booking under the
 // run's cap; the cap prices a request as main's calculateCost does (tiers included), on the hold and the booking. The
 // tools are the kernel registry's hands on the run's Workspace (runTools), and — once built through the ToolHost below —
 // tools.ts's full set (browser, web, MCP, decisions, monid) by their own names. The gate before a call's intent is the
 // run's revision's tool settings, read through runGate (approvals "never" among them), the adapter loop asking it.
+import { dirname, join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -48,7 +50,7 @@ import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
-import { COMPUTER_ROOT, recordingsFolder, runFolder } from "../workspace/paths.js";
+import { COMPUTER_ROOT, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
@@ -57,7 +59,8 @@ import { durableWait } from "../workflow/pi-versions.js";
 import { claimSecrets, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withModelKeys } from "./claim-secrets.js";
 import { catalogSessionNames, type ClaimMcp, mcpForClaim } from "./mcp-run.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { piAdapter } from "./adapters/pi.js";
+import { RUNNER_HARNESSES, type RunnerHarness } from "./adapters/index.js";
+import { DEFAULT_HARNESS } from "../harness.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
@@ -400,13 +403,15 @@ export async function storeSettings(store: Pick<Store, "settings">): Promise<Awa
   }
 }
 
-/** pi's spec for a claimed run. What it makes for the run (its Archil mount credential, its Workspace, its computer, its
- *  tools) is held until the spec's release; a build that throws part-way lets go what it made by then (spec-holds.ts). */
-export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim): Promise<AdapterRunSpec> {
-  return specBuilt((holds) => adapterSpec(launch, run, deps, claim, holds));
+/** pi's spec for a claimed run, on `runner`'s adapter (pi's when none is given; a harness module's runner for a harness it
+ *  adds with no adapter facts), its visible record kept as that runner says (RunnerHarness.record). What it makes for the
+ *  run (its Archil mount credential, its Workspace, its computer, its tools) is held until the spec's release; a build
+ *  that throws part-way lets go what it made by then (spec-holds.ts). */
+export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, runner: RunnerHarness = RUNNER_HARNESSES[DEFAULT_HARNESS]!): Promise<AdapterRunSpec> {
+  return specBuilt((holds) => adapterSpec(launch, run, deps, claim, holds, runner));
 }
 
-async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
+async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds, runner: RunnerHarness): Promise<AdapterRunSpec> {
   const context = BACKGROUND_CONTEXT;
   // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
   const reach = await mcpReachOf(deps);
@@ -582,17 +587,28 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       }
     }
   }
-  const adapter = piAdapter({
+  // The run's adapter is its runner's (runner/adapters/index.ts RunnerHarness: pi's, or the one a harness module's entry
+  // brings), made from the run's launch on its route. Its private files, where it keeps any, go in this claim's folder of
+  // the run's scratch (the CLI spec's layout), swept at the claim's end with the earlier claims' and any parent left empty.
+  // pi's own options (its extensions, tools, redactor, the model's catalog entry, hosted search, tiers, and the route's
+  // whole provider) are the harness's own options (`extra`), passed on as given.
+  const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
+  const harnesses = join(scratch, "harness");
+  holds.hold({ scratch: { sweep: async () => (await import("./cli-run-spec.js")).sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
+  const adapter = await runner.adapter({
     run,
+    model: route.model,
+    provider: route.provider,
+    ...(route.price ? { price: route.price as never } : {}),
+    sessionsDir: join(harnesses, String(claim.epoch)),
+    ...(route.fetch ? { fetch: route.fetch } : {}),
+  }, {
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
     extensions: native,
     tools: piTools,
-    model: route.model,
     provider: route.provider,
     redact: cut,
     ...(route.like ? { like: route.like } : {}),
-    ...(route.price ? { price: route.price as never } : {}),
-    ...(route.fetch ? { fetch: route.fetch } : {}),
     // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
     // proxy admits that search's one request (it goes through the session's port: buildToolHost's `search`) and books it
     // with each search it ran.
@@ -807,6 +823,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   return {
     adapter,
+    // Who keeps the run's visible record: its runner says (none: the adapter, as pi keeps its own).
+    ...(runner.record ? { record: runner.record } : {}),
     session,
     input,
     // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).

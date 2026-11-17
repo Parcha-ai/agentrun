@@ -165,7 +165,13 @@ export interface components {
       allow: string[];
     };
     harnesses?: {
-      id: "pi" | "claude-agent" | "codex" | "opencode";
+      id: string;
+      label: string;
+      promises: {
+        resume: "exact" | "load" | "restart";
+        tool_gate: "every_call" | "permission" | "config";
+        billing: "proxy" | "plan";
+      };
       available: boolean;
       free_models: {
         id: string;
@@ -192,7 +198,7 @@ export interface components {
       available: boolean;
       reason?: string;
       missing?: string[];
-      harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+      harnesses: string[];
       providers?: string[];
       provider?: string;
       default_provider?: string;
@@ -314,7 +320,7 @@ export interface components {
       strong?: string;
     };
     thinking?: "low" | "medium" | "high" | "xhigh" | "max";
-    harness?: "pi" | "claude-agent" | "codex" | "opencode";
+    harness?: string;
     place?: {
       mode: "runner";
     } | {

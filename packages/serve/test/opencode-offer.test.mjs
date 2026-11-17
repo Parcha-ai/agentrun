@@ -23,7 +23,11 @@ import { modelOn } from "../dist/provider.js";
 
 const pinned = verifyOpenCodeBinary(findOpenCode());
 const skip = pinned instanceof Error && env.AGENTRUN_OPENCODE_REQUIRE_BINARY !== "1" ? pinned.message : false;
-const opencodeOf = async (given) => (await harnessOffers(given)).find((h) => h.id === "opencode");
+// Its label and promises are harness-one-table.test.mjs's: each case here reads what the offer says of its run.
+const opencodeOf = async (given) => {
+  const { label: _label, promises: _promises, ...offer } = (await harnessOffers(given)).find((h) => h.id === "opencode");
+  return offer;
+};
 const INSTALL = "npm install @parcha/agentrun-serve opencode-ai@1.19.5";
 const STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
 

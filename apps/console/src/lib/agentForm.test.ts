@@ -173,6 +173,20 @@ describe("harnessOptions", () => {
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
   });
+  it("offers a harness the server adds (one entry of its table) after the built-in ones, by the label the server gives it, else its id", () => {
+    const listed = [{ id: "acme", label: "Acme", available: false, reason: "Acme stands in here." }, { id: "pi", available: true }, { id: "zed", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "acme", label: "Acme", available: false, reason: "Acme stands in here." },
+      { id: "zed", label: "zed", available: true, reason: undefined },
+    ]);
+  });
+  it.each(["workflow", "decision"])("keeps a harness the server adds with the id %s a harness, never a starter: one choice of it, and its create names it", (id) => {
+    const options = harnessOptions([{ id: "pi", available: true }, { id, label: "Module", available: true }], { available: true });
+    expect(options.filter((h) => h.id === id)).toEqual([{ id, label: "Module", available: true, reason: undefined }]);
+    expect(new Set(options.map((h) => h.id)).size).toBe(options.length);
+    expect(createBody({ name: "M", description: "", instructions: "Answer.", harness: id, tools: [] })).toEqual({ definition: { version: 1, name: "M", instructions: "Answer.", harness: id, skills: [], tools: [] } });
+  });
   it("offers OpenCode last of the harnesses, when the server lists it", () => {
     const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
     expect(harnessOptions(listed)).toEqual([
@@ -185,13 +199,14 @@ describe("harnessOptions", () => {
 
 describe("a decision agent", () => {
   it("is offered on create after the harnesses, as a choice and never a harness id: available when the server runs decision workflows, else disabled with why", () => {
-    expect(DECISION).toBe("decision");
-    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision", "workflow"]);
-    expect(harnessOptions(caps.body.harnesses, { available: true }).find((h) => h.id === "decision")).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
-    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).find((h) => h.id === "decision")!;
-    expect([off.id, off.available]).toEqual(["decision", false]);
+    // No harness id can be the choice's value (the API's harness id pattern).
+    expect(DECISION).not.toMatch(/^[a-z][a-z0-9-]{0,39}$/);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", DECISION, WORKFLOW]);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).find((h) => h.id === DECISION)).toEqual({ id: DECISION, label: "Decision", available: true, reason: undefined });
+    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).find((h) => h.id === DECISION)!;
+    expect([off.id, off.available]).toEqual([DECISION, false]);
     expect(off.reason).toMatch(/decision workflows/);
-    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("decision");
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain(DECISION);
   });
 
   it("is created as a workflow revision from the starter decision workflow: no instructions, harness, thinking or model, and no tools", () => {
@@ -256,11 +271,11 @@ describe("a decision agent", () => {
 
 describe("a general workflow agent", () => {
   it("is offered on create after Decision, available on every server, a server with no decision provider included; never when editing", () => {
-    expect(WORKFLOW).toBe("workflow");
+    expect(WORKFLOW).not.toMatch(/^[a-z][a-z0-9-]{0,39}$/);
     for (const available of [true, false]) {
-      expect(harnessOptions(caps.body.harnesses, { available }).at(-1)).toEqual({ id: "workflow", label: "Workflow", available: true, reason: undefined });
+      expect(harnessOptions(caps.body.harnesses, { available }).at(-1)).toEqual({ id: WORKFLOW, label: "Workflow", available: true, reason: undefined });
     }
-    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("workflow");
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain(WORKFLOW);
   });
 
   it("is created as a workflow revision from the general starter: no instructions, harness, thinking, model or tools, and no decision provider", () => {

@@ -176,7 +176,7 @@ func main() {
 		}
 		result := probe.Run(targets, probe.ConnectBounds)
 		if sockets {
-			search := probe.ConnectableSockets(probe.SocketRoots, "/proc/net/unix", probe.DefaultSocketBounds, 2*time.Second)
+			search := probe.ConnectableSockets(probe.SocketRoots, "/proc/net/unix", "/proc/self/mountinfo", probe.DefaultSocketBounds, 2*time.Second)
 			result.Sockets = &search
 			listeners := probe.Listeners("/proc")
 			result.Listeners = &listeners

@@ -160,7 +160,7 @@ export type DefinitionInput = {
     strong?: string;
   };
   thinking?: "low" | "medium" | "high" | "xhigh" | "max";
-  harness?: "pi" | "claude-agent" | "codex" | "opencode";
+  harness?: string;
   place?: {
     mode: "runner";
   } | {
@@ -952,7 +952,13 @@ export type Capabilities = {
     allow: Array<string>;
   };
   harnesses?: Array<{
-    id: "pi" | "claude-agent" | "codex" | "opencode";
+    id: string;
+    label: string;
+    promises: {
+      resume: "exact" | "load" | "restart";
+      tool_gate: "every_call" | "permission" | "config";
+      billing: "proxy" | "plan";
+    };
     available: boolean;
     free_models: Array<{
       id: string;
@@ -979,7 +985,7 @@ export type Capabilities = {
     available: boolean;
     reason?: string;
     missing?: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     providers?: Array<string>;
     provider?: string;
     default_provider?: string;

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps, type Revision } from "./AgentEditor";
 import { PerHarness } from "./ToolSettings";
-import { type Agent, toolOffers, toolsOnSwitch } from "@/lib/agentForm";
+import { type Agent, DECISION, toolOffers, toolsOnSwitch, WORKFLOW } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
 
 // The agent editor's tools follow the harness: what it shows ticked, and what Save sends, is what the chosen harness runs
@@ -95,6 +95,20 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
 
   it("keeps a tool capabilities don't list, for the server to judge", () => {
     expect(toolsOnSwitch("claude-agent", ["read", "a_future_tool", "ask_person"], [], caps.tools)).toEqual({ tools: ["read", "a_future_tool"], held: ["ask_person"] });
+  });
+});
+
+describe("AgentEditor: a starter's card on a new agent", () => {
+  it("names the starter under its label as before (decision, workflow), never its value that no harness id can be", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentEditor, { agent: null, revisions: [], caps: { ...caps, decisionProvider: "openrouter" }, step: "settings", onSave: async () => null } as never)));
+    for (const [value, shown] of [[DECISION, "decision"], [WORKFLOW, "workflow"]]) {
+      const input = host.querySelector<HTMLInputElement>(`input[name="harness"][value="${value}"]`);
+      expect(input, value).not.toBeNull();
+      const sub = input!.parentElement!.querySelector("span.min-w-0 > span:last-child");
+      expect(sub?.textContent).toBe(shown);
+    }
   });
 });
 
