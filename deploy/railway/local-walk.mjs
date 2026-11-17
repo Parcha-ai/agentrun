@@ -26,11 +26,11 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the walk publishes the 
  *  from `envFile`, its port on this machine's loopback, the volume at each mount path with nothing copied in, and its
  *  start command as the entrypoint and its arguments. */
 export function dockerRunArgs(service, { name, volume, envFile, image = service.source.image }) {
-  const env = service.variables ?? {};
-  const port = Number(env.PORT?.defaultValue);
+  const env = renderVariables(service, { domain: DOMAIN });
+  const port = Number(env.PORT);
   const [entrypoint, ...args] = startArgv(service.deploy.startCommand);
   const mounts = Object.values(service.volumeMounts ?? {}).flatMap((m) => ["-v", `${volume}:${m.mountPath}:nocopy`]);
-  const user = env.RAILWAY_RUN_UID ? ["--user", env.RAILWAY_RUN_UID.defaultValue] : [];
+  const user = env.RAILWAY_RUN_UID ? ["--user", env.RAILWAY_RUN_UID] : [];
   return ["run", "-d", "--name", name, ...user, "--env-file", envFile, "-p", `${LOOPBACK}::${port}`, ...mounts, "--entrypoint", entrypoint, image, ...args];
 }
 

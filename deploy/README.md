@@ -77,14 +77,19 @@ The button goes on the line below once the template is published.
 <!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->
 <!-- [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=agentrun) -->
 
-Once you click, Railway shows the service's variables. The token and the seal key are already filled in, and the model
-keys are optional. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
+Once you click, Railway shows the service's variables, all filled in: the token and the seal key are made for you, and
+there's nothing to type. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
 When the deploy is active, open that domain and paste `AGENTRUN_TOKEN` from the service's Variables tab as the setup
 code, or open the setup link in the deployment's Deploy Logs. Set your password, then Continue with ChatGPT or add a
 model key in the console.
 
 Railway mounts the volume as root. The service starts as root only to give the volume to the server's own user, then
 runs the server as that user. `railway/publish-and-walk.sh` publishes the template from `template.json` and walks it.
+Railway's API makes a template only by copying a project, and the copy drops plain values, optional flags and some
+deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character
+secrets over a one-character alphabet (always `7340` and `0`), and model keys are added in the console, not as variables.
+Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
+then picks up again after the restart.
 
 ## The first visit's setup code
 
@@ -294,5 +299,5 @@ Two walk the Railway template:
   the password survives a restart.
 - `railway/publish-and-walk.sh`, run by hand with a Railway token: the template deployed into a throwaway project, its
   health, its first visit and its token as the setup code, then the project deleted. With `--first-run` it also runs a
-  no-tool agent to completion on a model key given in the template's form. `--dry-run` prints the plan with no token;
+  no-tool agent to completion, its model key saved in the console as a person saves it. `--dry-run` prints the plan with no token;
   `--check-api` validates every operation it sends against Railway's live API.

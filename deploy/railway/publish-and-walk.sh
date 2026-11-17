@@ -10,9 +10,9 @@
 #       that AGENTRUN_TOKEN works as that code. It reads the project's Railway usage, deletes the project, and publishes
 #       the template. It prints the README's button line when that line changes. Each run costs a few cents of usage.
 #   ... --first-run [--model ID]
-#       Also the first run a person makes: OPENROUTER_API_KEY (from the environment or stdin, as the token is) goes in
-#       the deploy's form, then a no-tool "Release notes" agent on pi runs to completion over the API with the deploy's
-#       AGENTRUN_TOKEN. The run is capped at $1.
+#       Also the first run a person makes. OPENROUTER_API_KEY (from the environment or stdin, as the token is) is saved
+#       in the console's Settings with the session the setup signed in, then a no-tool "Release notes" agent on pi runs
+#       to completion over the API with the deploy's AGENTRUN_TOKEN. The run is capped at $1.
 #   ... publish-and-walk.sh WORKSPACE_ID --walk CODE       walks the template CODE and publishes nothing (a release's check)
 #   ... publish-and-walk.sh WORKSPACE_ID --template CODE   walks and publishes CODE, a template made in Railway's editor
 #   deploy/railway/publish-and-walk.sh --dry-run [WORKSPACE_ID]

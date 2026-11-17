@@ -1,6 +1,6 @@
 // Publishes deploy/railway/template.json as AgentRun's Railway template and walks it: one deploy of the template into a
 // throwaway project, its health, its first visit asking for the setup code, the token made for it working as that code,
-// with --first-run an agent's first run finished on a model key given in the template's form, then the project deleted.
+// with --first-run an agent's first run finished on a model key saved in the console, then the project deleted.
 // Run through publish-and-walk.sh, which says how; this file is its body.
 //
 // Railway's public API makes a template only from a project (templateGenerate) and changes none of a template's services
@@ -25,9 +25,10 @@ const README = new URL("../README.md", import.meta.url);
 const OVERVIEW = new URL("./overview.md", import.meta.url);
 const PUBLISH = { category: "AI/ML", description: "Deploy and host AgentRun, an open-source platform for running agents, on Railway" };
 
-/** The first run --first-run makes: a no-tool agent on pi, the model key given as a person gives it in the template's
- *  form, and a cap well under the walk's budget. */
+/** The first run --first-run makes: a no-tool agent on pi, the model key saved as a person saves it in the console's
+ *  Settings, and a cap well under the walk's budget. */
 export const FIRST_RUN = {
+  keyId: "openrouter",
   keyName: "OPENROUTER_API_KEY",
   model: "openrouter/anthropic/claude-haiku-5.5",
   maxCostUsd: 1,
@@ -63,6 +64,7 @@ export const OPS = {
   Usage: `query Usage($projectId: String!, $startDate: DateTime) { usage(projectId: $projectId, startDate: $startDate, includeDeleted: true, measurements: [CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, NETWORK_TX_GB]) { measurement value } }`,
   TemplatePublish: `mutation TemplatePublish($id: String!, $input: TemplatePublishInput!) { templatePublish(id: $id, input: $input) { id code status } }`,
   ProjectDelete: `mutation ProjectDelete($id: String!) { projectDelete(id: $id) }`,
+  TemplateDelete: `mutation TemplateDelete($id: String!, $input: TemplateDeleteInput!) { templateDelete(id: $id, input: $input) }`,
 };
 
 /** The README's Railway button: the one line after the mark. Until the template is published it is the placeholder, the
@@ -79,9 +81,10 @@ class Refused extends Error {
   }
 }
 
-/** curl's arguments for one request, its headers and body read from the config on stdin (-K -). Nothing secret is here. */
+/** curl's arguments for one request, its headers and body read from the config on stdin (-K -), the answer's status line
+ *  after its body and its headers as JSON on stderr. Nothing secret is here. */
 export function curlArgs(url, { method = "GET", timeoutS = 60 } = {}) {
-  return ["-sS", "--max-time", String(timeoutS), "-X", method, "-K", "-", "-w", "\n%{http_code} %{content_type}", url];
+  return ["-sS", "--max-time", String(timeoutS), "-X", method, "-K", "-", "-w", "\n%{http_code}%{stderr}%{header_json}", url];
 }
 
 const quoted = (s) => `"${String(s).replace(/[\\"]/g, (c) => `\\${c}`).replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")}"`;
@@ -90,8 +93,10 @@ const quoted = (s) => `"${String(s).replace(/[\\"]/g, (c) => `\\${c}`).replace(/
 export const curlConfig = (headers = {}, body) =>
   [...Object.entries(headers).map(([k, v]) => `header = ${quoted(`${k}: ${v}`)}`), ...(body === undefined ? [] : [`data-binary = ${quoted(body)}`])].join("\n") + "\n";
 
-/** One HTTP request through curl, its headers and body in the config on curl's stdin. Answers a Response's few parts the
- *  walk reads: status, the content-type header, json() and text(). */
+/** An answer as the walk reads it, a Response's few parts: status, headers.get (a header's first value), json(), text(). */
+export const answer = (status, headers, text) => ({ status, headers: { get: (n) => headers[n.toLowerCase()]?.[0] ?? null }, text: async () => text, json: async () => JSON.parse(text) });
+
+/** One HTTP request through curl, its headers and body in the config on curl's stdin. */
 export function curl(url, { method = "GET", headers = {}, body, timeoutS = 60 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("curl", curlArgs(url, { method, timeoutS }), { stdio: ["pipe", "pipe", "pipe"] });
@@ -101,13 +106,14 @@ export function curl(url, { method = "GET", headers = {}, body, timeoutS = 60 } 
     child.stderr.setEncoding("utf8").on("data", (c) => (err += c));
     child.on("error", reject);
     child.on("close", (code) => {
-      if (code !== 0) return reject(new Error(`${method} ${url}: curl exit ${code} ${err.trim()}`));
+      // Only curl's own lines: the rest of stderr is the answer's headers, which may set a session cookie.
+      if (code !== 0) return reject(new Error(`${method} ${url}: curl exit ${code} ${err.split("\n").filter((l) => l.startsWith("curl:")).join(" ")}`));
       const cut = out.lastIndexOf("\n");
-      const tail = out.slice(cut + 1);
-      const space = tail.indexOf(" ");
-      const text = out.slice(0, cut);
-      const type = space < 0 ? "" : tail.slice(space + 1);
-      resolve({ status: Number(space < 0 ? tail : tail.slice(0, space)), headers: { get: (n) => (n.toLowerCase() === "content-type" ? type : null) }, text: async () => text, json: async () => JSON.parse(text) });
+      let headers = {};
+      try {
+        headers = Object.fromEntries(Object.entries(JSON.parse(err.slice(err.indexOf("{")))).map(([k, v]) => [k.toLowerCase(), v]));
+      } catch {}
+      resolve(answer(Number(out.slice(cut + 1)), headers, out.slice(0, cut)));
     });
     child.stdin.on("error", () => {}); // curl may exit before it reads its config
     child.stdin.end(curlConfig(headers, body));
@@ -154,7 +160,7 @@ export async function checkApi(client, log) {
     DeploymentLogs: { id, filter: "Set up this server" },
     Usage: { projectId: id, startDate: new Date(0).toISOString() },
     TemplatePublish: { id, input: { ...PUBLISH, readme: "check", workspaceId: id } },
-    ProjectDelete: { id },
+    ProjectDelete: { id }, TemplateDelete: { id, input: { workspaceId: id } },
   };
   let bad = 0;
   for (const op of Object.keys(OPS)) {
@@ -187,16 +193,12 @@ export function sourcePatch(service, serviceId, current = {}) {
   return { services: { [serviceId]: { source: { image: service.source.image }, deploy: service.deploy, variables } } };
 }
 
-/** A template's config as its deploy form sends it, as the Railway CLI's `deploy --template` does: each variable's
- *  `value` is the one given (by `NAME` or `Service.NAME`), else its default; an optional one with neither is left out. */
-export function formValues(config, given = {}) {
+/** A template's config as its deploy form sends it untouched, as the Railway CLI's `deploy --template` does: each
+ *  variable's `value` is its default; one with no default is left out. */
+export function formValues(config) {
   const out = structuredClone(config);
   for (const service of Object.values(out.services ?? {})) {
-    for (const [name, v] of Object.entries(service.variables ?? {})) {
-      if (!v) continue;
-      const value = given[`${service.name}.${name}`] ?? given[name] ?? (v.defaultValue ? v.defaultValue : undefined);
-      if (value !== undefined) v.value = value;
-    }
+    for (const v of Object.values(service.variables ?? {})) if (v?.defaultValue) v.value = v.defaultValue;
   }
   return out;
 }
@@ -273,6 +275,12 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
     step.pass("template", `${had.code} (${had.id}, ${had.status}) already deploys what template.json says`);
     return had;
   }
+  // An earlier run's template that was never published (no button points at it) and deploys something else is deleted.
+  const image = service.source.image.replace(/:[^:/]+$/, ":");
+  for (const t of ours.filter((t) => t.status !== "PUBLISHED" && Object.values(t.serializedConfig?.services ?? {}).some((s) => s.source?.image?.startsWith(image)))) {
+    await client.call("TemplateDelete", { id: t.id, input: { workspaceId } });
+    step.pass("stale template deleted", `${t.code} (${t.id}): never published, and it deploys something other than template.json`);
+  }
   const made = (await client.call("TemplateGenerate", { projectId: source.id, environmentId })).templateGenerate;
   const before = ours.find((t) => t.status === "PUBLISHED");
   const moved = before ? `; it replaces ${before.code}, whose button must move to the new code` : "";
@@ -295,18 +303,17 @@ async function usageOf(client, projectId, since) {
 }
 
 /** One deploy of the template into a throwaway project, checked as a person who clicks the button meets it, then deleted.
- *  With `firstRun` ({key, model}), the key goes in the form as a person pastes it, and the walk ends with that person's
- *  first run: an agent made and run to completion over the API with the deploy's own AGENTRUN_TOKEN. */
+ *  With `firstRun` ({key, model}), the walk ends with that person's first run: the key saved in the console's Settings
+ *  with the session setup signed in, then an agent made and run to completion with the deploy's own AGENTRUN_TOKEN. */
 async function walk(client, { workspaceId, template, step, firstRun, times }) {
   const { service } = onlyService(template.serializedConfig);
   let projectId;
   try {
     times.clicked = Date.now();
-    const config = formValues(template.serializedConfig, firstRun ? { [FIRST_RUN.keyName]: firstRun.key } : {});
-    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: config, workspaceId } })).templateDeployV2;
+    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: formValues(template.serializedConfig), workspaceId } })).templateDeployV2;
     projectId = deployed.projectId;
     await client.call("ProjectRename", { id: projectId, name: `${WALK_PROJECT}-${Date.now()}` });
-    step.pass("template deployed", `into a new project ${projectId}${firstRun ? `, ${FIRST_RUN.keyName} given in the form (value not shown)` : ""}`);
+    step.pass("template deployed", `into a new project ${projectId}, with the form as the template fills it`);
     if (deployed.workflowId) {
       await until(client, "the template's deploy workflow completed", 10 * 60_000, 5_000, async () => {
         const s = (await client.call("WorkflowStatus", { id: deployed.workflowId })).workflowStatus;
@@ -336,8 +343,8 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     const vars = (await client.call("Variables", { projectId, environmentId, serviceId })).variables;
     const made = [/^[0-9a-f]{64}$/.test(vars.AGENTRUN_TOKEN ?? ""), /^[A-Za-z0-9+/]{43}=$/.test(vars.AGENTRUN_SEAL_KEY ?? ""), vars.AGENTRUN_PUBLIC_URL === base];
     if (made.includes(false)) throw new Error(`the deploy's variables are not as made by the template: AGENTRUN_TOKEN 64 hex ${made[0]}, AGENTRUN_SEAL_KEY 32 bytes in base64 ${made[1]}, AGENTRUN_PUBLIC_URL ${base} ${made[2]}`);
-    if (firstRun && vars[FIRST_RUN.keyName] !== firstRun.key) throw new Error(`${FIRST_RUN.keyName} given in the form is not the service's`);
-    step.pass("token and seal key made", `AGENTRUN_TOKEN: 64 hex characters; AGENTRUN_SEAL_KEY: 32 bytes in base64; AGENTRUN_PUBLIC_URL: the domain${firstRun ? `; ${FIRST_RUN.keyName}: the one given` : ""} (values not shown)`);
+    if (vars.PORT !== "7340" || vars.RAILWAY_RUN_UID !== "0") throw new Error(`PORT is ${JSON.stringify(vars.PORT)} and RAILWAY_RUN_UID ${JSON.stringify(vars.RAILWAY_RUN_UID)}, not "7340" and "0"`);
+    step.pass("variables made", `AGENTRUN_TOKEN: 64 hex characters; AGENTRUN_SEAL_KEY: 32 bytes in base64 (values not shown); AGENTRUN_PUBLIC_URL: the domain; PORT 7340; RAILWAY_RUN_UID 0`);
 
     const health = await until(client, `${base}/v2/health answered 200`, 5 * 60_000, 5_000, async () => {
       const r = await client.http(`${base}/v2/health`).catch(() => undefined);
@@ -363,12 +370,13 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
       headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({ code: vars.AGENTRUN_TOKEN, password: randomBytes(18).toString("base64url") }),
     });
-    const answer = await setup.json().catch(() => ({}));
-    if (setup.status !== 201 || answer.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(answer)}`);
+    const signedIn = await setup.json().catch(() => ({}));
+    if (setup.status !== 201 || signedIn.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(signedIn)}`);
+    const cookie = (setup.headers.get("set-cookie") ?? "").split(";")[0];
     times.setUp = Date.now();
-    step.pass("token works as the setup code", `POST ${base}/v2/setup with AGENTRUN_TOKEN as the code: 201, signed in`);
+    step.pass("token works as the setup code", `POST ${base}/v2/setup with AGENTRUN_TOKEN as the code: 201, signed in${cookie ? " (a session cookie, not shown)" : ""}`);
 
-    if (firstRun) await firstRunOf(client, { base, token: vars.AGENTRUN_TOKEN, model: firstRun.model, step, times });
+    if (firstRun) await firstRunOf(client, { base, token: vars.AGENTRUN_TOKEN, cookie, key: firstRun.key, model: firstRun.model, step, times });
   } finally {
     if (projectId) {
       const usage = await usageOf(client, projectId, times.clicked);
@@ -387,9 +395,18 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
   }
 }
 
-/** The person's first run, over the API with the deploy's AGENTRUN_TOKEN: a no-tool agent on pi on the given model, one
+/** The person's first run: the model key saved in the console's Settings (a secret takes the owner's signed-in session,
+ *  never the API token), then over the API with the deploy's AGENTRUN_TOKEN a no-tool agent on pi on the given model, one
  *  run of it to completion, and what its model cost. */
-async function firstRunOf(client, { base, token, model, step, times }) {
+async function firstRunOf(client, { base, token, cookie, key, model, step, times }) {
+  if (!cookie) throw new Error("POST /v2/setup set no session cookie, so the model key can't be saved as the console saves it");
+  const saved = await client.http(`${base}/v2/settings/tool-keys/${FIRST_RUN.keyId}`, {
+    method: "PUT",
+    headers: { cookie, origin: base, "content-type": "application/json" },
+    body: JSON.stringify({ values: { [FIRST_RUN.keyName]: key } }),
+  });
+  if (saved.status !== 204) throw new Error(`PUT /v2/settings/tool-keys/${FIRST_RUN.keyId} answered ${saved.status}: ${(await saved.text()).slice(0, 300)}`);
+  step.pass("model key saved", `${FIRST_RUN.keyName} saved in the console's Settings with the owner's session: 204 (value not shown)`);
   const api = async (method, path, body) => {
     const r = await client.http(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const got = await r.json().catch(() => ({}));
@@ -475,7 +492,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
   const config = loadTemplate();
   const { key } = onlyService(config);
   const domain = "agentrun-production-0000.up.railway.app";
-  let env = renderVariables(onlyService(config).service, { domain });
+  const env = renderVariables(onlyService(config).service, { domain });
   const generated = { ...config, services: { "<template service id>": { ...config.services[key], volumeMounts: { "<template service id>": Object.values(config.services[key].volumeMounts)[0] } } } };
   const node = (id, name) => ({ edges: [{ node: { id, name } }] });
   const workspace = { id: workspaceId, name: workspaceName };
@@ -491,11 +508,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     WorkspaceTemplates: () => ({ workspaceTemplates: { edges: [] } }),
     TemplateGenerate: () => ({ templateGenerate: { id: "<template>", code: "<code>", status: "UNPUBLISHED", serializedConfig: generated } }),
     Template: (v) => ({ template: { id: "<template>", code: v.code, status: "PUBLISHED", serializedConfig: generated } }),
-    TemplateDeploy: (v) => {
-      // The form's values become the service's, as a deploy sets them.
-      for (const [name, value] of Object.entries(Object.values(v.input.serializedConfig.services)[0].variables)) if (value?.value !== undefined && !value.value.includes("${{")) env = { ...env, [name]: value.value };
-      return { templateDeployV2: { projectId: "<walk project>", workflowId: "<workflow>" } };
-    },
+    TemplateDeploy: () => ({ templateDeployV2: { projectId: "<walk project>", workflowId: "<workflow>" } }),
     ProjectRename: (v) => ({ projectUpdate: { id: v.id, name: v.name } }),
     WorkflowStatus: () => ({ workflowStatus: { status: "Complete", error: null } }),
     Project: () => (calls.some((c) => c.op === "ProjectDelete") ? Promise.reject(new Error("Project not found")) : { project: { id: "<walk project>", name: WALK_PROJECT, deletedAt: null, workspace, environments: node("<walk environment>", "production"), services: node("<walk service>", "AgentRun") } }),
@@ -506,11 +519,11 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     Usage: () => ({ usage: [{ measurement: "CPU_USAGE", value: 0.5 }, { measurement: "MEMORY_USAGE_GB", value: 3 }, { measurement: "DISK_USAGE_GB", value: 2 }, { measurement: "NETWORK_TX_GB", value: 0.001 }] }),
     TemplatePublish: () => ({ templatePublish: { id: "<template>", code: "<code>", status: "PUBLISHED" } }),
     ProjectDelete: () => ({ projectDelete: true }),
+    TemplateDelete: () => ({ templateDelete: true }),
   };
-  const json = (status, body, type = "application/json") => ({ status, headers: { get: (n) => (n.toLowerCase() === "content-type" ? type : null) }, text: async () => (typeof body === "string" ? body : JSON.stringify(body)), json: async () => (typeof body === "string" ? JSON.parse(body) : body) });
+  const json = (status, body, headers = {}) => answer(status, { "content-type": ["application/json"], ...headers }, typeof body === "string" ? body : JSON.stringify(body));
   return {
     calls,
-    env: () => env,
     async call(op, variables) {
       calls.push({ op, variables });
       const shown = JSON.stringify(variables, (k, v) => (k === "serializedConfig" ? "<the template's config>" : v));
@@ -523,9 +536,10 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
       calls.push({ op: `${method} ${path}`, headers: init.headers, body: init.body });
       log(`  → ${method} ${url}`);
       if (path === "/v2/health") return json(200, { status: "ok", checks: { store: "ok", disk: "ok" } });
-      if (path === "/") return json(200, "<!doctype html>", "text/html; charset=utf-8");
+      if (path === "/") return answer(200, { "content-type": ["text/html; charset=utf-8"] }, "<!doctype html>");
       if (path === "/v2/auth/session") return json(200, { accounts: true, password_set: false, signed_in: false, setup_code: true });
-      if (path === "/v2/setup") return json(201, { signed_in: true });
+      if (path === "/v2/setup") return json(201, { signed_in: true }, { "set-cookie": ["agentrun_session=<session>; Path=/; HttpOnly; Secure; SameSite=Strict"] });
+      if (path === "/v2/settings/tool-keys/openrouter" && method === "PUT") return answer(init.headers?.cookie === "agentrun_session=<session>" ? 204 : 401, {}, "");
       if (path === "/v2/agents" && method === "POST") return json(201, { agent_id: "<agent>" });
       if (/^\/v2\/agents\/[^/]+\/runs$/.test(path) && method === "POST") return json(201, { run_id: "<run>" });
       if (path.startsWith("/v2/runs/")) return json(200, { run_id: "<run>", status: "completed", cost: { usd: 0.0004 }, result: { content: "# Release notes\n- Runs page: export runs as CSV." } });
@@ -575,7 +589,7 @@ async function main(argv) {
     const workspaceId = argv[1] ?? "<workspace id>";
     const client = planClient({ log, workspaceId, workspaceName: expectWorkspace ?? "<workspace>" });
     log("The plan: a first run in a workspace with no template yet, every call in order, against a stand-in for Railway (no network, no token).");
-    const all = await run(client, { workspaceId, expectWorkspace, firstRun: { key: "<the key given in the form>", model: model ?? FIRST_RUN.model }, log });
+    const all = await run(client, { workspaceId, expectWorkspace, firstRun: { key: "<the model key>", model: model ?? FIRST_RUN.model }, log });
     console.log(report(all));
     return 0;
   }

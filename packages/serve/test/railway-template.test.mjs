@@ -42,7 +42,7 @@ test("the start command is the image's own entrypoint and command, as the image'
   const mount = Object.values(service.volumeMounts)[0].mountPath;
   assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
   // Railway mounts a volume as root: the container starts as root (RAILWAY_RUN_UID=0) only for the chown above.
-  assert.equal(service.variables.RAILWAY_RUN_UID.defaultValue, "0");
+  assert.equal(renderValue(service.variables.RAILWAY_RUN_UID.defaultValue, { domain: "x" }), "0");
   assert.ok(cmd.includes(mount) && cmd[cmd.indexOf("--data") + 1] === mount, "the server's data directory is the volume");
 });
 
@@ -50,11 +50,22 @@ test("the volume, the health check, and one port for the domain, the health chec
   const dockerfile = await read("packages/serve/docker/Dockerfile");
   const port = Number(/^EXPOSE (\d+)$/m.exec(dockerfile)[1]);
   const argv = startArgv(service.deploy.startCommand)[2].split(" ");
-  assert.deepEqual([Object.values(service.volumeMounts).map((m) => m.mountPath), service.deploy.requiredMountPath], [["/data"], "/data"]);
+  assert.deepEqual(Object.values(service.volumeMounts).map((m) => m.mountPath), ["/data"]);
   assert.equal(service.deploy.healthcheckPath, /healthCheckPath: (\S+)/.exec(await read("render.yaml"))[1]);
-  assert.deepEqual([Number(service.variables.PORT.defaultValue), Number(argv[argv.indexOf("--port") + 1]), ...Object.values(service.networking.serviceDomains).map((d) => d.port)], [port, port, port]);
-  // At least the runner's 31 s stop (deploy/README.md) before Railway's SIGKILL.
-  assert.ok(service.deploy.drainingSeconds >= 35);
+  assert.deepEqual([Number(renderValue(service.variables.PORT.defaultValue, { domain: "x" })), Number(argv[argv.indexOf("--port") + 1]), ...Object.values(service.networking.serviceDomains).map((d) => d.port)], [port, port, port]);
+});
+
+test("the template holds only what Railway's templateGenerate keeps: no deploy setting it drops, and every fixed value made by an expression", () => {
+  // Seen in a template generated from the source project: startCommand, healthcheckPath and the restart policy are kept;
+  // healthcheckTimeout, drainingSeconds and requiredMountPath are dropped; a variable's plain value comes out empty and
+  // isOptional false, while a value with a ${{...}} expression in it is kept whole.
+  assert.deepEqual(Object.keys(service.deploy).sort(), ["healthcheckPath", "restartPolicyMaxRetries", "restartPolicyType", "startCommand"]);
+  for (const [name, v] of Object.entries(service.variables)) {
+    assert.match(v.defaultValue, /\$\{\{.+\}\}/, `${name} is made by an expression`);
+    assert.equal(v.isOptional, undefined, name);
+  }
+  // A one-character secret over a one-character alphabet is a constant.
+  for (let i = 0; i < 20; i++) assert.deepEqual([renderValue(service.variables.PORT.defaultValue, { domain: "x" }), renderValue(service.variables.RAILWAY_RUN_UID.defaultValue, { domain: "x" })], ["7340", "0"]);
 });
 
 test("each deploy generates a token and a seal key this server takes, with 256 bits or more each, and the public URL at its domain", () => {
@@ -63,7 +74,7 @@ test("each deploy generates a token and a seal key this server takes, with 256 b
     assert.equal(tokenProblem(env.AGENTRUN_TOKEN), undefined);
     assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, env.AGENTRUN_SEAL_KEY.length);
     assert.equal(env.AGENTRUN_PUBLIC_URL, "https://agentrun-production-ab12.up.railway.app");
-    assert.equal(env.OPENROUTER_API_KEY, undefined, "an optional key left blank is not set");
+    assert.deepEqual([env.PORT, env.RAILWAY_RUN_UID], ["7340", "0"]);
   }
   const bits = (v) => {
     const [, n, alphabet] = /secret\((\d+), "([^"]+)"\)/.exec(v.defaultValue);
@@ -73,15 +84,13 @@ test("each deploy generates a token and a seal key this server takes, with 256 b
   assert.throws(() => renderValue("${{Postgres.DATABASE_URL}}", { domain: "x" }), /does not know/);
 });
 
-test("every variable says what it is for, and only model keys are optional", () => {
-  for (const [name, v] of Object.entries(service.variables)) {
-    assert.ok(v.description?.length > 20, `${name} has a description`);
-    assert.equal(Boolean(v.isOptional), /_API_KEY$/.test(name), name);
-  }
+test("every variable says what it is for, and the deploy form asks nothing: no model key, so no blank field to fill", () => {
+  for (const [name, v] of Object.entries(service.variables)) assert.ok(v.description?.length > 20, `${name} has a description`);
+  assert.deepEqual(Object.keys(service.variables).filter((n) => /_API_KEY$/.test(n)), []);
 });
 
 test("the deploy settings are railway.json's (railway.com/railway.schema.json, deploy): the same names and types", () => {
-  const schema = { startCommand: "string", healthcheckPath: "string", healthcheckTimeout: "number", drainingSeconds: "number", overlapSeconds: "number", requiredMountPath: "string", restartPolicyType: "string", numReplicas: "number" };
+  const schema = { startCommand: "string", healthcheckPath: "string", restartPolicyType: "string", restartPolicyMaxRetries: "number" };
   for (const [k, v] of Object.entries(service.deploy)) assert.equal(typeof v, schema[k], k);
 });
 
@@ -117,8 +126,7 @@ test("the source project's patch is the template's service, and removes a variab
   const patch = sourcePatch(service, "svc", { variables: { OLD: { value: "x" }, PORT: { value: "1" } } });
   const s = patch.services.svc;
   assert.equal(s.variables.OLD, null);
-  assert.deepEqual(s.variables.PORT, { value: "7340", description: service.variables.PORT.description });
-  assert.equal(s.variables.OPENAI_API_KEY.isOptional, true);
+  assert.deepEqual(s.variables.PORT, { value: service.variables.PORT.defaultValue, description: service.variables.PORT.description });
   assert.deepEqual([s.source, s.deploy], [service.source, service.deploy]);
   // The fields of Railway's environment config (the Railway CLI's EnvironmentConfig, src/controllers/config/environment.rs).
   const known = { service: ["source", "networking", "variables", "deploy", "build", "volumeMounts"], variable: ["value", "defaultValue", "description", "isOptional", "isSealed", "generator"] };
@@ -144,16 +152,17 @@ test("a first run: the source project made, the template generated and checked, 
   assert.ok(lines.some((l) => l.includes(buttonLine("<code>"))), "the README's button line is printed");
 });
 
-test("the first run: the model key goes in the deploy's form, never in the output, and the run finishes before the project is deleted", async () => {
+test("the first run: the model key saved in the console with the setup's session, never in the output or on Railway, and the run finishes before the project is deleted", async () => {
   const lines = [];
   const key = `sk-or-v1-${"k".repeat(40)}`;
   const client = planClient({ log: (l) => lines.push(l), workspaceId: "ws", workspaceName: "Parcha" });
   const times = {};
   const rows = await run(client, { workspaceId: "ws", expectWorkspace: "Parcha", firstRun: { key, model: FIRST_RUN.model }, times, log: (l) => lines.push(l) });
   assert.deepEqual(rows.filter((r) => r[1] !== "PASS"), []);
-  const deploy = client.calls.find((c) => c.op === "TemplateDeploy").variables.input.serializedConfig;
-  assert.equal(Object.values(deploy.services)[0].variables[FIRST_RUN.keyName].value, key);
-  assert.ok(!lines.some((l) => l.includes(key)) && !rows.some((r) => r[2].includes(key)), "the model key was printed");
+  assert.ok(!client.calls.some((c) => !c.op.includes("/") && JSON.stringify(c.variables).includes(key)), "the model key went to Railway");
+  const saved = client.calls.find((c) => c.op === `PUT /v2/settings/tool-keys/${FIRST_RUN.keyId}`);
+  assert.deepEqual([saved.headers.cookie, saved.headers.authorization, JSON.parse(saved.body).values[FIRST_RUN.keyName]], ["agentrun_session=<session>", undefined, key]);
+  assert.ok(!lines.some((l) => l.includes(key) || l.includes("<session>")) && !rows.some((r) => r[2].includes(key)), "the model key or the session was printed");
   const agent = JSON.parse(client.calls.find((c) => c.op === "POST /v2/agents").body).definition;
   assert.deepEqual([agent.name, agent.harness, agent.model, agent.tools, agent.place], ["Release notes", "pi", FIRST_RUN.model, [], { mode: "runner" }]);
   assert.equal(JSON.parse(client.calls.find((c) => /^POST \/v2\/agents\/.+\/runs$/.test(c.op)).body).input.content, FIRST_RUN.input);
@@ -181,6 +190,23 @@ test("a workspace template that already deploys template.json is used again, a p
   assert.equal(client.calls.find((c) => c.op === "TemplateDeploy").variables.input.templateId, "t-pub");
 });
 
+test("before generating, an earlier unpublished AgentRun template that deploys something else is deleted; a published or foreign one is kept", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const call = client.call.bind(client);
+  const off = structuredClone((await call("TemplateGenerate", {})).templateGenerate.serializedConfig);
+  Object.values(off.services)[0].deploy.healthcheckPath = "/";
+  const foreign = { services: { x: { name: "Other", source: { image: "postgres:17" } } } };
+  const ours = [
+    { id: "t-stale", code: "stale", status: "UNPUBLISHED", createdAt: "2026-11-17T12:00:00Z", serializedConfig: off },
+    { id: "t-live", code: "live", status: "PUBLISHED", createdAt: "2026-11-16T12:00:00Z", serializedConfig: off },
+    { id: "t-other", code: "other", status: "UNPUBLISHED", createdAt: "2026-11-15T12:00:00Z", serializedConfig: foreign },
+  ];
+  client.call = async (op, v) => (op === "WorkspaceTemplates" ? (await call(op, v), { workspaceTemplates: { edges: ours.map((node) => ({ node })) } }) : call(op, v));
+  const rows = await run(client, { workspaceId: "ws", log: quiet });
+  assert.deepEqual(client.calls.filter((c) => c.op === "TemplateDelete").map((c) => c.variables.id), ["t-stale"]);
+  assert.match(rows.find((r) => r[0] === "template generated")[2], /replaces live/);
+});
+
 test("a workspace not named as expected stops the run before anything is made", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws", workspaceName: "Someone else" });
   const rows = await run(client, { workspaceId: "ws", expectWorkspace: "Parcha", log: quiet });
@@ -188,13 +214,13 @@ test("a workspace not named as expected stops the run before anything is made", 
   assert.deepEqual(client.calls.map((c) => c.op), ["Workspace"]);
 });
 
-test("the deploy form takes a given value, else the default; an optional variable with neither is left out", () => {
+test("the deploy form sends each variable's default as its value, and one with no default not at all", () => {
   const config = loadTemplate();
-  const vars = Object.values(formValues(config, { OPENROUTER_API_KEY: "given" }).services)[0].variables;
-  assert.equal(vars.OPENROUTER_API_KEY.value, "given");
+  Object.values(config.services)[0].variables.BLANK = { defaultValue: "" };
+  const vars = Object.values(formValues(config).services)[0].variables;
   assert.equal(vars.AGENTRUN_TOKEN.value, service.variables.AGENTRUN_TOKEN.defaultValue);
-  assert.equal(vars.ANTHROPIC_API_KEY.value, undefined);
-  assert.equal(Object.values(config.services)[0].variables.OPENROUTER_API_KEY.value, undefined, "the template's config is left as it was");
+  assert.equal(vars.BLANK.value, undefined);
+  assert.equal(Object.values(config.services)[0].variables.AGENTRUN_TOKEN.value, undefined, "the template's config is left as it was");
 });
 
 test("curl gets the request's headers and body on stdin, quoted, and nothing of them in its arguments", () => {
