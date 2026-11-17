@@ -3,7 +3,10 @@
 import { AgentRun, type ClientOptions } from './client.js';
 import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
 
-export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk' | 'eve';
+/** Where a backend SDK run comes from. The run itself stays in the backend: an SDK library (Claude Agent SDK, Codex
+ *  SDK) or an agent platform (OpenClaw, Capy) whose agents, scheduled jobs and threads report through these calls. */
+export const BACKEND_SDK_RUNTIMES = ['claude-agent-sdk', 'codex-sdk', 'eve', 'openclaw', 'capy'] as const;
+export type BackendSdkRuntime = (typeof BACKEND_SDK_RUNTIMES)[number];
 
 export interface BackendWorkflowToolManifest {
   name: string;
@@ -231,7 +234,7 @@ export class BackendLearningClient {
     if (options.idempotencyKey !== undefined && (!options.idempotencyKey.trim() || options.idempotencyKey.length > 256 || /[^\x21-\x7e]/.test(options.idempotencyKey)))
       throw new AgentRunUsage('idempotencyKey must be a nonempty printable ASCII string of at most 256 characters.');
     signal?.throwIfAborted();
-    if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk' && source.runtime !== 'eve') throw new AgentRunUsage('Unsupported backend SDK runtime.');
+    if (!(BACKEND_SDK_RUNTIMES as readonly unknown[]).includes(source.runtime)) throw new AgentRunUsage('Unsupported backend SDK runtime.');
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
     const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });

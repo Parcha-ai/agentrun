@@ -1,9 +1,11 @@
-export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk' | 'eve';
+export const BACKEND_SDK_RUNTIMES = ['claude-agent-sdk', 'codex-sdk', 'eve', 'openclaw', 'capy'] as const;
+export type BackendSdkRuntime = (typeof BACKEND_SDK_RUNTIMES)[number];
 
 /** Execution stays in the application's SDK. The public binding holds no credentials or source-machine paths. */
 export function backendSdkOf(value: unknown): { runtime: BackendSdkRuntime } | undefined {
   const sdk = value && typeof value === 'object' ? (value as { sdk?: { runtime?: unknown } }).sdk : undefined;
-  return sdk?.runtime === 'claude-agent-sdk' || sdk?.runtime === 'codex-sdk' || sdk?.runtime === 'eve' ? { runtime: sdk.runtime } : undefined;
+  return (BACKEND_SDK_RUNTIMES as readonly unknown[]).includes(sdk?.runtime) ? { runtime: sdk!.runtime as BackendSdkRuntime } : undefined;
 }
 
-export const backendSdkLabel = (runtime: BackendSdkRuntime) => ({ 'claude-agent-sdk': 'Claude Agent SDK', 'codex-sdk': 'Codex SDK', eve: 'Vercel eve' })[runtime];
+const LABELS: Record<BackendSdkRuntime, string> = { 'claude-agent-sdk': 'Claude Agent SDK', 'codex-sdk': 'Codex SDK', eve: 'Vercel eve', openclaw: 'OpenClaw', capy: 'Capy' };
+export const backendSdkLabel = (runtime: BackendSdkRuntime) => LABELS[runtime];

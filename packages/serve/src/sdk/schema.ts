@@ -1,4 +1,5 @@
 import { MCP_TOOL_KEY_PATTERN } from "../tool-names.js";
+import { SDK_RUNTIMES } from "./runtimes.js";
 
 const text = { type: "string" };
 const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
@@ -7,7 +8,7 @@ const object = (properties: Record<string, unknown>, required = Object.keys(prop
   properties,
   required,
 });
-export const SDK_BINDING = object({ runtime: { enum: ["claude-agent-sdk", "codex-sdk", "eve"] } });
+export const SDK_BINDING = object({ runtime: { enum: [...SDK_RUNTIMES] } });
 const usage = object(
   Object.fromEntries(
     ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd"].map((key) => [

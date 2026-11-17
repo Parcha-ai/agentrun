@@ -22,7 +22,8 @@ import { promotionOf, promotionsOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { fits, workflowDigest } from "../runner/workflow-first.js";
 
-export type SdkRuntime = "claude-agent-sdk" | "codex-sdk" | "eve";
+import { isSdkRuntime, type SdkRuntime } from "./runtimes.js";
+export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export type SdkUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
@@ -104,7 +105,7 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   return result;
 };
 export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
-  isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk" || body.sdk.runtime === "eve")
+  isObject(body) && isObject(body.sdk) && isSdkRuntime(body.sdk.runtime)
     ? { runtime: body.sdk.runtime }
     : undefined;
 export async function sdkInbox(store: Pick<Store, "settings">, runId: string): Promise<SdkInbox> {

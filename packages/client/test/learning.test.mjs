@@ -148,3 +148,19 @@ test('context rendering includes the corrections and workflow context only when 
   assert.equal(renderLearningContext({ ...snapshot, learningEnabled: false }), '');
   assert.equal(renderLearningContext({ ...snapshot, context: '', workflowContext: '' }), '', 'nothing learned: no context');
 });
+
+for (const runtime of ['openclaw', 'capy']) test(`${runtime} is a backend runtime: registered and started under its own name`, async () => {
+  const server = service({ exists: false, runtime });
+  const client = new BackendLearningClient(server.config);
+  await client.begin({ runtime, input: 'Overnight job', instructions: 'Platform policy' });
+  const creation = server.requests.find(r => r.path === '/v2/agents');
+  assert.deepEqual(creation.body.definition.sdk, { runtime });
+  const start = server.requests.find(r => r.path === '/v2/agents/backend/sdk-runs');
+  assert.equal(start.body.runtime, runtime);
+});
+
+test('an unknown backend runtime is refused before any request', async () => {
+  const server = service();
+  await assert.rejects(new BackendLearningClient(server.config).begin({ runtime: 'shell', input: 'x', instructions: 'y' }), /Unsupported backend SDK runtime/);
+  assert.equal(server.requests.length, 0);
+});
