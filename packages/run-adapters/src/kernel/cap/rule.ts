@@ -21,8 +21,10 @@ type Known = JudgeState & { spentUsd: number; heldUsd: number };
 export const isFigure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
 
 /** A step admitted: what it is held at (its worst case: no answer, miss or cut books it past this), the output it may be
- *  sent with and its thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold). */
-export type Judged = { heldUsd: number; outputTokensMax?: number; thinkingBudget?: number; stoppedUsd(streamedTokens: number): number };
+ *  sent with and its thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold).
+ *  `uncutUsd`: sent with less output than it asks, its worst case at all it asks, which a cap must leave room for to send
+ *  it whole (the figure a cut of its answer names). */
+export type Judged = { heldUsd: number; outputTokensMax?: number; thinkingBudget?: number; stoppedUsd(streamedTokens: number): number; uncutUsd?: number };
 
 /** A model request priced: its output asked and least, and its worst case at an output (price.ts requestPrice). */
 export function priced(request: ModelCapRequest) {
@@ -70,6 +72,7 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
     heldUsd,
     ...(p.asked === undefined ? {} : { outputTokensMax: output }),
     ...(thinking === undefined ? {} : { thinkingBudget: thinking }),
+    ...(p.asked !== undefined && output < p.asked ? { uncutUsd: p.cost(p.asked) } : {}),
     stoppedUsd: (streamed) => Math.min(heldUsd, stoppedPrice(streamed)),
   };
 }

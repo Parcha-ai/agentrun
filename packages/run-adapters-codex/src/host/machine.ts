@@ -22,6 +22,7 @@ import { FileTail } from "@parcha/agentrun-kernel/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import type { CapCut } from "@parcha/agentrun-kernel";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
@@ -256,7 +257,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let script: { callId: string; input: string } | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
-    const cutListeners: ((stop: { outputTokens?: number }) => void)[] = [];
+    const cutListeners: ((stop: { outputTokens?: number; capCut?: CapCut }) => void)[] = [];
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({

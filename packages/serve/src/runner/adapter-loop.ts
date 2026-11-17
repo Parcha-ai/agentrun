@@ -719,7 +719,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
   /** What was said since the last boundary as a model message; at a turn's end, with the cut its adapter reported. */
-  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }, atRequest = false) => {
+  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number; capCut?: { capUsd: number; raiseToUsd: number } }, atRequest = false) => {
     // Taken at the boundary, not when its write's turn comes: text said after it is the next message's.
     const said = text;
     text = "";
@@ -730,7 +730,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       const joined = flushedAtRequest && said.trim() === "";
       flushedAtRequest = atRequest;
       if (joined) return;
-      const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }) } : {};
+      const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }), ...(cut.capCut === undefined ? {} : { capCut: { capUsd: cut.capCut.capUsd, raiseToUsd: cut.capCut.raiseToUsd } }) } : {};
       await append(KINDS.message, { role: "model", text: said, ...length });
     });
   };
