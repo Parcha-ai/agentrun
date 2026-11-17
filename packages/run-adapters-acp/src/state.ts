@@ -8,7 +8,7 @@
 //    recipe's own files (written fresh at every start) are not either.
 //  - The next process's HOME gets the newest record of each path back, before the agent starts.
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { NativeJournal } from "@parcha/agentrun-kernel/process";
 
@@ -29,19 +29,30 @@ export const MAX_STATE_FILE = 16 * 1024 * 1024;
 
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
-/** Every file under `paths` in `home`, by its path in HOME (POSIX separators). */
+/** A file or directory the agent removed (or replaced with a file) while the walk read it: gone, never an error. */
+const gone = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException)?.code ?? "");
+
+/** `read()`, or undefined when what it reads is gone. Any other error is thrown: the mirror says nothing it did not read. */
+function unlessGone<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch (error) {
+    if (gone(error)) return undefined;
+    throw error;
+  }
+}
+
+/** Every file under `paths` in `home`, by its path in HOME (POSIX separators). A link is never followed: a state path
+ *  whose directories in HOME include one (the agent made `.agent/store` a link out of HOME) is skipped whole, and a link
+ *  inside the walk is neither a file nor a directory. */
 function filesUnder(home: string, paths: readonly string[], skip: ReadonlySet<string>, log: (message: string, fields?: Record<string, unknown>) => void): Map<string, Buffer> {
   const out = new Map<string, Buffer>();
   const visit = (absolute: string) => {
-    let stat;
-    try {
-      stat = lstatSync(absolute);
-    } catch {
-      return;
-    }
+    const stat = unlessGone(() => lstatSync(absolute));
+    if (!stat) return;
     const path = relative(home, absolute).split(sep).join("/");
     if (stat.isDirectory()) {
-      for (const name of readdirSync(absolute).sort()) visit(join(absolute, name));
+      for (const name of (unlessGone(() => readdirSync(absolute)) ?? []).sort()) visit(join(absolute, name));
       return;
     }
     if (!stat.isFile() || skip.has(path) || CREDENTIAL_FILE.test(path.split("/").at(-1) ?? "")) return;
@@ -49,9 +60,36 @@ function filesUnder(home: string, paths: readonly string[], skip: ReadonlySet<st
       log("acp: a state file too large to mirror was skipped", { path, bytes: stat.size });
       return;
     }
-    out.set(path, readFileSync(absolute));
+    // A directory on the way swapped for a link after the check below: the file's own resolved path says so.
+    const real = unlessGone(() => realpathSync(absolute));
+    if (!real) return;
+    if (!realHome || !real.startsWith(realHome + sep)) {
+      log("acp: a state file outside HOME was skipped", { path });
+      return;
+    }
+    const bytes = unlessGone(() => readFileSync(absolute));
+    if (bytes) out.set(path, bytes);
   };
-  for (const path of paths) visit(join(home, path));
+  const realHome = unlessGone(() => realpathSync(home));
+  /** Whether each directory between HOME and the state path's last part is a directory of HOME's own, not a link. */
+  const withinHome = (parts: readonly string[]) => {
+    let at = home;
+    for (const part of parts.slice(0, -1)) {
+      at = join(at, part);
+      const stat = unlessGone(() => lstatSync(at));
+      if (!stat) return true; // Not there: the walk finds nothing under it.
+      if (!stat.isDirectory()) return false;
+    }
+    return true;
+  };
+  for (const path of paths) {
+    const parts = path.split(/[\\/]/).filter(Boolean);
+    if (!withinHome(parts)) {
+      log("acp: a state path that leaves HOME through a link was skipped", { path });
+      continue;
+    }
+    visit(join(home, ...parts));
+  }
   return out;
 }
 

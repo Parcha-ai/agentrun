@@ -53,16 +53,14 @@ export class CallIds {
   add(id: string, tool: string, input: unknown): void {
     if (this.used.has(id)) return;
     if (!this.tools.has(id)) this.tools.set(id, tool);
-    const keys = [`${tool}\0${canonical(isPlain(input) ? input : {})}`, `${tool}\0*`];
-    // An announced call with no input is matched by its tool alone.
-    const key = input === undefined || input === null ? keys[1]! : keys[0]!;
-    for (const k of input === undefined || input === null ? [key] : keys) {
-      const waiter = this.waiting.get(k)?.shift();
-      if (waiter) {
-        this.used.add(id);
-        waiter(id);
-        return;
-      }
+    // An announced call with no input is matched by its tool alone; one with input only by its tool and that input, so
+    // it never takes an MCP call of the same tool with other arguments that is waiting for its own announcement.
+    const key = input === undefined || input === null ? `${tool}\0*` : `${tool}\0${canonical(isPlain(input) ? input : {})}`;
+    const waiter = this.waiting.get(key)?.shift();
+    if (waiter) {
+      this.used.add(id);
+      waiter(id);
+      return;
     }
     const list = this.seen.get(key) ?? [];
     if (!list.includes(id)) list.push(id);

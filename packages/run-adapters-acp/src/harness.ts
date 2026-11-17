@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { canonical, CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
+import { CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -47,6 +47,14 @@ export const START_MS = 60_000;
 export const CALL_ID_WAIT_MS = 10_000;
 /** How long a drive's end waits for the agent's process to go. */
 const EXIT_WAIT_MS = 5_000;
+/** How long an agent past the plan's limit of tool calls has to end its turn after session/cancel before its process is
+ *  ended: past the limit, each moment it goes on is spent on the owner's plan. */
+export const LIMIT_STOP_MS = 3_000;
+/** How long a turn's end waits for the calls of ours still running in it to stop, once their signal is aborted. */
+export const CALL_STOP_MS = 5_000;
+/** The most of an earlier call's input, and of its result or error, a context note quotes. */
+export const NOTE_INPUT_CHARS = 1_000;
+export const NOTE_RESULT_CHARS = 2_000;
 
 /** The stdio MCP bridge the agent starts when it takes no MCP over HTTP. */
 const STDIO_BRIDGE = fileURLToPath(new URL("./host/mcp-stdio.js", import.meta.url));
@@ -99,6 +107,8 @@ interface Current {
   bridge: ToolBridge;
   signal: AbortSignal;
   turn?: Turn;
+  /** The calls of ours running: a turn ends (and an interrupt returns) only once they stopped. */
+  inflight: Set<Promise<unknown>>;
 }
 
 /** One agent process and its session. */
@@ -113,7 +123,8 @@ interface Runtime {
   firstBlocks: string[];
   calls: CallIds;
   counted: Set<string>;
-  asked: Map<string, number>;
+  /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
+  claimed: Set<string>;
   ownIds: Set<string>;
   mirror: StateMirror;
   loading: boolean;
@@ -128,6 +139,20 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const message = (error: unknown) => String((error as Error)?.message ?? error);
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} more characters]`);
 const indent = (text: string) => text.split("\n").map((line) => `    ${line}`).join("\n");
+/** A tool's recorded output as text: its text, never the bytes of an image it returned. */
+const outputText = (output: unknown): string => {
+  if (typeof output === "string") return output;
+  const text = (output as { text?: unknown } | null)?.text;
+  return typeof text === "string" ? text : (JSON.stringify(output) ?? String(output));
+};
+
+/** Whether every promise in `running` settled within `ms`. */
+async function settledWithin(running: ReadonlySet<Promise<unknown>>, ms: number): Promise<boolean> {
+  if (running.size === 0) return true;
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), ms)));
+  return Promise.race([Promise.allSettled([...running]).then(() => true as const), late]).finally(() => clearTimeout(timer));
+}
 
 /** The submissions a drive marked as sent to the agent (PROMPT_STREAM), with those a recovery's send carried. */
 export function sentSubmissions(state: SessionState): Set<string> {
@@ -153,15 +178,25 @@ function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> 
 }
 
 /** The conversation before the open turn (all of it with none open), as a new agent session reads it: each user
- *  message, each answer and each call of ours with how it ended. Empty when there is none. */
+ *  message, each answer and each call of ours with its input and how it ended (its result, or its error), each cut to a
+ *  bound (NOTE_INPUT_CHARS, NOTE_RESULT_CHARS) that says how much was left out. The inputs and results are quoted as
+ *  the session's records hold them, as the kernel's recovery note quotes them. Empty when there is none. */
 export function contextNote(state: SessionState): string | undefined {
   const since = openTurn(state)?.since;
   const lines: { at: number; line: string }[] = [];
   state.effectOrder.forEach((effect, at) => {
     if (since !== undefined && at > since) return;
     if (effect.name.startsWith("tool.")) {
-      const status = effect.status === "completed" ? "completed" : effect.status === "failed" ? (effect.error?.interrupted ? "interrupted, it may have taken effect" : "failed") : "never ended";
-      lines.push({ at, line: `- ${effect.name.slice("tool.".length)}, call ${effect.key.slice("tool:".length)}: ${status}.` });
+      const head = `- ${effect.name.slice("tool.".length)}(${clip(JSON.stringify(effect.input ?? {}) ?? "{}", NOTE_INPUT_CHARS)}), call ${effect.key.slice("tool:".length)}:`;
+      const line =
+        effect.status === "completed"
+          ? `${head} completed. Its result:\n${indent(clip(outputText(effect.output), NOTE_RESULT_CHARS))}`
+          : effect.status === "failed" && !effect.error?.interrupted
+            ? `${head} failed: ${clip(effect.error?.message || "the tool failed with no message", NOTE_RESULT_CHARS).replace(/\n/g, "\n    ")}`
+            : effect.status === "failed"
+              ? `${head} interrupted before it reported a result; it may have taken effect.`
+              : `${head} never ended; it may have taken effect.`;
+      lines.push({ at, line });
       return;
     }
     if (effect.placed.length === 0 || effect.name === "chaos") return;
@@ -194,6 +229,16 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const listed = options.tools.filter((tool) => !tool.deferred);
   const names = new Set(listed.map((tool) => tool.name));
   let runtime: Runtime | undefined;
+
+  /** Mirror the agent's session store into `journal` (the caller flushes). A failure is said and never thrown: the next
+   *  point takes the mirror again, and a turn's outcome is never lost to it. */
+  const mirrorInto = (rt: Runtime, journal: NativeJournal) => {
+    try {
+      rt.mirror.take(journal);
+    } catch (error) {
+      log("acp: the mirror of the agent's session store failed; the next point takes it again", { error: message(error).slice(0, 300) });
+    }
+  };
 
   /** The open turn's limit of tool calls, counted from the records: past it, the turn is cancelled with a named reason. */
   const countCall = (rt: Runtime, cur: Current, toolCallId: string): string | undefined => {
@@ -236,7 +281,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       case "tool_call_update": {
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (!cur || (update.status !== "completed" && update.status !== "failed")) return;
-        rt.mirror.take(cur.journal);
+        mirrorInto(rt, cur.journal);
         void cur.journal.flush().catch(() => {});
         return;
       }
@@ -265,12 +310,26 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";
     const title = typeof call.title === "string" ? call.title : kind;
     const input = call.rawInput ?? null;
-    const signature = canonical({ title, kind, input });
-    const nth = rt.asked.get(signature) ?? 0;
-    rt.asked.set(signature, nth + 1);
+    // The request's id is the open turn's: the turn, what it asks, and which of the turn's requests that ask the same it
+    // is. The records hold the ids the turn's requests took (another runner's agent process asked some of them): this
+    // process's request takes, of those it has not taken itself, the first one still waiting for its answer (the one a
+    // swap left parked), else the first one answered (the agent asking again for what it was answered), else a new one.
     const opened = openTurn(cur.ctx.state());
-    const callId = permissionCallId(opened?.placed[0] ?? "", { title, kind, rawInput: input }, nth);
-    const records = cur.journal.records<PermissionRecord>(PERMISSION_STREAM).map((r) => r.data).filter((r) => r?.callId === callId);
+    const turnId = opened?.placed[0] ?? "";
+    const all = cur.journal.records<PermissionRecord>(PERMISSION_STREAM).map((r) => r.data);
+    const askedIds = new Set(all.filter((r) => r?.type === "asked").map((r) => r.callId));
+    const answeredIds = new Set(all.filter((r) => r?.type === "answered").map((r) => r.callId));
+    let callId: string | undefined;
+    let firstAnswered: string | undefined;
+    for (let nth = 0; callId === undefined; nth++) {
+      const id = permissionCallId(turnId, { title, kind, rawInput: input }, nth);
+      if (rt.claimed.has(id)) continue;
+      if (!askedIds.has(id)) callId = firstAnswered ?? id;
+      else if (!answeredIds.has(id)) callId = id;
+      else firstAnswered ??= id;
+    }
+    rt.claimed.add(callId);
+    const records = all.filter((r) => r?.callId === callId);
     const answered = records.find((r) => r.type === "answered");
     if (answered) return choose(answered.answer === "allow" ? "allow_once" : "reject_once");
     if (!records.some((r) => r.type === "asked")) {
@@ -293,8 +352,21 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
 
   const onMcpCall = async (rt: Runtime, name: string, args: Record<string, unknown>, callSignal: AbortSignal) => {
     const cur = rt.current;
-    if (!cur) return { text: "acp: no turn is running to take this call", isError: true };
-    const signal = AbortSignal.any([callSignal, cur.signal]);
+    const turn = cur?.turn;
+    if (!cur || !turn) return { text: "acp: no turn is running to take this call", isError: true };
+    if (turn.limitHit) return { text: turn.limitHit, isError: true };
+    // The call stops with its MCP request, the drive, or the turn (a cancel, the plan's limit): an agent that answers its
+    // prompt `cancelled` and leaves the request open does not keep the tool running. The turn's end waits for it.
+    const running = runMcpCall(rt, cur, name, args, AbortSignal.any([callSignal, cur.signal, turn.stop.signal]));
+    cur.inflight.add(running);
+    try {
+      return await running;
+    } finally {
+      cur.inflight.delete(running);
+    }
+  };
+
+  const runMcpCall = async (rt: Runtime, cur: Current, name: string, args: Record<string, unknown>, signal: AbortSignal) => {
     let callId = recipe.quirks?.mcpCall === "mint" ? undefined : await rt.calls.take(name, args, signal, options.callIdWaitMs ?? CALL_ID_WAIT_MS);
     if (!callId) {
       callId = `acp-${randomUUID()}`;
@@ -340,24 +412,36 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, firstBlocks: [], calls: new CallIds(), counted: new Set(), asked: new Map(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
     let disposed: Promise<void> | undefined;
+    /** Close the proxy this start holds, once: whoever comes first (the drive's end, or a start the stop overtook). */
+    const closeProxy = async () => {
+      const open = proxy;
+      proxy = undefined;
+      await open?.close().catch(() => {});
+    };
     rt.mcp = mcp;
     rt.dispose = () =>
       (disposed ??= (async () => {
         stopped.abort(new Error("the agent's drive ended"));
         if (agent) await Promise.race([agent.exited, sleep(EXIT_WAIT_MS)]);
         await mcp.close().catch(() => {});
-        await proxy?.close().catch(() => {});
+        await closeProxy();
       })());
     ctx.signal.addEventListener("abort", () => void rt.dispose(), { once: true });
     try {
       if (recipe.billing.kind === "proxy") {
         if (!options.proxy) throw new Error("acp: proxy billing needs the adapter's proxy option");
         proxy = await options.proxy();
+        // A stop while the proxy started: the drive's end ran before there was a proxy to close. It is closed here, and
+        // the agent is never started.
+        if (signal.aborted) {
+          await closeProxy();
+          throw signal.reason ?? new Error("acp: the drive ended while the proxy started");
+        }
       }
       agent = startAgent({
         command: recipe.command,
@@ -425,7 +509,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         const opened = await ask("session/new", () => live.connection.agent.request("session/new", { cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
         rt.sessionId = opened.sessionId;
         journal.append(SESSION_STREAM, { sessionId: opened.sessionId });
-        rt.mirror.take(journal);
+        mirrorInto(rt, journal);
         await journal.flush();
         if (instructions && !systemPrompt) rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
         const context = contextNote(ctx.state());
@@ -457,7 +541,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       ...(gate ? { gate: async (call: GateCall) => (await journal.flush(), gate(call)) } : {}),
       beforeNever: () => journal.flush(),
     });
-    const cur: Current = { ctx, journal, bridge, signal: ctx.signal };
+    const cur: Current = { ctx, journal, bridge, signal: ctx.signal, inflight: new Set() };
 
     // A resumed session: each call of ours the agent made and the records never answered goes through the bridge before
     // the agent starts again. One that never reached its intent (a park held it) runs now, gate first; one whose end the
@@ -494,6 +578,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         const turn = cur.turn;
         if (!turn || !agent.agent.alive()) return false;
         interrupting = true;
+        // The turn's stop aborts the calls of ours running in it; its end waits for them to stop (runTurn), so true says
+        // both the agent and our tools let go: none writes through this drive's journal after it.
         turn.stop.abort();
         await agent.agent.connection.agent.notify("session/cancel", { sessionId: agent.sessionId }).catch(() => {});
         return Promise.race([turn.ended.then(() => true), sleep(ms).then(() => false)]);
@@ -518,17 +604,34 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       cur.turn = turn;
       let answer: { stopReason?: string } | undefined;
       let failure: unknown;
+      // Past the plan's limit of tool calls the turn is cancelled (countCall); an agent that goes on anyway has
+      // LIMIT_STOP_MS, then its process is ended.
+      let limitTimer: NodeJS.Timeout | undefined;
+      const pastLimit = new Promise<"past limit">((resolve) =>
+        turn.stop.signal.addEventListener("abort", () => void (turn.limitHit && (limitTimer = setTimeout(() => resolve("past limit"), LIMIT_STOP_MS))), { once: true }),
+      );
       try {
-        answer = await unlessAborted(agent.agent.connection.agent.request("session/prompt", { sessionId: agent.sessionId, prompt }), ctx.signal);
+        const asked = agent.agent.connection.agent.request("session/prompt", { sessionId: agent.sessionId, prompt });
+        asked.catch(() => {});
+        const result = await unlessAborted(Promise.race([asked, pastLimit]), ctx.signal);
+        if (result === "past limit") {
+          log("acp: the agent went on past the plan's limit after session/cancel; its process is ended", { waitedMs: LIMIT_STOP_MS });
+          await agent.dispose();
+          if (runtime === agent) runtime = undefined;
+        } else answer = result;
       } catch (error) {
         failure = error;
       } finally {
+        clearTimeout(limitTimer);
         cur.turn = undefined;
         turn.stop.abort();
+        // The calls of ours still running were told to stop (the turn's signal): the turn ends once they did, so none
+        // writes to the records after it.
+        if (!(await settledWithin(cur.inflight, CALL_STOP_MS))) log("acp: a call of ours did not stop with its turn", { waitedMs: CALL_STOP_MS });
         ended();
       }
       if (ctx.signal.aborted) throw ctx.signal.reason;
-      agent.mirror.take(journal);
+      mirrorInto(agent, journal);
       // Cancelled by the session's interrupt: no end is written, the turn stays open (its host settles it).
       if (interrupting) {
         await journal.flush();
@@ -562,7 +665,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         journal.message({ type: "message", role: "user", text, synthetic: "recovery" });
         await placeSubmissions(ctx, note.pending);
         await runTurn([text], `recovery:${transcriptOf(ctx.state()).length}`, [...note.turn.placed, ...note.pending.map((s) => s.id)]);
-        if (interrupting) return;
+        // Interrupted, or the agent's process ended (past the plan's limit): the next turn is the next drive's.
+        if (interrupting || !agent.agent.alive()) return;
       }
       // The inbox: one submission per turn.
       for (;;) {
@@ -571,7 +675,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!submission) break;
         await placeSubmissions(ctx, [submission]);
         await runTurn([submission.text ?? ""], submission.id);
-        if (interrupting) return;
+        if (interrupting || !agent.agent.alive()) return;
       }
     } finally {
       control?.(undefined);
