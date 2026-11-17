@@ -303,15 +303,17 @@ async function lastLines(client, id) {
 }
 
 /** What the service used, from Railway's live metrics (CPU in vCPU and memory and disk in GB, sampled), each sample held
- *  until the next and costed at the list prices; and Railway's own usage figures for the project, which lag, beside it. */
-export async function usageOf(client, { projectId, environmentId, serviceId, since }) {
+ *  until the next, the last until `now`, and costed at the list prices; and Railway's own usage figures for the project,
+ *  which lag, beside it. */
+export async function usageOf(client, { projectId, environmentId, serviceId, since, now = Date.now() }) {
   const out = { usd: null, by: {}, usage: null };
   try {
     const series = (await client.call("Metrics", { projectId, environmentId, serviceId, startDate: new Date(since).toISOString() })).metrics;
     const seconds = (ts) => (typeof ts === "number" ? ts : Date.parse(ts) / 1000);
     for (const { measurement, values } of series) {
       const points = [...values].sort((a, b) => seconds(a.ts) - seconds(b.ts));
-      out.by[measurement] = points.reduce((sum, p, i) => sum + p.value * (i + 1 < points.length ? seconds(points[i + 1].ts) - seconds(p.ts) : i > 0 ? seconds(p.ts) - seconds(points[i - 1].ts) : 0), 0) / 60;
+      const end = (i) => (i + 1 < points.length ? seconds(points[i + 1].ts) : Math.max(now / 1000, seconds(points[i].ts)));
+      out.by[measurement] = points.reduce((sum, p, i) => sum + p.value * (end(i) - seconds(p.ts)), 0) / 60;
     }
     out.usd = Object.entries(PRICE_PER_MINUTE).reduce((sum, [m, p]) => sum + (out.by[m] ?? 0) * p, 0);
   } catch (error) {
@@ -408,10 +410,13 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
       }
       try {
         await client.call("ProjectDelete", { id: projectId });
-        const gone = await client.call("Project", { id: projectId }).then((d) => Boolean(d.project.deletedAt), () => true);
+        // Railway deletes in the background: the project reads as live for a while, then as not found.
+        const gone = await until(client, "the throwaway project deleted", 3 * 60_000, 5_000, () =>
+          client.call("Project", { id: projectId }).then((d) => (d.project.deletedAt ? true : undefined), (e) => (/not found/i.test(e.message) ? true : undefined)),
+        ).catch(() => false);
         times.deleted = Date.now();
         if (gone) step.pass("throwaway project deleted", `${projectId}, ${minutes(times.deleted - times.clicked)} after the deploy started`);
-        else step.fail("throwaway project deleted", `${projectId} still reads as live: delete it in the dashboard`);
+        else step.fail("throwaway project deleted", `${projectId} still reads as live 3 minutes after the delete: delete it in the dashboard`);
       } catch (error) {
         step.fail("throwaway project deleted", `${projectId}: ${error.message}; delete it in the dashboard`);
       }
@@ -541,7 +546,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     Variables: () => ({ variables: env }),
     BuildLogs: () => ({ buildLogs: [{ message: "Healthcheck failed!", timestamp: "<time>" }] }),
     DeploymentLogs: () => ({ deploymentLogs: [{ message: `Set up this server: https://${domain}/setup#code=${"x".repeat(22)} (or paste AGENTRUN_TOKEN)`, timestamp: "<time>" }] }),
-    Metrics: () => ({ metrics: [{ measurement: "CPU_USAGE", values: [{ ts: 1000, value: 0.1 }, { ts: 1060, value: 0.05 }] }, { measurement: "MEMORY_USAGE_GB", values: [{ ts: 1000, value: 0.2 }, { ts: 1060, value: 0.3 }] }] }),
+    Metrics: ({ startDate }, t = Date.parse(startDate) / 1000) => ({ metrics: [{ measurement: "CPU_USAGE", values: [{ ts: t, value: 0.1 }, { ts: t + 60, value: 0.05 }] }, { measurement: "MEMORY_USAGE_GB", values: [{ ts: t, value: 0.2 }, { ts: t + 60, value: 0.3 }] }] }),
     Usage: () => ({ usage: [{ measurement: "CPU_USAGE", value: 0.5 }, { measurement: "MEMORY_USAGE_GB", value: 3 }, { measurement: "DISK_USAGE_GB", value: 2 }, { measurement: "NETWORK_TX_GB", value: 0.001 }] }),
     TemplatePublish: () => ({ templatePublish: { id: "<template>", code: "<code>", status: "PUBLISHED" } }),
     ProjectDelete: () => ({ projectDelete: true }),

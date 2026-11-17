@@ -220,13 +220,28 @@ test("a failed deploy is reported with its last log lines, the setup code's line
   assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
 });
 
-test("the walk's Railway cost: each metric sample held until the next (the last for the gap before it), at the list prices", async () => {
+test("the walk's Railway cost: each metric sample held until the next, the last until the reading, at the list prices", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws" });
-  const got = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0 });
-  // CPU 0.1 vCPU for 60 s then 0.05 for 60 s; memory 0.2 GB for 60 s then 0.3 for 60 s.
+  const got = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0, now: 120_000 });
+  // Samples at 0 s and 60 s, read at 120 s. CPU 0.1 vCPU for 60 s then 0.05 for 60 s; memory 0.2 GB then 0.3.
   assert.ok(Math.abs(got.by.CPU_USAGE - 9 / 60) < 1e-9 && Math.abs(got.by.MEMORY_USAGE_GB - 30 / 60) < 1e-9, JSON.stringify(got.by));
   assert.ok(Math.abs(got.usd - ((9 / 60) * PRICE_PER_MINUTE.CPU_USAGE + (30 / 60) * PRICE_PER_MINUTE.MEMORY_USAGE_GB)) < 1e-12);
   assert.equal(got.usage.CPU_USAGE, 0.5);
+
+  // Railway's default rate can give one sample per series: it counts from its time to the reading.
+  client.call = async (op) => (op === "Metrics" ? { metrics: [{ measurement: "DISK_USAGE_GB", values: [{ ts: "1970-01-01T00:16:40Z", value: 0.6 }] }] } : { usage: [] });
+  const one = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0, now: 1030_000 });
+  assert.ok(Math.abs(one.by.DISK_USAGE_GB - 0.3) < 1e-9, JSON.stringify(one.by));
+});
+
+test("the walk waits for Railway's background delete of the throwaway project", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const call = client.call;
+  let reads = 0;
+  client.call = async (op, v) => (op === "Project" && client.calls.some((c) => c.op === "ProjectDelete") && ++reads < 3 ? { project: { id: v.id, deletedAt: null } } : call(op, v));
+  const rows = await run(client, { workspaceId: "ws", log: quiet });
+  assert.equal(rows.find((r) => r[0] === "throwaway project deleted")[1], "PASS");
+  assert.equal(reads, 3);
 });
 
 test("the published template's description fits Railway's 75 characters", () => {
