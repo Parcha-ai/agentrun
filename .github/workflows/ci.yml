@@ -351,7 +351,8 @@ jobs:
 
   image-custody:
     # A run of the image holds its own model's key and nothing else, runs as a uid of its own, and reaches neither the data
-    # directory nor the server's memory (packages/serve/docker/image-custody.sh): the image built once from this checkout,
+    # directory nor the server's memory, nor anything of another live run (packages/serve/docker/image-custody.sh), after
+    # the run helper's own Go tests (packages/serve/runas): the image built once from this checkout,
     # then read in both shapes, the server with its runner in one process, and the two processes on a Postgres store whose
     # URL is a canary. It runs when a change reaches the server, its runner, its launcher, its image or this file. Outside
     # the verify matrix: it needs a Docker daemon, not both Node versions.
@@ -381,6 +382,17 @@ jobs:
           changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/serve/ .github/workflows/ci.yml)
           echo "${changed:-no server, runner, launcher or image path changed}"
           if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        if: steps.paths.outputs.run == 'true'
+        with:
+          go-version-file: packages/serve/runas/go.mod
+          cache: false
+      - name: The run helper's vet and tests (packages/serve/runas)
+        if: steps.paths.outputs.run == 'true'
+        working-directory: packages/serve/runas
+        env:
+          CGO_ENABLED: '0'
+        run: go vet ./... && go test ./...
       - name: The image, built once
         id: image
         if: steps.paths.outputs.run == 'true'

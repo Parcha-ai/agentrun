@@ -5,45 +5,51 @@
 # bytes, AGENTRUN_TOKENS an id and a 32-character secret), its server on the faux model of image-custody-faux.mjs (this
 # checkout's, copied in readable to every uid). image-custody-check.mjs then makes one run that reports, from inside the
 # process its loop runs in, what that process holds and reaches, and one that holds its turn while every process in the
-# container is read. It fails, one line for each, when:
+# container is read. The container is given a group (CUSTODY_SOCKET_GID, 4242 by default) as compose gives the server's
+# user the Docker socket's. It fails, one line for each, when:
+#   - the capabilities do not say run_isolation "uid";
 #   - the run's process holds any secret but its model's (OpenAI's: the agent is on an OpenAI model), as its own secrets
 #     module answers secret(name), or has one in its environment;
-#   - the run's process, or a program it starts, runs as the uid that owns the data directory (the server's), lists that
+#   - the run's process, or a program it starts, runs as the uid that owns the data directory (the server's) or one
+#     outside the helper's range, holds a group but its slot's, a capability in any set, or no no_new_privs; lists that
 #     directory or reads a file of it (seal/seal.key, the store), or opens the memory of a process of that uid;
+#   - of two live runs, one (or a program it starts) shares the other's uid, lists or reads the other's folder, reads its
+#     process's environment or descriptors, opens its memory, or connects to a socket of the group the container gives;
+#   - a slot's uid lists or reads any entry of the data directory (its harnesses aside, which runs execute);
+#   - a cancelled run leaves a process (one in a session of its own included) or a file in /tmp, or the next run on its
+#     slot reaches its folder;
 #   - any process has a canary in its environment, its command line or a pipe it holds; one but PID 1 (tini) holds the
 #     launcher's pipe; PID 1 is not tini.
 # Every container, and the network and Postgres of --two, is removed by its name at the end.
 #
-#   image-custody.sh [--two] [--keys-only] [--seal-file] <image> [docker run arguments...]
+#   image-custody.sh [--two] [--seal-file] <image> [docker run arguments...]
 #
 # One process (the default): the image's server with its runner beside it in the server's process, on the SQLite store
 # in /data, AGENTRUN_STORE_URL unset.
 # --two: the server and its runner as two processes, on a Postgres store whose URL is a canary (its password), given to
 # both. An image with docker/start.sh is given `server-and-runner` (its own two-process command); an older one, the server
 # with --no-runner and a runner started beside it in the same container through the image's launcher.
-# --keys-only: only what the run's process holds is read, not its uid nor its reach: for a release from before a run had
-# a uid of its own.
 # --seal-file: no seal key is handed, so the server makes its own in /data/seal/seal.key; the check reads that file (as
 # the server's uid) for the canary, and the run must not.
 # Arguments after the image go to `docker run`: a reviewer can bind-mount a changed launcher read-only over the image's.
 # CUSTODY_NAME names the container (and prefixes the others); CUSTODY_DOCKER_TIMEOUT bounds each docker call (seconds);
 # CUSTODY_POSTGRES is the Postgres image of --two.
 set -eu
-two= keys_only= seal_file=
+two= seal_file=
 while :; do
   case ${1-} in
     --two) two=1; shift ;;
-    --keys-only) keys_only=1; shift ;;
     --seal-file) seal_file=1; shift ;;
     *) break ;;
   esac
 done
-image=${1:?usage: image-custody.sh [--two] [--keys-only] [--seal-file] <image> [docker run arguments...]}
+image=${1:?usage: image-custody.sh [--two] [--seal-file] <image> [docker run arguments...]}
 shift
 here=$(cd "$(dirname "$0")" && pwd)
 name=${CUSTODY_NAME:-agentrun-image-custody-$$}
 limit=${CUSTODY_DOCKER_TIMEOUT:-300}
 postgres=${CUSTODY_POSTGRES:-postgres:17-alpine}
+socket_gid=${CUSTODY_SOCKET_GID:-4242}
 dk() { timeout "$limit" docker "$@"; }
 say() { printf 'image custody: %s\n' "$*" >&2; }
 root=/opt/agentrun/packages/serve
@@ -69,7 +75,7 @@ store=
 if [ -n "$two" ]; then
   if dk run --rm --entrypoint sh "$image" -c "test -f $root/docker/start.sh"; then shape=server-and-runner; else shape=runner-beside; fi
   dk network create "$name-net" >/dev/null
-  dk run -d --name "$name-pg" --network "$name-net" -e POSTGRES_USER=agentrun -e POSTGRES_DB=agentrun -e POSTGRES_PASSWORD="$canary-store" "$postgres" >/dev/null
+  dk run -d --name "$name-pg" --network "$name-net" -e POSTGRES_USER=agentrun -e POSTGRES_DB=agentrun -e "POSTGRES_PASSWORD=$canary-store" "$postgres" >/dev/null
   i=0
   until dk exec "$name-pg" pg_isready -q -h 127.0.0.1 -U agentrun -d agentrun; do # key-gate: loopback-rule Postgres's own readiness, inside its container
     i=$((i + 1))
@@ -99,7 +105,7 @@ case $shape in
   runner-beside) set -- "$@" "$image" --data /data --port 7340 --no-runner --faux "$faux" ;;
 esac
 # shellcheck disable=SC2086
-dk create --name "$name" $net $secrets "$@" >/dev/null
+dk create --name "$name" --group-add "$socket_gid" $net $secrets "$@" >/dev/null
 # The faux, readable to every uid, in the container's /tmp before it starts.
 tar -C "$here" --owner=0 --group=0 --mode=a+r -cf - image-custody-faux.mjs | dk cp - "$name:/tmp"
 dk start "$name" >/dev/null
@@ -116,7 +122,7 @@ if [ "$shape" = runner-beside ]; then
 fi
 say "$image, $shape"
 rc=0
-dk exec -i -e CANARY="$canary" -e SEAL="$seal" -e TOKEN="$canary-AGENTRUN_TOKEN" -e KEYS_ONLY="$keys_only" "$name" node --input-type=module - <"$here/image-custody-check.mjs" || rc=$?
+dk exec -i -e CANARY="$canary" -e SEAL="$seal" -e TOKEN="$canary-AGENTRUN_TOKEN" -e SOCKET_GID="$socket_gid" "$name" node --input-type=module - <"$here/image-custody-check.mjs" || rc=$?
 if [ "$rc" -ne 0 ]; then
   say "the container's last lines:"
   dk logs --tail 20 "$name" >&2 || true
