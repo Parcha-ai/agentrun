@@ -14,6 +14,8 @@ import type { Problem } from "@/lib/problem";
 import type { Run, RunStatus } from "@/lib/v2";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { queryRunsPrompt } from "@/lib/codingAgentPrompts";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 /** The statuses GET /v2/runs filters by, in the order a run moves through them. */
 export const RUN_STATUSES: readonly RunStatus[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
@@ -26,8 +28,8 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
   const archived = !!filter.archived;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-5 py-2 md:px-6">
-        <h1 className="caps mr-auto flex items-center gap-2.5 text-small font-semibold"><History className="size-4" aria-hidden />{archived ? "Archived runs" : "Runs"}</h1>
+      <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
+        <h1 className={cn(pageTitleClass, "mr-auto")}><History className="size-4" aria-hidden />{archived ? "Archived runs" : "Runs"}</h1>
         {onFilter && (
           <>
             <Picker label="Runs in one state" value={filter.status ?? ""} onChange={(v) => onFilter({ ...filter, status: (v || undefined) as RunStatus | undefined })} className="h-control-sm w-48"

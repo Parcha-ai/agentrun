@@ -10,14 +10,17 @@ import type { SecretMeta } from "@/lib/v2";
  *  paste over it. No value is ever shown: the read has none. `note`: a word on its state (a saved one that no longer
  *  opens). An action with no handler is not offered. `required` false: a key its provider can do without (Kernel's project),
  *  said Optional, its absence no warning; left out, a secret is needed. `stateSaid`: the page already shows Set or
- *  Missing beside it (the Keys page's chip on a key of one field), so the row's own word is for a screen reader only. */
-export function SecretRow({ field: f, label, writable, required = true, stateSaid = false, now = Date.now, note, onPaste, onRemove }: {
+ *  Missing beside it (the Keys page's chip on a key of one field), so the row's own word is for a screen reader only.
+ *  `actionsInline`: Paste, Replace and Remove follow the key's words instead of standing at the row's far end, where a
+ *  row inside a card with other content (Computers' provider rows) leaves them far from the key they act on. */
+export function SecretRow({ field: f, label, writable, required = true, stateSaid = false, actionsInline = false, now = Date.now, note, onPaste, onRemove }: {
   field: SecretMeta;
   /** What the page calls it where its name ends in no field ("Bearer token", "Signing secret"): secretLabel. */
   label?: string;
   writable: boolean;
   required?: boolean;
   stateSaid?: boolean;
+  actionsInline?: boolean;
   now?: () => number;
   note?: string;
   onPaste?: () => void;
@@ -33,7 +36,7 @@ export function SecretRow({ field: f, label, writable, required = true, stateSai
       {f.changed_at && <span className="text-muted-foreground">Changed {ago(f.changed_at, now())} ago</span>}
       {note && <span className="text-warning-text">{note}</span>}
       {acts && (
-        <span className="ml-auto flex gap-2 font-sans">
+        <span className={cn("flex gap-2 font-sans", !actionsInline && "ml-auto")}>
           {onPaste && <Button type="button" size="sm" variant={f.set ? "outline" : "primary"} onClick={onPaste}>{f.set ? "Replace" : "Paste"}</Button>}
           {onRemove && f.set && <Button type="button" size="sm" variant="destructive" onClick={onRemove}>Remove</Button>}
         </span>
