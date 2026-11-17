@@ -160,7 +160,7 @@ message as the console address, tell the person where it is:
 
 - **Render:** in the Render dashboard, the service's **Environment** tab holds `AGENTRUN_TOKEN`; they paste its value
   into **Setup code**. The service's **Logs** tab holds the line below too.
-- **Docker or a terminal:** the server's log (`docker logs <container>`, `docker compose logs server`, or the terminal
+- **Docker or a terminal:** the server's log (`docker logs <container>`, `docker compose logs`, or the terminal
   it runs in) has a line `Set up this server: <address>/setup#code=<code>`. The newest one counts.
 
 When you can read that log, read it privately and give them the newest `Set up this server:` link itself: it opens the

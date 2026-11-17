@@ -37,7 +37,7 @@ describe("SignIn's setup code field", () => {
   it("on a server someone started themselves, says which log line holds the code, where that log is, and how to get a new code", () => {
     expect(hint(mount("agents.example.test"))).toEqual([
       "The server printed it in its log: find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.",
-      "The log is the terminal the server runs in. In Docker: docker logs <container>, or docker compose logs server. On Render: the service's Logs tab.",
+      "The log is the terminal the server runs in. In Docker: docker logs <container>, or docker compose logs. On Render: the service's Logs tab.",
       "A code works once and lasts 30 minutes. When it has run out, Get a new code below prints a fresh one in the log. The server's API token works here too and does not expire: AGENTRUN_TOKEN (on Render, in the service's Environment tab), else the .token file in the server's data folder.",
     ]);
   });

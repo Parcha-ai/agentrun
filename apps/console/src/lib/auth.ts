@@ -36,7 +36,7 @@ export function setupCodePlaces(host: string): string[] {
   ];
   return [
     `The server printed it in its log: ${line}`,
-    "The log is the terminal the server runs in. In Docker: docker logs <container>, or docker compose logs server. On Render: the service's Logs tab.",
+    "The log is the terminal the server runs in. In Docker: docker logs <container>, or docker compose logs. On Render: the service's Logs tab.",
     "A code works once and lasts 30 minutes. When it has run out, Get a new code below prints a fresh one in the log. The server's API token works here too and does not expire: AGENTRUN_TOKEN (on Render, in the service's Environment tab), else the .token file in the server's data folder.",
   ];
 }

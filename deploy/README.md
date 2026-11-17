@@ -52,7 +52,7 @@ password. The console says where to look and never shows the code. It is in one 
 | Server | Where the code is |
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
-| Docker | `docker logs agentrun` (compose: `docker compose logs server`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
+| Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
 
 A code works once and lasts 30 minutes from the moment its line was printed. When it has run out, get a new one
