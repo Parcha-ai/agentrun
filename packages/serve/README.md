@@ -1230,11 +1230,15 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 `model_key`. With no key at all, claude-agent's default
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
 switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
-apply. It runs only on a runner on the machine the mode was turned on for; elsewhere claude-agent uses the keys.
+apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
+sandbox, or on another machine, uses the keys.
 
-`AGENTRUN_CLAUDE_CODE_LOGIN=off` turns the mode off for the whole server: the row is gone, every route above answers
-`404` naming its operation, and claude-agent runs on the model keys whatever was saved. Set it in every hosted template,
-since a hosted server is never one person's machine.
+The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
+bound to any other address, such as all interfaces in a container or on a hosting service, has it off
+with nothing to set. `AGENTRUN_CLAUDE_CODE_LOGIN` overrides the default. `off` turns the mode off anywhere. `on` makes
+it available past loopback, but a server with more than one API token still refuses it, and so does the API-only
+profile. While the mode is off, the row is gone and every route above answers `404` naming its operation. A turn-on
+saved earlier is dropped when the server starts, and claude-agent runs on the model keys.
 
 ## Tools
 

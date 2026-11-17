@@ -471,8 +471,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   }
   // Claude Code's login on this machine, where the owner turned it on for claude-agent here (claude-login.ts): the run
   // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
-  // runs on that key.
-  const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name);
+  // runs on that key, and a run in a sandbox place on the model keys.
+  const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey), login);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);

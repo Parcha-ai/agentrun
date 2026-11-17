@@ -4,10 +4,12 @@
 // server only tells the CLI where its login is, asks it for its status (`claude auth status`), and keeps one setting: that
 // the owner turned the mode on, where the login is, and on which machine.
 //
-// One off switch (AGENTRUN_CLAUDE_CODE_LOGIN=off): the Settings row is gone, every route here answers 404, and harness
-// selection reads no setting, so claude-agent runs on the model keys as it does without the mode. Hosted templates set
-// it off. The mode is for a server one person runs: it is refused where more than one person can start runs, and the
-// owner confirms they alone run agents here. It runs only on a runner on the machine the owner turned it on for.
+// One switch (AGENTRUN_CLAUDE_CODE_LOGIN): unset, the mode is there only on a server that listens on loopback, so a
+// server bound past it (0.0.0.0 in a container, a hosted service) has it off with nothing to set; `off` or `on` says so
+// outright. Off, the Settings row is gone, every route here answers 404, a saved turn-on is dropped at the start, and
+// harness selection reads no setting, so claude-agent runs on the model keys as it does without the mode. The mode is
+// for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
+// confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -20,9 +22,20 @@ import type { Settings } from "./store/index.js";
 // person's plan on for this server's runs, and starting its sign-in, are the owner's to do.
 for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]) registerSecretWrite(operation, () => true);
 
-/** The off switch: `off` (or 0, false, no) turns the mode off on this server. */
+/** The switch: `off` (or 0, false, no) turns the mode off on this server, `on` (or 1, true, yes) leaves it there past
+ *  loopback; unset, the listen address decides (claudeLoginSwitchedOff). */
 export const CLAUDE_LOGIN_ENV = "AGENTRUN_CLAUDE_CODE_LOGIN";
 export const claudeLoginOff = (env: Readonly<Record<string, string | undefined>>): boolean => /^(off|0|false|no)$/i.test((env[CLAUDE_LOGIN_ENV] ?? "").trim());
+const claudeLoginOn = (env: Readonly<Record<string, string | undefined>>): boolean => /^(on|1|true|yes)$/i.test((env[CLAUDE_LOGIN_ENV] ?? "").trim());
+const loopback = (host: string): boolean => host === "localhost" || host === "::1" || /^127\./.test(host); // key-gate: loopback-rule the default follows a loopback listen address
+
+/** Why the mode is off on a server listening on `listen`, or undefined where it is there: the switch's `off`, or, unset,
+ *  a listen address past loopback. */
+export function claudeLoginSwitchedOff(env: Readonly<Record<string, string | undefined>>, listen: string): string | undefined {
+  if (claudeLoginOff(env)) return `${CLAUDE_LOGIN_ENV}=off`;
+  if (claudeLoginOn(env) || loopback(listen)) return undefined;
+  return `it listens on ${listen}, past loopback; ${CLAUDE_LOGIN_ENV}=on turns it on`;
+}
 
 /** The setting row: the mode on, where the login is, and the machine it was turned on for. */
 export const CLAUDE_LOGIN_SETTING = "claude_login";
@@ -143,15 +156,16 @@ export function settingFor(place: LoginPlace, data: string): Setting {
 }
 
 /** The login a run of `harness` on this runner goes on: the saved setting's, read now, when the switch is not off, the
- *  harness runs on it, and this is the machine it was turned on for; else none. */
-export async function loginForRun(settings: Pick<Settings, "get">, data: string, env: Readonly<Record<string, string | undefined>>, harness: string | undefined): Promise<ClaudeAgentLogin | undefined> {
-  if (harness === undefined || !LOGIN_HARNESSES.includes(harness) || claudeLoginOff(env)) return undefined;
+ *  harness runs on it, the run is in a runner place (`place`), and this is the machine it was turned on for; else none,
+ *  and the run goes on the model keys. */
+export async function loginForRun(settings: Pick<Settings, "get">, data: string, env: Readonly<Record<string, string | undefined>>, harness: string | undefined, place: { readonly mode: string }): Promise<ClaudeAgentLogin | undefined> {
+  if (harness === undefined || !LOGIN_HARNESSES.includes(harness) || claudeLoginOff(env) || place.mode !== "runner") return undefined;
   return loginOf(await claudeLoginSetting(settings), data, env);
 }
 
-/** The routes here (server.ts): every one answers 404, by its name, while the switch is off. */
+/** The routes here (server.ts): every one answers 404, by its name, while the mode is off (`why`). */
 export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]);
-export const claudeLoginRouteOff = (name: string): string => `${name}: Claude Code's login on this machine is off on this server (${CLAUDE_LOGIN_ENV}=off).`;
+export const claudeLoginRouteOff = (name: string, why: string): string => `${name}: Claude Code's login on this machine is off on this server: ${why}.`;
 
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
  *  server. `sameMachine`: the request comes from a browser on this machine to a server bound to loopback with no public
@@ -228,12 +242,13 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
   return claudeLoginView(deps);
 }
 
-/** At the server's start: a setting saved where the mode is now refused (a second token, the API-only profile) goes, so
- *  no runner runs on it; the reason is logged. */
-export async function dropRefusedLogin(settings: Pick<Settings, "get" | "remove">, refused: string | undefined, log: (line: string) => void): Promise<void> {
-  if (!refused || !(await claudeLoginSetting(settings))) return;
+/** At the server's start: a setting saved where the mode is now off or refused (`why`: the switch, a listen address past
+ *  loopback, a second token, the API-only profile) goes, so no runner, in this process or another, runs on it; the reason
+ *  is logged. */
+export async function dropRefusedLogin(settings: Pick<Settings, "get" | "remove">, why: string | undefined, log: (line: string) => void): Promise<void> {
+  if (!why || !(await claudeLoginSetting(settings))) return;
   await settings.remove(CLAUDE_LOGIN_SETTING);
-  log(`Claude Code's login on this machine turned off: ${refused}`);
+  log(`Claude Code's login on this machine turned off: ${why}`);
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
