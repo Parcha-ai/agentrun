@@ -88,9 +88,12 @@ function namespace(Class, env) {
 		if (!places.has(name)) places.set(name, { storage: fakeStorage(), container: new FakeContainer() });
 		const one = places.get(name);
 		if (one.object === undefined) {
-			// A callback that throws resets the object, as workerd does; the next call makes a new one.
+			// A callback that throws, or runs past 30 s, resets the object, as workerd does
+			// (developers.cloudflare.com/durable-objects/api/state/); the next call makes a new one.
 			const blockConcurrencyWhile = (run) => {
-				const done = run();
+				let timer;
+				const limit = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("blockConcurrencyWhile() callback timed out after 30 s")), 30_000)));
+				const done = Promise.race([run(), limit]).finally(() => clearTimeout(timer));
 				one.ready = done.then(
 					() => undefined,
 					() => void (one.object = undefined),
@@ -249,7 +252,7 @@ test("an index write that fails strands nothing: a create's starts nothing, a st
 	const names = async () => (await cf.call("GET", "/v1/computers")).json.computers.map(({ name }) => name);
 	// The create's index write fails first: no container, no row, so the provider's create again starts it once.
 	cf.failIndex(1);
-	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 500);
+	assert.deepEqual(await cf.call("POST", "/v1/computers", create()), { status: 500, json: { error: `the relay failed: the index answered 500 to PUT ${NAME}` } });
 	const { container, storage } = cf.computer();
 	assert.deepEqual([container.starts.length, storage.map.size, await names()], [0, 0, []]);
 	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
@@ -263,13 +266,65 @@ test("an index write that fails strands nothing: a create's starts nothing, a st
 	// The delete's index write fails after the container and the row are gone: the entry stays listed, and the next
 	// delete, with no row to end, drops it.
 	cf.failIndex(1);
-	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 500);
+	assert.deepEqual(await cf.call("DELETE", `/v1/computers/${NAME}`), { status: 500, json: { error: `the relay failed: the index answered 500 to DELETE ${NAME}` } });
 	assert.deepEqual([container.running, storage.map.size, await names()], [false, 0, [NAME]]);
 	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 204);
 	assert.deepEqual(await names(), []);
 	// The busy name, its stray gone, starts on the provider's create again.
 	assert.equal((await cf.call("POST", "/v1/computers", create({ name: busy }))).status, 201);
 	assert.deepEqual(await names(), [busy]);
+});
+
+test("a create whose container call waits past 30 s answers its row: only the quick steps hold the object", async (t) => {
+	// Live, 11-17: the first standard-3 create of a run answered a bare 500 30 s in, the limit workerd puts on
+	// blockConcurrencyWhile; a container call on a cold start can wait that long (which call waited is unverified).
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const cf = fakeCloudflare();
+	const { container } = cf.computer();
+	let started;
+	container.setInactivityTimeout = (ms) => (container.idle.push(ms), new Promise((resolve) => (started = resolve)));
+	const made = cf.call("POST", "/v1/computers", create());
+	while (started === undefined) await settle();
+	t.mock.timers.tick(30_001);
+	await settle();
+	// The row is kept and readable while the container settles; a second create of the name answers it.
+	assert.equal((await cf.call("GET", `/v1/computers/${NAME}`)).json.state, "running");
+	started();
+	assert.equal((await made).status, 201);
+	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 200);
+	assert.deepEqual([container.starts.length, container.idle], [1, [6 * HOUR]]);
+});
+
+test("a create whose idle timeout fails answers 500 in its words and ends what it made, so a create again starts it", async () => {
+	const cf = fakeCloudflare();
+	const { container, storage } = cf.computer();
+	container.setInactivityTimeout = async () => {
+		throw new Error("the container is not ready");
+	};
+	assert.deepEqual(await cf.call("POST", "/v1/computers", create()), { status: 500, json: { error: "Cloudflare did not keep the container: the container is not ready" } });
+	assert.deepEqual([container.running, storage.map.size, storage.alarm, (await cf.call("GET", "/v1/computers")).json.computers], [false, 0, undefined, []]);
+	delete container.setInactivityTimeout;
+	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
+	assert.deepEqual([container.starts.length, container.running, container.idle], [2, true, [6 * HOUR]]);
+});
+
+test("a create whose idle timeout fails after a delete and a create again leaves the new computer alone", async () => {
+	const cf = fakeCloudflare();
+	const { container } = cf.computer();
+	let fail;
+	container.setInactivityTimeout = (ms) => {
+		container.idle.push(ms);
+		return container.idle.length === 1 ? new Promise((_, reject) => (fail = reject)) : Promise.resolve();
+	};
+	const first = cf.call("POST", "/v1/computers", create());
+	while (fail === undefined) await settle();
+	assert.equal((await cf.call("DELETE", `/v1/computers/${NAME}`)).status, 204);
+	assert.equal((await cf.call("POST", "/v1/computers", create())).status, 201);
+	fail(new Error("the container is not ready"));
+	assert.deepEqual(await first, { status: 500, json: { error: "Cloudflare did not keep the container: the container is not ready" } });
+	assert.deepEqual([container.starts.length, container.running], [2, true]);
+	assert.equal((await cf.call("GET", `/v1/computers/${NAME}`)).json.state, "running");
+	assert.deepEqual((await cf.call("GET", "/v1/computers")).json.computers.map(({ name }) => name), [NAME]);
 });
 
 test("the alarm sets the idle timeout again each hour, and at backstopAt destroys the container and drops its row", async (t) => {
