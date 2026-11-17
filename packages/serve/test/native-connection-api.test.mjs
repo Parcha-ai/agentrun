@@ -46,7 +46,7 @@ for(const imports of [true,false])test(`Claude ${imports?'imported':'direct AGEN
  assert.equal(connected.status,200,JSON.stringify(connected.body));const id=connected.body.agent.agent_id;
  const verified=await api('POST',`/agents/${id}/native/verify`,{});
  assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.launch,true);
- assert.equal(verified.body.native.capabilities.notes,false);assert.equal(verified.body.native.capabilities.skills,false);
+ assert.equal(verified.body.native.capabilities.learning,false);
  assert.match(verified.body.native.issues.join(' '),/Claude.*(import|policy)/i);
  assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:false}})).status,200);
  const started=await api('POST',`/agents/${id}/runs`,{input:{content:'Follow the original project policy.'}});

@@ -164,7 +164,7 @@ test('a native permission denial ends the run before an output-schema retry can 
 
 test('native incomplete policy is explicitly unavailable for learning and a forced proposal ends refused rather than remaining Proposed', {timeout:60_000},async t=>{
  const {api,id,project,run,learned,home}=await fixture(t,'plain');await writeFile(join(project,'AGENTS.md'),'A native policy rule.\n'.repeat(4000));
- const verified=await api('POST',`/agents/${id}/native/verify`,{});assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.notes,false);
+ const verified=await api('POST',`/agents/${id}/native/verify`,{});assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.learning,false);
  const first=await run();const result=await learned(first);assert.equal(result.state,'dropped',JSON.stringify(result));assert.match(result.detail,/grading evidence limit/);
  const calls=(await readFile(join(home,'fixture-calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);assert.deepEqual(calls.filter(c=>c.cwd!==project),[],'nothing but the task reaches a source process');
 });
@@ -175,7 +175,7 @@ test('Codex custom-policy evidence disables promotion while ordinary native task
  await writeFile(join(home,'config.toml'),configuration);await writeFile(join(home,'standing-policy.md'),'Require owner review.\n');
  const verified=await api('POST',`/agents/${id}/native/verify`,{});
  assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.launch,true);
- assert.equal(verified.body.native.capabilities.notes,false);assert.equal(verified.body.native.capabilities.skills,false);
+ assert.equal(verified.body.native.capabilities.learning,false);
  assert.match(verified.body.native.issues.join(' '),/incomplete.*Codex|Codex.*policy/i);
  const first=await run();const result=await learned(first);
  assert.equal(result.state,'dropped',JSON.stringify(result));assert.match(result.detail,/incomplete.*Codex|Codex.*policy/i);

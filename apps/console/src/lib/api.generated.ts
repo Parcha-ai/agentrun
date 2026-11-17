@@ -37,8 +37,7 @@ export interface components {
       issues: string[];
       capabilities: {
         launch: boolean;
-        notes: boolean;
-        skills: boolean;
+        learning: boolean;
         workflows: false;
         approval: "native" | "unavailable";
         usage: boolean;
@@ -297,8 +296,7 @@ export interface components {
       issues: string[];
       capabilities: {
         launch: boolean;
-        notes: boolean;
-        skills: boolean;
+        learning: boolean;
         workflows: false;
         approval: "native" | "unavailable";
         usage: boolean;
@@ -1439,8 +1437,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -1909,8 +1906,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -1952,8 +1948,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -2395,8 +2390,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -3120,8 +3114,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -3158,8 +3151,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -5402,8 +5394,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;

@@ -61,14 +61,14 @@ export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: 
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const available = native.connected && native.state === "ready" && native.capabilities.notes && native.capabilities.skills && native.capabilities.launch;
+  const available = native.connected && native.state === "ready" && native.capabilities.learning && native.capabilities.launch;
   const save = async (next: boolean) => {
     if (!mutations.begin()) return;
     setBusy(true); setError(null);
     try {
       if (next) {
         const { native: checked } = await v2.verifyNative(agent.agent_id);
-        if (!checked.connected || checked.state !== "ready" || !checked.capabilities.notes || !checked.capabilities.skills) throw new Error(`Native learning is not ready: ${checked.issues.join("; ") || nativeStateLabel(checked)}. Verify the connection and try again.`);
+        if (!checked.connected || checked.state !== "ready" || !checked.capabilities.learning) throw new Error(`Native learning is not ready: ${checked.issues.join("; ") || nativeStateLabel(checked)}. Verify the connection and try again.`);
       }
       const { agent: current, etag } = await v2.getAgent(agent.agent_id);
       const { unchanged, ...body } = editBody(current, { learning: next }, next ? "Native self-improvement on" : "Native self-improvement off");

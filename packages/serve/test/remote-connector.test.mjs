@@ -5,7 +5,7 @@ import { learningFolderOf, seedOf } from '../dist/learning.js';
 import { learningCommit } from '../dist/learn/commit.js';
 import { RemoteConnectors } from '../dist/native/remote.js';
 
-const target = { runtime:'codex',project:'/source-only/project',selector:{kind:'project'},machine_id:'source-machine',version:'0.167.2',model:'source-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,notes:true,skills:true,workflows:false,approval:'unavailable',usage:true},connected:true,verified_at:new Date().toISOString() };
+const target = { runtime:'codex',project:'/source-only/project',selector:{kind:'project'},machine_id:'source-machine',version:'0.167.2',model:'source-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,learning:true,workflows:false,approval:'unavailable',usage:true},connected:true,verified_at:new Date().toISOString() };
 const usage={input_tokens:100,output_tokens:20,cache_read_tokens:0,cache_write_tokens:0,cost_usd:null};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function setup(t, options={runner:false}) {

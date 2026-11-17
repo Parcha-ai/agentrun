@@ -1103,8 +1103,7 @@ class DefinitionNativeConfigurationItem(TypedDict):
 
 class DefinitionNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1358,8 +1357,7 @@ class AgentNativeStatusConfigurationItem(TypedDict):
 
 class AgentNativeStatusCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1486,8 +1484,7 @@ class ConnectNativeResponseNativeConfigurationItem(TypedDict):
 
 class ConnectNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1580,8 +1577,7 @@ class DefinitionInputNativeConfigurationItem(TypedDict):
 
 class DefinitionInputNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1818,8 +1814,7 @@ class DisconnectNativeResponseNativeConfigurationItem(TypedDict):
 
 class DisconnectNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1874,8 +1869,7 @@ class DiscoverNativeResponseTargetsItemConfigurationItem(TypedDict):
 
 class DiscoverNativeResponseTargetsItemCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1966,8 +1960,7 @@ class GetAgentResponseNativeStatusConfigurationItem(TypedDict):
 
 class GetAgentResponseNativeStatusCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2117,8 +2110,7 @@ class GetNativeResponseNativeConfigurationItem(TypedDict):
 
 class GetNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2584,8 +2576,7 @@ class VerifyNativeResponseNativeConfigurationItem(TypedDict):
 
 class VerifyNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2689,8 +2680,7 @@ class ImportRemoteTargetBodyTargetConfigurationItem(TypedDict):
 
 class ImportRemoteTargetBodyTargetCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2743,8 +2733,7 @@ class ImportRemoteTargetResponseNativeConfigurationItem(TypedDict):
 
 class ImportRemoteTargetResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool

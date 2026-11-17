@@ -309,7 +309,7 @@ export function checkedPrepared(before: NativeBinding, result: unknown): { targe
         ? 'This source bridge did not check imported or additional Claude policy files.'
         : undefined;
   if (unchecked && !instructions.incomplete) instructions = { ...instructions, incomplete: unchecked };
-  if (instructions.incomplete || instructions.truncated) target = { ...target, capabilities: { ...target.capabilities, notes: false, skills: false }, issues: [...target.issues, `Self-improvement is unavailable: ${instructions.incomplete ?? 'the source instruction snapshot exceeds the grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`] };
+  if (instructions.incomplete || instructions.truncated) target = { ...target, capabilities: { ...target.capabilities, learning: false }, issues: [...target.issues, `Self-improvement is unavailable: ${instructions.incomplete ?? 'the source instruction snapshot exceeds the grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`] };
   return { target, instructions };
 }
 

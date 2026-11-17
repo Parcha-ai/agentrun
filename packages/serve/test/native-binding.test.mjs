@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openSqliteStore } from '../dist/store/index.js';
 import { createAgent, commitAgent, definitionOf } from '../dist/agents-store.js';
-const native = {runtime:'codex',project:'/fixture/project',selector:{kind:'profile',name:'review'},machine_id:'test-machine',version:'0.167.2',model:null,fingerprint:'abc',configuration:[],skills:[],mcp_servers:[],state:'needs_verification',issues:[],capabilities:{launch:true,notes:true,skills:true,workflows:false,approval:'unavailable',usage:true},connected:true};
+const native = {runtime:'codex',project:'/fixture/project',selector:{kind:'profile',name:'review'},machine_id:'test-machine',version:'0.167.2',model:null,fingerprint:'abc',configuration:[],skills:[],mcp_servers:[],state:'needs_verification',issues:[],capabilities:{launch:true,learning:true,workflows:false,approval:'unavailable',usage:true},connected:true};
 test('native binding stays in ordinary revisions through learning edits; no imported history identity', async t => {
  const data=await mkdtemp(join(tmpdir(),'agentrun-native-binding-')); const store=await openSqliteStore({dataDir:data,role:'server'});
  t.after(async()=>{await store.close();await rm(data,{recursive:true,force:true});});

@@ -105,7 +105,7 @@ for (const runtime of ['claude-code', 'codex']) for (const incomplete of [false,
  assert.equal(snapshot.incomplete, prepared[0].instructions.incomplete);
  for (const field of ['codexConfigurationChecked', 'claudeConfigurationChecked', 'claudePolicySourcesChecked']) assert.equal(snapshot[field], prepared[0].instructions[field]);
  if (incomplete) {
-  assert.ok(snapshot.incomplete);assert.equal(configuration.capabilities.notes, false);assert.equal(configuration.capabilities.skills, false);
+  assert.ok(snapshot.incomplete);assert.equal(configuration.capabilities.learning, false);
  }
  const evidence = snapshot.text;
  const processInput = JSON.stringify(await f.calls()) + await readFile(inputLog, 'utf8');
@@ -141,7 +141,7 @@ async function preparedLearning(t, runtime, mode) {
  ];
  const source = sourceBridge(t, { ...f.env, NATIVE_TEST_EVENTS: JSON.stringify(events) }), seen = [], prepared = [];
  const target = (await source.call('discover', { payload: { project: f.project, runtime } })).targets.find(row => row.selector.kind === 'project');
- assert.ok(target.capabilities.notes, 'the queued launch initially supports learning');
+ assert.ok(target.capabilities.learning,'the queued launch initially supports learning');
  const s = await serve(t, { runner: true });
  const request = async (path, body, credential = s.token) => {
   const reply = await fetch(s.baseUrl + path, { method: 'POST', headers: { Authorization: `Bearer ${credential}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -168,7 +168,7 @@ async function preparedLearning(t, runtime, mode) {
    seen.push(command); const start = source.events.length;
    const result = await source.call(command.type, { target, session_key: command.session_key, payload: command.payload });
    if (command.type === 'prepare') {
-    if (mode === 'capabilities') result.target.capabilities = { ...result.target.capabilities, notes: false, skills: false };
+    if (mode === 'capabilities') result.target.capabilities = { ...result.target.capabilities, learning: false };
     prepared.push(result);
    }
    const events = source.events.slice(start).map(row => row.event);

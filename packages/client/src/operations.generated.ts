@@ -36,8 +36,7 @@ export type Agent = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -143,8 +142,7 @@ export type DefinitionInput = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1225,8 +1223,7 @@ export type ConnectNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1281,8 +1278,7 @@ export type DisconnectNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1324,8 +1320,7 @@ export type DiscoverNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1410,8 +1405,7 @@ export type GetNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1577,8 +1571,7 @@ export type VerifyNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1656,8 +1649,7 @@ export type ImportRemoteTargetBody = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1694,8 +1686,7 @@ export type ImportRemoteTargetResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;

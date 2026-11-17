@@ -164,9 +164,9 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
     // Preparation can withdraw learning after this launch was queued. The final
     // saved-policy snapshot can also newly exceed the evidence limit. Keep task
     // context/use intact, but refuse the reflection before it reaches the source.
-    if(launch.learning&&!launch.learning.use&&(instructions.incomplete||instructions.truncated||!target.capabilities.notes&&!target.capabilities.skills)){
+    if(launch.learning&&!launch.learning.use&&(instructions.incomplete||instructions.truncated||!target.capabilities.learning)){
      automaticLearningUnavailable=true;
-     const why=instructions.incomplete||(instructions.truncated?'the combined source and saved policy exceeds the grading evidence limit.':'the prepared source does not support notes or skills.');
+     const why=instructions.incomplete||(instructions.truncated?'the combined source and saved policy exceeds the grading evidence limit.':'the prepared source does not support learning.');
      const detail=redact(`Self-improvement skipped: ${why} A new run must capture complete policy evidence before automatic learning.`);
      // An unasked drop settles both learning views atomically with the task end;
      // it queues no learning run and keeps an unavailable run from staying seeded.
