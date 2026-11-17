@@ -743,6 +743,7 @@ __all__ = [
     "RunPending6",
     "RunPlace1",
     "RunPlace2",
+    "RunRecordingsItem",
     "RunResult",
     "RunReview",
     "RunSdk",
@@ -2960,6 +2961,9 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     workflow_pct: float
     agent_pct: float
     cleared: bool
+    agreed: int
+    alone: int
+    agree_min: float
 
 
 class GetAgentLearningResponse(TypedDict):
@@ -4494,6 +4498,7 @@ class Run(_RunRequired, total=False):
     labels: dict[str, str]
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
+    recordings: list[RunRecordingsItem]
     input: dict[str, Any] | None
     file_ids: list[str]
     claim: RunClaim | None
@@ -4570,6 +4575,14 @@ class RunNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunRecordingsItem(TypedDict):
+    path: str
+    computer: str
+    seconds: float
+    bytes: int
+    finished: bool
 
 
 class RunClaim(TypedDict):

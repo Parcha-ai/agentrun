@@ -1244,6 +1244,9 @@ const LEARNING_COST = closed({
       workflow_pct: { type: "number", minimum: 0, maximum: 100, description: "The share of them it answered alone with the agent's own recorded answer, in percent to a tenth." },
       agent_pct: { type: "number", minimum: 0, maximum: 100, description: "The agent's accuracy on them, in percent: 100, its own answers being the label." },
       cleared: { type: "boolean", description: "The check passed: a serving champion was promoted on it." },
+      agreed: { ...COUNT, description: "Of the inputs it answered alone (`alone`), how many said what the agent's own recorded answer said." },
+      alone: { ...COUNT, description: "The inputs it answered alone (no hand-back, no failed step)." },
+      agree_min: { type: "number", minimum: 0, maximum: 1, description: "The agreement bar it passed (the definition's `learning.agree_min`): `agreed` over `alone` at least this. Passing it says the workflow agreed with the agent that often, never that it is as accurate." },
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
 });
@@ -2798,6 +2801,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "While a message the run took is still open (an agentic run, working or queued): when its turn last wrote anything, a request's start included; it holds still while a tool or a model request runs, and moves as the turn writes. Null once every message has had its turn, and on a workflow run.",
       "x-agentrun-serve": "turnend/1",
     },
+    recordings: {
+      type: "array",
+      items: closed({
+        path: { type: "string", description: "Where it is read: `GET /runs/{run_id}/files/{path}` with this path (`recordings/<computer>.mp4`), `video/mp4`, its byte ranges answered; `?download=1` for an attachment." },
+        computer: { type: "string", description: "The computer it recorded: its id, as the file is named. A computer's later files (a resumed run's, a phone's frames that changed format) are `<computer>-2.mp4` and on." },
+        seconds: { type: "number", minimum: 0, description: "How long it plays, to a tenth of a second, as far as it is written." },
+        bytes: { type: "integer", minimum: 0, description: "Its size now." },
+        finished: { type: "boolean", description: "false while it is still being written: it plays up to its last whole fragment. true once its recording stopped, and for every file once the run has ended and the file has stopped changing (a few seconds after the end)." },
+      }, "One video of a computer's screen during the run (H.264 in fragmented MP4)."),
+      description: "On the run read (and an archive's or unarchive's answer) alone, never in a list: the videos of the run's screen, where its agent's computer says `record: true` (a desktop or a phone), each computer's files in the order they were recorded; empty when nothing was recorded, and for a run whose words are withheld. Read from the files on the machine whose runner recorded them. The video shows everything on the screen: see the agent's `computer.record`.",
+      "x-agentrun-serve": "runvideo/1",
+    },
     input: {
       type: ["object", "null"],
       additionalProperties: true,
@@ -3524,6 +3539,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     files["x-agentrun-serve-changed"] = { description: "signins/1", ...(added ? { responses: "signins/1" } : {}) };
     changed.push(`GET ${path}`);
   }
+  // runvideo/1: a run's screen recordings are read under recordings/, as video/mp4, their byte ranges answered.
+  const readFile = (doc.paths["/runs/{run_id}/files/{path}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };
+  readFile.description = `${String(readFile.description).trimEnd()}\nHere a path under \`recordings/\` is one of the run's screen recordings (the run read's \`recordings\`, made where its agent's computer says \`record: true\`), never a file the run made: \`video/mp4\`, inline unless \`?download=1\`, read-only, to whoever may read the run's other files. A folder the run made named \`recordings\` is neither listed nor served. A recording still being written is served as it stands: a fragmented MP4 plays up to its last whole fragment. \`Range\` is honoured for every file (\`features.files.range\`): one byte range, \`206\` with \`Content-Range\`, so a \`<video>\` can seek; one that starts past the end is \`416 range_not_satisfiable\`.\n`;
+  for (const code of ["200", "206"]) readFile.responses[code]!.content = { "video/mp4": { schema: { type: "string", contentMediaType: "video/mp4" } }, ...readFile.responses[code]!.content };
+  readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), responses: "runvideo/1" };
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;

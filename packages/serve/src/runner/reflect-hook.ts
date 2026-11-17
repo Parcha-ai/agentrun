@@ -50,7 +50,8 @@ export interface ReflectDeps {
    *  compiles nothing (its job not due, a workflow that answered). Absent, or a read that throws: no compile turn. */
   readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => Promise<CompileAsk | undefined>;
   /** Compile once: a compile turn whose drafts all failed their checks (one answered, none passed) is the compile's
-   *  attempt, kept on a promotion record (learning-end.ts recordDraftFailed) that compileFacts reads. Absent: none kept. */
+   *  attempt, kept on a promotion record (learning-end.ts recordDraftFailed) that compileFacts reads. Its `workflow` and
+   *  `errors` come cut of `refuse`. Absent: none kept. */
   readonly compileFailed?: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => Promise<void>;
   /** The compile turn's deadline, every attempt in it. Default learn/compile.ts COMPILE_TIMEOUT_MS. */
   readonly compileDeadlineMs?: number;
@@ -165,8 +166,11 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         // Each error names its file already (checkDraftOf); one with no rule behind it (an answer the compile could not
         // read) is the workflow's.
         if (result.drafted) draftProblems = result.draftProblems ?? result.draftErrors.map((detail) => ({ rule: "workflow" as const, detail }));
-        // Compile once: its failed drafts are the compile's attempt, on record before the learning closes.
-        if (result.drafted && deps.compileFailed) await deps.compileFailed({ runId: input.runId, agentId: input.agentId, compile, workflow: result.record.workflow, errors: result.draftErrors }).catch(() => undefined);
+        // Compile once: its failed drafts are the compile's attempt, on record before the learning closes. The draft's
+        // name and errors are the model's words: cut of `refuse` as the proposal row is (cutRow) before they are saved
+        // on the promotion record or logged, whose reads cut only the server's secrets, never this run's.
+        const cut = (text: string) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY);
+        if (result.drafted && deps.compileFailed) await deps.compileFailed({ runId: input.runId, agentId: input.agentId, compile, workflow: cut(result.record.workflow), errors: result.draftErrors.map(cut) }).catch(() => undefined);
       }
     }
     const compiledFields = compiled ? { compiled: compiled.record, ...(compiled.draft_errors?.length ? { draft_errors: compiled.draft_errors } : {}) } : {};

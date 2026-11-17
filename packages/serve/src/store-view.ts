@@ -63,6 +63,7 @@ import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
 import { FINAL_STATES, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
+import type { RecordingView } from "./run-recordings.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
@@ -81,6 +82,10 @@ export interface ViewDeps {
   /** Each learned item's status on agent `agentId`'s learning folder's main (learning-routes.ts statusesOf): what a run held
    *  for its owner's OK reads as it stands there. None: as the merge wrote it. */
   readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
+  /** Run `runId`'s screen recordings (run-recordings.ts recordingsOf), the run ended at `endedAt` (null: it has not). Only
+   *  the reads that answer a run as a whole pass it (a run's own read, its archive): absent, the view has no `recordings`,
+   *  so a list, a poll or a status read opens no file. */
+  readonly recordings?: (agentId: string, runId: string, endedAt: number | null) => Promise<RecordingView[]>;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -585,6 +590,10 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     labels: runRow.labels,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
     learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values)),
+    // Its screen recordings (computer.record), from the files on this machine, where its read asks for them; none for a
+    // withheld run, whose files are refused. A run that left running with no end stamped (parked) ends now, each read: only
+    // a file's trailer finishes it there.
+    ...(deps.recordings ? { recordings: unshown ? [] : await deps.recordings(row.agent, row.id, ended ? (runRow.endedAt ?? Date.now()) : null) } : {}),
     poll_after_ms: settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };

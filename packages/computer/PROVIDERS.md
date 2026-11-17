@@ -422,8 +422,7 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
-  (`relays/cloudflare`, `src/cloudflare.ts`): on Workers Paid, `npx wrangler secret put RELAY_TOKEN` and
-  `npx wrangler deploy` from that folder, then paste the Worker's URL and the token into Settings.
+  (`src/cloudflare.ts`; deploy and remove it as `relays/cloudflare/README.md` says).
 
 A provider that can do both takes one option, `connect: "exec" | "dial"`, read once in its constructor, which picks
 its host's facts: on `dial` the host declares `connect: "dial"` and has no `exec` or `upload`, and create boots the

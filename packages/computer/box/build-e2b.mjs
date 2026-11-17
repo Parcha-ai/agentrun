@@ -10,7 +10,7 @@
 // it install.sh's checked step runs again, and the Dockerfile's USER and CMD are the template's (recipe.mjs onImage).
 //
 // --public makes the template public once it is built (E2B's v2 PATCH /v2/templates/{id}, public: true), so another
-// team's sandbox starts from it, and prints the names E2B gives it. release.yml's box-e2b job runs both.
+// team's sandbox starts from it, and prints the names E2B gives it. release.yml's box job runs both.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";

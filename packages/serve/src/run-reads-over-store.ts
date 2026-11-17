@@ -21,6 +21,7 @@ import type { RunStated } from "./store-view.js";
 import { StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
 import type { Workspace } from "./workspace/index.js";
+import { RECORDINGS } from "./workspace/paths.js";
 
 /** The most files a list answers with (server.ts FILE_LIST_CAP). */
 export const FILE_LIST_CAP = 2_000;
@@ -35,6 +36,9 @@ export interface RunReadsDeps {
   /** The run's Workspace for a server-side read (not the runner's claim-time openRunWorkspace): null when it has no folder
    *  (an imported run never has one). */
   runWorkspace(store: RunReadsStore, runId: string): Promise<Workspace | null>;
+  /** The run's recordings folder on this machine, read-only (run-recordings.ts recordingsWorkspace): null when it recorded
+   *  nothing. */
+  recordings(store: RunReadsStore, runId: string): Promise<Workspace | null>;
   /** The environment the plane re-check reads (tool-plane.ts recheckPlane): the server's keys as it holds them. */
   readonly env: NodeJS.ProcessEnv;
   /** The run's open live browser viewer, when its runner serves one (its link), or undefined. The runner publishes the
@@ -60,19 +64,22 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   // in is what it saw (store-view's `unshown`), as the graph refuses and the base's filesShown did.
   if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const workspace = await deps.runWorkspace(store, runId);
-  const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP) : { files: [] as FileView[], deep: false };
+  // A folder the run made named recordings is not listed: the route's recordings/ is the run's recordings.
+  const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP, { owned: (name) => name === RECORDINGS }) : { files: [] as FileView[], deep: false };
   files.sort((a, b) => a.path.localeCompare(b.path));
   return { run_id: runId, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP };
 }
 
 /** One of a run's files, through its Workspace (readRunFile): streamed to `res` as the route streams it, with the route's
- *  path check and its 404 words; a withheld run refuses (403) before anything is streamed. */
+ *  path check and its 404 words; a withheld run refuses (403) before anything is streamed. A path under recordings/ is
+ *  one of the run's recordings (its recordings folder, beside its Workspace's), never a file the run made. */
 export async function readRunFile(store: RunReadsStore, runId: string, rawPath: string, req: IncomingMessage, res: ServerResponse, url: URL, deps: RunReadsDeps): Promise<void> {
   if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const rel = checkedPath(decodedPath(rawPath), "the run's own, not a file it wrote");
-  const workspace = await deps.runWorkspace(store, runId);
+  const recording = rel.startsWith(`${RECORDINGS}/`) ? rel.slice(RECORDINGS.length + 1) : undefined;
+  const workspace = await (recording === undefined ? deps.runWorkspace : deps.recordings)(store, runId);
   if (!workspace) throw new ApiError("not_found", "no such file");
-  return sendFile(req, res, url, workspace, rel, "a tool in the run's box");
+  return sendFile(req, res, url, workspace, recording ?? rel, "a tool in the run's box");
 }
 
 /** Whether the run's revision grants the browser tool: an agentic revision whose tools name it. */

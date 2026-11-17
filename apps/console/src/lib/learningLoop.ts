@@ -201,16 +201,17 @@ export function withheldWords(w: { unknown: number; at_most: number }): string {
 }
 export const WITHHELD_NEXT = "how many times cheaper shows once every run's cost is known";
 
-/** The tab's cheaper headline over a ratio above 1: "About Nx cheaper at the same accuracy" only when the serving
- *  champion's check cleared (the cost summary's `replay`: the share that said what the agent said, the agent's own
- *  answers being 100%), with that check and what was served under it; else the ratio alone, and why accuracy is not claimed. */
+/** The tab's cheaper headline over a ratio above 1: "About Nx cheaper" and what its check showed when the serving
+ *  champion's check cleared (the cost summary's `replay`): it passed the agreement check, N of the M inputs it answered
+ *  alone agreeing with the agent against the bar, and what was served under it. Never "the same accuracy": passing the
+ *  bar is all it says. Else the ratio alone, and why accuracy is not claimed. */
 function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: string; detail: string } {
   const n = ratio >= 1.5 ? `${Math.round(ratio)}x` : `${ratio.toFixed(1)}x`;
   const r = s.replay;
   const scored = r ? `workflow ${Math.round(r.workflow_pct)}% vs agent ${Math.round(r.agent_pct)}% on ${r.n} inputs` : "";
   if (r?.cleared) {
     const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}` : "";
-    return { value: `About ${n} cheaper at the same accuracy`, detail: `Check: ${scored}${served}` };
+    return { value: `About ${n} cheaper`, detail: `Passed the agreement check: ${r.agreed} of ${r.alone} agreed (bar ${Math.round(r.agree_min * 100)}%)${served}` };
   }
   return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its check was below the bar (${scored})` : "no check yet"}` };
 }

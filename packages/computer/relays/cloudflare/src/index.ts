@@ -16,7 +16,8 @@
 //
 // Pages: A = developers.cloudflare.com/containers/api/durable-object-container/ (start, monitor, destroy,
 // setInactivityTimeout, images), L = /sandbox/concepts/lifetime/ (an instance stops once its object is inactive; code in
-// the container doesn't count as activity; an alarm does).
+// the container doesn't count as activity; an alarm does), S = /durable-objects/api/state/ (blockConcurrencyWhile resets
+// an object whose callback throws or runs past 30 s).
 
 /** The relay's routes and rows, as the provider speaks them: a change to either is a new version (descriptors/cloudflare.ts). */
 export const RELAY_VERSION = 1;
@@ -72,6 +73,7 @@ interface Row {
 
 const answer = (status: number, body?: unknown) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refuse = (status: number, error: string) => answer(status, { error });
+const words = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const strings = (value: unknown): value is Record<string, string> => typeof value === "object" && value !== null && !Array.isArray(value) && Object.values(value).every((one) => typeof one === "string");
 
 /** Whether two strings are equal, compared by their SHA-256 in full, so the time taken says nothing of the token. */
@@ -92,26 +94,36 @@ function createProblem(body: Record<string, unknown>, env: Env): string | undefi
 	return undefined;
 }
 
+/** The relay's routes, each answered: a throw of its own or its objects' (which reaches the caller) is a 500 in words. */
+async function route(request: Request, env: Env): Promise<Response> {
+	if (!env.RELAY_TOKEN) return refuse(503, "this relay has no RELAY_TOKEN: set one with `npx wrangler secret put RELAY_TOKEN`, then use the same token in AgentRun");
+	if (!(await same(request.headers.get("authorization") ?? "", `Bearer ${env.RELAY_TOKEN}`))) return refuse(401, "the bearer token is not this relay's RELAY_TOKEN");
+	const url = new URL(request.url);
+	const { method } = request;
+	if (url.pathname === "/v1/health" && method === "GET") return answer(200, { version: RELAY_VERSION, image: env.BOX_IMAGE });
+	if (url.pathname === "/v1/computers" && method === "GET") return env.INDEX.getByName("index").fetch(new Request(`https://index/${url.search}`));
+	if (url.pathname === "/v1/computers" && method === "POST") {
+		const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+		const problem = body === null ? "the body must be JSON" : createProblem(body, env);
+		if (problem || body === null) return refuse(422, problem ?? "");
+		return env.COMPUTER.getByName(body.name as string).fetch(new Request(`https://computer/${body.name}`, { method, body: JSON.stringify(body) }));
+	}
+	const name = /^\/v1\/computers\/([^/]+)$/.exec(url.pathname)?.[1];
+	if (name !== undefined && (method === "GET" || method === "DELETE")) {
+		if (!NAME.test(name)) return refuse(404, `${name} is no computer of this relay`);
+		return env.COMPUTER.getByName(name).fetch(new Request(`https://computer/${name}`, { method }));
+	}
+	return refuse(404, `${method} ${url.pathname} is no route of this relay`);
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
-		if (!env.RELAY_TOKEN) return refuse(503, "this relay has no RELAY_TOKEN: set one with `npx wrangler secret put RELAY_TOKEN`, then use the same token in AgentRun");
-		if (!(await same(request.headers.get("authorization") ?? "", `Bearer ${env.RELAY_TOKEN}`))) return refuse(401, "the bearer token is not this relay's RELAY_TOKEN");
-		const url = new URL(request.url);
-		const { method } = request;
-		if (url.pathname === "/v1/health" && method === "GET") return answer(200, { version: RELAY_VERSION, image: env.BOX_IMAGE });
-		if (url.pathname === "/v1/computers" && method === "GET") return env.INDEX.getByName("index").fetch(new Request(`https://index/${url.search}`));
-		if (url.pathname === "/v1/computers" && method === "POST") {
-			const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-			const problem = body === null ? "the body must be JSON" : createProblem(body, env);
-			if (problem || body === null) return refuse(422, problem ?? "");
-			return env.COMPUTER.getByName(body.name as string).fetch(new Request(`https://computer/${body.name}`, { method, body: JSON.stringify(body) }));
+		try {
+			return await route(request, env);
+		} catch (error) {
+			// Never Cloudflare's own bare 500: the provider reads why from `error`.
+			return refuse(500, `the relay failed: ${words(error)}`);
 		}
-		const name = /^\/v1\/computers\/([^/]+)$/.exec(url.pathname)?.[1];
-		if (name !== undefined && (method === "GET" || method === "DELETE")) {
-			if (!NAME.test(name)) return refuse(404, `${name} is no computer of this relay`);
-			return env.COMPUTER.getByName(name).fetch(new Request(`https://computer/${name}`, { method }));
-		}
-		return refuse(404, `${method} ${url.pathname} is no route of this relay`);
 	},
 };
 
@@ -121,6 +133,8 @@ export class Computer {
 	readonly #env: Env;
 	/** Set once this object ends its container (until a new start), so the monitor's settling never writes the row back. */
 	#ended = false;
+	/** The row this object's last start made, until its end: a create's cleanup ends that computer and no later one. */
+	#made: Row | undefined;
 
 	constructor(state: State, env: Env) {
 		this.#state = state;
@@ -146,30 +160,47 @@ export class Computer {
 			return answer(204);
 		}
 		const body = (await request.json()) as Row & { env: Record<string, string>; instance: string };
-		// One create at a time: a second of the same name waits for the first, then answers its row, whatever its state.
-		return this.#state.blockConcurrencyWhile(async () => {
-			const first = await this.#state.storage.get<Row>("row");
-			if (first !== undefined) return answer(200, this.#view(first));
-			const made: Row = { name, labels: body.labels, createdAt: new Date().toISOString(), backstopAt: body.backstopAt };
-			// The index first, so the provider's sweep by name finds whatever follows; a start that throws takes it back.
-			await this.#index("PUT", made);
-			const container = this.#state.container;
-			try {
-				container.start({ image: container.images.box, env: body.env, entrypoint: [DIAL], enableInternet: true, instance: body.instance });
-			} catch (error) {
-				// A: start() throws while a container runs; with no row, one a failed delete left. It ends before its entry
-				// goes, so nothing runs unlisted: a destroy that throws keeps the entry, and the sweep's DELETE ends it.
-				if (container.running) await container.destroy("stray");
-				await this.#index("DELETE", made);
-				return refuse(500, `Cloudflare did not start the container: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			this.#ended = false;
-			await this.#state.storage.put("row", made);
-			await container.setInactivityTimeout(IDLE_MS);
-			await this.#nextAlarm(made);
-			this.#watch();
-			return answer(201, this.#view(made));
-		});
+		// One start at a time: a second create of the same name waits for the first's, then answers its row, whatever its
+		// state. Only the quick steps hold the object (S): the idle timeout waits outside, since a call on a cold container
+		// can outlast 30 s (live, 11-17: a first standard-3 create answered a bare 500 30 s in).
+		const started = await this.#state.blockConcurrencyWhile(() => this.#start(name, body));
+		if (started instanceof Response) return started;
+		try {
+			// A: set after start(), as its example does; start() returns before the container is up.
+			await this.#state.container.setInactivityTimeout(IDLE_MS);
+		} catch (error) {
+			// The container would stop soon after the object goes quiet (A): end it, so the provider's create again starts one.
+			// Only if it is still this create's: a delete, and a create again, may have come while it waited.
+			if (this.#made === started) await this.#end(name);
+			return refuse(500, `Cloudflare did not keep the container: ${words(error)}`);
+		}
+		return answer(201, this.#view(started));
+	}
+
+	/** A create's quick steps: the index entry, the start, the row and its alarm; the row made, or the answer to give. */
+	async #start(name: string, body: Row & { env: Record<string, string>; instance: string }): Promise<Row | Response> {
+		const first = await this.#state.storage.get<Row>("row");
+		if (first !== undefined) return answer(200, this.#view(first));
+		const made: Row = { name, labels: body.labels, createdAt: new Date().toISOString(), backstopAt: body.backstopAt };
+		// The index first, so the provider's sweep by name finds whatever follows; a start that throws takes it back.
+		await this.#index("PUT", made);
+		const container = this.#state.container;
+		try {
+			container.start({ image: container.images.box, env: body.env, entrypoint: [DIAL], enableInternet: true, instance: body.instance });
+		} catch (error) {
+			// A: start() throws while a container runs; with no row, one a failed delete left. It ends before its entry
+			// goes, so nothing runs unlisted: a destroy that throws keeps the entry, and the sweep's DELETE ends it.
+			if (container.running) await container.destroy("stray");
+			await this.#index("DELETE", made);
+			return refuse(500, `Cloudflare did not start the container: ${words(error)}`);
+		}
+		this.#ended = false;
+		this.#made = made;
+		await this.#state.storage.put("row", made);
+		// The alarm with the row, so a create that fails from here on still has its backstop.
+		await this.#nextAlarm(made);
+		this.#watch();
+		return made;
 	}
 
 	/** Every hour: the inactivity timeout again, so a quiet container stays (L); at backstopAt, the end. */
@@ -190,7 +221,7 @@ export class Computer {
 		return this.#state.storage.setAlarm(Math.min(Date.now() + HOUR_MS, Date.parse(row.backstopAt)));
 	}
 
-	/** The index entry written or dropped; a call that fails throws, so the route answers 500 and the caller asks again. */
+	/** The index entry written or dropped; a call that fails throws, so the route answers 500 in words and the caller asks again. */
 	async #index(method: "PUT" | "DELETE", row: Pick<Row, "name"> & Partial<Row>): Promise<void> {
 		const done = await this.#env.INDEX.getByName("index").fetch(new Request(`https://index/${row.name}`, { method, ...(method === "PUT" ? { body: JSON.stringify(row) } : {}) }));
 		if (!done.ok) throw new Error(`the index answered ${done.status} to ${method} ${row.name}`);
@@ -207,7 +238,7 @@ export class Computer {
 		stopped
 			.then(
 				() => this.#stopped("its main process exited"),
-				(error: unknown) => this.#stopped(`it stopped: ${error instanceof Error ? error.message : String(error)}`),
+				(error: unknown) => this.#stopped(`it stopped: ${words(error)}`),
 			)
 			// Its row reads gone already; an index entry that missed it reads running until the computer's delete drops it.
 			.catch(() => undefined);
@@ -227,6 +258,7 @@ export class Computer {
 	 */
 	async #end(name: string): Promise<void> {
 		this.#ended = true;
+		this.#made = undefined;
 		if (this.#state.container.running) await this.#state.container.destroy("deleted");
 		await this.#state.storage.deleteAlarm();
 		await this.#state.storage.deleteAll();

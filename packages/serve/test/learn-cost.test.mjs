@@ -115,7 +115,7 @@ test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bo
 });
 
 test("the summary carries the serving promotion's replay as it is given", () => {
-  const replay = { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true };
+  const replay = { n: 40, workflow_pct: 86, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 };
   const runs = series([["agent", 0.9], ["workflow", 0.1]]);
   assert.deepEqual(costSummary(runs, replay).replay, replay);
   assert.equal(costSummary(runs).replay, null);
@@ -125,7 +125,7 @@ test("the serving promotion's check: the champion of the workflow the newest ser
   const check = (alone, agreed, n = 40) => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n, agreed, alone, of: [] });
   const rec = (digest, decided, extra = {}) => ({ workflow: "classify", digest, at: "2026-11-12T00:00:00Z", decided, reason: "r", ...extra });
   const runs = series([["agent", 0.9], ["workflow", 0.1], ["handed_back", 0.5]]);
-  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 100, cleared: true });
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 });
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(0, 0, 0) })], runs), null, "promoted on a dry run: no inputs checked");
   assert.equal(servingReplayOf([rec("d1", "promote")], runs), null, "no check kept");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(38, 33) }), rec("d1", "hold", { check: check(10, 2) })], runs), null, "held: nothing serves");
