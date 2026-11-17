@@ -227,7 +227,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!cur) return;
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
-        const tool = ourTool(update as { title?: string | null; name?: string | null }, names);
+        // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
+        // MCP call's id, and never passes the permission shortcut below.
+        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
         if (tool) rt.calls.add(update.toolCallId, tool, update.rawInput);
         return;
       }
@@ -253,8 +255,12 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const turn = cur?.turn;
     if (!cur || !turn || turn.stop.signal.aborted) return turn?.limitHit ? choose("reject_once") : cancelled;
     if (turn.limitHit) return choose("reject_once");
-    // Our own tool: the gate is the bridge's, asked at the MCP call itself. Allowed once, never always.
-    if (ourTool(request.toolCall as { title?: string | null; name?: string | null }, names)) return choose("allow_once");
+    // Our own tool: the gate is the bridge's, asked at the MCP call itself. Allowed once, never always. The title is the
+    // agent's text, so it takes both: a request whose kind has no effects of its own and whose name is ours, for the
+    // tool_call the agent announced as that same tool of ours under the request's own id. Anything else is the agent's
+    // own call: the host's gate, journaled.
+    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
+    if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";
     const title = typeof call.title === "string" ? call.title : kind;

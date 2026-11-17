@@ -21,9 +21,16 @@ export function canonical(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+/** The ACP tool kinds of a call with effects of its own (a shell, a file write, a delete, a move, a fetch): never one of
+ *  our tools, whatever its title says. */
+export const NATIVE_EFFECT_KINDS: ReadonlySet<string> = new Set(["execute", "edit", "delete", "move", "fetch"]);
+
 /** The host tool an ACP tool call names, by the agent's own name for our MCP server's tools (Goose `agentrun__<tool>`,
- *  Cursor `agentrun-<tool>: <tool>`, or its `name`), when it is one of `tools`. */
-export function ourTool(update: { title?: string | null; name?: string | null }, tools: ReadonlySet<string>): string | undefined {
+ *  Cursor `agentrun-<tool>: <tool>`), when it is one of `tools` and its kind is not one with effects of its own. The title
+ *  is the agent's text, so this alone is never evidence that a call is ours: a permission request also needs the tool_call
+ *  that announced it (CallIds.announced). */
+export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>): string | undefined {
+  if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
   const candidates: string[] = [];
   for (const said of [update.name, update.title]) {
     if (typeof said !== "string") continue;
@@ -32,7 +39,6 @@ export function ourTool(update: { title?: string | null; name?: string | null },
     const cursor = new RegExp(`^${MCP_SERVER}(?:-[^:]*)?: (.+)$`).exec(said);
     if (cursor) candidates.push(cursor[1]!.trim());
   }
-  if (typeof update.name === "string") candidates.push(update.name);
   return candidates.find((name) => tools.has(name));
 }
 
@@ -41,10 +47,12 @@ export class CallIds {
   private readonly seen = new Map<string, string[]>();
   private readonly waiting = new Map<string, ((id: string) => void)[]>();
   private readonly used = new Set<string>();
+  private readonly tools = new Map<string, string>();
 
   /** The agent announced call `id` of `tool` with `input` (undefined: it reported none). */
   add(id: string, tool: string, input: unknown): void {
     if (this.used.has(id)) return;
+    if (!this.tools.has(id)) this.tools.set(id, tool);
     const keys = [`${tool}\0${canonical(isPlain(input) ? input : {})}`, `${tool}\0*`];
     // An announced call with no input is matched by its tool alone.
     const key = input === undefined || input === null ? keys[1]! : keys[0]!;
@@ -64,6 +72,11 @@ export class CallIds {
   /** Whether the agent announced `id` (matched or not). */
   has(id: string): boolean {
     return this.used.has(id) || [...this.seen.values()].some((ids) => ids.includes(id));
+  }
+
+  /** The tool of ours the agent's tool_call `id` was announced as, or undefined when no such tool_call came. */
+  announced(id: string): string | undefined {
+    return this.tools.get(id);
   }
 
   /** The id of an MCP call of `tool` with `args`: the agent's announced one, waited for at most `ms`; undefined when none
