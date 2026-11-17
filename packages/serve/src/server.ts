@@ -1787,12 +1787,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   // A composio trigger kept with a credential of its config in the clear (saved before the config was sealed) is sealed
   // before the first request: no answer shows it from this start on.
-  // Rewritten under the store's secureRewrite, so the row's old bytes (the key) are not left in its files.
+  // All of it under the store's secureRewrite, so no file of the store keeps the rows' old bytes (the key): when it can't
+  // finish the scrub (a reader held the log back), it is said by a code alone and the next start finishes it.
   const sealing = options.store ?? store;
-  await composioTriggers.sealKept(async (id, source) => {
-    const write = async () => void (await sealing.triggers.update(id, { source }));
-    await (sealing === store && store.secureRewrite ? store.secureRewrite(write) : write());
-  }).catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  const sealKept = () => composioTriggers.sealKept(async (id, source) => void (await sealing.triggers.update(id, { source })));
+  await (sealing === store && store.secureRewrite ? store.secureRewrite(sealKept) : sealKept().then((rewritten) => ({ rewritten, left: undefined })))
+    .then(({ left }) => {
+      if (!left) return;
+      const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
   {

@@ -2191,9 +2191,12 @@ takes them as passwords. A PATCH that leaves a sealed field out or sends `"[seal
 change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
 The trigger's delete removes the value. A trigger saved by an earlier server with such a value in plain text is answered
 masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
-and sealed at the next start. On SQLite that rewrite runs with `secure_delete` on and a WAL checkpoint after, so the old
-row's bytes are not left in the store's files; on Postgres the old row version stays until the database vacuums it. The
-log line names the trigger and the field, never the value.
+and sealed at the next start. On SQLite that rewrite runs with `secure_delete` on, then a `VACUUM` and a WAL checkpoint,
+so the store's files keep no copy of the old row: neither the one rewritten nor one an earlier update of the row left in
+free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
+checkpoint is done. A start that finds it (the server stopped mid-way, or a reader in another connection held the
+checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version stays until the
+database vacuums it. The log line names the trigger and the field, never the value.
 
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`

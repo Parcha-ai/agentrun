@@ -4,8 +4,8 @@
 // with more than one statement is one transaction (connection.transaction, BEGIN IMMEDIATE): all of it or none of it.
 // The domain code below (the SqliteStore class, storeOver) is written once for SQLite and Postgres (a Postgres store opens
 // it on its own connection): what differs, and the locks Postgres's many writers take, is the connection's Dialect (store/dialect.ts).
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rmSync, statSync, writeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } from '../native-command-owner.js';
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
@@ -21,7 +21,7 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
-  type ImportedTemplates, type MintedTokenRow, type MintedTokens,
+  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -30,6 +30,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
   return Number(cursor);
 };
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
+import { inMemory } from "./memory.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, readLearningStarts, writeLaunch } from "./run-launch.js";
@@ -354,7 +355,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, options.now ?? Date.now);
+  return storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file);
 }
 
 /** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */
@@ -425,9 +426,31 @@ function readOnly(tx: Tx): Tx {
 }
 
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
- *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first. */
-export function storeOver(connection: StoreConnection, now: () => number): Store {
-  return new SqliteStore(connection, now);
+ *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first.
+ *  `file`: a SQLite store's database file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX). */
+export function storeOver(connection: StoreConnection, now: () => number, file?: string): Store {
+  return new SqliteStore(connection, now, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`);
+}
+
+/** The suffix, after the database file's name, of the marker secureRewrite writes before a rewrite and removes once no
+ *  file of the store keeps the bytes it replaced: a start that finds it finishes the scrub. */
+const SCRUB_SUFFIX = ".scrub";
+
+/** The marker at `path`, written and synced (its directory too) before the rewrite it marks changes a byte. */
+function markScrub(path: string): void {
+  const fd = openSync(path, "w", 0o600);
+  try {
+    writeSync(fd, "agentrun-serve: a rewrite of a secret this store kept in the clear may have left its old bytes in the store's free pages; the next start scrubs them and removes this file.\n");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  const dir = openSync(dirname(path), "r");
+  try {
+    fsyncSync(dir);
+  } finally {
+    closeSync(dir);
+  }
 }
 
 /** The store's domain code, written once for both databases: its SQL takes `?` parameters, and what a database says
@@ -468,9 +491,12 @@ class SqliteStore implements Store {
    *  but nothing is written through it: release moved the run's epoch on, so the journal's first commit is Fenced by the
    *  epoch check in its own transaction. The map refuses early; the epoch is what guarantees it. */
   readonly #released = new Map<string, number>();
+  /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
+  readonly #scrubMarker: string | undefined;
 
-  constructor(db: StoreConnection, now: () => number, origin?: Store) {
+  constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string) {
     this.#db = db;
+    this.#scrubMarker = scrubMarker;
     this.#now = now;
     this.origin = origin ?? this;
     this.where = db.where;
@@ -1749,16 +1775,38 @@ class SqliteStore implements Store {
     };
   }
 
-  async secureRewrite<T>(work: () => Promise<T>): Promise<T> {
-    if (this.#db.dialect.name !== "sqlite") return work();
+  async secureRewrite(work: () => Promise<number>): Promise<SecureRewrite> {
+    const marker = this.#scrubMarker;
+    if (this.#db.dialect.name !== "sqlite" || marker === undefined) return { rewritten: await work() };
+    // Written before any byte changes: a server that dies after the rewrite committed, and before the scrub below is done,
+    // leaves it, and its next start scrubs though no row is left in the clear.
+    const pending = existsSync(marker);
+    markScrub(marker);
+    let rewritten: number;
     await this.#db.all("PRAGMA secure_delete = ON");
     try {
-      return await work();
+      rewritten = await work();
     } finally {
       await this.#db.all("PRAGMA secure_delete = OFF");
-      // A reader in another process (a runner) may hold the log back: the next checkpoint then copies the new pages over.
-      await this.#db.all("PRAGMA wal_checkpoint(TRUNCATE)");
     }
+    if (rewritten === 0 && !pending) {
+      rmSync(marker, { force: true });
+      return { rewritten };
+    }
+    // secure_delete zeroes only the bytes `work` freed: a copy an earlier, ordinary update of the row left (a pause, a
+    // rename, a firing) is in a free block or page still. VACUUM rebuilds the file with neither, through the log; the
+    // checkpoint copies it into the file and truncates the log. Run outside any transaction.
+    try {
+      await this.#db.all("VACUUM");
+      const [checkpoint] = await this.#db.all<{ busy: number; log: number; checkpointed: number }>("PRAGMA wal_checkpoint(TRUNCATE)");
+      // A reader in another connection (a runner, a backup) held the log back: the old frames are there until a
+      // checkpoint is done, so the marker stays.
+      if (checkpoint?.busy !== 0) return { rewritten, left: "busy" };
+    } catch {
+      return { rewritten, left: "failed" };
+    }
+    rmSync(marker, { force: true });
+    return { rewritten };
   }
 
   async claim(runId: string, runner: string, { leaseMs = DEFAULT_LEASE_MS }: { leaseMs?: number } = {}): Promise<Claim | null> {
