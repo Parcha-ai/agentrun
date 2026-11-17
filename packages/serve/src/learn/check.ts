@@ -5,7 +5,7 @@
 import { placeholdersOf, placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME } from "./workflow-draft.js";
+import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
 
 /** Byte caps (UTF-8). Over a cap is refused, never cut. */
 export const CAPS = Object.freeze({
@@ -64,6 +64,8 @@ const MODES: Record<string, string> = { "120000": "a link: never followed", "040
 
 /** Why a path is none of what a draft may write. */
 const OUTSIDE = "a draft writes workflows/<name>/ with its workflow.json and README.md";
+/** Why a workflow.json checked with no workflow DSL is refused. */
+const NO_DSL = "no workflow DSL to read it with: it was not checked";
 
 /** `problem` as it may be printed: its path and detail cut of `values` and of every shape learning refuses, a bank's
  *  numbers too (redactLearned: a name refused for one never prints it), whole when over PRINT_MAX. */
@@ -643,6 +645,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
   const text = textOf(path, change.bytes, refused, add);
   if (text === undefined || decodedScanned(path, text, refused, add)) return;
   if (place.kind === "workflow") {
+    if (!input.dsl) return add("workflow", NO_DSL, path);
     const problems = draftProblems(input.dsl, text, input.tools, input.gated, input.deniedBy, input.decisions, input.workflowAdapters);
     // A draft the DSL reads parses: its answering step is held to the agent's model, its steps there to compact state
     // (the SDK bridge's runNode picks every model itself: it names no tier), and its quote check to code.
@@ -681,19 +684,35 @@ export function unstorable(changes: readonly Change[], refuseValues: readonly st
 }
 
 /** Checks one workflow draft (its workflow.json and README.md, given together by draftFiles) against SPEC.md: each file
- *  under workflows/<name>/ (learnedChecked), nothing else. Every problem printable; none when it passes. */
+ *  under workflows/<name>/ (learnedChecked), nothing else, and the two together (a workflow whose files are otherwise in
+ *  shape with one of them missing names it: restore reads the README). Never throws: a draft it could not read (no
+ *  workflow DSL, a check that threw) is a problem in words. Every problem printable; none when it passes. */
 export function checkDraft(input: DraftCheckInput): Problem[] {
   const values = input.refuseValues ?? [];
   const problems: Problem[] = [];
   const add: Add = (rule, detail, path) => void problems.push(printable(path === undefined ? { rule, detail } : { rule, path, detail }, values));
   const refused = valueMatcher(values);
+  /** Each workflow's files given, by its name. */
+  const given = new Map<string, Set<LearnedPlace["kind"]>>();
   for (const change of input.changes) {
     const place = learnedPlace(change.path);
-    if (place) learnedChecked(change, place, refused, input, add);
-    else {
+    if (!place) {
       nameScanned(change.path, refused, add);
       add("outside", OUTSIDE, change.path);
+      continue;
     }
+    if (change.status !== "deleted") given.set(place.name, (given.get(place.name) ?? new Set()).add(place.kind));
+    try {
+      learnedChecked(change, place, refused, input, add);
+    } catch (error) {
+      add("workflow", `it could not be checked: ${String((error as Error)?.message ?? error).slice(0, 200)}`, change.path);
+    }
+  }
+  for (const [name, kinds] of given) {
+    const dir = `${WORKFLOWS_DIR}/${name}/`;
+    if (kinds.size === 2 || problems.some((problem) => problem.path?.startsWith(dir))) continue;
+    const missing = kinds.has("workflow") ? "README.md" : "workflow.json";
+    add("workflow", `${OUTSIDE}: its ${missing} is missing`, `${dir}${missing}`);
   }
   return problems;
 }

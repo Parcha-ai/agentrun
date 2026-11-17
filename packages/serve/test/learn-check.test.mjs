@@ -172,7 +172,7 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
   assert.ok(Date.now() - started < 2_000, `read in ${Date.now() - started} ms`);
   for (const text of plain) {
     assert.deepEqual(learnedSecretShapes(text), [], `no secret: ${text}`);
-    assert.deepEqual(check([added(README_PATH, described(text))]), [], text);
+    assert.deepEqual(check(draft(undefined, described(text))), [], text);
   }
 });
 
