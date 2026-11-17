@@ -4,7 +4,7 @@
 // here is this machine's own environment with a search path whose `od` fails, after planting a FIFO at each name the
 // copy could fall back to (`.put.<pid>.` for the copy's shell and each of its parents).
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { backgroundTools } from "../dist/background.js";
+import { fakeBin } from "./fake-bin.mjs";
 
 test("with no random bytes to name a temporary file, a display copy is skipped at once, never hung on a FIFO planted at the name it would fall back to", { timeout: 90_000 }, async (t) => {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "bg-put-"));
@@ -19,9 +20,7 @@ test("with no random bytes to name a temporary file, a display copy is skipped a
   const bin = join(dir, "bin");
   const work = join(dir, "work");
   await Promise.all([bin, work, join(dir, "tmp")].map((d) => mkdir(d)));
-  for (const from of ["/usr/bin", "/bin"]) {
-    for (const name of readdirSync(from)) if (name !== "od" && !existsSync(join(bin, name))) symlinkSync(join(from, name), join(bin, name));
-  }
+  fakeBin(bin, ["od"]);
   // An od that reads nothing and fails, having planted a FIFO at `.put.<pid>.` for itself and each parent, in the
   // directory the copy runs in.
   writeFileSync(join(bin, "od"), [

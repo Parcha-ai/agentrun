@@ -5,7 +5,10 @@
 // its setup code (run.mjs --url with --setup-code-file): one whose owner is set has no first visit to check, so it skips.
 import { check, PASSWORD, signedIn } from "../harness.mjs";
 
-const NOTE = "On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.";
+const NOTE = "The server printed it in its log: find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.";
+// At Render's own address the field leads with the token's place instead (src/lib/auth.ts setupCodePlaces).
+const RENDER_NOTE = "This server is on Render. In the Render dashboard, open this service's Environment tab and paste the value of AGENTRUN_TOKEN here.";
+const noteAt = (address) => (/\.onrender\.com$/i.test(new URL(address).hostname) ? RENDER_NOTE : NOTE);
 
 export default {
   name: "setup-public",
@@ -19,7 +22,10 @@ export default {
     await page.getByRole("heading", { name: "Start building" }).waitFor();
     const code = page.getByLabel("Setup code");
     check(await code.count() === 1, "the plain address asks for no setup code");
-    check((await page.getByText(NOTE).count()) === 1, "the Setup code field's note is missing");
+    check((await page.getByText(noteAt(origin)).count()) === 1, "the Setup code field's note is missing");
+    // Get a new code, with the start's code still good: the server keeps it and prints none, and the page says so.
+    await page.getByRole("button", { name: "Get a new code" }).click();
+    await page.getByRole("status").filter({ hasText: /^The current code is still good until .+, so no new one was printed: it is the newest “Set up this server:” line in / }).waitFor();
     await page.getByLabel("New password").fill(PASSWORD);
     await page.getByLabel("Password again").fill(PASSWORD);
     const button = page.getByRole("button", { name: "Set password and continue" });
