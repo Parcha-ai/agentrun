@@ -84,7 +84,7 @@ test("until the server is ready, it answers warming: health says so, the API ans
   assert.equal(warmBody.checks.store, "opening");
   assert.ok(["ok", "below_floor", "cannot_check"].includes(warmBody.checks.disk), JSON.stringify(warmBody));
 
-  const api = await fetch(`${url}/v2/agents`, { headers: { authorization: "Bearer ar_not_a_real_token_000000000000000" } });
+  const api = await fetch(`${url}/v2/agents`, { headers: { authorization: "Bearer not-a-key" } });
   assert.equal(api.status, 503);
   assert.equal(api.headers.get("retry-after"), "2");
   assert.ok(/^req_[0-9a-f]{16}$/.test(api.headers.get("x-request-id") ?? ""), "a request id, as every answer has");
