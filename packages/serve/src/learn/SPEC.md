@@ -182,9 +182,10 @@ one is asked). A shadow ended once its cost passed its cap (the kernel's overCap
 `parked: true` with `agreed` null: neither agreed nor disagreed, never counted toward the hold. The shadow is the same agent and revision on the
 same input with learning off (no seed, no look-back, no end-of-run turn), its id `audit.<run id>`, its launch's `audit`
 naming the run it audits; a shadow whose line could not be written is never created. The shadow is no row of the run
-list, GET /runs/{id} reads it with `audit_of`, and its cost is the served run's learning (its `cost.usd` and its learning
-cost in the cost series). While the shadow is queued or running the served run's all-in is unknown, never $0
-(`store-reads/learning.ts` shadowSpendOf): its `cost.usd`, `cost.all_in_usd` and learning cost read null, and a
+list, sends no webhook, is no run of the stats, GET /runs/{id} reads it with `audit_of` and `path` `audit`, and its cost
+is the served run's learning (its `cost.learning_usd` and its learning cost in the cost series; `cost.usd` stays the
+served run's own spend). While the shadow is queued or running the served run's all-in is unknown, never $0
+(`store-reads/learning.ts` shadowSpendOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null, and a
 learning batch closes no row on it, nor saves its cost, until the shadow ends (`learning-batch.ts` Figures.unsettled). Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
 digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by `sameAnswer` of the

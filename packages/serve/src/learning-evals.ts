@@ -89,18 +89,19 @@ export function evalOf(body: unknown, now: Date): LearningEval {
   };
 }
 
-const keyOf = (agentId: string) => `learning.evals.${agentId}`;
+/** Where agent `agentId`'s eval records are kept (a setting of the store). */
+export const evalsKey = (agentId: string): string => `learning.evals.${agentId}`;
 const listOf = (value: unknown): LearningEval[] => (Array.isArray(value) ? (value as LearningEval[]) : []);
 
 /** Agent `agentId`'s records, newest recorded first. */
 export async function evalsOf(store: Store, agentId: string): Promise<LearningEval[]> {
-  return listOf(await store.settings.get(keyOf(agentId)));
+  return listOf(await store.settings.get(evalsKey(agentId)));
 }
 
 /** Appends `record` first in agent `agentId`'s records, the latest EVALS_KEPT kept: a compare-and-set, so of two posts at
  *  once neither is lost. */
 export async function recordEval(store: Store, agentId: string, record: LearningEval): Promise<void> {
-  const key = keyOf(agentId);
+  const key = evalsKey(agentId);
   for (;;) {
     const was = await store.settings.get(key);
     const next = [record, ...listOf(was)].slice(0, EVALS_KEPT);

@@ -5,6 +5,7 @@ import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
 import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { EMPTY_BILL } from "@/lib/learningBill.fixture";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // The cost per run chart (GET /v2/agents/{id}/learning/cost): the invented invoice-sorter agent's 80 runs, its cost
@@ -31,7 +32,7 @@ function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
 const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, cost_upper_bound: false, learning_usd: total === null ? null : 0, total_usd: total });
-const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: summary.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...summary }, workflows: [] });
+const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: summary.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...summary }, workflows: [], bill: EMPTY_BILL });
 
 describe("the chart's arithmetic", () => {
   it("plots only runs whose all-in cost is known", () => {
@@ -294,7 +295,7 @@ describe("CostPerRun", () => {
     expect(text(host)).toContain("Workflow took over, run 21");
   });
   it("shows nothing under the tab's empty state until two runs have a cost, then the chart", async () => {
-    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [] };
+    const empty: LearningCost = { agent: "a", runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: EMPTY_BILL };
     for (const [answer, shown] of [[empty, false], [sample, true]] as const) {
       const v2 = { learningCost: async () => answer } as unknown as Client;
       const host = document.body.appendChild(document.createElement("div"));
