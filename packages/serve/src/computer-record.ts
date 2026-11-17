@@ -19,8 +19,8 @@
 // file and goes on in the next, <computer>-2.mp4, since one ffmpeg reads one format; a resumed run's claim starts the
 // next file too. A frame of another size is fitted into the file's own (scaled and padded).
 //
-// Its caps stop it: RECORDING_LIMITS.maxBytes across the run's files (a recording after a park counts the files before
-// it, read from the folder, so a run past it records no more) and maxMs of one recording (from its first frame to its
+// Its caps stop it: RECORDING_LIMITS.maxBytes across the run's files (read from the folder at each check, so a park's
+// earlier files and a browser's other sessions recording at once count too, and a run past it records no more) and maxMs of one recording (from its first frame to its
 // stop or its park). So do ffmpeg ending by itself (a crash, a full disk) and the screen's watch ending past
 // RECORDING_LIMITS.rewatches tries: each says so on the run's timeline, in words. The run itself never fails because of
 // the recorder.
@@ -171,8 +171,6 @@ export function startRecording(input: RecordInput): Recording {
   let wroteAt = Number.NEGATIVE_INFINITY;
   let firstAt: number | undefined;
   let pacer: NodeJS.Timeout | undefined;
-  /** The bytes of the files finished before this one. */
-  let doneBytes = 0;
   let written = 0;
   let dropped = 0;
   let thinned = 0;
@@ -202,21 +200,26 @@ export function startRecording(input: RecordInput): Recording {
       ended.child.kill("SIGKILL");
       await ended.exited;
     }
-    doneBytes += await stat(ended.path).then((file) => file.size, () => 0);
+  };
+
+  /** The bytes of every video in the run's folder: the byte cap is the run's, so it counts a park's earlier files and the
+   *  files of the run's other recordings (a browser's sessions, each its own, can record at once). */
+  const runBytes = async (listed?: readonly string[]): Promise<number> => {
+    let total = 0;
+    for (const one of (listed ?? (await readdir(input.folder).catch(() => []))).filter((name) => name.endsWith(".mp4"))) total += await stat(join(input.folder, one)).then((file) => file.size, () => 0);
+    return total;
   };
 
   /** A file for `frame`'s format: its folder made, its name the first of the series not taken, its ffmpeg started. */
   const openPart = async (frame: ScreenFrame, before: Part | undefined): Promise<Part | undefined> => {
     let path: string;
     let name: string;
+    let bytes: number;
     try {
       await mkdir(input.folder, { recursive: true, mode: 0o700 });
       const listed = await readdir(input.folder);
       const taken = new Set(listed);
-      // The byte cap is the run's: its first file here counts the files of the run's earlier recordings (a park's).
-      if (!before && files.length === 0) {
-        for (const earlier of listed.filter((one) => one.endsWith(".mp4"))) doneBytes += await stat(join(input.folder, earlier)).then((file) => file.size, () => 0);
-      }
+      bytes = await runBytes(listed);
       let n = 1;
       while (taken.has(fileName(input.tag, n))) n += 1;
       name = `recordings/${fileName(input.tag, n)}`;
@@ -225,7 +228,7 @@ export function startRecording(input: RecordInput): Recording {
       void finish(`its folder could not be made (${(error as NodeJS.ErrnoException).code ?? "an error"})`);
       return undefined;
     }
-    if (doneBytes >= limits.maxBytes) {
+    if (bytes >= limits.maxBytes) {
       void finish(`it reached its cap of ${sizeWords(limits.maxBytes)}`);
       return undefined;
     }
@@ -343,8 +346,7 @@ export function startRecording(input: RecordInput): Recording {
   const checker = setInterval(() => {
     if (over !== undefined || firstAt === undefined) return;
     if (Date.now() - firstAt >= limits.maxMs) return void finish(`it reached its cap of ${lengthWords(limits.maxMs)}`);
-    const current = part;
-    if (current) void stat(current.path).then((file) => (doneBytes + file.size >= limits.maxBytes && over === undefined ? finish(`it reached its cap of ${sizeWords(limits.maxBytes)}`) : undefined), () => undefined);
+    if (part) void runBytes().then((bytes) => (bytes >= limits.maxBytes && over === undefined ? finish(`it reached its cap of ${sizeWords(limits.maxBytes)}`) : undefined));
   }, limits.checkMs);
   checker.unref();
 
@@ -369,6 +371,9 @@ export function startRecording(input: RecordInput): Recording {
       const newest = slot ?? last;
       await endPart(ending, !busy && newest && newest.format === ending.format ? newest.bytes : undefined);
     }
+    // An ended recording keeps no picture: the claim holds each of its run's recordings until its own end.
+    slot = undefined;
+    last = undefined;
     await closing;
     if (files.length) log(`recorded ${what}'s screen into ${files.join(", ")}: ${written} frames written, ${dropped} dropped while ffmpeg was busy, ${thinned} thinned to ${limits.fps} a second`);
   })());

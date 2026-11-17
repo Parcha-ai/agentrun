@@ -237,7 +237,11 @@ export function createLiveView(options: LiveViewOptions): LiveViewHost {
       if (!conn.send(encodeFrame(jpeg, page.w, page.h), ack)) ack();
     },
     page: (page) => tell(entry, "page", { type: "page", url: page.url, title: page.title }),
-    noPage: () => tell(entry, "page", { type: "no_page" }),
+    noPage: () => {
+      // The closed tab's picture goes with it: a viewer that joins now is told no page, and shown none.
+      delete entry.shown.frame;
+      tell(entry, "page", { type: "no_page" });
+    },
     dialog: (dialog) => tell(entry, "dialog", dialog ? { type: "dialog", ...dialog } : { type: "dialog_closed" }),
     closed: () => {
       const conn = entry.viewer?.conn;

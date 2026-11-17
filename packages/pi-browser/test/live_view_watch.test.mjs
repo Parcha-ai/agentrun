@@ -69,6 +69,22 @@ test("a watch takes the session's frames with no viewer, each acked; a viewer th
   assert.equal(seen.ended, 0);
 });
 
+test("a viewer that joins a watched stream after its last page closed is told no_page and shown no picture of it", async (t) => {
+  const { fake, host, view, seen, watcher } = await rig(t);
+  host.watch("ar-run-w-1", watcher);
+  assert.ok(await until(() => fake.screencasts().length === 1));
+  assert.ok(fake.frame({ bytes: jpeg(800, 500, 0, 1) }));
+  assert.ok(await until(() => seen.frames.length === 1));
+  fake.destroyPage("PAGE1");
+  await wait(200);
+  const ws = await viewerOf(view);
+  const { item, seen: said } = await ws.until((m) => m.type === "binary", 500);
+  assert.equal(item, null, "no frame of the closed page");
+  const types = said.filter((m) => m.type === "text").map((m) => JSON.parse(m.data).type);
+  assert.deepEqual(types.slice(0, 2), ["ready", "no_page"], "told no page right after its ready");
+  assert.equal(types.includes("page"), false, "and of no page since");
+});
+
 test("a release ends a watch with no call; a DevTools socket cut under a watch calls ended once", async (t) => {
   const { fake, host, seen, watcher } = await rig(t);
   host.watch("ar-run-w-1", watcher);
