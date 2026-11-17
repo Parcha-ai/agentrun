@@ -1,8 +1,8 @@
 // The shadow audit over HTTP v2, API first: what an owner reads of the runs a promoted learned workflow serves and of
 // their audits, with nothing console-only. A served run (answered by the workflow alone, or handed back to the agent)
 // reads like any run: its answer text in GET /runs/{id}, its timeline in the documented row kinds, its cost.usd all in
-// (its own requests, its hand-back's, and its shadow's). The shadow reads as the audit of its run (`audit_of`) and is no
-// row of the owner's run list. The workflow's state (serving, checking, held, stopped), its check's numbers and its audit
+// (its own requests, its hand-back's, and its shadow's, when it has one: only a run the workflow answered is drawn). The
+// shadow reads as the audit of its run (`audit_of`) and is no row of the owner's run list. The workflow's state (serving, checking, held, stopped), its check's numbers and its audit
 // line are in GET /agents/{id}/learning/promotions; the rows are GET /agents/{id}/learning/audits. And (f): an owner's
 // grade on a served run is a row of the same ledger (source grade, agreed = the grade), opening no round and asking no
 // compile by itself.
@@ -85,10 +85,12 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
   const { api, store, doc, meets, run, shadowOf } = await world(t, { audit_every: 1 });
   const alone = await run({ content: "What is 1 plus 41?" });
   const escalated = await run({ content: HAND_BACK });
-  const shadows = { [alone]: await shadowOf(alone), [escalated]: await shadowOf(escalated) };
-  // A later run's claim writes both finished audits' rows.
+  // Only a run the workflow answered is drawn: the one it handed back has no shadow (path handed_back).
+  const shadows = { [alone]: await shadowOf(alone) };
+  // A later run's claim writes the finished audit's row.
   const later = await run({ content: "What is 3 plus 39?" });
   await shadowOf(later);
+  for (const row of await store.runs.list({ agentId: "source" })) assert.notEqual((await store.runs.launch(row.id))?.body?.audit?.of, escalated, "the handed-back run is never audited");
 
   for (const [id, path] of [[alone, "workflow"], [escalated, "handed_back"]]) {
     const view = (await api("GET", `/runs/${id}`)).body;
@@ -101,26 +103,28 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
     const rows = (await api("GET", `/runs/${id}/timeline`)).body.rows;
     assert.ok(rows.length > 0);
     for (const row of rows) assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, row), [], JSON.stringify(row));
-    // cost.usd all in: its own requests (its hand-back's among them) and its shadow's.
+    // cost.usd all in: its own requests (its hand-back's among them) and its shadow's, when it has one.
     const own = (await store.runs.get(id)).costUsd;
     const shadow = shadows[id];
-    assert.ok(own > 0 && shadow.costUsd > 0, `${own} ${shadow.costUsd}`);
-    assert.equal(Math.round(view.cost.usd * 1e6), Math.round((own + shadow.costUsd) * 1e6), `all in: ${JSON.stringify(view.cost)}`);
+    assert.ok(own > 0 && (shadow?.costUsd ?? 1) > 0, `${own} ${shadow?.costUsd}`);
+    assert.equal(Math.round(view.cost.usd * 1e6), Math.round((own + (shadow?.costUsd ?? 0)) * 1e6), `all in: ${JSON.stringify(view.cost)}`);
+    assert.equal(view.audit_of, null, "a served run audits nothing");
+    if (!shadow) continue;
     // The shadow reads as the audit of its run, at its own cost.
     const audit = (await api("GET", `/runs/${shadow.id}`)).body;
     meets("/runs/{run_id}", audit);
     assert.equal(audit.audit_of, id);
     assert.equal(Math.round(audit.cost.usd * 1e6), Math.round(shadow.costUsd * 1e6));
-    assert.equal(view.audit_of, null, "a served run audits nothing");
   }
   // No shadow is a row of the owner's run list.
   const listed = (await api("GET", "/agents/source/runs")).body.runs.map((one) => one.run_id);
   assert.deepEqual([...listed].sort(), [alone, escalated, later].sort(), JSON.stringify(listed));
 
-  // The rows: one per finished audit, both costs.
+  // The rows: one per finished audit, both costs; none for the handed-back run.
   const audits = (await api("GET", "/agents/source/learning/audits")).body;
   meets("/agents/{agent_id}/learning/audits", audits);
-  for (const id of [alone, escalated]) {
+  assert.equal(audits.audits.some((one) => one.run === escalated), false, JSON.stringify(audits));
+  for (const id of [alone]) {
     const row = audits.audits.find((one) => one.run === id);
     assert.ok(row, JSON.stringify(audits));
     assert.deepEqual([row.shadow_run, row.workflow, row.digest, row.source, typeof row.agreed], [shadows[id].id, "answer", DIGEST, "shadow", "boolean"]);

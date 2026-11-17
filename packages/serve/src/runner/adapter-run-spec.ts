@@ -785,7 +785,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // data directory, Mode 2 the agent's folder on THIS claim's Archil disk (the draft is checked against the seed on the disk, never this machine's
   // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
   // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
-  // A run the promoted workflow served first starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
+  // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
   const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
     store: deps.store,
@@ -803,7 +803,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  }), { ...audits, launch });
+  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
 
   return {
     adapter,

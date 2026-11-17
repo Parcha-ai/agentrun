@@ -71,7 +71,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, settledStatusOf, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
@@ -2632,8 +2632,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
     let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
     if (status !== null) {
-      // The v2 status is the run view's (store-view over the journal), per row.
-      const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
+      // The v2 status is the run view's (store-view over the journal), per row; a settled run's is its row's (settledStatusOf),
+      // so only the runs still going are read over their journals.
+      const statuses = await Promise.all(rows.map((row) => settledStatusOf(row.state) ?? viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
     // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.

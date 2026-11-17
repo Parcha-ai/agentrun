@@ -1,6 +1,6 @@
 // The shadow audit of a serving learned workflow, at a run's claim and its end (learn/audit.ts keeps the ledger).
-//   startAudit (withAudit: at the served run's end, before the end commits): a run the promoted workflow served first is
-//     drawn at 1 in k (auditDrawn, from its id), and a drawn one appends a `started` line to audits.jsonl (with the
+//   startAudit (withAudit: at the served run's end, before the end commits): a run the promoted workflow answered (path
+//     `workflow`; a run it handed back is never drawn and never counts as served) is drawn at 1 in k (auditDrawn, from its id), and a drawn one appends a `started` line to audits.jsonl (with the
 //     promotion serving it and the answer it audits, `turn`: the id of the run's newest answer row now), then starts its
 //     shadow run: the same agent and revision on the same input with learning off (no seed, no compile turn), marked as the
 //     audit of the served run (launch.audit), no row of the run list, billed to the agent as learning cost. Its cap is
@@ -25,9 +25,9 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
 import { auditLoopOf, type AuditLoop } from "../learning-setting.js";
-import { SERVED_PATHS, type RunPath } from "../learning-cost.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
+import { runPathOverStore } from "../store-reads/learning.js";
 import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
@@ -69,7 +69,9 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const ended = (row: RunRow | undefined) => row !== undefined && FINAL_STATES.includes(row.state) && row.runner === null;
 const inputText = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input) ?? "");
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
-const served = (row: RunRow) => SERVED_PATHS.includes(metricsOf(row).path as RunPath);
+/** A run the audit counts as served: one its learned workflow answered (path `workflow`). One it handed back (path
+ *  `handed_back`) is the agent's answer: never drawn, never counted. */
+const served = (row: RunRow) => metricsOf(row).path === "workflow";
 /** A line's `turn` (AuditRow.turn): the answer row's id, none when the run had no answer. */
 const turnOf = (id: string | undefined): { turn?: string } => (id === undefined ? {} : { turn: id });
 /** The answer an audit row is of: its `turn`'s, read from the run by that row's id; none when it names none. */
@@ -105,7 +107,7 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  it, read from its journal whatever claim it served on (servedOf), and, for a capped run, what its cap leaves once this
  *  end is counted (auditRoomOf: its job, its follow-ups, its compile turns). A run that
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
-export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch }): EndOfRunTurn | undefined {
+export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
   return async (input) => {
     const rows = step ? await step(input) : undefined;
@@ -114,11 +116,14 @@ export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { re
   };
 }
 
-async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch }, runId: string): Promise<void> {
+/** Only a run the workflow answered is drawn: its path `workflow` by the one classifier its record keeps
+ *  (store-reads/learning.ts runPathOverStore, with the run's `redact`), never one it handed back. */
+async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }, runId: string): Promise<void> {
   try {
     const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
     const served = servedOf(entries);
     if (!served?.digest) return;
+    if ((await runPathOverStore(deps.store, runId, deps.launch.learning, deps.redact)).path !== "workflow") return;
     const capUsd = deps.launch.maxCostUsd;
     await startAudit({ ...deps, runId, ...(capUsd !== undefined ? { room: () => auditRoomOf(deps.store, runId, capUsd, entries) } : {}) }, { name: served.workflow, digest: served.digest });
   } catch (error) {
