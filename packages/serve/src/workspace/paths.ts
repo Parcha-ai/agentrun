@@ -53,8 +53,11 @@ export const learningKey = (agentId: string): string => `agents/${agentDirName(a
 /** Run `runId`'s folder, the root of its Workspace: `<data>/disk/agents/<agent>/runs/<run>/work`. */
 export const runFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, runKey(agentId, runId));
 
+/** The recordings folder's name: beside a run's folder on this machine, and the run files route's path to it. */
+export const RECORDINGS = "recordings";
+
 /** Run `runId`'s recordings on this machine, beside its folder: `<data>/disk/agents/<agent>/runs/<run>/recordings`. */
-export const recordingsFolder = (dataDir: string, agentId: string, runId: string): string => join(dirname(runFolder(dataDir, agentId, runId)), "recordings");
+export const recordingsFolder = (dataDir: string, agentId: string, runId: string): string => join(dirname(runFolder(dataDir, agentId, runId)), RECORDINGS);
 
 /** Agent `agentId`'s learning folder, the root of its learning Workspace: `<data>/disk/agents/<agent>/learning`. */
 export const agentLearningFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, learningKey(agentId));

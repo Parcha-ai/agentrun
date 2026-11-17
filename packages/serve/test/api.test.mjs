@@ -39,7 +39,7 @@ test("capabilities answer without a credential and say what this server offers: 
   const withJev = (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.workflows;
   assert.deepEqual([withJev.adapters, withJev.decisions.providers], [["runNode", "runEffect", "runJudge"], [{ id: "jev", available: true }, { id: "parallel", available: false, reason: withJev.decisions.providers[1]?.reason }, { id: "openrouter", available: false, reason: withJev.decisions.providers[2]?.reason }]]);
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
-  assert.deepEqual(body.features.files, { upload: true, read: true, range: false, during_run: true });
+  assert.deepEqual(body.features.files, { upload: true, read: true, range: true, during_run: true });
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);
 });
 

@@ -40,6 +40,8 @@ export type RunDetailProps = {
   outputSchema?: Record<string, unknown>;
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
   readFile?: (file: RunFile) => Promise<string>;
+  /** A run file's URL on this origin (/v2/runs/{id}/files/{path}): the Screen tab's Export of a recording. */
+  fileUrl?: (path: string) => string;
   openFile?: RunFile | null;
   actions?: RunActions;
   /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
@@ -113,7 +115,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
@@ -265,7 +267,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" ? keptUntil : undefined}
-            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} />}
+            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} />}
         </div>
       </div>}
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
