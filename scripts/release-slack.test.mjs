@@ -41,7 +41,8 @@ async function fakeSlack(t, reply) {
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+  // A client that holds its connection open (a keep-alive, or a prober) would keep close() waiting: drop them first.
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   return { got, endpoint: `http://127.0.0.1:${server.address().port}/api/chat.postMessage` };
 }
 

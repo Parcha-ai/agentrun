@@ -95,7 +95,8 @@ test('a re-run is a notice: the branch exists already, or a pull request for it 
   });
   const before = await git(origin, 'rev-parse', 'refs/heads/release/v0.1.0-beta.44-content');
   const branch = github(routes());
-  assert.equal(await run(work, branch.fetchImpl), `::notice::website import skipped: the branch release/${tag}-content exists already`);
+  // A branch with no open pull request may be one a person closed: it is never reopened, and the notice says how to import again.
+  assert.equal(await run(work, branch.fetchImpl), `::notice::website import skipped: the branch release/${tag}-content exists already; with no pull request open for it, delete the branch and re-run this job to import again`);
   assert.ok(!branch.calls.some(call => call.method === 'POST'));
   assert.equal(await git(origin, 'rev-parse', 'refs/heads/release/v0.1.0-beta.44-content'), before, 'the branch is not moved');
 

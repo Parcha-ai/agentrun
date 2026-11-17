@@ -43,11 +43,15 @@ export function installLines({ version, launcher, python, image, platforms }) {
   ].join('\n');
 }
 
-/** The body: the section, then the install block. A section that would take the body over MAX_BODY is cut after a whole line and links the rest. */
+/**
+ * The body: the section, then the install block. A section that would take the body over MAX_BODY is cut after a whole line and
+ * links the rest: the tag's changes/ fragments, which are what the section was folded from (the fold is not committed at the
+ * tag, so CHANGELOG.md there has no section for this version).
+ */
 export function releaseNotes({ section, install, tag, repository }) {
   const whole = `${section}\n\n${install}\n`;
   if (whole.length <= MAX_BODY) return whole;
-  const rest = `\n\nThe rest of this release's changes are in [CHANGELOG.md at ${tag}](https://github.com/${repository}/blob/${tag}/CHANGELOG.md).\n\n${install}\n`;
+  const rest = `\n\nThe rest of this release's changes are in [its fragments in changes/ at ${tag}](https://github.com/${repository}/tree/${tag}/changes).\n\n${install}\n`;
   const kept = section.slice(0, MAX_BODY - rest.length);
   return `${kept.slice(0, kept.lastIndexOf('\n'))}${rest}`;
 }

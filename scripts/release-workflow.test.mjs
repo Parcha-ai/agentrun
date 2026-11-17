@@ -182,7 +182,12 @@ test('the website import pull request is opened after the GitHub release with th
   for (const step of site.steps.slice(1)) assert.equal(step.if, "steps.app.outputs.ready == 'true'", `${step.name ?? step.uses} runs only with the App configured`);
   const token = site.steps.find(step => /^actions\/create-github-app-token@[0-9a-f]{40}$/.test(step.uses ?? ''));
   assert.ok(token, 'the App token, pinned by commit');
-  assert.deepEqual(token.with, { 'app-id': '${{ vars.WEBSITE_APP_ID }}', 'private-key': '${{ secrets.WEBSITE_APP_PRIVATE_KEY }}', owner: 'Parcha-ai', repositories: 'agentrun-website' });
+  // The App is installed on more repositories than the website: the token names the website alone, and only the two writes it makes.
+  assert.equal(token.with.owner, 'Parcha-ai');
+  assert.equal(token.with.repositories, 'agentrun-website', 'the token is scoped to the website repository alone');
+  const permissions = Object.fromEntries(Object.entries(token.with).filter(([key]) => key.startsWith('permission-')));
+  assert.deepEqual(permissions, { 'permission-contents': 'write', 'permission-pull-requests': 'write' }, 'push the branch, open the pull request, nothing else');
+  assert.deepEqual(token.with, { 'app-id': '${{ vars.WEBSITE_APP_ID }}', 'private-key': '${{ secrets.WEBSITE_APP_PRIVATE_KEY }}', owner: 'Parcha-ai', repositories: 'agentrun-website', ...permissions });
   const checkouts = site.steps.filter(step => /^actions\/checkout@/.test(step.uses ?? ''));
   const agentrun = checkouts.find(step => step.with.path === 'agentrun');
   assert.equal(agentrun.with.ref, '${{ inputs.tag }}');

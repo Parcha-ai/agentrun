@@ -26,7 +26,7 @@ export async function openImport({ tag, dir, token, appSlug, fetchImpl = fetch, 
   const branch = importBranch(tag);
   const git = async (...args) => (await exec('git', ['-c', 'gc.auto=0', ...args], { cwd: dir, maxBuffer: 64 * 1024 * 1024 })).stdout;
   if (!(await git('status', '--porcelain', '--untracked-files=all')).trim()) return `::notice::website already has ${tag}`;
-  if ((await git('ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).trim()) return `::notice::website import skipped: the branch ${branch} exists already`;
+  if ((await git('ls-remote', '--heads', 'origin', `refs/heads/${branch}`)).trim()) return `::notice::website import skipped: the branch ${branch} exists already; with no pull request open for it, delete the branch and re-run this job to import again`;
   const api = path => `https://api.github.com/${path}`;
   const read = path => getJson(api(path), { token, fetchImpl, wait });
   const [owner] = WEBSITE.split('/');

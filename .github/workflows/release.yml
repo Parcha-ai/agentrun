@@ -523,7 +523,8 @@ jobs:
   # scripts/import-content.py, run in its checkout of main against this tag, then scripts/release-website.mjs commits the
   # change as the website App's bot on release/<tag>-content and opens "content: import AgentRun <tag>". Nothing changed, or a
   # branch or open pull request for it already there, is a notice, so a re-run is harmless. The App (the repository variable
-  # WEBSITE_APP_ID and the secret WEBSITE_APP_PRIVATE_KEY) holds the only write, on the website alone; without it the job
+  # WEBSITE_APP_ID and the secret WEBSITE_APP_PRIVATE_KEY) holds the only write: the App is installed on other repositories
+  # too, so its token names the website alone and asks for contents and pull requests only. Without the App the job
   # says so and stops. It continues on error, so the website never fails or blocks a release.
   website:
     needs: [publish, github-release]
@@ -556,6 +557,8 @@ jobs:
           private-key: ${{ secrets.WEBSITE_APP_PRIVATE_KEY }}
           owner: Parcha-ai
           repositories: agentrun-website
+          permission-contents: write
+          permission-pull-requests: write
       - if: steps.app.outputs.ready == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

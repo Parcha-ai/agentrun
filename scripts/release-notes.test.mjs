@@ -93,7 +93,7 @@ test('this checkout\'s versions: the workspace\'s, the launcher\'s own line and 
   assert.notEqual(launcher, version, '@parcha/agentrun is on a line of its own');
 });
 
-test('the notes are the section, then the install lines; a body over GitHub\'s limit is cut at a line and points at the changelog at the tag', () => {
+test('the notes are the section, then the install lines; a body over GitHub\'s limit is cut at a line and points at the change fragments at the tag', () => {
   const install = '## Install\n\n- x';
   const section = changelogSection(changelog, '0.1.0-beta.43');
   assert.equal(releaseNotes({ section, install, tag: 'v0.1.0-beta.43', repository: 'o/r' }), `${section}\n\n${install}\n`);
@@ -101,7 +101,9 @@ test('the notes are the section, then the install lines; a body over GitHub\'s l
   const cut = releaseNotes({ section: long, install, tag: 'v0.1.0-beta.43', repository: 'o/r' });
   assert.ok(cut.length <= MAX_BODY, `${cut.length} characters`);
   assert.ok(MAX_BODY <= 125_000, 'under GitHub\'s release body limit');
-  assert.match(cut, /\n- Entry \d+ x+\n\nThe rest of this release's changes are in \[CHANGELOG\.md at v0\.1\.0-beta\.43\]\(https:\/\/github\.com\/o\/r\/blob\/v0\.1\.0-beta\.43\/CHANGELOG\.md\)\.\n\n## Install\n\n- x\n$/);
+  // CHANGELOG.md at the tag has no section for this version (the fold is not committed); the tag's changes/ fragments are its notes.
+  assert.match(cut, /\n- Entry \d+ x+\n\nThe rest of this release's changes are in \[its fragments in changes\/ at v0\.1\.0-beta\.43\]\(https:\/\/github\.com\/o\/r\/tree\/v0\.1\.0-beta\.43\/changes\)\.\n\n## Install\n\n- x\n$/);
+  assert.equal(cut.match(/\]\((https:[^)]+)\)/)[1], 'https://github.com/o/r/tree/v0.1.0-beta.43/changes', 'the cut body\'s link is the tag\'s changes/ folder');
 });
 
 test('the highlights are the first lines of the upgrading block when the release has one, else of the section', () => {
