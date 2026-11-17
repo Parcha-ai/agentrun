@@ -1,5 +1,5 @@
 // The release workflow's publish step, run whole in a scratch directory: a stub npm that records each publish, a stub
-// verify-published that answers as the registry would, and a publish set of three packages in two layers.
+// verify-published that answers as the registry would, and a publish set of three packages in two layers (c depends on a and b).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFile } from 'node:child_process';
@@ -20,7 +20,7 @@ const step = (() => {
 })();
 
 // Stub verify-published: --allow-absent exits 3 (absent), 0 (EXISTING: the same bytes are there) or 1 (MISMATCH: other bytes);
-// a plain verification waits a little, so a layer's waits can be seen to overlap, then passes unless the package is BAD.
+// a plain verification waits a little, so the waits can be seen to overlap, then passes unless the package is BAD.
 const verifier = `import { appendFileSync, writeFileSync } from 'node:fs';
 const [, , , pkg, flag] = process.argv;
 const has = name => (process.env[name] ?? '').split(' ').includes(pkg);
@@ -57,41 +57,45 @@ async function publish(env) {
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test('each layer is published, then its packages wait for the registry together, before the next layer is published', async () => {
+// Every layer goes out in dependency order with no wait between layers; then every package published waits for the registry and
+// is verified at once, so a release waits as long as its slowest package, not the sum of a wait per layer.
+test('every layer is published in dependency order before any wait, then every published package waits for the registry together', async () => {
   const { status, stderr, events } = await publish({});
   assert.equal(status, 0, stderr);
-  assert.deepEqual(events.slice(0, 2), ['publish a', 'publish b'], 'both packages of the first layer go out before any wait');
-  assert.deepEqual(events.slice(2, 6).sort(), ['verified a', 'verified b', 'wait a', 'wait b']);
-  assert.ok(events.indexOf('wait b') < events.indexOf('verified a'), 'the first layer\'s waits overlap');
-  assert.deepEqual(events.slice(6), ['publish c', 'wait c', 'verified c']);
+  assert.deepEqual(events.slice(0, 3), ['publish a', 'publish b', 'publish c'], 'the second layer goes out after the first, with no wait between');
+  assert.deepEqual(events.slice(3).sort(), ['verified a', 'verified b', 'verified c', 'wait a', 'wait b', 'wait c']);
+  assert.ok(events.indexOf('wait c') < events.indexOf('verified a'), 'the waits of both layers overlap');
 });
 
-test('a failed verification stops the release before the next layer is published', async () => {
-  const { status, stderr, events } = await publish({ BAD: 'b' });
+test('a failed verification fails the release, after every published package was verified', async () => {
+  const { status, stderr, events, receipts } = await publish({ BAD: 'b' });
   assert.notEqual(status, 0);
-  assert.match(stderr, /a package of the layer 'a b' failed verification; later layers were not published/);
-  assert.ok(events.includes('failed b') && events.includes('verified a'), 'the other package of the layer is still verified');
-  assert.ok(!events.includes('publish c'), 'the next layer is never published');
+  assert.match(stderr, /a published package failed verification against the registry: b/);
+  assert.ok(events.includes('verified a') && events.includes('verified c'), 'the other packages are still verified');
+  assert.deepEqual(receipts, { a: 'passed', b: 'failed', c: 'passed' }, 'each receipt says what the registry holds');
 });
 
 test('a resumed release skips a version already published with the same bytes, and verifies the rest', async () => {
   const { status, stderr, events } = await publish({ EXISTING: 'a' });
   assert.equal(status, 0, stderr);
   assert.ok(events.includes('exists a') && !events.includes('publish a') && !events.includes('wait a'), 'a is neither published again nor waited on');
-  assert.ok(events.includes('publish b') && events.includes('verified b') && events.includes('publish c'));
+  assert.ok(events.includes('publish b') && events.includes('verified b') && events.includes('publish c') && events.includes('verified c'));
 });
 
-test('a version already published with other bytes is never published over, and nothing after it goes out', async () => {
-  const { status, events } = await publish({ MISMATCH: 'b' });
+test('a version already published with other bytes is never published over, nothing after it goes out, and what went out before it is verified', async () => {
+  const { status, stderr, events, receipts } = await publish({ MISMATCH: 'b' });
   assert.equal(status, 1);
   assert.ok(events.includes('mismatch b') && !events.includes('publish b'), 'b is refused, not republished');
-  assert.ok(!events.includes('publish c'), 'the next layer is never published');
+  assert.ok(!events.includes('publish c'), 'nothing after it is published');
+  assert.ok(events.includes('verified a'), 'a, already live, is verified');
+  assert.deepEqual(receipts, { a: 'passed', b: undefined, c: undefined });
+  assert.match(stderr, /the registry check of b stopped the release \(exit 1\); the packages published before it were verified, nothing after it was published/);
 });
 
-test('a publish that fails partway through a layer still verifies what the layer published, then stops before the next layer', async () => {
+test('a publish that fails partway still verifies what was published, then stops before anything after it', async () => {
   const { status, stderr, events, receipts } = await publish({ PUBLISH_FAILS: 'b' });
   assert.notEqual(status, 0);
-  assert.match(stderr, /publishing b failed; the packages this layer published before it were verified, later layers were not published/);
+  assert.match(stderr, /publishing b failed; the packages published before it were verified, nothing after it was published/);
   assert.deepEqual(events.slice(0, 2), ['publish a', 'publish-failed b']);
   assert.ok(events.includes('verified a'), 'a, already live, is verified');
   assert.deepEqual(receipts, { a: 'passed', b: undefined, c: undefined }, 'a\'s receipt says what the registry holds; nothing claims b or c');
