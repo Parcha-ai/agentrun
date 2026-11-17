@@ -1839,8 +1839,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  after-start seal by the events' schemas finds fields the name rule (shownTrigger, at the start's rewrite of the
    *  records) does not, and a replay must not hand one back. The file is written again when one changed. */
   const cachedMasked = async (id: string, source: Record<string, unknown>) => {
+    if (maskCached(id, source).length) await keep();
+  };
+  /** The records kept under an Idempotency-Key (their slots) that answered trigger `id`'s create with a field `source`
+   *  keeps sealed still in the clear, each masked in the map now (not saved: the caller saves). */
+  function maskCached(id: string, source: Record<string, unknown>): string[] {
     const fields = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as unknown[]).filter((name): name is string => typeof name === "string") : [];
-    let changed = 0;
+    const changed: string[] = [];
     for (const [slot, v] of idempotency) {
       const body = v.answer?.body;
       if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
@@ -1849,10 +1854,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (!hit.length) continue;
       for (const name of hit) config[name] = SEALED_MASK;
       idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: fields } } } });
-      changed++;
+      changed.push(slot);
     }
-    if (changed) await keep();
-  };
+    return changed;
+  }
   const idempotencySaid = (fields: Record<string, string>) => {
     const line = logLine("idempotency", fields);
     if (log) log(line);
@@ -1878,17 +1883,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
   {
-    let scrubbed = 0;
+    // Each record rewritten, counted once whichever of the two passes below rewrote it.
+    const scrubbed = new Set<string>();
+    // Each cached create answer checked against its trigger as stored, whatever its field's name: a field sealed since
+    // (by its event's schema, whose save of this file failed before a restart) is masked before the first request.
+    const answered = new Set<string>();
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (slot.startsWith("/triggers\n") && isObject(body) && typeof body.id === "string") answered.add(body.id);
+    }
+    for (const id of answered) {
+      const row = await sealing.triggers.get(id).catch(() => undefined);
+      if (row && isObject(row.source)) for (const slot of maskCached(id, row.source as Record<string, unknown>)) scrubbed.add(slot);
+    }
     for (const [slot, v] of idempotency) {
       const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
       const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
       if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
       idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
-      scrubbed++;
+      scrubbed.add(slot);
     }
-    if (scrubbed || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
-    if (scrubbed) {
-      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed });
+    if (scrubbed.size || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    if (scrubbed.size) {
+      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed.size });
       if (log) log(line);
       else process.stderr.write(`agentrun-serve: ${line}\n`);
     }
