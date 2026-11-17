@@ -89,6 +89,7 @@ describe("setupCodeRenewed", () => {
   it("a new code printed: where the line is, that it works once, and until when", () => {
     expect(setupCodeRenewed("agents.example.test", { printed: true, expires_at: at })).toBe(`The server printed a new code: it is the newest “Set up this server:” line in the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab). It works once, until ${clock(at)}.`);
     expect(setupCodeRenewed("agentrun-server-ab12.onrender.com", { printed: true, expires_at: at })).toBe(`The server printed a new code: it is the newest “Set up this server:” line in the service's Logs tab in the Render dashboard. It works once, until ${clock(at)}.`);
+    expect(setupCodeRenewed("agentrun-production-ab12.up.railway.app", { printed: true, expires_at: at })).toBe(`The server printed a new code: it is the newest “Set up this server:” line in the Deploy Logs of the service's latest deployment in the Railway dashboard. It works once, until ${clock(at)}.`);
   });
   it("a code still good is kept: the newest line, good until when", () => {
     expect(setupCodeRenewed("agents.example.test", { printed: false, expires_at: at })).toBe(`The current code is still good until ${clock(at)}, so no new one was printed: it is the newest “Set up this server:” line in the server's log (the terminal it runs in, docker logs <container>, or Render's Logs tab).`);
