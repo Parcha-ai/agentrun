@@ -52,7 +52,7 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import type { Workspace } from "./workspace.js";
 
@@ -479,16 +479,19 @@ type Renewal = {
 };
 
 /**
- * `first`, a sandbox the claim made through its provider, held so its loss is not the run's: a call it answers deleted
- * (the hosted connection's own words, DELETED_SAID), or gone with its provider confirming it no longer has it (attach
- * answers not_found or gone), marks it lost, and that call answers as it did. The next call made inside one of the run's
- * tool calls starts a new one in its place (`renewal.remake`, one at a time however many calls ask) and goes to it: the
- * lost one let go, the run's Timeline told (`started`). Each new one is the claim's, under its epoch: a later claim lets
- * it go as it lets any of the run's older computers go. Gone with the provider still reporting the machine, or its read
- * failing (a 5xx, a timeout), is not lost: the call's own answer stands. Past `renewal.max` new ones, the next loss ends
- * the run (`renewal.stop`, computer-lost.ts lostEnd's words, code computer_unavailable) and every later call answers the
- * provider's words. A call outside a tool call (the run's end sweeping its scratch, the owner's computer channel) gets
- * the loss's own answer and starts nothing.
+ * `first`, a sandbox the claim made through its provider (or took back from the run's park), held so its loss is not the
+ * run's: a call it answers deleted (the hosted connection's own words, DELETED_SAID), or gone with its provider
+ * confirming it no longer has it (attach answers not_found or gone), marks it lost, and that call answers as it did. The
+ * next call made inside one of the run's tool calls starts a new one in its place (`renewal.remake`, one at a time
+ * however many calls ask) and goes to it: the lost one let go, the run's Timeline told (`started`). Each new one is the
+ * claim's, under its epoch: a later claim lets it go as it lets any of the run's older computers go. A start that fails
+ * answers its words and counts for nothing: the next call tries again under the same request, so a retry finds what an
+ * earlier try made. Gone with the provider still reporting the machine, or its read failing (a 5xx, a timeout), is not
+ * lost: the call's own answer stands, and so does a read that comes back after another call already replaced the one it
+ * asked about. A loss once `renewal.max` new ones were started ends the run at once (`renewal.stop`, computer-lost.ts
+ * lostEnd's words, code computer_unavailable), the call that found it answering those words, as every later call does.
+ * A call outside a tool call (the run's end sweeping its scratch, the owner's computer channel) gets the loss's own
+ * answer and starts nothing.
  */
 function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer {
   let current = first;
@@ -496,6 +499,8 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
   let lost: ComputerError | undefined;
   /** How many new ones this claim started. */
   let made = 0;
+  /** The current one was let go since it was lost (a failed start's retry does not let it go again). */
+  let letGo = false;
   /** The bound was passed: every call answers this. */
   let spent: ComputerError | undefined;
   let renewing: Promise<ComputerError | undefined> | undefined;
@@ -507,20 +512,27 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     const found = await renewal.provider.attach({ id: held.ref.id }).catch(() => undefined);
     return found !== undefined && !found.ok && (found.error.code === "not_found" || found.error.code === "gone");
   };
-  /** A new one in place of the lost one, or why the run has none. */
-  const renew = async (why: ComputerError): Promise<ComputerError | undefined> => {
-    if (made >= renewal.max) {
-      spent = { code: "not_found", message: lostEnd(renewal.max, why.message) };
-      await renewal.stop(spent.message);
-      return spent;
+  /** `why`, the current one's loss: past the bound, the run's end, at once. */
+  const lose = async (why: ComputerError): Promise<ComputerError> => {
+    if (made < renewal.max) {
+      lost = why;
+      letGo = false;
+      return why;
     }
-    made += 1;
-    const old = current;
+    spent = { code: "not_found", message: lostEnd(renewal.max, why.message) };
+    await renewal.stop(spent.message);
+    return spent;
+  };
+  /** A new one in place of the lost one, or why the run has none now. */
+  const renew = async (why: ComputerError): Promise<ComputerError | undefined> => {
     // The lost one's resources go first: a vendor's delete of one it no longer has is done already.
-    await old.release().catch(() => undefined);
+    if (!letGo) {
+      await current.release().catch(() => undefined);
+      letGo = true;
+    }
     let fresh: ProviderComputer;
     try {
-      fresh = await renewal.remake(made);
+      fresh = await renewal.remake(made + 1);
     } catch (error) {
       return { code: "gone", message: `${why.message}; a new sandbox could not be started: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -528,6 +540,7 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
       await fresh.release().catch(() => undefined);
       return why;
     }
+    made += 1;
     current = fresh;
     lost = undefined;
     renewal.started(fresh.ref.name);
@@ -544,9 +557,11 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
       }
       const held = current;
       const answered = await held.client.call(method, params, options);
-      if (answered.ok || held !== current || lost) return answered;
-      if (await goneFrom(held, answered.error)) lost = answered.error;
-      return answered;
+      if (answered.ok || held !== current || lost || spent) return answered;
+      const gone = await goneFrom(held, answered.error);
+      // Read back after another call replaced it, or found it lost, or the run ended: this answer alone stands.
+      if (!gone || held !== current || lost || spent) return answered;
+      return { ok: false, error: await lose(answered.error) };
     },
     close() {
       current.client.close();
@@ -781,17 +796,41 @@ export async function computerForClaim(
     if (!options.ok) throw new Error(options.error.message);
     return make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
   };
-  /** How a sandbox this claim made through `provider` is started again once its provider lost it (lostAware): made as
-   *  the lost one was (`spec`, under this claim's labels), under its own request (the claim's, then which new one), so a
-   *  retry of it under this epoch finds the one it made. Mode 2: the lost one's mount credential removed and a new one
-   *  minted for the new one's mount, which is read back before it serves a call. */
-  const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, spec: ComputerSpec): Renewal => ({
+  /** What a computer of `kind` from `entry` is made with under this claim, but its mount: the deps' spec, within what
+   *  `provider` declares it makes, from the image it prepares (readyImage) or the spec's, under the claim's labels. */
+  const specOf = async (entry: ProviderEntry, provider: ComputerProvider, kind: ComputerSettingKind, configuration: KindCapabilities, signal: AbortSignal | undefined, gpu?: ComputerSpec["gpu"]): Promise<ComputerSpec> => {
+    // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
+    // (computer-deps.ts computerSpecOf).
+    const { network: networks, maxLifetimeMs } = provider.capabilities();
+    const run: ComputerRun = {
+      ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
+      ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
+      ...(networks ? { networks } : {}),
+      ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
+    };
+    // A provider that declares it prepares its own image (its prepareImage(): its recipe built when the engine lacks it,
+    // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
+    // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing. A
+    // configuration that names its image starts from it, else the kind's default.
+    const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
+    const ready = await readyImage(entry, provider, signal, deps.onImageWait);
+    const image = ready ?? asked.image;
+    if (image === undefined) throw new Error(`${entry.label} names no image for its ${kind} computer and prepares none`);
+    return { ...asked, image, labels: runLabels(launch.runId, launch.epoch), ...(gpu ? { gpu } : {}) };
+  };
+  /** How a sandbox of `provider` this claim holds is started again once its provider lost it (lostAware): made from
+   *  `specNow` (the lost one's spec, or for one taken back from the park this claim's own, read when it is needed), under
+   *  this claim's labels and its own request (the claim's, then which new one), so a retry of it under this epoch finds
+   *  the one it made. Where it mounts the run's folder (`mounts`), the lost one's mount credential is removed (Mode 2) and
+   *  a new mount asked for, which is read back before the new one serves a call. */
+  const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, specNow: () => Promise<ComputerSpec>, mounts: boolean): Renewal => ({
     provider,
     max: deps.recreates ?? LOST_RECREATES,
     async remake(times) {
       deps.onStarting?.({ provider: entry.label, kind: "sandbox" });
-      let mount = spec.mount;
-      if (mount) {
+      const spec = await specNow();
+      let mount: ComputerSpec["mount"];
+      if (mounts) {
         await deps.revokeMount?.();
         mount = await deps.workspace.mountSpec();
       }
@@ -827,7 +866,7 @@ export async function computerForClaim(
     // time is not over: taken off its row first (computer-kept.ts takeKept), so its end and this claim never both have it,
     // then attached and connected again. Its mount, where it has one, stays the one it was made with: its credential is
     // this claim's from here (inheritMount). Never the agent's own computer, a paired one or --faux's.
-    async reattach(entry, { kind, keys, configuration, persistent, signal }) {
+    async reattach(entry, { kind, keys, configuration, gpu, persistent, signal }) {
       const record = kept;
       kept = undefined;
       if (!record || !store.settings || persistent || paired.some((row) => row.id === entry.id)) return undefined;
@@ -840,9 +879,12 @@ export async function computerForClaim(
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
-        const again = await keptLaunch(provider, record, signal);
-        if (!again) return undefined;
+        const taken = await keptLaunch(provider, record, signal);
+        if (!taken) return undefined;
         deps.inheritMount?.();
+        // A sandbox taken back is started again when it is lost as one this claim made (lostAware): the new one is this
+        // claim's, made from this claim's spec, its folder mounted.
+        const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), true)) : taken;
         keepable = { provider, entry: entry.id, kind: record.kind, computer: again, epoch: record.epoch };
         ownKind = record.kind;
         const screen = record.kind === "sandbox" ? undefined : record.kind;
@@ -870,24 +912,7 @@ export async function computerForClaim(
         return own;
       }
       const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub) : await vendorProvider(entry, keys, configuration);
-      // What this provider makes, as it declares it: the spec asks for one of its networks, within its lifetime
-      // (computer-deps.ts computerSpecOf).
-      const { network: networks, maxLifetimeMs } = provider.capabilities();
-      const run: ComputerRun = {
-        ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }),
-        ...(launch.boxAllowSet ? { boxAllowSet: true as const } : {}),
-        ...(networks ? { networks } : {}),
-        ...(typeof maxLifetimeMs === "number" ? { maxLifetimeMs } : {}),
-      };
-      // A provider that declares it prepares its own image (its prepareImage(): its recipe built when the engine lacks it,
-      // an image by name pulled) does so first, and the computer starts from the tag it answers: the recipe's tag is in no
-      // registry, so a run of it unbuilt would be refused. The spec comes first, so a setting it refuses builds nothing. A
-      // configuration that names its image starts from it, else the kind's default.
-      const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
-      const ready = await readyImage(entry, provider, signal, deps.onImageWait);
-      const image = ready ?? asked.image;
-      if (image === undefined) throw new Error(`${entry.label} names no image for its ${kind} computer and prepares none`);
-      const spec: ComputerSpec = { ...asked, image, labels: runLabels(launch.runId, launch.epoch), ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}) };
+      const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
@@ -924,7 +949,7 @@ export async function computerForClaim(
         // A sandbox the claim made is started again when its provider loses it mid-run (lostAware): never a paired
         // computer, nor a desktop or a phone (a person may hold or watch it), nor the agent's own (persistent, above).
         const { releasedOlder } = fresh;
-        const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, spec)) : fresh;
+        const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount !== undefined)) : fresh;
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
         if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, epoch: launch.epoch };

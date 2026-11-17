@@ -170,12 +170,12 @@ test("a sandbox its provider deletes mid-call: that call fails, the next starts 
   assert.equal((await run.served()).error, null);
 });
 
-test("past two new sandboxes the next loss ends the run failed, served as computer_unavailable in the provider's words; no fourth is made", { timeout: 120_000 }, async (t) => {
+test("the loss after two new sandboxes ends the run failed, served as computer_unavailable in the provider's words, though the model answers right after it; no fourth is made", { timeout: 120_000 }, async (t) => {
   const run = await opened(t);
-  // Every sandbox is deleted at its first read.
+  // Every sandbox is deleted at its first read; the model answers at once after the third loss, with no further call.
   run.docker.lose = (_one, method) => method === "files.read";
   const requests = [];
-  await run.start(scriptedOrigin([WRITE, READ, READ, READ, READ, READ, { say: "done" }], requests));
+  await run.start(scriptedOrigin([WRITE, READ, READ, READ, { say: "done" }], requests));
   const row = await run.settled(["failed"]);
   assert.equal(row.state, "failed");
   assert.deepEqual(run.docker.made, ["c1", "c2", "c3"], "two new ones, then none");
