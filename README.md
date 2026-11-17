@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Render or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -125,7 +125,7 @@ If Docker is running on your machine, new agents get a Docker sandbox with a she
 which takes a few minutes, and the console says when it's ready. Without Docker, agents still read and write files,
 but get no shell.
 
-Want your own server with a URL? [Self-host on Render](#deploy-it).
+Want your own server with a URL? [Self-host on Railway or Render](#deploy-it).
 
 </details>
 
@@ -512,6 +512,16 @@ open-source platform on infrastructure you manage. None of them needs a model ke
 or let others run agents on it. Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT
 settings. On a server that isn't this computer, the sign-in tab ends on a page that won't load: copy its whole address
 into the console.
+
+**Self-host on Railway.**
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun)
+
+The button deploys the published template: the image, a volume at `/data`, a domain, and the token and seal key made
+for you. About $5 a month on Railway's Hobby plan, which includes $5 of usage; agents get no shell. When it's live, open
+its domain and paste `AGENTRUN_TOKEN` from the service's Variables tab as the setup code. Then Continue with ChatGPT or
+add a model key, and run your first agent. Walked from click to a finished first run in 46 seconds. Details:
+[deploy/README.md](deploy/README.md).
 
 **Self-host on Render.**
 
