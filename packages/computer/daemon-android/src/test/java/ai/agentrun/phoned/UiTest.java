@@ -418,10 +418,14 @@ final class UiTest {
 	}
 
 	static void testAClickableListIsAContainerNotARow() {
-		// Clock's cities list is clickable as well as scrollable (a phone-showpiece take saw it as one row named
-		// "6:26 PM", its cities hidden): a list keeps its rows, each named from its own texts.
+		// Clock's cities list is clickable (a phone-showpiece take saw it as one row named "6:26 PM", its cities hidden):
+		// a list keeps its rows, each named from its own texts. Live, the list was not scrollable either: its rows fit.
+		for (boolean scrolls : new boolean[] {true, false}) clickableList(scrolls);
+	}
+
+	private static void clickableList(boolean scrolls) {
 		FakeNode cities = FakeNode.of("androidx.recyclerview.widget.RecyclerView").at(0, 0, 360, 500).id("com.android.deskclock:id/cities").tappable();
-		cities.scrollable = true;
+		cities.scrollable = scrolls;
 		FakeNode local = FakeNode.of("android.widget.LinearLayout").at(0, 0, 360, 100);
 		local.add(FakeNode.of("android.widget.TextView").at(0, 0, 360, 100).text("6:26 PM"));
 		FakeNode tokyo = FakeNode.of("android.widget.FrameLayout").at(0, 100, 360, 200).tappable();
