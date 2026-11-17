@@ -180,6 +180,7 @@ export type DefinitionInput = {
     persistent?: boolean;
     surface?: "code" | "tools";
     exec?: boolean;
+    record?: boolean;
   };
   tool_settings?: {
     read?: {
