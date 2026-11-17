@@ -298,13 +298,22 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      const again = ["agentrun service install --tailscale", ...(port !== undefined ? [`--port ${port}`] : []), ...(data !== undefined ? [`--data ${resolve(data)}`] : [])].join(" ");
-      const tailnet = tailnetOf({ platform, root, uid, exec, say, fail, again });
+      // --tailscale or --no-tailscale on an installed service changes its sharing only: its data folder and port stay
+      // unless named (the installer passes the flag alone).
+      if (tailscale !== undefined && installed()) {
+        const now = argsNow();
+        const option = (name) => (now.includes(name) ? now[now.indexOf(name) + 1] : undefined);
+        data ??= option("--data");
+        port ??= option("--port");
+      }
+      const again = (flag) => [`agentrun service install ${flag}`, ...(port !== undefined ? [`--port ${port}`] : []), ...(data !== undefined ? [`--data ${resolve(data)}`] : [])].join(" ");
+      const tailnet = tailnetOf({ platform, root, uid, exec, say, fail, again: again("--tailscale") });
       // --no-tailscale takes it off the tailnet; with neither flag, a service on the tailnet stays there.
       const share = tailscale ?? tailnet.recorded() !== undefined;
-      if (!share) tailnet.off();
       // On the tailnet the port is fixed, so the serve entry and the server still agree after a restart.
       const served = share ? (port ?? TAILNET_PORT) : port;
+      if (share && Number(served) === 0) throw fail(2, `--tailscale serves a fixed port, and --port 0 has the system pick another at each start: name a port, or leave --port out for ${TAILNET_PORT}.`);
+      if (!share) tailnet.off(again("--no-tailscale"));
       // The server knows the address people open: its host check takes the name, and its setup takes the printed code.
       const at = share ? tailnet.address(targetOf(served)) : undefined;
       const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : [])];

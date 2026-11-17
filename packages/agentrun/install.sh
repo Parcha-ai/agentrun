@@ -192,7 +192,7 @@ Options:
                     floor's major line, from nodejs.org/dist/index.json)
   --no-start        install only
   --service         install the service, and fail if this machine can't run one
-  --tailscale       also serve it over HTTPS on your own tailnet only, at https://<machine>.<tailnet>.ts.net
+  --tailscale       also serve it over HTTPS on your own tailnet only, at this machine's name there
                     (tailscale serve, never Funnel; Tailscale must be installed and logged in, and it says how when
                     not); --no-tailscale takes it off
   -h, --help        this help
@@ -449,7 +449,7 @@ start_background() {
 tailnet() {
   verb=$1
   shift
-  "$node_dir/bin/node" "$tailnet_js" "$verb" "${1:-}" "curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale" "${2:-}"
+  "$node_dir/bin/node" "$tailnet_js" "$verb" "${1:-}" "curl -fsSL https://agentrun.ai/install | sh -s -- $ts_flag" "${2:-}"
 }
 
 shown_shim() {

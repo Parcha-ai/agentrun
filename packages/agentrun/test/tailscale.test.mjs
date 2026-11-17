@@ -1,9 +1,10 @@
 // `--tailscale`: AgentRun on the person's own tailnet through `tailscale serve`, with a fake `tailscale` first on PATH
 // (fake-tailscale.sh), so no tailnet is touched. Logged in, missing, logged out, not running, no HTTPS certificates,
-// operator rights refused, Funnel already on, the address taken by another service, and the entry removed alone.
+// operator rights refused, Funnel already on, the address taken by another service, the entry removed alone (and kept on
+// record while Tailscale is stopped), and a sharing flag that keeps the installed service's data folder and port.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,7 +13,7 @@ import { PRICE, tailnetOf } from "../lib/tailscale.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const FAKE = new URL("fake-tailscale.sh", import.meta.url).pathname;
-const HOST = "box.tail1234.ts.net";
+const HOST = "box.tail1234.example";
 const AGAIN = "agentrun service install --tailscale";
 
 class Fail extends Error {
@@ -70,7 +71,7 @@ test("missing, not running, logged out, no HTTPS certificate: the steps, the com
     none: [/^Tailscale is not installed here, so AgentRun/, /1\. Install Tailscale: https:\/\/tailscale\.com\/download\/linux/, /2\. Connect this machine to your tailnet: sudo tailscale up --operator=\$USER/],
     down: [/Tailscale is installed but not running \(failed to connect to local tailscaled/, /1\. Start it: sudo systemctl enable --now tailscaled/, /2\. Connect this machine to your tailnet: sudo tailscale up/],
     "logged-out": [/this machine is not on a tailnet \(NeedsLogin\)/, /1\. Connect it: sudo tailscale up --operator=\$USER/],
-    "missing-https": [/your tailnet gives none to this machine \(box\.tail1234\.ts\.net\)/, /1\. Turn on MagicDNS and HTTPS Certificates: https:\/\/login\.tailscale\.com\/admin\/dns/],
+    "missing-https": [/your tailnet gives none to this machine \(box\.tail1234\.example\)/, /1\. Turn on MagicDNS and HTTPS Certificates: https:\/\/login\.tailscale\.com\/admin\/dns/],
   };
   for (const [mode, lines] of Object.entries(cases)) {
     const box = machine(mode);
@@ -100,7 +101,7 @@ test("Funnel already on, or the address serving something else: refused by name,
   const funnel = machine();
   writeFileSync(join(funnel.state, "served"), "http://127.0.0.1:7340\n");
   writeFileSync(join(funnel.state, "funnel"), "");
-  assert.throws(() => funnel.tailnet.address("http://127.0.0.1:7340"), (error) => error.code === 1 && /Tailscale Funnel is on for https:\/\/box\.tail1234\.ts\.net\/ .*nothing was changed\. Turn that Funnel off, then run again: agentrun service install --tailscale/.test(error.message));
+  assert.throws(() => funnel.tailnet.address("http://127.0.0.1:7340"), (error) => error.code === 1 && /Tailscale Funnel is on for https:\/\/box\.tail1234\.example\/ .*nothing was changed\. Turn that Funnel off, then run again: agentrun service install --tailscale/.test(error.message));
   assert.deepEqual(funnel.calls(), ["status --json", "serve status --json"]);
 
   const taken = machine();
@@ -133,6 +134,27 @@ test("off removes only the entry it added: another port's entry stays, and an en
   assert.deepEqual(box.calls().slice(before), ["serve status --json"]);
 });
 
+test("off with Tailscale stopped keeps its record and says to run again; with Tailscale gone, the record goes too", () => {
+  const box = machine();
+  box.tailnet.serve("7340", HOST);
+  writeFileSync(join(box.state, "mode"), "down\n");
+  box.tailnet.off("agentrun service uninstall");
+  assert.equal(box.file("served"), "http://127.0.0.1:7340\n");
+  assert.ok(existsSync(join(box.root, "tailscale.json")), "the record stays for the next run");
+  assert.match(box.said(), /AgentRun's entry at https:\/\/box\.tail1234\.example\/ may still be in Tailscale's serve settings, and they can't be read now \(failed to connect to local tailscaled.*\)\. Start Tailscale, then run again: agentrun service uninstall$/);
+  // Started again, the next run removes it.
+  writeFileSync(join(box.state, "mode"), "ok\n");
+  box.tailnet.off();
+  assert.equal(box.file("served"), "");
+  assert.equal(existsSync(join(box.root, "tailscale.json")), false);
+
+  const gone = machine();
+  gone.tailnet.serve("7340", HOST);
+  rmSync(join(gone.home, "fakes", "tailscale"));
+  gone.tailnet.off();
+  assert.equal(existsSync(join(gone.root, "tailscale.json")), false);
+});
+
 /** serviceOf on Linux with a fake systemd that "starts" a server by writing its record, and the fake tailscale. */
 function serviceBox(mode = "ok") {
   const box = machine(mode);
@@ -142,7 +164,11 @@ function serviceBox(mode = "ok") {
     if (command === "tailscale") return box.exec(command, args, options);
     if (command === "loginctl") return { status: 0, stdout: "yes\n", stderr: "" };
     if (["restart", "start"].includes(args[1])) {
-      writeFileSync(join(box.root, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: process.pid }));
+      // The server's record goes in its data folder, as the unit names it.
+      const words = unitArgs(unit());
+      const data = words.includes("--data") ? words[words.indexOf("--data") + 1] : box.root;
+      mkdirSync(data, { recursive: true });
+      writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: process.pid }));
     }
     return { status: 0, stdout: args[1] === "show" ? "ActiveState=active\nSubState=running\nMainPID=7\n" : "", stderr: "" };
   };
@@ -162,7 +188,7 @@ test("service install --tailscale: the unit names the https address and the fixe
   assert.match(box.unit(), /^Environment=AGENTRUN_TRUSTED_PROXIES=loopback$/m);
   const order = box.execed.filter((call) => call.startsWith("tailscale serve --bg") || call.includes("restart"));
   assert.deepEqual(order, ["systemctl --user restart agentrun.service", "tailscale serve --bg --https=443 http://127.0.0.1:7340"]);
-  assert.match(box.said(), /AgentRun is running at http:\/\/127\.0\.0\.1:7340\/[\s\S]*AgentRun is on your tailnet at https:\/\/box\.tail1234\.ts\.net\//);
+  assert.match(box.said(), /AgentRun is running at http:\/\/127\.0\.0\.1:7340\/[\s\S]*AgentRun is on your tailnet at https:\/\/box\.tail1234\.example\//);
 
   // Installed again with neither flag (`--service`, an install with --port): it stays on the tailnet.
   assert.equal(await box.service.install({ port: "7400" }), 0);
@@ -172,6 +198,23 @@ test("service install --tailscale: the unit names the https address and the fixe
   assert.equal(await box.service.install({ tailscale: false }), 0);
   assert.doesNotMatch(box.unit(), /AGENTRUN_PUBLIC_URL/);
   assert.equal(box.file("served"), "");
+});
+
+test("a sharing flag alone keeps the installed service's data folder and port; --port 0 is refused on the tailnet", async () => {
+  const box = serviceBox();
+  const data = join(box.home, "my-data");
+  assert.equal(await box.service.install({ data, port: "7400" }), 0);
+  assert.equal(await box.service.install({ tailscale: true }), 0);
+  assert.deepEqual(unitArgs(box.unit()).slice(1), ["--no-open", "--data", data, "--port", "7400"]);
+  assert.equal(box.file("served"), "http://127.0.0.1:7400\n");
+  assert.equal(await box.service.install({ tailscale: false }), 0);
+  assert.deepEqual(unitArgs(box.unit()).slice(1), ["--no-open", "--data", data, "--port", "7400"]);
+  assert.doesNotMatch(box.unit(), /AGENTRUN_PUBLIC_URL/);
+
+  const zero = serviceBox();
+  await assert.rejects(zero.service.install({ tailscale: true, port: "0" }), (error) => error.code === 2 && /--tailscale serves a fixed port, and --port 0/.test(error.message));
+  assert.equal(existsSync(join(zero.home, ".config", "systemd", "user", UNIT)), false);
+  assert.ok(!zero.execed.some((call) => call.startsWith("tailscale")));
 });
 
 test("service install --tailscale with Tailscale missing installs AgentRun anyway, exit 0; Funnel on refuses before the unit is written", async () => {
@@ -208,7 +251,7 @@ test("install.sh: --tailscale is in its help, and an install with no service man
   assert.deepEqual([address.status, address.stdout], [0, `https://${HOST}/\n`]);
   const serve = run("serve", "7340", "again", `https://${HOST}/`);
   assert.equal(serve.status, 0);
-  assert.match(serve.stdout, /AgentRun is on your tailnet at https:\/\/box\.tail1234\.ts\.net\//);
+  assert.match(serve.stdout, /AgentRun is on your tailnet at https:\/\/box\.tail1234\.example\//);
   writeFileSync(join(box.state, "funnel"), "");
   const refused = run("address", "7340", "curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale");
   assert.deepEqual([refused.status, refused.stdout], [1, ""]);

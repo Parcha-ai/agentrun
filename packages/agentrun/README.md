@@ -43,8 +43,8 @@ when it is off. To remove AgentRun, run `agentrun service uninstall`, then delet
 `~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.
 
 On a machine you keep on (a Mac mini, a home server, a VPS), `--tailscale` also puts AgentRun on your own
-[Tailscale](https://tailscale.com) network, at `https://<machine>.<tailnet>.ts.net`, which only your devices on that
-network open:
+[Tailscale](https://tailscale.com) network, at `https://<machine>.<your tailnet's DNS name>/`, which only your devices
+on that network open:
 
 ```sh
 curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale

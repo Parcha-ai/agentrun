@@ -95,7 +95,7 @@ piped_install() {
 # --tailscale in the background (no service manager), with no tailscale, then a fake one (fake-tailscale.sh) in a fresh
 # state folder per case. No tailnet is touched.
 tailnet_walk() {
-  local name=box.tail1234.ts.net again='curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale' fakes code session
+  local name=box.tail1234.example again='curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale' fakes code session
   if ! ls "$HOME"/.agentrun/lib/*/node_modules/@parcha/agentrun/lib/tailscale.mjs > /dev/null 2>&1; then
     echo "skip: the launcher installed has no --tailscale"
     return 0
@@ -135,7 +135,7 @@ tailnet_walk() {
   grep -q '"password_set": *false' <<< "$session" || die "a password is already set"
   grep -q '"setup_code": *true' <<< "$session" || die "setup takes no code: an open server"
   # As the page at the served name sends it through tailscale serve (which adds X-Forwarded-Proto: https), with no code.
-  code=$(curl -s -o /tmp/ts-setup.json -w '%{http_code}' -X POST -H "Host: $name" -H "Origin: https://$name" -H 'X-Forwarded-Proto: https' -H 'content-type: application/json' --data '{"password":"correct horse battery staple"}' "$(base)/setup")
+  code=$(curl -s -o /tmp/ts-setup.json -w '%{http_code}' -X POST -H "Host: $name" -H "Origin: https://$name" -H 'X-Forwarded-Proto: https' -H 'content-type: application/json' --data '{"password":"not-a-secret"}' "$(base)/setup")
   cat /tmp/ts-setup.json
   echo
   [ "$code" = 403 ] && grep -q "takes the setup code in its log" /tmp/ts-setup.json || die "a setup with no code answered $code"

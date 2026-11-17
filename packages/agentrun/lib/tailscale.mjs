@@ -12,7 +12,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 /** The port AgentRun is served on when --tailscale names none: fixed, so the serve entry and the server agree after a
  *  restart, where "the first free port" could land on another of this machine's services. */
@@ -49,14 +48,14 @@ export function tailnetOf({ platform = process.platform, root = join(homedir(), 
     say(`Then run again: ${again}`);
     say(PRICE);
   };
-  const operator = () => {
+  const operator = (retry = again) => {
     say("Tailscale on Linux lets only root or its operator change what it serves. Run once:");
     say("  sudo tailscale set --operator=$USER");
-    say(`Then run again: ${again}`);
+    say(`Then run again: ${retry}`);
   };
   const serveConfig = () => {
     const result = run(["serve", "status", "--json"]);
-    if (result.status !== 0) return { denied: DENIED.test(result.stderr ?? ""), error: errorOf(result) };
+    if (result.status !== 0) return { denied: DENIED.test(result.stderr ?? ""), missing: result.error?.code === "ENOENT", error: errorOf(result) };
     return { config: json(result) ?? {} };
   };
   const recorded = () => {
@@ -121,17 +120,24 @@ export function tailnetOf({ platform = process.platform, root = join(homedir(), 
       say(PRICE);
       return true;
     },
-    /** Removes the serve entry this added, when it is still the one there; never another. */
-    off() {
+    /** Removes the serve entry this added, when it is still the one there; never another. The record stays while
+     *  Tailscale's settings can't be read or change, so running it again finishes the job. */
+    off(retry = again) {
       const had = recorded();
       if (!had) return;
       const host = URL.canParse(had.url) ? new URL(had.url).hostname : "";
-      const { config, denied } = serveConfig();
-      if (denied) return operator();
+      const { config, denied, missing, error } = serveConfig();
+      if (denied) return operator(retry);
+      if (config === undefined && !missing) {
+        // The entry may still be in Tailscale's settings (tailscaled stopped keeps them), so the record stays for the next run.
+        say(`AgentRun's entry at https://${host}/ may still be in Tailscale's serve settings, and they can't be read now (${error || "no answer"}). Start Tailscale, then run again: ${retry}`);
+        return;
+      }
+      // With Tailscale gone, what it served went with it.
       if (config !== undefined && handlerOf(config, host)?.Proxy === had.proxy) {
         const result = run(["serve", "--https=443", "off"]);
         if (result.status !== 0) {
-          if (DENIED.test(result.stderr ?? "")) return operator();
+          if (DENIED.test(result.stderr ?? "")) return operator(retry);
           throw fail(1, `tailscale serve --https=443 off failed: ${errorOf(result)}.`);
         }
         say(`Removed AgentRun from your tailnet (tailscale serve --https=443 off): https://${host}/ serves nothing now.`);
@@ -162,4 +168,5 @@ function script([verb, port, again, url]) {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) process.exitCode = script(process.argv.slice(2));
+// The installer runs this on the Node it installed, inside the engines floor, where import.meta.main is set.
+if (import.meta.main) process.exitCode = script(process.argv.slice(2));

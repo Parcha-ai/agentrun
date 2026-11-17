@@ -4,9 +4,10 @@
 # its `calls` file.
 #   mode     ok (default): logged in, HTTPS certificates on; missing-https; logged-out; down (tailscaled not running);
 #            denied (a non-operator on Linux: serve settings refused)
-#   served   the proxy target of https://box.tail1234.ts.net/ (empty: none)
-#   funnel   present: Funnel is on for box.tail1234.ts.net:443
-#   other    present: another serve entry, https://box.tail1234.ts.net:8443/ to http://127.0.0.1:3000
+#   served   the proxy target of https://box.tail1234.example/ (empty: none)
+#   funnel   present: Funnel is on for box.tail1234.example:443
+#   other    present: another serve entry, https://box.tail1234.example:8443/ to http://127.0.0.1:3000
+# The machine's name ends in a reserved .example domain where a real one ends in its tailnet's DNS name.
 set -eu
 dir=${FAKE_TAILSCALE_DIR:?names the folder of the fake state}
 # Shell builtins only, so a test can run it with nothing else on PATH (a real tailscale there would be found too).
@@ -14,7 +15,7 @@ mode=ok
 [ ! -f "$dir/mode" ] || read -r mode < "$dir/mode"
 served=
 [ ! -s "$dir/served" ] || read -r served < "$dir/served"
-host=box.tail1234.ts.net
+host=box.tail1234.example
 printf '%s\n' "$*" >> "$dir/calls"
 
 denied() {
@@ -22,20 +23,23 @@ denied() {
   exit 1
 }
 
+down() {
+  echo "failed to connect to local tailscaled; it doesn't appear to be running (sudo systemctl start tailscaled ?)" >&2
+  exit 1
+}
+
 case "$*" in
   version) echo 1.90.6 ;;
   "status --json")
     case $mode in
-      down)
-        echo "failed to connect to local tailscaled; it doesn't appear to be running (sudo systemctl start tailscaled ?)" >&2
-        exit 1
-        ;;
+      down) down ;;
       logged-out) echo '{"BackendState":"NeedsLogin","Self":{"DNSName":""},"CertDomains":null}' ;;
       missing-https) echo "{\"BackendState\":\"Running\",\"Self\":{\"DNSName\":\"$host.\"},\"CertDomains\":null}" ;;
       *) echo "{\"BackendState\":\"Running\",\"Self\":{\"DNSName\":\"$host.\"},\"CertDomains\":[\"$host\"]}" ;;
     esac
     ;;
   "serve status --json")
+    [ "$mode" != down ] || down
     tcp=
     web=
     if [ -n "$served" ]; then
