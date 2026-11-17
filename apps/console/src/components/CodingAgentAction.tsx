@@ -79,14 +79,17 @@ export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLab
   useEffect(() => {
     if (!open) { setPosition(null); return; }
     const place = () => {
-      const anchor = trigger.current!.getBoundingClientRect();
+      // The whole control is the anchor, not the chevron alone: the menu's left edge is the control's.
+      const anchor = container.current!.getBoundingClientRect();
       const width = Math.min(240, window.innerWidth - 16);
+      // Under the control from its left edge; from its right edge only where that would leave the viewport.
+      const start = anchor.left + width <= window.innerWidth - 8 ? anchor.left : anchor.right - width;
       const height = Math.min(menu.current?.scrollHeight || 340, window.innerHeight - 16);
       const below = window.innerHeight - anchor.bottom - 12;
       const above = anchor.top - 12;
       const down = below >= height || below >= above;
       const maxHeight = Math.max(80, down ? below : above);
-      setPosition({ width, left: Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8)), top: down ? anchor.bottom + 4 : Math.max(8, anchor.top - Math.min(height, maxHeight) - 4), maxHeight });
+      setPosition({ width, left: Math.max(8, Math.min(start, window.innerWidth - width - 8)), top: down ? anchor.bottom + 4 : Math.max(8, anchor.top - Math.min(height, maxHeight) - 4), maxHeight });
     };
     place();
     const outside = (event: PointerEvent) => {
