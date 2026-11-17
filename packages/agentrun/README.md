@@ -15,6 +15,29 @@ it in your browser (`--no-open`, a CI run or a machine with no display skips tha
 each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
 Node gets one line naming that floor.
 
+No Node.js on the machine, or an older one? The installer brings its own and keeps AgentRun running after the terminal
+closes:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh
+```
+
+It downloads the Node.js this version needs from nodejs.org, checks it against that release's `SHASUMS256.txt`, and
+installs it and AgentRun under `~/.agentrun` (`node/`, `lib/`, `bin/agentrun`). Any other Node, nvm or Homebrew is left
+alone, and nothing needs sudo. When no line in your shell's startup file puts `~/.agentrun/bin` on `PATH`, it adds one
+and says so. Then it starts AgentRun as a service of your user, a LaunchAgent on macOS or a systemd user unit on Linux,
+which starts again at login and after a crash and logs to `~/.agentrun/logs/agentrun.log`. Where there is no service
+manager (a container, say), it starts AgentRun in the terminal instead. `sh -s -- --no-start` installs only,
+`--version V` installs another version, and `--service` fails rather than start it in the terminal. Running it again
+upgrades.
+
+`agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
+`upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
+`agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. On Linux, a user's
+services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
+when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
+`~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.
+
 A start that fails says why on stderr: the step that failed, how the server ended (its exit code or signal, or still
 running after 60 seconds without printing its address, and stopped), its last lines on stderr and stdout, and
 `~/.agentrun/start.log` (in the folder `--data` names), which holds everything the server wrote in that start. Each start
