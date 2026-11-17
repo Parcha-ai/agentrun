@@ -271,7 +271,7 @@ export function messagesImagesIn(messages: unknown): ImageInput[] {
 }
 
 /** The parts of a Responses body the API reads as images, in order: an `input_image` item, a part of an item's content,
- *  a part of a function call's output. */
+ *  a part of a function call's or a custom tool call's output. */
 function responsesImageParts(input: unknown): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   const image = (part: unknown) => { if (plain(part) && part.type === "input_image") out.push(part); };
@@ -279,7 +279,7 @@ function responsesImageParts(input: unknown): Record<string, unknown>[] {
     if (!plain(item)) continue;
     image(item);
     for (const part of list(item.content)) image(part);
-    if (item.type === "function_call_output") for (const part of list(item.output)) image(part);
+    if (item.type === "function_call_output" || item.type === "custom_tool_call_output") for (const part of list(item.output)) image(part);
   }
   return out;
 }

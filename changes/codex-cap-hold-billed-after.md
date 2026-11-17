@@ -8,4 +8,6 @@ A request that only adds items to the session's last billed request is now held 
 
 Once the run has seen its model reason, a request's least output is 1,024 tokens plus twice the most reasoning one answer reported, within its effort's allowance. Before that it is the whole allowance, as before.
 
-The request is still sent with all the output the cap fits, and the hold is still its worst case, so the cap is never passed. When the provider cuts an answer at the output the cap limited it to, the turn says so. A final answer cut that way ends the run with "the run's $0.50 cap stopped the model at N tokens before it finished its answer: raise the cap to at least $X to let it finish", where $X is the cap that sends that request whole.
+The request is still sent with all the output the cap fits, and the hold is still its worst case, so the cap is never passed. When the provider cuts an answer at the output the cap limited it to, the turn says so. A final answer cut that way ends the run with "the run's $0.50 cap stopped the model at N tokens before it finished its answer: raise the cap to at least $X to let it finish", where $X is the cap that sends that request whole with the run's wrap-up reserve still kept beside it.
+
+An image in a custom tool call's output (Codex code mode's exec) is now counted at its billed tokens, as one in a function call's output already was.

@@ -22,8 +22,10 @@ export const isFigure = (usd: unknown): usd is number => typeof usd === "number"
 
 /** A step admitted: what it is held at (its worst case: no answer, miss or cut books it past this), the output it may be
  *  sent with and its thinking budget, and what it counts at if stopped having streamed that many tokens (within its hold).
- *  `uncutUsd`: sent with less output than it asks, its worst case at all it asks, which a cap must leave room for to send
- *  it whole (the figure a cut of its answer names). */
+ *  `uncutUsd`: sent with less output than it asks, what a cap must leave room for beside the run's spend and holds to send
+ *  it whole (the figure a cut of its answer names): its worst case at all it asks, and the keep-back beside it when one
+ *  was asked (with the float's tail judgeModel keeps it with), so at that cap the same request is sent whole and the
+ *  keep-back stays free. */
 export type Judged = { heldUsd: number; outputTokensMax?: number; thinkingBudget?: number; stoppedUsd(streamedTokens: number): number; uncutUsd?: number };
 
 /** A model request priced: its output asked and least, and its worst case at an output (price.ts requestPrice). */
@@ -59,7 +61,8 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
   // and if it is cut with no usage, the request is booked at no more than its hold, which counts in the run's records
   // while it is out; a stop counts what streamed, within the hold. (The keep-back is kept with a float's tail to spare,
   // so the host's sum of the same figures never reads it as passed.)
-  const kept = isFigure(keepUsd) && keepUsd > 0 ? mostOutput(p.cost, p.least, p.asked ?? 0, left - keepUsd - 2 * FIT_TOLERANCE) : undefined;
+  const keepBack = isFigure(keepUsd) && keepUsd > 0 ? keepUsd + 2 * FIT_TOLERANCE : undefined;
+  const kept = keepBack === undefined ? undefined : mostOutput(p.cost, p.least, p.asked ?? 0, left - keepBack);
   const output = kept ?? mostOutput(p.cost, p.least, p.asked ?? 0, left);
   if (output === undefined) {
     const { text, figures } = roomRefusal(capUsd, spent, held, p.cost(p.least));
@@ -72,7 +75,7 @@ function judgeModel(request: ModelCapRequest, { capUsd, spentUsd: spent, heldUsd
     heldUsd,
     ...(p.asked === undefined ? {} : { outputTokensMax: output }),
     ...(thinking === undefined ? {} : { thinkingBudget: thinking }),
-    ...(p.asked !== undefined && output < p.asked ? { uncutUsd: p.cost(p.asked) } : {}),
+    ...(p.asked !== undefined && output < p.asked ? { uncutUsd: p.cost(p.asked) + (keepBack ?? 0) } : {}),
     stoppedUsd: (streamed) => Math.min(heldUsd, stoppedPrice(streamed)),
   };
 }
