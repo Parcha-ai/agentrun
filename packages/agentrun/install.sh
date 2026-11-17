@@ -9,8 +9,8 @@
 # @parcha/agentrun, and the server it depends on, with that Node into ~/.agentrun/lib/<version>, and writes
 # ~/.agentrun/bin/agentrun, which always runs that Node. The node, nvm, Homebrew or global npm on this machine are never
 # used or changed. ~/.agentrun is also the server's data directory: the installer keeps to bin, lib, node and logs, names
-# the server never uses. No sudo. Running it again installs the version asked for (the latest by default) and keeps the
-# one before it.
+# the server never uses. No sudo. Running it again installs the version asked for (the latest by default) and removes the
+# others, except one a running server still uses.
 #
 # Then it starts AgentRun as a service of this user (`agentrun service install`: launchd on macOS, systemd --user on
 # Linux), so it keeps running after the terminal closes and starts again at login. Where this user has no service
@@ -98,24 +98,17 @@ main() {
   fi
   entry=$lib_dir/node_modules/@parcha/agentrun/bin/agentrun.mjs
   [ -f "$work/lib/node_modules/@parcha/agentrun/bin/agentrun.mjs" ] || fail "npm installed $spec without its bin/agentrun.mjs"
+  printf '%s\n' "$node_dir" > "$work/lib/.node"
   mkdir -p "$root/lib"
   replace "$work/lib" "$lib_dir"
 
   # The command: this version on this Node, whatever node is on PATH. Its Node goes first on PATH too, as the server's own
   # launcher and the harness installs run `node` and `npm` by name.
   shim=$root/bin/agentrun
-  previous_lib=
-  previous_node=
-  if [ -f "$shim" ]; then
-    previous_lib=$(sed -n "s/^# lib: //p" "$shim")
-    previous_node=$(sed -n "s/^# node: //p" "$shim")
-  fi
   mkdir -p "$root/bin" "$root/logs"
   cat > "$work/agentrun" <<EOF
 #!/bin/sh
 # AgentRun $version on its own Node.js $floor, written by the AgentRun installer (https://agentrun.ai/install).
-# lib: $lib_dir
-# node: $node_dir
 PATH='$node_dir/bin':"\$PATH"
 export PATH
 exec '$node_dir/bin/node' '$entry' "\$@"
@@ -125,9 +118,7 @@ EOF
   "$shim" help > /dev/null 2>&1 || fail "$shim does not run: $("$shim" help 2>&1 | tail -n 3)"
   say "Installed AgentRun $version (Node.js $floor) in $root"
 
-  # Every other version goes, except the one this replaced, which a server started before this may still be running.
-  prune "$root/lib" "$lib_dir" "$previous_lib"
-  prune "$root/node" "$node_dir" "$previous_node"
+  prune
 
   add_to_path
 
@@ -253,12 +244,29 @@ replace() {
   fi
 }
 
-# Removes every folder in $1 but $2 and $3.
+# Removes every other version in lib/ and node/ unless a running process names it on its command line: a server started
+# before this install keeps its files until it stops, and its Node (lib/<version>/.node). Without ps, removes nothing.
 prune() {
-  for dir in "$1"/*; do
+  running=$(ps -A -o args= 2> /dev/null) || return 0
+  keep_node=$node_dir
+  for dir in "$root/lib"/*; do
     [ -d "$dir" ] || continue
-    [ "$dir" = "$2" ] || [ "$dir" = "$3" ] || rm -rf "$dir"
+    if [ "$dir" = "$lib_dir" ] || in_use "$dir"; then
+      [ -f "$dir/.node" ] && keep_node="$keep_node
+$(cat "$dir/.node")"
+    else
+      rm -rf "$dir"
+    fi
   done
+  for dir in "$root/node"/*; do
+    [ -d "$dir" ] || continue
+    printf '%s\n' "$keep_node" | grep -qxF "$dir" || in_use "$dir" || rm -rf "$dir"
+  done
+}
+
+in_use() {
+  case $running in *"$1/"*) return 0 ;; esac
+  return 1
 }
 
 # Whether this user has a service manager AgentRun can be a service of; $why says why not.

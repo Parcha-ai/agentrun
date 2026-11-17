@@ -129,11 +129,20 @@ before=$(pid)
 kill -9 "$(manager_pid)"
 healthy 120 "$before"
 
+step "two older launchers installed with --no-start while the service runs: the running version stays"
+serving=$(ls "$HOME/.agentrun/lib")
+sh "$here/install.sh" --no-start --version 0.4.8
+sh "$here/install.sh" --no-start --version 0.4.9
+[ -d "$HOME/.agentrun/lib/$serving" ] || die "the running server's install ($serving) was removed"
+[ ! -e "$HOME/.agentrun/lib/0.4.8" ] || die "0.4.8, which nothing runs, was kept"
+healthy 10
+
 step "the installer again (an upgrade in place): restarts the service on the new install"
 before=$(pid)
 sh "$here/install.sh" "$@" | tee /tmp/again.log
 grep -q "AgentRun is running at" /tmp/again.log || die "no address printed"
 healthy 10 "$before"
+[ "$(ls "$HOME/.agentrun/lib")" = "$serving" ] || die "lib/ keeps $(ls "$HOME/.agentrun/lib" | tr '\n' ' '), not only $serving"
 
 step "logs"
 "$agentrun" service logs --lines 5

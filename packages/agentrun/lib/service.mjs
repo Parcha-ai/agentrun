@@ -4,7 +4,7 @@
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
 // port, and writes to ~/.agentrun/logs/agentrun.log.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -218,11 +218,30 @@ async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
   }
 }
 
-const tailOf = (file, lines) => {
+/** The last `count` lines of a file, read back from its end only as far as they go: the log is appended to forever. */
+const tailOf = (file, count) => {
+  if (count === 0) return [];
+  let fd;
   try {
-    return readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-lines);
+    fd = openSync(file, "r");
+    const chunks = [];
+    let start = fstatSync(fd).size;
+    let newlines = 0;
+    while (start > 0 && newlines <= count) {
+      const chunk = Buffer.alloc(Math.min(65_536, start));
+      start -= chunk.length;
+      readSync(fd, chunk, 0, chunk.length, start);
+      chunks.unshift(chunk);
+      for (let at = chunk.indexOf(10); at !== -1; at = chunk.indexOf(10, at + 1)) newlines++;
+    }
+    const lines = Buffer.concat(chunks).toString("utf8").split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    if (start > 0) lines.shift();
+    return lines.slice(-count);
   } catch {
     return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 };
 
@@ -299,7 +318,8 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     },
     async start() {
       needInstalled();
-      const since = Date.now();
+      // Starting a running service leaves it as it is, its record included.
+      const since = manager.state().active ? 0 : Date.now();
       manager.start();
       return started(since, dataOf(argsNow(), home));
     },

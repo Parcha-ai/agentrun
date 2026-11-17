@@ -3,7 +3,7 @@
 // and the wiring from the bin. The installer's flags and its refusals.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -241,7 +241,34 @@ test("service logs prints the log's last lines", async () => {
   const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: execOf().exec, io, fail });
   assert.equal(await service.logs({ lines: "2" }), 0);
   assert.equal(out.join(""), "two\nthree\n");
+  out.splice(0);
+  assert.equal(await service.logs({ lines: "0" }), 0);
+  assert.equal(out.join(""), "");
   await assert.rejects(service.logs({ lines: "-1" }), (error) => error.code === 2);
+
+  // A long log is read from its end: the last lines whole, a character split across a read boundary included.
+  const long = Array.from({ length: 20_000 }, (_, i) => `line ${i} é`).join("\n");
+  writeFileSync(join(home, ".agentrun", "logs", "agentrun.log"), `${long}\n\nlast, no newline ✓`);
+  out.splice(0);
+  assert.equal(await service.logs({ lines: "3" }), 0);
+  assert.equal(out.join(""), "line 19999 é\n\nlast, no newline ✓\n");
+  out.splice(0);
+  assert.equal(await service.logs({ lines: "20002" }), 0);
+  assert.equal(out.join(""), `${long}\n\nlast, no newline ✓\n`);
+});
+
+test("service start on a service that is already running accepts its record, however old; a stopped one needs a new record", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 }).install({});
+  const record = join(home, ".agentrun", ".server.json");
+  const old = new Date(Date.now() - 600_000);
+  utimesSync(record, old, old);
+  const asIs = (active) => execOf((command, args) => (args[1] === "show" ? { stdout: `ActiveState=${active}\nSubState=x\nMainPID=7\n` } : {})).exec;
+  const running = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: asIs("active"), io, fail, get, waitMs: 1_000 });
+  assert.equal(await running.start(), 0);
+  const stopped = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: asIs("inactive"), io, fail, get, waitMs: 600 });
+  assert.equal(await stopped.start(), 1);
 });
 
 /** The bin, with HOME a fresh folder and a fake systemctl first on PATH that answers as a machine with no user session. */
