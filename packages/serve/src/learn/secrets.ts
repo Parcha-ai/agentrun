@@ -146,20 +146,55 @@ export function redactLearned(text: string, values: readonly string[], max = PRI
  *  text whole). */
 function redactWith(text: string, values: readonly string[], max: number, shapes: readonly (readonly [string, RegExp])[], shapesOf: (text: string) => string[]): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
-  const given = withPathSpellings(values.filter((v) => v.length > 0));
-  const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? [...needlesOf(v).plain, ...percentForms(v)] : [])]).filter((form) => form.length > 0));
+  const { forms, hexes, folds: foldPatterns, matchUnfolded, match } = derivedOf(values);
   const found = [
-    ...[...forms].flatMap((form) => places(text, form)),
-    ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
+    ...forms.flatMap((form) => places(text, form)),
+    ...hexes.flatMap((hex) => spans(text, hex)),
     ...shapes.flatMap(([, pattern]) => spans(text, pattern)),
   ];
   const unfolded = cutAt(text, found);
-  if (spelledMatcher(given, false)(unfolded) || shapesOf(unfolded).length > 0) return "[redacted]";
+  if (matchUnfolded(unfolded) || shapesOf(unfolded).length > 0) return "[redacted]";
   // Then the folded finds cut in place, and the fold-aware check over what is left, always: a folded value split by
   // whitespace or percent-encoded has no span here, but the matcher's squeezed and decoded views still see it.
-  const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
+  const folds = foldPatterns.flatMap((pattern) => spans(text, pattern));
   const out = folds.length ? cutAt(text, [...found, ...folds]) : unfolded;
-  return spelledMatcher(given)(out) || shapesOf(out).length > 0 ? "[redacted]" : out;
+  return match(out) || shapesOf(out).length > 0 ? "[redacted]" : out;
+}
+
+/** What redactWith looks for of a set of values, whatever the text: each form found as it stands (as written, as JSON
+ *  writes it, its plain needles and percent forms), each value's hex and folded patterns, and the two whole-text
+ *  matchers. */
+type Derived = {
+  readonly forms: readonly string[];
+  readonly hexes: readonly RegExp[];
+  readonly folds: readonly RegExp[];
+  readonly matchUnfolded: (text: string) => boolean;
+  readonly match: (text: string) => boolean;
+};
+
+/** Each value set's Derived, by the array a caller passes, with a copy of the values it was derived of. A run's view
+ *  redacts every row of its timeline with one array, and deriving it again for each row (path spellings, base64 at three
+ *  alignments, percent forms, folded patterns, for every value, a private key's PEM among them) took seconds per view.
+ *  An array whose values changed since is derived again, never served a stale set: what a caller adds is always cut. */
+const DERIVED = new WeakMap<readonly string[], { readonly values: readonly string[]; readonly derived: Derived }>();
+
+function derivedOf(values: readonly string[]): Derived {
+  const kept = DERIVED.get(values);
+  if (kept && kept.values.length === values.length && kept.values.every((value, at) => value === values[at])) return kept.derived;
+  const given = withPathSpellings(values.filter((v) => v.length > 0));
+  const needles = new Map(given.filter(longEnough).map((v) => [v, needlesOf(v)]));
+  const derived: Derived = {
+    forms: [...new Set(given.flatMap((v) => {
+      const of = needles.get(v);
+      return [v, asJson(v), ...(of ? [...of.plain, ...percentForms(v)] : [])];
+    }).filter((form) => form.length > 0))],
+    hexes: [...needles.values()].map((of) => new RegExp(of.hex, "i")),
+    folds: [...needles.values()].flatMap((of) => of.folded.map(foldedPattern)),
+    matchUnfolded: spelledMatcher(given, false),
+    match: spelledMatcher(given),
+  };
+  DERIVED.set(values, { values: [...values], derived });
+  return derived;
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
