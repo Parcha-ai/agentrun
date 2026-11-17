@@ -78,16 +78,33 @@ const fileEntry = async (workspace: Workspace, rel: string): Promise<Entry | und
   return entry?.kind === "file" ? entry : undefined;
 };
 
-/** File `rel` of `workspace`, raw, in reads of SEND_CHUNK: its length from the listing, so HEAD reads no byte. `who`
- *  names who makes a file private, in the words of a 403. */
+/** The one byte range a Range header asks of a file of `size` bytes, first and last byte; undefined for the whole file (no
+ *  Range, or one this server does not take: another unit, several ranges, or a last byte before the first);
+ *  "unsatisfiable" when it starts past the file's end. */
+export function rangeOf(header: string | undefined, size: number): [number, number] | "unsatisfiable" | undefined {
+  const asked = /^bytes=(\d*)-(\d*)$/.exec(header?.trim() ?? "");
+  if (!asked || (asked[1] === "" && asked[2] === "")) return undefined;
+  if (asked[1] === "") return Number(asked[2]) === 0 || size === 0 ? "unsatisfiable" : [Math.max(0, size - Number(asked[2])), size - 1];
+  const start = Number(asked[1]);
+  if (start >= size) return "unsatisfiable";
+  const end = asked[2] === "" ? size - 1 : Math.min(Number(asked[2]), size - 1);
+  return end < start ? undefined : [start, end];
+}
+
+/** File `rel` of `workspace`, raw, in reads of SEND_CHUNK, whole or the one byte range its Range header asks (206): its
+ *  length from the listing, so HEAD reads no byte. `who` names who makes a file private, in the words of a 403. */
 export async function sendFile(req: IncomingMessage, res: ServerResponse, url: URL, workspace: Workspace, rel: string, who: string): Promise<void> {
   const unreadable = () => new ApiError("system_file_forbidden", `This file was created private by ${who}: this server cannot read it.`, { details: { reason: "unreadable" } });
   const entry = await fileEntry(workspace, rel);
   if (!entry) throw new ApiError("not_found", "no such file");
   if (entry.unreadable) throw unreadable();
+  const range = rangeOf(req.headers?.range, entry.size);
+  if (range === "unsatisfiable") throw new ApiError("range_not_satisfiable", `The range asked for starts past the file's end: it is ${entry.size} bytes.`, {}, { "content-range": `bytes */${entry.size}` });
+  const [start, last] = range ?? [0, entry.size - 1];
+  const length = last - start + 1;
   // A GET reads its first chunk before the head: a file gone, or swapped for a link, since the listing is a 404, not a
   // broken 200. A HEAD reads none.
-  const first = req.method === "HEAD" ? new Uint8Array(0) : await workspace.read(rel, { offset: 0, length: Math.min(SEND_CHUNK, entry.size) }).catch((error: unknown) => {
+  const first = req.method === "HEAD" ? new Uint8Array(0) : await workspace.read(rel, { offset: start, length: Math.min(SEND_CHUNK, length) }).catch((error: unknown) => {
     if (isWorkspaceError(error, "REFUSED")) throw unreadable();
     if (skipped(error)) throw new ApiError("not_found", "no such file");
     throw error;
@@ -95,9 +112,11 @@ export async function sendFile(req: IncomingMessage, res: ServerResponse, url: U
   const type = typeOf(rel) ?? "application/octet-stream";
   const download = url.searchParams.get("download") === "1" || !INLINE_TYPES.has(type);
   const name = rel.split("/").at(-1)!.replace(/[^\w.-]/g, "_");
-  res.writeHead(200, {
+  res.writeHead(range ? 206 : 200, {
     "content-type": type,
-    "content-length": entry.size,
+    "content-length": length,
+    "accept-ranges": "bytes",
+    ...(range ? { "content-range": `bytes ${start}-${last}/${entry.size}` } : {}),
     "x-content-type-options": "nosniff",
     "cache-control": "no-store",
     ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
@@ -107,11 +126,11 @@ export async function sendFile(req: IncomingMessage, res: ServerResponse, url: U
   // The length said is the listing's: a file that changes while it is sent is cut there, or the answer ends short.
   try {
     let sent = 0;
-    for (let chunk = first; ; chunk = await workspace.read(rel, { offset: sent, length: Math.min(SEND_CHUNK, entry.size - sent) })) {
+    for (let chunk = first; ; chunk = await workspace.read(rel, { offset: start + sent, length: Math.min(SEND_CHUNK, length - sent) })) {
       if (chunk.length === 0 || res.destroyed) break;
       if (!res.write(chunk)) await new Promise<void>((resolve) => { res.once("drain", resolve); res.once("close", resolve); });
       sent += chunk.length;
-      if (sent >= entry.size) break;
+      if (sent >= length) break;
     }
   } catch {
     // Mid-answer there is no status left to give: the answer ends, short of its length, which the client sees.

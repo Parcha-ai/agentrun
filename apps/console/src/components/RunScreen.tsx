@@ -1,11 +1,16 @@
-import { Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
+import { Download, Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
+import { bytes } from "@/lib/format";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
-import type { ComputerHold, RunComputer, RunMachine, TimelineRow } from "@/lib/v2";
+import type { ComputerHold, Run, RunComputer, RunMachine, TimelineRow } from "@/lib/v2";
+
+/** One of a run's screen recordings, as its read lists it. */
+type RunRecording = NonNullable<Run["recordings"]>[number];
 
 /** The run page's tab body keeps this much padding below its content (its py-8). */
 const PANE_BELOW = 32;
@@ -138,7 +143,7 @@ const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pendin
  *  viewer: the iframe is made again for it. A browser is taken over and handed back in its own viewer; a desktop or a
  *  phone here, with Take over and Hand back (`onTake`, `onHand`: each resolves with the refusal to say, or null). A
  *  metered provider's line shows for every kind but the browser. */
-export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand }: {
+export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl }: {
   /** The run whose screen this is: only a viewer under its own path is framed. */
   runId: string;
   screen: ScreenView | null;
@@ -157,6 +162,10 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   keptUntil?: string;
   onTake?: () => Promise<string | null>;
   onHand?: () => Promise<string | null>;
+  /** The run read's `recordings` (its agent's computer.record): "Recording" shows while one is being written, and each
+   *  finished one is exported through the run files route (`fileUrl`, a path's URL there) with ?download=1. */
+  recordings?: readonly RunRecording[];
+  fileUrl?: (path: string) => string;
 }) {
   // Each viewer gets an iframe of its own (a new session is a new page); the key is a count, never the viewer itself.
   const session = useRef({ viewer: "", n: 0 });
@@ -258,6 +267,12 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
         {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
         <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
+        {recordings.some((r) => !r.finished) && <Chip tone="active" title="A video of this screen is being recorded">Recording</Chip>}
+        {fileUrl && recordings.filter((r) => r.finished).map((r, i, done) => (
+          <a key={r.path} href={`${fileUrl(r.path)}?download=1`} download className={buttonVariants({ variant: "ghost", size: "sm" })} aria-label={`Export ${r.path} (${bytes(r.bytes)})`}>
+            <Download aria-hidden /> Export{done.length > 1 ? ` ${i + 1}` : ""}
+          </a>
+        ))}
         {!full && fill}
         {!full && hands}
       </header>
