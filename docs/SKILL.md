@@ -117,16 +117,17 @@ grep 'AgentRun is running at' agentrun.log || { echo 'AgentRun did not start; in
 
 Its data is in `~/.agentrun`; it takes the first free port from 7340 on loopback. If it did not start, read the log
 yourself and explain the error without quoting a token. Give the person the address and wait until they say it opens
-in their browser; a request from here does not show that. They set the owner password on the first visit. To restart
-it, `kill "$(cat agentrun.pid)"`, wait until `server health` stops answering, and run the same command again.
+in their browser; a request from here does not show that. They set the owner password on the first visit.
+To restart a server this step started, `kill "$(cat agentrun.pid)"`, wait until `server health` stops answering, and
+run the same command again. A server you reused was started some other way: ask how it runs (free text, one plain
+message), agree on when to stop it, and restart that same service with its own settings; never stop it unasked.
 
 ### My always-on machine
 
-The install runs on that machine: continue in a session there, or in an SSH session they already use. It needs
-Tailscale there, signed in to their own tailnet. Read its name with `tailscale status --json | jq -r .Self.DNSName`
-(drop the trailing dot), start AgentRun as above with `AGENTRUN_PUBLIC_URL=https://<that name>/` in front of `npx`,
-and with their OK share it on the tailnet only: `tailscale serve --bg <port it printed>`. Never `tailscale funnel`,
-which puts it on the internet. They open `https://<that name>/`; it asks for a setup code (below).
+Continue in a session on that machine, or an SSH session they already use; it needs Tailscale signed in to their own
+tailnet. Read its name with `tailscale status --json | jq -r .Self.DNSName` (drop the trailing dot), start AgentRun as
+above with `AGENTRUN_PUBLIC_URL=https://<that name>/` in front of `npx`, and with their OK share it on the tailnet
+only: `tailscale serve --bg <port it printed>`, never `tailscale funnel`. It asks for a setup code (below).
 
 ### A hosted service
 
@@ -275,9 +276,8 @@ npx --yes @parcha/agentrun@0.4 runs start release-notes --wait --timeout 300 --m
 the answer, the cost and the `console_url` link. A run waiting on its cap (`status` `input_required`, `pending.kind`
 `budget`) is theirs to raise in the console: link it. A failed run: show its `error`, and never retry silently.
 
-These commands find a server on this computer by its data folder. A server elsewhere needs `--base-url <address>/v2`
-and its API token, which the person saves with `npx @parcha/agentrun@0.4 login --base-url <address>/v2` in their own
-terminal (it reads the token on standard input); or they start a template's run in the console themselves.
+A server elsewhere needs `--base-url <address>/v2` and its API token, which the person saves in their own terminal
+with `npx @parcha/agentrun@0.4 login --base-url <address>/v2` (it reads standard input), or they run it in the console.
 
 Report the console address, the run's link and cost, the data folder, `server.version` and any step still pending.
 Offer **Learning** (off by default; turned on in the agent's **Learning** tab; reflection and grading add model
