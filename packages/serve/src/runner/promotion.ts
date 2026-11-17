@@ -536,7 +536,8 @@ const handsBackAt = (row: Pick<CheckRow, "guards">, thresholds: ReadonlyMap<stri
 /** A check's rows, once every replay run ended (or REPLAY_DEADLINE_MS passed); undefined while one is at work or not
  *  created yet. One row per reserved input, so every one counts: a run not ended by the deadline failed, and so did one
  *  never created by then (`unstarted`: the server stopped after reserving it, say), its input read from the agent's run
- *  the record names for it. With what its runs cost, their outcomes, and how many were never created by the deadline.
+ *  the record names for it. With what its runs cost, the rows' outcomes (one per row, the never created failed), and how
+ *  many were never created by the deadline.
  *  No grade is read: the label is the agent's own recorded answer. */
 async function checkRows(deps: Pick<PromotionDeps, "store" | "context" | "now">, record: PromotionRecord): Promise<{ rows: CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number } | undefined> {
   const { store, context } = deps;
@@ -565,7 +566,10 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "context" | "now">,
       ...(stoppedAt ? { skipped: stoppedAt } : {}),
     });
   }
-  return { rows, cost: replayCost(runs, late), outcomes: outcomesOf(runs, late), unstarted: runs.filter((row) => !row).length };
+  // The outcomes are the rows', so they add up to its n: a reserved run never created is a failed input there too.
+  const outcomes = { ...NO_OUTCOMES };
+  for (const row of rows) outcomes[row.outcome] += 1;
+  return { rows, cost: replayCost(runs, late), outcomes, unstarted: rows.filter((row) => row.unstarted).length };
 }
 
 /** A run's input as a check's disagreement shows it: its text, else its JSON. */
@@ -632,14 +636,16 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   const tools = skippedToolsOf(read.rows);
   const { skipped_write: skipped, failed } = read.outcomes;
   const { hint, why: skipWhy } = skipWordsOf(tools, skipped);
-  const numbers = { of: read.rows.map((row) => row.of), cost_usd: read.cost, outcomes: read.outcomes, ...(tools.length ? { skipped_tools: tools } : {}) };
+  const numbers = { of: read.rows.map((row) => row.of), cost_usd: read.cost, outcomes: read.outcomes, ...(read.unstarted ? { unstarted: read.unstarted } : {}), ...(tools.length ? { skipped_tools: tools } : {}) };
   // Every input skipped at a write (each reserved input counts: one never created or never ended failed, so this is the
   // only way to none): nothing to check it on, so it stops, never promoted unchecked, and asks no recompile.
   if (!score.n) {
     const why = skipped ? `${plural(skipped, "input")} skipped because ${hint ? skipWhy : `each ${SKIPPED_WRITE} (a check never runs a write)`}` : "it ran on no input";
     return stopUnchecked(deps, name, digest, bar, why, still, numbers, extra);
   }
-  const aside = [...(failed ? [`${failed} failed: a step failed, or it was still at work at the check's deadline`] : []), ...(skipped ? [`${skipped} skipped: ${skipWhy}`] : []), ...(read.unstarted ? [`${read.unstarted} never started by the check's deadline (the server stopped after reserving it, say), each a failed input`] : [])].join("; ");
+  // A run never created is a failed outcome too, said once: as never started.
+  const ranFailed = failed - read.unstarted;
+  const aside = [...(ranFailed ? [`${ranFailed} failed: a step failed, or it was still at work at the check's deadline`] : []), ...(skipped ? [`${skipped} skipped: ${skipWhy}`] : []), ...(read.unstarted ? [`${read.unstarted} never started by the check's deadline (the server stopped after reserving it, say), each a failed input`] : [])].join("; ");
   const said = `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)}), and ${score.agreed} of those said what the agent said (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})${aside ? ` (${aside})` : ""}`;
   const reason = ok ? `${said}: promoted` : stopped ? `${said}: held, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held; the agent's next run recompiles it once with the inputs it did not agree on`;
   const check: CheckRecord = { ...bar, ...score, ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}) };
@@ -1234,7 +1240,7 @@ async function checkView(ask: ReplayAsk, record: PromotionRecord, id: string, na
     const n = check.n ?? 0;
     const handedBack = check.outcomes.handed_back;
     const wf = n ? Math.round(((check.agreed ?? 0) + handedBack) / n * 1e4) / 1e4 : 0;
-    const neverStarted = inputs > 0 && Object.values(check.outcomes).every((count) => count === 0);
+    const neverStarted = inputs > 0 && check.unstarted === inputs;
     return { replay: id, workflow: name, digest, status: neverStarted ? "failed" : "done", inputs, outcomes: check.outcomes, score: { n, agree: check.agreed ?? 0, agent_acc: n ? 1 : 0, wf_acc: wf, delta: n ? Math.round((wf - 1) * 1e4) / 1e4 : 0, handed_back: handedBack }, cost_usd: check.cost_usd ?? null, decided, reason: record.reason };
   }
   const runs = await Promise.all((record.runs ?? []).map((run) => ask.store.runs.get(run)));

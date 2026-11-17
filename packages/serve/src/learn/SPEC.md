@@ -150,7 +150,8 @@ its owner acts. The record keeps `check`: the bar it was held to, `n`, `agreed`,
 stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades, a refit or a queued revision. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
 Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
-failed input, never left out. A draft with nothing to check it on (none of those runs has an input it takes, or every
+failed input, never left out, in `n` and in `outcomes` alike (the record's `unstarted` counts the never created; every
+one: its replay's read is `failed`). A draft with nothing to check it on (none of those runs has an input it takes, or every
 input was skipped at a write, such as an MCP tool listed with no `readOnlyHint`) is never promoted: it stops
 (`check.stopped`, `n` 0) with a reason starting "nothing to check it on", which the loop read shows as the compile's
 draft error, and it asks no recompile (a revision would have nothing to be checked on either).

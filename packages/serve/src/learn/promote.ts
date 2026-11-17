@@ -197,9 +197,10 @@ export interface CheckDisagreement {
 
 /** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone with
  *  the agent's recorded answer (sameAnswer), `alone` answered alone (no escalate, no failed step, no guard under its
- *  serving threshold); the inputs (`of`, the agent's runs), what its replay runs cost, their outcomes, the tools that
- *  stopped its skipped inputs, the inputs it did not agree on, and `stopped` when a recompile's check held it too
- *  (nothing compiles again). */
+ *  serving threshold); the inputs (`of`, the agent's runs), what its replay runs cost, their outcomes (one per input:
+ *  a replay run never created by the deadline failed), how many of its replay runs were never created (`unstarted`,
+ *  when any), the tools that stopped its skipped inputs, the inputs it did not agree on, and `stopped` when a
+ *  recompile's check held it too (nothing compiles again). */
 export type CheckRecord = CheckBar & {
   readonly n?: number;
   readonly agreed?: number;
@@ -207,6 +208,7 @@ export type CheckRecord = CheckBar & {
   readonly of?: readonly string[];
   readonly cost_usd?: number | null;
   readonly outcomes?: ReplayOutcomes;
+  readonly unstarted?: number;
   readonly skipped_tools?: readonly SkippedTool[];
   readonly disagreements?: readonly CheckDisagreement[];
   readonly stopped?: true;

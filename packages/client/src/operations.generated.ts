@@ -1533,6 +1533,7 @@ export type ListLearningPromotionsResponse = {
         failed: number;
         skipped_write: number;
       };
+      unstarted?: number;
       skipped_tools?: Array<{
         tool: string;
         inputs: number;

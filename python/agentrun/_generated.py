@@ -2290,6 +2290,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     of: list[str]
     cost_usd: float | None
     outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
+    unstarted: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
     stopped: Literal[True]

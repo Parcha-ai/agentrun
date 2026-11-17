@@ -3982,6 +3982,7 @@ export interface operations {
             failed: number;
             skipped_write: number;
           };
+          unstarted?: number;
           skipped_tools?: {
             tool: string;
             inputs: number;
