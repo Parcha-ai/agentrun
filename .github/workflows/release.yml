@@ -20,8 +20,10 @@ concurrency:
 
 jobs:
   # The release's preconditions, checked once before anything else starts: the tag is a reviewed beta tag, the run was
-  # dispatched at it, and the tagged commit passed CI on main. Every other job needs it, so the jobs the npm-release
-  # approval holds (publish, pypi, box) all ask for it at the same moment and one approval covers them.
+  # dispatched at it, it is newer than what is out and is the version the manifests at it say, and the tagged commit passed
+  # every check main requires. Every other job needs it, so the jobs the npm-release approval holds (publish, pypi, box)
+  # all ask for it at the same moment and one approval covers them. Anyone with write access may dispatch the workflow;
+  # the npm-release environment's required reviewers are the approval, and nothing here names a person.
   gate:
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
@@ -46,6 +48,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
+      # Newer than npm's latest @parcha/agentrun-serve and the newest GitHub release; equal or older stops here, naming
+      # both. A release that stopped partway is finished by re-running its failed jobs, not by a new dispatch.
+      - name: The tag is newer than what is out, and is the version at the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-version.mjs --tag "$RELEASE_TAG"
+      # The push run on main of this exact commit: every check main's ruleset requires concluded success.
       - name: The tagged commit passed CI on main
         env:
           GH_TOKEN: ${{ github.token }}
@@ -94,6 +103,14 @@ jobs:
         # packed, so the published changelogs list everything the archives ship. release-preflight checks the tree is the tag plus
         # this fold. The next release pull request's fold moves them into this version's section on main (docs/releasing.md).
         run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"
+      # The fold's CHANGELOG.md is the GitHub release's notes (the github-release job), so the notes say what the archives say.
+      - name: Keep the folded changelog for the release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-changelog
+          path: CHANGELOG.md
+          if-no-files-found: error
+          overwrite: true
       - run: npm ci --ignore-scripts
       - run: npm run build
       # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
@@ -428,3 +445,76 @@ jobs:
           BOX_IMAGE: ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
         run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public
+
+  # The GitHub release, once everything it names is out: the npm packages (publish), the Python client (pypi), the server
+  # image (image-release), and the box image and template (box). Its notes are the version's CHANGELOG.md section as the
+  # publish job's fold left it (the release-changelog artifact), then the install lines (scripts/release-notes.mjs).
+  # scripts/release-github.mjs publishes it on the existing tag, a prerelease for a beta: it never creates or moves a tag,
+  # and stops, saying so, when the tag has a release already. The one job that writes to the repository.
+  github-release:
+    needs: [publish, pypi, image-release, box]
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      IMAGE: ghcr.io/parcha-ai/agentrun-server
+      PLATFORMS: linux/amd64,linux/arm64
+    outputs:
+      url: ${{ steps.release.outputs.url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-changelog
+          path: ${{ runner.temp }}/changelog
+      - name: Write the notes
+        run: node scripts/release-notes.mjs --tag "$RELEASE_TAG" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md" --image "$IMAGE:$RELEASE_TAG" --platforms "$PLATFORMS" --out "${{ runner.temp }}/notes.md"
+      - name: Publish the release on its tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-github.mjs --tag "$RELEASE_TAG" --notes "${{ runner.temp }}/notes.md"
+
+  # The release post, through the star notifications' Slack path: their bot token (the secret SLACK_STARS_BOT_TOKEN) and the
+  # channel in the repository variable SLACK_RELEASES_CHANNEL. Either unset is one line; a failed post is a warning, and the
+  # job continues on error, so Slack never fails a release.
+  slack:
+    needs: github-release
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-changelog
+          path: ${{ runner.temp }}/changelog
+      - name: Post the release to Slack
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_STARS_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.SLACK_RELEASES_CHANNEL }}
+          RELEASE_URL: ${{ needs.github-release.outputs.url }}
+        run: node scripts/release-slack.mjs --tag "$RELEASE_TAG" --url "$RELEASE_URL" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md"
