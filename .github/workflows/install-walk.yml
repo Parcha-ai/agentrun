@@ -89,6 +89,9 @@ jobs:
         shell: bash
         env:
           PACKAGE: ${{ needs.pack.outputs.package }}
+          # x64 pins Node to the launcher's floor (--node-version), so a failure there is never a new Node release; arm64
+          # takes the installer's choice, the newest on the floor's major line.
+          NODE_PIN: ${{ runner.arch == 'X64' && '1' || '' }}
         run: packages/agentrun/test/install-walk.sh container ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
 
   linux:

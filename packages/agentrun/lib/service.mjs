@@ -2,9 +2,10 @@
 // keeps running after the terminal closes and starts again at login. A launchd LaunchAgent on macOS, a systemd --user
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
-// port, and writes to ~/.agentrun/logs/agentrun.log.
+// port, and writes to ~/.agentrun/logs/agentrun.log. `agentrun stop` stops the AgentRun the installer starts in the
+// background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,8 @@ export const UNIT = "agentrun.service";
 export const INSTALL_COMMAND = "curl -fsSL https://agentrun.ai/install | sh";
 /** How long a start waits for the server to answer /health before it says it did not. */
 export const HEALTH_WAIT_MS = 90_000;
+/** How long `agentrun stop` waits for the background AgentRun to end after its SIGTERM before it sends a SIGKILL. */
+export const STOP_WAIT_MS = 20_000;
 const INSTALLER = fileURLToPath(new URL("../install.sh", import.meta.url));
 
 const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -246,7 +249,7 @@ const tailOf = (file, count) => {
 };
 
 /** Every service command, given what it runs on; the entries below bind it to this machine. */
-export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS }) {
+export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS }) {
   exec ??= (command, args, options = {}) => spawnSync(command, args, { encoding: "utf8", ...options });
   const root = join(home, ".agentrun");
   const program = join(root, "bin", "agentrun");
@@ -362,6 +365,56 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       say(`Removed AgentRun's service (${manager.file}). Its data stays in ${root}.`);
       return 0;
     },
+    /** `agentrun stop`: the AgentRun install.sh started in the background, stopped as Ctrl-C would (SIGTERM, which the
+     *  launcher passes on to the server), then SIGKILL past stopWaitMs. Exit 0, or 3 when none is running. */
+    async background() {
+      const file = join(root, "agentrun.pid");
+      let pid;
+      try {
+        pid = Number(readFileSync(file, "utf8").trim());
+      } catch {}
+      // Its state letter and command line: from /proc where there is one (a container may have no ps), else from ps.
+      // Undefined once it is gone. A process that ended is a zombie (Z) until its parent reaps it, and in a container
+      // with no init nothing does, so a zombie counts as ended.
+      const processOf = () => {
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+          return { state: stat.slice(stat.lastIndexOf(")") + 2)[0], args: readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ") };
+        } catch {
+          if (existsSync("/proc/self/stat")) return undefined;
+        }
+        const ps = exec("ps", ["-o", "stat=", "-o", "args=", "-p", String(pid)]);
+        const [, state, args] = (ps.status === 0 && /^\s*(\S)\S*\s+(.*)$/s.exec(ps.stdout ?? "")) || [];
+        return state === undefined ? undefined : { state, args };
+      };
+      const alive = () => {
+        const now = processOf();
+        return now !== undefined && now.state !== "Z";
+      };
+      // A pid file outlives a crash, and its pid can be another process's by now: only a process running this install's
+      // files is stopped.
+      const ours = Number.isInteger(pid) && pid > 1 && alive() && processOf()?.args.includes(`${root}/`);
+      if (!ours) {
+        rmSync(file, { force: true });
+        say(`No AgentRun started in the background is running.${installed() ? " AgentRun runs as a service here: agentrun service stop stops it." : ""}`);
+        return 3;
+      }
+      kill(pid, "SIGTERM");
+      const deadline = Date.now() + stopWaitMs;
+      while (alive() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 200));
+      if (alive()) {
+        // The installer starts it with setsid, so it leads a process group, the server's too.
+        try {
+          kill(-pid, "SIGKILL");
+        } catch {
+          kill(pid, "SIGKILL");
+        }
+        say(`AgentRun (pid ${pid}) was still running ${stopWaitMs / 1000} s after its SIGTERM, so it was sent a SIGKILL.`);
+      }
+      rmSync(file, { force: true });
+      say(`Stopped AgentRun (pid ${pid}).`);
+      return 0;
+    },
   };
 }
 
@@ -385,3 +438,13 @@ export const SERVICE = VERBS.map(([verb, summary, help, options]) => ({
   options,
   run: ({ values, io, env, cli }) => serviceOf({ env, io, fail: cli.fail })[verb](values),
 }));
+
+/** `agentrun stop` (cli.mjs LOCAL). */
+export const STOP = {
+  command: ["stop"],
+  pathParams: [],
+  summary: "Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)",
+  help: [],
+  options: {},
+  run: ({ io, env, cli }) => serviceOf({ env, io, fail: cli.fail }).background(),
+};

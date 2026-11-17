@@ -2,7 +2,7 @@
 // each verb (a fake runs in their place: no service is installed on the machine that runs this), the wait for /health,
 // and the wiring from the bin. The installer's flags and its refusals.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -271,6 +271,55 @@ test("service start on a service that is already running accepts its record, how
   assert.equal(await stopped.start(), 1);
 });
 
+/** A process in its own process group, as install.sh starts AgentRun (setsid), running a file under `home`'s
+ *  .agentrun/lib; `ignoreTerm` makes it ignore SIGTERM. Resolves once it runs, with its exit. */
+async function holder(home, { ignoreTerm = false } = {}) {
+  const dir = join(home, ".agentrun", "lib", "0.0.0");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "hold.mjs");
+  writeFileSync(file, `${ignoreTerm ? 'process.on("SIGTERM", () => {});\n' : ""}setInterval(() => {}, 1000);\nconsole.log("ready");\n`);
+  const child = spawn(process.execPath, [file], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const exited = new Promise((done) => child.on("exit", (code, signal) => done(signal ?? code)));
+  await new Promise((done) => child.stdout.once("data", done));
+  writeFileSync(join(home, ".agentrun", "agentrun.pid"), `${child.pid}\n`);
+  return { child, exited };
+}
+
+test("stop: the AgentRun the installer started in the background ends on a SIGTERM, or a SIGKILL past the wait; none running is exit 3", async () => {
+  const home = fresh();
+  const pidFile = join(home, ".agentrun", "agentrun.pid");
+  const { out, io } = ioOf();
+  const service = (stopWaitMs = 5_000) => serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, stopWaitMs });
+
+  const one = await holder(home);
+  assert.equal(await service().background(), 0);
+  assert.equal(await one.exited, "SIGTERM");
+  assert.equal(existsSync(pidFile), false);
+  assert.match(out.join(""), new RegExp(`Stopped AgentRun \\(pid ${one.child.pid}\\)\\.`));
+
+  const stubborn = await holder(home, { ignoreTerm: true });
+  out.splice(0);
+  assert.equal(await service(600).background(), 0);
+  assert.equal(await stubborn.exited, "SIGKILL");
+  assert.match(out.join(""), /still running 0\.6 s after its SIGTERM, so it was sent a SIGKILL/);
+
+  // No pid file; then a pid file naming a live process that runs nothing of this install (this test's own): neither is
+  // stopped, and the stale file goes.
+  out.splice(0);
+  assert.equal(await service().background(), 3);
+  writeFileSync(pidFile, `${process.pid}\n`);
+  assert.equal(await service().background(), 3);
+  assert.equal(existsSync(pidFile), false);
+  assert.match(out.join(""), /^No AgentRun started in the background is running\.\n/);
+
+  // With a service installed, it says the service has a stop of its own.
+  mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+  writeFileSync(join(home, ".config", "systemd", "user", UNIT), "");
+  out.splice(0);
+  assert.equal(await service().background(), 3);
+  assert.match(out.join(""), /AgentRun runs as a service here: agentrun service stop stops it\./);
+});
+
 /** The bin, with HOME a fresh folder and a fake systemctl first on PATH that answers as a machine with no user session. */
 function bin(args, home = fresh()) {
   const fakes = join(home, "fakes");
@@ -280,9 +329,12 @@ function bin(args, home = fresh()) {
   return spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: { HOME: home, PATH: `${fakes}:${process.env.PATH}` } });
 }
 
-test("the bin: --version prints the version; help lists service; each verb is wired, and an unknown one is refused", { skip: process.platform !== "linux" && "the wiring runs systemd's path" }, () => {
+test("the bin: --version prints the version; help lists service and stop; each verb is wired, and an unknown one is refused", { skip: process.platform !== "linux" && "the wiring runs systemd's path" }, () => {
   assert.equal(bin(["--version"]).stdout, `${VERSION}\n`);
   assert.match(bin(["help"]).stdout, /^ {2}service +install, logs, restart, start, status, stop, uninstall, upgrade$/m);
+  assert.match(bin(["help"]).stdout, /^ {2}stop +Stop the AgentRun the installer started in the background/m);
+  const stop = bin(["stop"]);
+  assert.deepEqual([stop.status, stop.stdout], [3, "No AgentRun started in the background is running.\n"]);
   const status = bin(["service", "status"]);
   assert.equal(status.status, 3);
   assert.match(status.stdout, /not installed/);
@@ -302,10 +354,19 @@ test("install.sh: POSIX sh syntax, its help, and its refusals before it download
   const run = (...args) => spawnSync("sh", [INSTALLER, ...args], { encoding: "utf8", env: { HOME: fresh(), PATH: process.env.PATH } });
   const help = run("--help");
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /--version V.*\n.*--package FILE.*\n.*--no-start.*\n.*--service/);
+  assert.match(help.stdout, /--version V.*\n.*--package FILE.*\n.*--node-version V.*\n.*\n.*--no-start.*\n.*--service/);
   assert.match(run("--bogus").stderr, /agentrun install: unknown option --bogus/);
   assert.match(run("--version", "1.0;rm").stderr, /--version 1\.0;rm is not a version or npm tag/);
   assert.match(run("--package", "/nonexistent.tgz").stderr, /--package \/nonexistent\.tgz: no such file/);
+  assert.match(run("--node-version", "24.22").stderr, /--node-version 24\.22 is not a Node\.js version \(X\.Y\.Z\)/);
+  // --node-version is checked against the floor of the package it installs, part by part as numbers.
+  const dir = fresh();
+  mkdirSync(join(dir, "package"));
+  writeFileSync(join(dir, "package", "package.json"), JSON.stringify({ name: "@parcha/agentrun", version: "9.9.9", engines: { node: ">=24.22.3" } }, null, 2));
+  assert.equal(spawnSync("tar", ["-czf", join(dir, "launcher.tgz"), "-C", dir, "package"]).status, 0);
+  for (const below of ["24.22.2", "24.9.99", "23.99.99", "v24.3.0"]) {
+    assert.match(run("--package", join(dir, "launcher.tgz"), "--node-version", below).stderr, /--node-version v?[\d.]+ is below the Node\.js @parcha\/agentrun 9\.9\.9 needs, 24\.22\.3/, below);
+  }
   const quoted = spawnSync("sh", [INSTALLER, "--no-start"], { encoding: "utf8", env: { HOME: "/tmp/it's", PATH: process.env.PATH } });
   assert.match(quoted.stderr, /has a single quote in it/);
 });

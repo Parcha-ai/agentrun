@@ -4,17 +4,19 @@
 #   curl -fsSL https://agentrun.ai/install | sh
 #   curl -fsSL https://agentrun.ai/install | sh -s -- --version 0.4.11 --no-start
 #
-# It brings its own Node.js: the launcher's engines floor (`>=X.Y.Z`, the security release it needs), downloaded from
-# nodejs.org and checked against that release's SHASUMS256.txt, into ~/.agentrun/node/vX.Y.Z. It installs
-# @parcha/agentrun, and the server it depends on, with that Node into ~/.agentrun/lib/<version>, and writes
-# ~/.agentrun/bin/agentrun, which always runs that Node. The node, nvm, Homebrew or global npm on this machine are never
-# used or changed. ~/.agentrun is also the server's data directory: the installer keeps to bin, lib, node and logs, names
-# the server never uses. No sudo. Running it again installs the version asked for (the latest by default) and removes the
-# others, except one a running server still uses.
+# It brings its own Node.js: the newest release on the major line of the launcher's engines floor (`>=X.Y.Z`, the
+# security release it needs) that is at least that floor, as nodejs.org/dist/index.json lists them, so later security
+# releases come with the next install. It is downloaded from nodejs.org and checked against that release's
+# SHASUMS256.txt, into ~/.agentrun/node/vX.Y.Z. It installs @parcha/agentrun, and the server it depends on, with that Node
+# into ~/.agentrun/lib/<version>, and writes ~/.agentrun/bin/agentrun, which always runs that Node. The node, nvm,
+# Homebrew or global npm on this machine are never used or changed. ~/.agentrun is also the server's data directory: the
+# installer keeps to bin, lib, node, logs and agentrun.pid, names the server never uses. No sudo. Running it again
+# installs the version asked for (the latest by default) and removes the others, except one a running server still uses.
 #
 # Then it starts AgentRun as a service of this user (`agentrun service install`: launchd on macOS, systemd --user on
 # Linux), so it keeps running after the terminal closes and starts again at login. Where this user has no service
-# manager (a container, say), it starts AgentRun in this terminal instead. Options: --help.
+# manager (a container, say), it starts AgentRun in the background until the machine stops (`agentrun stop` stops it).
+# Either way it returns once AgentRun answers, and prints its address. Options: --help.
 #
 # The whole script is one function, called on its last line, so a download cut short runs nothing.
 
@@ -25,6 +27,7 @@ main() {
   package=@parcha/agentrun
   version=latest
   tarball=
+  node_version=
   start=default
 
   while [ $# -gt 0 ]; do
@@ -33,6 +36,8 @@ main() {
       --version=*) version=${1#--version=} ;;
       --package) [ $# -ge 2 ] || fail "--package takes a tarball"; tarball=$2; shift ;;
       --package=*) tarball=${1#--package=} ;;
+      --node-version) [ $# -ge 2 ] || fail "--node-version takes a Node.js version"; node_version=${2#v}; shift ;;
+      --node-version=*) node_version=${1#--node-version=}; node_version=${node_version#v} ;;
       --no-start) start=none ;;
       --service) start=service ;;
       -h | --help) usage; return 0 ;;
@@ -40,6 +45,9 @@ main() {
     esac
     shift
   done
+  if [ -n "$node_version" ] && ! printf '%s\n' "$node_version" | grep -qx '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*'; then
+    fail "--node-version $node_version is not a Node.js version (X.Y.Z)"
+  fi
 
   [ -n "${HOME:-}" ] || fail "HOME is not set"
   case $HOME in *"'"*) fail "HOME ($HOME) has a single quote in it, and the command this writes quotes paths with one" ;; esac
@@ -69,6 +77,9 @@ main() {
     sed -n 's/^"node":">=\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p')
   [ -n "$floor" ] || fail "$package $version names no Node.js floor (engines.node \">=X.Y.Z\")"
   [ -n "$tarball" ] || spec=$package@$version
+  if [ -n "$node_version" ] && ! at_least "$node_version" "$floor"; then
+    fail "--node-version $node_version is below the Node.js $package $version needs, $floor"
+  fi
 
   mkdir -p "$root"
   chmod 700 "$root"
@@ -78,15 +89,21 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  node_dir=$root/node/v$floor
-  if [ -x "$node_dir/bin/node" ] && [ "$("$node_dir/bin/node" --version 2>/dev/null)" = "v$floor" ]; then
-    say "Node.js $floor is already in $node_dir"
+  if [ -n "$node_version" ]; then
+    say "Node.js $node_version, as --node-version asks"
+  else
+    resolve_node
+    say "Node.js $node_version, the newest ${floor%%.*}.x at or above $floor"
+  fi
+  node_dir=$root/node/v$node_version
+  if [ -x "$node_dir/bin/node" ] && [ "$("$node_dir/bin/node" --version 2>/dev/null)" = "v$node_version" ]; then
+    say "Node.js $node_version is already in $node_dir"
   else
     install_node
   fi
 
   lib_dir=$root/lib/$version
-  say "Installing $package $version with Node.js $floor ..."
+  say "Installing $package $version with Node.js $node_version ..."
   mkdir -p "$work/lib"
   printf '{ "private": true }\n' > "$work/lib/package.json"
   # npm from this Node, with this Node first on PATH for the packages' own scripts. The person's npm config (a registry
@@ -108,7 +125,7 @@ main() {
   mkdir -p "$root/bin" "$root/logs"
   cat > "$work/agentrun" <<EOF
 #!/bin/sh
-# AgentRun $version on its own Node.js $floor, written by the AgentRun installer (https://agentrun.ai/install).
+# AgentRun $version on its own Node.js $node_version, written by the AgentRun installer (https://agentrun.ai/install).
 PATH='$node_dir/bin':"\$PATH"
 export PATH
 exec '$node_dir/bin/node' '$entry' "\$@"
@@ -116,9 +133,7 @@ EOF
   chmod 755 "$work/agentrun"
   mv -f "$work/agentrun" "$shim"
   "$shim" help > /dev/null 2>&1 || fail "$shim does not run: $("$shim" help 2>&1 | tail -n 3)"
-  say "Installed AgentRun $version (Node.js $floor) in $root"
-
-  prune
+  say "Installed AgentRun $version (Node.js $node_version) in $root"
 
   add_to_path
 
@@ -129,6 +144,7 @@ EOF
       say "      or: $(shown_shim)                    (in this terminal; Ctrl-C stops it)"
       ;;
     service)
+      stop_background
       "$shim" service install
       ;;
     default)
@@ -138,16 +154,18 @@ EOF
       if [ "$code" = 0 ] || [ "$code" = 1 ]; then
         "$shim" service restart
       elif [ "$code" = 3 ] && service_manager; then
+        stop_background
         "$shim" service install
       else
         [ "$code" = 3 ] || why="AgentRun $version has no service command"
-        say "AgentRun can't run as a service here ($why), so it runs in this terminal: Ctrl-C stops it."
-        rm -rf "$work"
-        trap - EXIT
-        exec "$shim"
+        say "AgentRun can't run as a service here ($why), so it runs in the background."
+        start_background
       fi
       ;;
   esac
+
+  # After the start, so the version a server ran until now goes once it has stopped.
+  prune
 }
 
 usage() {
@@ -159,14 +177,16 @@ AgentRun's installer, for macOS and Linux (x64, arm64):
 
 It installs AgentRun, with a Node.js of its own, in ~/.agentrun, and starts it as a service of this user (launchd on
 macOS, systemd --user on Linux), which keeps running after the terminal closes. Where there is no service manager, it
-starts AgentRun in this terminal.
+starts AgentRun in the background until the machine stops; `agentrun stop` stops it. It returns once AgentRun answers.
 
 Options:
-  --version V     the @parcha/agentrun version or npm tag to install (default: latest)
-  --package FILE  install the launcher from FILE, a tarball `npm pack` made, in place of the registry's
-  --no-start      install only
-  --service       install the service, and fail if this machine can't run one
-  -h, --help      this help
+  --version V       the @parcha/agentrun version or npm tag to install (default: latest)
+  --package FILE    install the launcher from FILE, a tarball `npm pack` made, in place of the registry's
+  --node-version V  the Node.js version to install, at least the launcher's floor (default: the newest release on the
+                    floor's major line, from nodejs.org/dist/index.json)
+  --no-start        install only
+  --service         install the service, and fail if this machine can't run one
+  -h, --help        this help
 EOF
 }
 
@@ -218,17 +238,43 @@ sha256() {
   fi
 }
 
+# Whether version $1 is at least version $2 (X.Y.Z each).
+at_least() {
+  printf '%s %s\n' "$1" "$2" | awk '{ split($1, a, "."); split($2, b, ".")
+    for (i = 1; i <= 3; i++) if (a[i] + 0 != b[i] + 0) exit !(a[i] + 0 > b[i] + 0)
+    exit 0 }'
+}
+
+# Of the versions on stdin (X.Y.Z, one a line), the newest on $1's major line that is at least $1.
+newest_from() {
+  awk -F. -v floor="$1" 'BEGIN { split(floor, f, ".") }
+    $1 + 0 == f[1] + 0 && ($2 + 0 > f[2] + 0 || ($2 + 0 == f[2] + 0 && $3 + 0 >= f[3] + 0)) &&
+      (best == "" || $2 + 0 > b2 || ($2 + 0 == b2 && $3 + 0 > b3)) { best = $0; b2 = $2 + 0; b3 = $3 + 0 }
+    END { if (best != "") print best }'
+}
+
+# $node_version: the newest release nodejs.org builds for this platform on the floor's major line, at least the floor.
+# index.json holds one release a line, its version first and its builds in "files" ("linux-x64", "osx-arm64-tar").
+resolve_node() {
+  case $os in darwin) build=osx-$arch-tar ;; *) build=$os-$arch$suffix ;; esac
+  download https://nodejs.org/dist/index.json > "$work/index.json" ||
+    fail "could not read https://nodejs.org/dist/index.json to choose a Node.js; --node-version V names one"
+  node_version=$(grep -F "\"$build\"" "$work/index.json" |
+    sed -n 's/^{"version":"v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' | newest_from "$floor")
+  [ -n "$node_version" ] || fail "nodejs.org lists no Node.js ${floor%%.*}.x at or above $floor built for $build"
+}
+
 install_node() {
-  base=node-v$floor-$os-$arch$suffix
-  say "Downloading Node.js $floor ($os-$arch$suffix) from nodejs.org ..."
-  download "https://nodejs.org/dist/v$floor/$base.tar.gz" > "$work/$base.tar.gz" || fail "could not download $base.tar.gz"
-  download "https://nodejs.org/dist/v$floor/SHASUMS256.txt" > "$work/SHASUMS256.txt" || fail "could not download Node.js $floor's SHASUMS256.txt"
+  base=node-v$node_version-$os-$arch$suffix
+  say "Downloading Node.js $node_version ($os-$arch$suffix) from nodejs.org ..."
+  download "https://nodejs.org/dist/v$node_version/$base.tar.gz" > "$work/$base.tar.gz" || fail "could not download $base.tar.gz"
+  download "https://nodejs.org/dist/v$node_version/SHASUMS256.txt" > "$work/SHASUMS256.txt" || fail "could not download Node.js $node_version's SHASUMS256.txt"
   expected=$(awk -v file="$base.tar.gz" '$2 == file { print $1 }' "$work/SHASUMS256.txt")
-  [ -n "$expected" ] || fail "SHASUMS256.txt of Node.js $floor lists no $base.tar.gz"
+  [ -n "$expected" ] || fail "SHASUMS256.txt of Node.js $node_version lists no $base.tar.gz"
   [ "$(sha256 "$work/$base.tar.gz")" = "$expected" ] || fail "$base.tar.gz does not match its SHA-256 in SHASUMS256.txt; nothing was installed"
   say "Checked $base.tar.gz against SHASUMS256.txt"
   tar -xzf "$work/$base.tar.gz" -C "$work"
-  [ "$("$work/$base/bin/node" --version)" = "v$floor" ] || fail "the Node.js downloaded does not run here"
+  [ "$("$work/$base/bin/node" --version)" = "v$node_version" ] || fail "the Node.js downloaded does not run here"
   mkdir -p "$root/node"
   replace "$work/$base" "$node_dir"
 }
@@ -281,6 +327,45 @@ service_manager() {
     why="no systemd user session"
   fi
   return 1
+}
+
+# Stops the AgentRun an earlier install started in the background, if one runs, so only one server uses ~/.agentrun.
+stop_background() {
+  "$shim" stop > /dev/null 2>&1 || true
+}
+
+# AgentRun in the background, where there is no service manager: in a session of its own where setsid is there (Linux),
+# so neither the terminal closing nor a Ctrl-C to it stops AgentRun, with nothing open on this script's output, so a
+# `curl | sh` returns. Its output goes to the service's log, its pid to agentrun.pid for `agentrun stop`. Waits for the
+# launcher's "AgentRun is running at" line, or for it to end (it stops a server that never answers, after 60 s).
+start_background() {
+  stop_background
+  log=$root/logs/agentrun.log
+  touch "$log"
+  from=$(($(wc -c < "$log") + 1))
+  if command -v setsid > /dev/null 2>&1; then
+    nohup setsid "$shim" --no-open < /dev/null >> "$log" 2>&1 &
+  else
+    nohup "$shim" --no-open < /dev/null >> "$log" 2>&1 &
+  fi
+  pid=$!
+  printf '%s\n' "$pid" > "$root/agentrun.pid"
+  url=
+  waited=0
+  while [ "$waited" -lt 120 ]; do
+    url=$(tail -c "+$from" "$log" | sed -n 's/^AgentRun is running at //p' | head -n 1)
+    [ -z "$url" ] || break
+    kill -0 "$pid" 2> /dev/null || break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ -z "$url" ]; then
+    tail -c "+$from" "$log" | tail -n 20 >&2
+    kill "$pid" 2> /dev/null || true
+    fail "AgentRun did not start (its last lines are above, and all of them are in $log)"
+  fi
+  say "AgentRun is running at $url"
+  say "It runs in the background until this machine or container stops. $(shown_shim) stop stops it; its log is $log."
 }
 
 shown_shim() {

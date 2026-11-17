@@ -1022,6 +1022,14 @@ Route: `GET /stats`.
 - `--to STRING` (string): Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
 - `--agent STRING` (string): One agent's runs.
 
+## stop
+
+### `agentrun stop`
+
+Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running).
+
+Route: none, it runs on this machine.
+
 ## template
 
 ### `agentrun template apply TEMPLATE`

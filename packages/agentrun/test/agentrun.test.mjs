@@ -535,7 +535,7 @@ test("a server whose output ends with no \"Open \" line gives no address", async
 
 // The repository's Node rule, at the top of the bin and not behind a main-module guard (Node 20 has none, and a guarded
 // check there would pass by doing nothing): an older Node gets one line saying what to install, and exit 1.
-test("on a Node below the package's engines floor the bin says, in one line, the floor it needs, and exits 1 before it loads anything", () => {
+test("on a Node below the package's engines floor the bin says, in one line, the floor it needs and the installer's command, and exits 1 before it loads anything", () => {
   // The floor the line names is the package's engines.node, never a number of its own (it once said 22.19 and 24.2).
   const engines = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).engines.node;
   const [, needMajor, needMinor, needPatch] = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(engines).map(Number);
@@ -545,7 +545,7 @@ test("on a Node below the package's engines floor the bin says, in one line, the
   // The patch counts: a Node on the floor's minor below its patch lacks the security fixes, and is refused too.
   for (const node of ["20.20.0", "22.23.5", "23.11.0", "24.2.0", "24.11.0", "24.21.0", `${needMajor}.${needMinor - 1}.9`, `${needMajor}.${needMinor}.0`, `${needMajor}.${needMinor}.${needPatch - 1}`]) {
     const run = spawnSync(process.execPath, ["--import", fakeNode(node), BIN, "--help"], { encoding: "utf8" });
-    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js ${floor} or newer; you have v${node}.\n`], node);
+    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js ${floor} or newer; you have v${node}. To install AgentRun with a Node.js of its own, run: curl -fsSL https://agentrun.ai/install | sh\n`], node);
   }
   // At the floor itself, and past it on a later patch, the check passes: the bin goes on and prints its usage.
   for (const node of [floor, `${needMajor}.${needMinor}.${needPatch + 7}`, `${needMajor}.${needMinor + 1}.0`]) {

@@ -4,8 +4,10 @@
 #       the service; its health through a stop and start, a restart by the service manager, `service restart`, a crash
 #       (SIGKILL), running the installer again, and `service uninstall`.
 #   install-walk.sh container [installer options]  no service manager: the installer piped to sh, `service install`
-#       refused in words, and the default start in the terminal.
-# Installer options: --package FILE (this checkout's launcher, packed), or none (the published one).
+#       refused in words; the default start, in the background, returns and AgentRun answers after it; the installer
+#       again replaces it; `agentrun stop` stops it.
+# Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
+# installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
 mode=$1
 shift
@@ -13,6 +15,9 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 agentrun=$HOME/.agentrun/bin/agentrun
 record=$HOME/.agentrun/.server.json
 log=$HOME/.agentrun/logs/agentrun.log
+pidfile=$HOME/.agentrun/agentrun.pid
+floor=$(sed -n 's/^ *"node": *">=\([0-9][0-9.]*\)".*/\1/p' "$here/package.json")
+if [ "${NODE_PIN:-}" = 1 ]; then set -- "$@" --node-version "$floor"; fi
 
 step() { printf '\n== %s\n' "$*"; }
 die() {
@@ -49,6 +54,38 @@ expect_exit() {
   "$@" || got=$?
   [ "$got" = "$want" ] || die "$* exited $got, not $want"
 }
+# The Node.js the installer chose, from its output in $1: the floor when pinned, else the newest on the floor's major line
+# it named, and never below the floor.
+node_chosen() {
+  local dirs got said a b c x y z
+  dirs=$(ls "$HOME/.agentrun/node")
+  [ "$(wc -l <<< "$dirs")" = 1 ] || die "node/ holds $(tr '\n' ' ' <<< "$dirs")"
+  got=$("$HOME/.agentrun/node/$dirs/bin/node" --version)
+  [ "$got" = "$dirs" ] || die "node/$dirs runs Node.js $got"
+  if [ "${NODE_PIN:-}" = 1 ]; then
+    [ "$got" = "v$floor" ] || die "pinned to $floor, installed $got"
+  else
+    said=$(sed -n 's/^Node\.js \([0-9.]*\), the newest .*/\1/p' "$1")
+    [ "v$said" = "$got" ] || die "the installer said Node.js $said, and installed $got"
+  fi
+  IFS=. read -r a b c <<< "${got#v}"
+  IFS=. read -r x y z <<< "$floor"
+  ((a == x && (b > y || (b == y && c >= z)))) || die "Node.js $got is not on $floor's major line at or above it"
+  echo "Node.js $got (floor $floor, $([ "${NODE_PIN:-}" = 1 ] && echo pinned || echo resolved))"
+}
+# Whether process $1 runs: in /proc and not a zombie (a container's PID 1 may reap nothing).
+running() { [ -r "/proc/$1/stat" ] && ! grep -q ') Z ' "/proc/$1/stat"; }
+# The installer as `curl | sh` runs it, with a reader that waits for the end of its output, as an agent's shell does: it
+# returns 0 within $1 seconds, or the walk fails. Its output goes to $2.
+piped_install() {
+  local bound=$1 out=$2
+  shift 2
+  timeout "$bound" bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
+    cat "$out"
+    die "the installer did not return 0 within $bound s"
+  }
+  cat "$out"
+}
 
 step "no Node.js on PATH ($PATH)"
 if command -v node; then die "node is on PATH"; fi
@@ -56,7 +93,8 @@ uname -a
 
 if [ "$mode" = container ]; then
   step "the installer, piped to sh, --no-start"
-  sh -s -- --no-start "$@" < "$here/install.sh"
+  piped_install 600 /tmp/install.log --no-start "$@"
+  node_chosen /tmp/install.log
   step "agentrun --version: $("$agentrun" --version)"
   step "service status: not installed, exit 3"
   expect_exit 3 "$agentrun" service status
@@ -64,16 +102,31 @@ if [ "$mode" = container ]; then
   out=$("$agentrun" service install 2>&1) && die "service install worked in a container"
   echo "$out"
   grep -q "can't run as a service here" <<< "$out" || die "the refusal does not say why"
-  step "the default start: no service manager, so AgentRun runs in this terminal"
-  sh "$here/install.sh" "$@" > /tmp/foreground.log 2>&1 &
-  started=$!
-  healthy 120
-  grep -q "runs in this terminal" /tmp/foreground.log || die "the installer did not say it starts in the terminal"
-  grep -q "AgentRun is running at" /tmp/foreground.log || die "no address printed"
-  cat /tmp/foreground.log
-  kill "$started"
-  wait "$started" || true
+  step "the default start, piped: no service manager, so AgentRun runs in the background, and the installer returns"
+  piped_install 300 /tmp/background.log "$@"
+  grep -q "so it runs in the background" /tmp/background.log || die "the installer did not say it runs in the background"
+  grep -q "AgentRun is running at http" /tmp/background.log || die "no address printed"
+  grep -q "until this machine or container stops.* stop stops it" /tmp/background.log || die "it does not say how long it runs, or how to stop it"
+  first=$(cat "$pidfile")
+  running "$first" || die "the pid file names $first, which does not run"
+  step "after the installer returned: /v2/health from a new shell"
+  healthy 10
+  bash -c "curl -fsS '$(base)/health'"
+  echo
+
+  step "the installer again: stops the AgentRun it started, and starts the new install"
+  before=$(pid)
+  piped_install 300 /tmp/again.log "$@"
+  healthy 10 "$before"
+  running "$first" && die "the AgentRun started first (pid $first) still runs beside the new one"
+  [ "$(cat "$pidfile")" != "$first" ] || die "the pid file still names $first"
+
+  step "agentrun stop"
+  "$agentrun" stop
   down 30
+  [ ! -e "$pidfile" ] || die "the pid file is still there"
+  step "agentrun stop again: none running, exit 3"
+  expect_exit 3 "$agentrun" stop
   echo "walk: container ok"
   exit 0
 fi
@@ -91,9 +144,17 @@ step "the installer, default: installs and starts the service"
 sh "$here/install.sh" "$@" | tee /tmp/install.log
 grep -q "AgentRun is running at" /tmp/install.log || die "no address printed"
 healthy 10
+node_chosen /tmp/install.log
 step "agentrun --version: $("$agentrun" --version)"
 step "service status"
 "$agentrun" service status
+step "agentrun stop, with a service: none in the background, exit 3, and it names service stop"
+code=0
+out=$("$agentrun" stop) || code=$?
+echo "$out"
+[ "$code" = 3 ] || die "agentrun stop exited $code with only a service running, not 3"
+grep -q "agentrun service stop stops it" <<< "$out" || die "agentrun stop does not name service stop"
+healthy 1
 if [ "$(uname -s)" = Darwin ]; then
   launchctl print "$target" | grep -E '^[[:space:]]*(state|pid|program) = '
   plutil -lint "$HOME/Library/LaunchAgents/ai.agentrun.server.plist"
