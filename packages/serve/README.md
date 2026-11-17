@@ -2829,7 +2829,7 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    live view, channel posts, kept learning, files and scratch folders, and the answers kept under its idempotency keys),
    its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) kept its folder
    there, under the agent's own folder: that folder is deleted on the disk, and the disk and everything else on it are
-   kept. Shared things are kept: MCP servers, keys, paired computers and uploads. What the agent owns elsewhere is
+   kept; a disk Archil says is gone has nothing left to delete. Shared things are kept: MCP servers, keys, paired computers and uploads. What the agent owns elsewhere is
    deleted there before the record here that names it (a trigger's registration and its settings before its row, a
    sign-in's object at its vendor before its tombstone, the disk at Archil before it is forgotten, a run's folder on a
    disk its launch named before its launch record), so a failure or a crash never leaves one with nothing here to reach

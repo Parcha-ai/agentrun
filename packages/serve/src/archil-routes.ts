@@ -30,7 +30,7 @@ import type { RunState, Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./workspace/archil-disk.js";
-import { deleteDisk, listOneDisk } from "./workspace/archil-disks.js";
+import { deleteDisk, getDisk, listOneDisk } from "./workspace/archil-disks.js";
 import { archilWorkspace } from "./workspace/archil.js";
 import { agentDirName } from "./workspace/paths.js";
 import { WorkspaceError } from "./workspace/workspace.js";
@@ -269,7 +269,9 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
    *  here), deleted over the disk's file API for agent `agentId`, which is being deleted: agents/<agent>/runs/<run> and
    *  everything under it (its work folder and its exec spill folder, paths.ts runKey and archil.ts spillFolderOf), then
    *  the agent's runs folder and its own folder there once nothing else is in them, since their names carry the agent's
-   *  id. Nothing outside the agent's own folder is touched. Done again, it does nothing: a folder not there is gone.
+   *  id. Nothing outside the agent's own folder is touched. Done again, it does nothing: a folder not there is gone, and
+   *  so is the folder of a disk Archil says is gone, which has nothing left to delete (one the caller deleted, or the
+   *  agent's own disk named in the launch, which the agent's delete removed whole before its runs' folders).
    *  Archil off, or no account key, is 503 unavailable; a delete Archil refuses (a computer that still holds the folder,
    *  Archil not reached) is 424 upstream_failed, what was not deleted left for the next call. */
   async function removeRunFolder(agentId: string, runId: string, diskId: string): Promise<void> {
@@ -293,7 +295,20 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
         }
       }
     } catch (error) {
+      if (await diskGone(settings, key, diskId)) return;
       throw new ApiError("upstream_failed", `${what} is not deleted there yet: ${describe(error).split(key).join("[the key]")}`);
+    }
+  }
+
+  /** Whether Archil's control plane says disk `diskId` is gone: its read answers that the account has no such disk (404,
+   *  getDisk's undefined) or reads it as deleted. Only Archil's word counts: a read that fails (not reached, a 5xx, the key
+   *  refused) says nothing, so the disk is taken as still there. */
+  async function diskGone(settings: ArchilSettings, key: string, diskId: string): Promise<boolean> {
+    try {
+      const disk = await getDisk(control(settings, key), diskId);
+      return disk === undefined || disk.status === "deleted";
+    } catch {
+      return false;
     }
   }
 

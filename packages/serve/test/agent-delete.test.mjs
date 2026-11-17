@@ -15,7 +15,7 @@ import { test } from "node:test";
 import { agentDiskKey, keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
-import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
+import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { calls as bbCalls, contexts, deleteFailures, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
@@ -366,7 +366,7 @@ function launchOnDisk(data, runId, diskId) {
 test("a run's folder on the Archil disk its launch named (the caller's) is deleted there, the agent's own folder only and never the disk; while Archil refuses, 503 with the agent kept and refusing runs, and the next DELETE finishes", { timeout: 120_000 }, async (t) => {
   const customer = "dsk-c0570e4e00000001";
   const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: customer, name: "a-customers-disk" }] });
-  withEnv(t, { ARCHIL_API_KEY: "fake-test-key-archil-a9-0002" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
   // The caller's disk, as the server's file API reaches it (archil-disk.ts): every disk the server makes is this one.
   const disk = new FakeArchilDisk();
   disk.id = customer;
@@ -397,6 +397,92 @@ test("a run's folder on the Archil disk its launch named (the caller's) is delet
   for (const key of theirs) assert.ok(disk.files.has(key), `${key} is kept: it is not the agent's`);
   assert.ok(control.disks.has(customer), "the caller's disk itself is kept");
   assert.ok(made.length > 0 && made.every((id) => id === customer), `only the run's disk was reached: ${made.join(", ")}`);
+  assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
+});
+
+/** `disk`'s file API while Archil's control plane (`control`) holds the disk: once it is deleted there (not there, or read
+ *  as deleted), every call fails as S3 answers for a bucket that is not there (404 NoSuchBucket), so no folder on it can be
+ *  opened, let alone deleted. */
+function goneWithControl(disk, control) {
+  return new Proxy(disk, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      return (...args) => {
+        if ((control.disks.get(target.id)?.status ?? "deleted") === "deleted") throw new FakeDiskError(404, "NoSuchBucket", `The specified bucket does not exist: ${target.id}`);
+        return value.apply(target, args);
+      };
+    },
+  });
+}
+
+/** A server in Archil mode, Archil's control plane faked by `control` and every disk's file API by `disk` (as
+ *  goneWithControl reaches it), and an external agent with one finished run whose launch named `disk.id`, with a file of
+ *  the run's in its folder there. */
+async function launchedOn(t, control, disk) {
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  const learning = fakeLearning();
+  const { api, data, store } = await serve(t, { deleteLearning: learning.deleteLearning, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: () => goneWithControl(disk, control) } });
+  const { agentId, runId } = await finishedAgent(api);
+  launchOnDisk(data, runId, disk.id);
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  await disk.putObject(`agents/${agentDir(agentId)}/runs/${runId}/work/notes.md`, Buffer.from("bytes"));
+  return { api, data, store, agentId, runId };
+}
+
+test("a run whose launch named the agent's own Archil disk: the disk is deleted at Archil once, the run's folder with it, and the DELETE answers 204", { timeout: 120_000 }, async (t) => {
+  const own = "dsk-a9de1e7e00000002";
+  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: own, name: "its-own-disk" }] });
+  const disk = new FakeArchilDisk();
+  disk.id = own;
+  const { api, data, store, agentId, runId } = await launchedOn(t, control, disk);
+  await storeAgentDisk(store, agentId, { diskId: own });
+
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  const deletes = control.requests.filter((one) => one.method === "DELETE" && one.path === `/api/disks/${own}`);
+  assert.equal(deletes.length, 1, "the agent's disk is deleted at Archil once");
+  assert.equal(control.disks.has(own), false);
+  assert.equal(await store.settings.get(agentDiskKey(agentId)), undefined);
+  assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
+});
+
+test("a run's launch disk the caller deleted before the DELETE (Archil reads it as not there, or as deleted) has nothing left to delete: 204", { timeout: 180_000 }, async (t) => {
+  const gone = "dsk-c0570e4e00000002";
+  for (const [why, disks] of [["not there", []], ["deleted", [{ id: gone, name: "a-customers-disk", status: "deleted" }]]]) {
+    await t.test(why, async (t) => {
+      const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks });
+      const disk = new FakeArchilDisk();
+      disk.id = gone;
+      const { api, data, agentId, runId } = await launchedOn(t, control, disk);
+
+      const done = await api("DELETE", `/agents/${agentId}`);
+      assert.equal(done.status, 204, JSON.stringify(done.body));
+      assert.ok(control.requests.some((one) => one.method === "GET" && one.path === `/api/disks/${gone}`), "Archil was asked about the disk");
+      assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
+    });
+  }
+});
+
+test("a run's launch disk Archil can't be asked about (500) keeps the delete from finishing: 503, the agent kept and refusing runs with the launch record; once Archil answers that the disk is gone, the next DELETE finishes", { timeout: 120_000 }, async (t) => {
+  const gone = "dsk-c0570e4e00000003";
+  const failing = { on: true };
+  const control = archilControlFetch({
+    region: "aws-us-east-1",
+    strict: true,
+    disks: [],
+    answer: ({ method, path }) => (failing.on && method === "GET" && path === `/api/disks/${gone}` ? { status: 500, body: { success: false, error: "internal error", code: "internal" } } : undefined),
+  });
+  const disk = new FakeArchilDisk();
+  disk.id = gone;
+  const { api, data, agentId, runId } = await launchedOn(t, control, disk);
+
+  await notYet(api, agentId, runId, new RegExp(gone));
+  assert.equal(rowsOf(data, agentId, [runId]).launches, 1, "its launch record, which names the disk, is kept for the next DELETE");
+
+  failing.on = false;
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
   assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
 });
 
