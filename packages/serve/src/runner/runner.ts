@@ -415,6 +415,11 @@ export function startRunner(options: RunnerOptions): Runner {
     delivery = (async () => {
       try {
         const rows = given ?? (await store.commands(held.claim.runId, held.cursor));
+        // A row whose delivery threw (its loop could not take it yet: a message whose model key cannot be read, adapter-
+        // loop.ts command) blocks the rows after it, which wait in order behind it, but a stop or a cancel: those still
+        // reach the loop, so a run is never kept turning and spending behind a row it cannot take. The cursor stays before
+        // the blocked row, which the next poll delivers again; the error is said once the rows are read.
+        let blocked: { error: unknown } | undefined;
         for (const row of rows) {
           if (held.stopping || held.ending || held.fence.lost || killed) break;
           // A row another delivery handed on since the runner's read is not handed on again.
@@ -422,16 +427,24 @@ export function startRunner(options: RunnerOptions): Runner {
           // The cursor moves past a row only once its delivery went through (handed to the loop, and any refusal written):
           // a delivery that throws leaves the row for the next poll, never skipped for the rest of the claim.
           if (row.takenAt !== null) {
-            held.cursor = Math.max(held.cursor, row.id);
+            if (!blocked) held.cursor = Math.max(held.cursor, row.id);
             continue;
           }
           if (row.kind === "stop" || row.kind === "cancel") {
-            held.cursor = Math.max(held.cursor, row.id);
+            if (!blocked) held.cursor = Math.max(held.cursor, row.id);
             stopLoop(held, { kind: "command", commandId: row.id, ...(row.kind === "cancel" ? { cancel: true as const } : {}) });
             // A stop that keeps the run's computer leaves the rows after it to be handed on (the loop head ends the rest).
             continue;
           }
-          const outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
+          if (blocked) continue;
+          let outcome: Awaited<ReturnType<typeof held.loop.command>>;
+          try {
+            outcome = COMMAND_KINDS.has(row.kind) ? await held.loop.command(row) : { refused: `no command is of kind ${JSON.stringify(row.kind)}` };
+          } catch (error) {
+            if (isFenced(error) || held.sealed || killed) throw error;
+            blocked = { error };
+            continue;
+          }
           if (held.sealed || killed) return;
           // `taken`: the loop's commit took it. `later`: left untaken for the run's next claim. Only a refusal is written here.
           if ("refused" in outcome) {
@@ -440,6 +453,7 @@ export function startRunner(options: RunnerOptions): Runner {
           }
           held.cursor = Math.max(held.cursor, row.id);
         }
+        if (blocked) throw blocked.error;
       } catch (error) {
         if (held.sealed || killed) return;
         if (isFenced(error)) loseClaim(held, "fenced");

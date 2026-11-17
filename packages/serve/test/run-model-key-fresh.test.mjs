@@ -23,12 +23,17 @@ const KEY_TWO = `not-a-secret-${"fresh-key-two"}-3d4c`;
 after(closeOpenSessions);
 
 /** A launch store for run `runId` whose sealed key is `current.key`, and whose next `fail.reads` reads throw, as a store
- *  that cannot be reached for a moment does; `events` records each read. */
+ *  that cannot be reached for a moment does; `events` records each read. `fail.after` and `fail.gate`: the read that comes
+ *  after that many failures waits on the gate first, so a test reads the state between two deliveries with nothing
+ *  moving. */
 function flakyLaunch(sealKey, runId, current, fail, events) {
+  let failed = 0;
   return {
     runs: {
       launch: async () => {
+        if (fail.gate && failed === fail.after) await fail.gate;
         if (fail.reads > 0) {
+          failed += 1;
           fail.reads -= 1;
           events.push("read-failed");
           throw new Error("the store could not be read (injected)");
@@ -86,12 +91,18 @@ test("a message whose key cannot be read yet is not handed to the session: its r
   t.after(() => runner.close());
   await midAnswer;
   // The message's key is written with its row; its first delivery's reads all fail (one delivery's worth, and one more).
+  // The second delivery's first read waits on the gate, so the row is read untaken with nothing moving.
+  let open = () => {};
+  fail.gate = new Promise((resolve) => (open = resolve));
+  fail.after = 3;
+  t.after(() => open());
   current.key = KEY_TWO;
   fail.reads = 4;
   const steer = await sendCommand(opened.server, "run-1", { kind: "steer", body: { text: "and keep it short" } });
   const takenAt = async () => (await opened.server.commands("run-1", steer.id - 1)).find((command) => command.id === steer.id)?.takenAt;
-  await until(() => fail.reads === 1, "the first delivery's three reads failed");
+  await until(() => events.filter((event) => event === "read-failed").length === 3, "the first delivery's three reads failed");
   assert.equal(await takenAt(), null, "the message is not taken while its key cannot be read");
+  open();
   await until(async () => (await takenAt()) !== null, "delivered again, its key read, the message taken");
   letFinish();
   await until(async () => (await opened.server.runs.get("run-1")).state === "ended", "the run ended", 15_000);
@@ -103,4 +114,52 @@ test("a message whose key cannot be read yet is not handed to the session: its r
     "read-failed", "read", // the next delivery: one more failure, then the message's key
     `request 2 on ${KEY_TWO}`,
   ], "the steered request went only after the message's key was read, and on it");
+});
+
+test("a stop queued behind a message whose key cannot be read still reaches the loop: the turn in flight is cut, and the message never runs (red before: the blocked row held every row behind it, the stop among them, and the turn ran on)", { timeout: 60_000 }, async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const sealKey = randomBytes(32);
+  const current = { key: KEY_ONE };
+  const fail = { reads: 0 };
+  const events = [];
+  const launches = flakyLaunch(sealKey, "run-1", current, fail, events);
+  let answering = () => {};
+  const midAnswer = new Promise((resolve) => (answering = resolve));
+  let cut = () => {};
+  const wasCut = new Promise((resolve) => (cut = resolve));
+  const origin = scriptedOrigin([{ say: "first answer" }, { sayLastSteer: true }]);
+  let requests = 0;
+  // The first request never answers on its own: only a stop that reaches the loop ends it (its signal aborts).
+  const fetch = async (url, init) => {
+    requests += 1;
+    if (requests === 1) {
+      answering();
+      await new Promise((_, reject) => {
+        const abort = () => (cut(), reject(init.signal.reason ?? new Error("aborted")));
+        if (init?.signal?.aborted) abort();
+        else init?.signal?.addEventListener("abort", abort, { once: true });
+      });
+    }
+    return origin(url, init);
+  };
+  const runCap = { capUsd: () => undefined, modelOf: () => undefined };
+  const spec = piAdapterSpec({ script: [], tools: {}, hooks: quiet }, { fetch });
+  // Each claim opens the run's key as a claim does (claimModelKey over the store), so a claim after the stop reads it again.
+  const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), runCap, modelKey: await claimModelKey({ store: launches, sealKey, env: ENV }, claim.runId) }));
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await midAnswer;
+  // The message's key never reads: every delivery of it fails, for as long as the test lasts.
+  current.key = KEY_TWO;
+  fail.reads = Number.POSITIVE_INFINITY;
+  await sendCommand(opened.server, "run-1", { kind: "steer", body: { text: "and keep it short" } });
+  await until(() => events.filter((event) => event === "read-failed").length >= 3, "the message's first delivery failed");
+  const stop = await sendCommand(opened.server, "run-1", { kind: "stop" });
+  let timer;
+  await Promise.race([wasCut, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("not within 15000 ms: the stop behind the blocked message reached the loop and cut the turn")), 15_000)))]).finally(() => clearTimeout(timer));
+  await until(async () => (await opened.server.commands("run-1", stop.id - 1)).find((command) => command.id === stop.id)?.takenAt !== null, "the stop taken");
+  // Time for any claim after the stop to try the message: its key still cannot be read, so it never runs.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(requests, 1, "the blocked message never ran a request");
 });
