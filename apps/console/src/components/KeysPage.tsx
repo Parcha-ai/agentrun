@@ -169,6 +169,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
             {/* A key no harness reads (one only a decision provider uses) names no harnesses, not an empty list. */}
             {k.harnesses.length > 0 && ` · Harnesses ${k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}`}
           </p>
+          {keyHelp(k.id)?.note && <p className="mt-1.5 text-small text-muted-foreground">{keyHelp(k.id)!.note}</p>}
           {checkLine(k.label, k.check) && <p className={`mt-1.5 text-small ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
           {/* Paste and Replace open the key's form (a key's fields go together); Remove asks to remove what is saved here.
               None while a form or a confirm is open. */}

@@ -7,7 +7,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLear
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -313,6 +313,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Signs out here and revokes the sign-in at OpenAI: whether OpenAI confirmed it (`revoked`), and when it didn't, what
      *  to do (`message`). A server from before the answer had a body says nothing (204, an empty text). */
     signOutChatGPT: () => call<ChatGPTSignOut | "">("DELETE", "/settings/chatgpt"),
+    /** Claude Code's login on this machine: on or off, and what the CLI says of it (404 where the server has it off). */
+    claudeLogin: () => call<unknown>("GET", "/settings/claude-login"),
+    /** Turns it on at `place`, with the owner's word that they alone run agents here. */
+    turnOnClaudeLogin: (place: ClaudeLoginView["place"]) => call<ClaudeLoginView>("PUT", "/settings/claude-login", { body: { place, only_me: true } }),
+    turnOffClaudeLogin: () => call<ClaudeLoginView>("DELETE", "/settings/claude-login"),
+    /** Starts the CLI's own sign-in on the server's machine, which opens a browser there. */
+    startClaudeLogin: () => call<ClaudeLoginView>("POST", "/settings/claude-login/login"),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),

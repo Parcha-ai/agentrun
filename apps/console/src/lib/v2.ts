@@ -174,6 +174,9 @@ export type ToolKeysReenter = NonNullable<ToolKeys["reenter"]>;
 /** `capabilities.features.tool_keys`. */
 export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 
+/** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
+ *  says of its login, never a token. */
+export type ClaudeLoginView = Answer<"getClaudeLogin">;
 /** This server's ChatGPT sign-in (GET /v2/settings/chatgpt, a serve extension): its state, who and which plan, never a
  *  token. */
 export type ChatGPTView = Answer<"getChatGPTSignIn">;
