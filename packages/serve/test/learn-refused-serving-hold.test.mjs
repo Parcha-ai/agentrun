@@ -148,13 +148,15 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
       await folder.end();
     }
   };
-  /** The promotions read as GET /agents/{id}/learning/promotions builds it (no audit rows, the default numbers). */
+  /** The promotions read as GET /agents/{id}/learning/promotions builds it (no audit rows, the default numbers). A
+   *  workflow nothing serves has no champion (null); the route reads a serving one's from the learning folder, which this
+   *  read does not, so a serving row here has none and fails the schema: only a read where nothing serves is checked. */
   const read = async () => {
     const records = await promotionsOf(server.settings, "agent-1");
     const same = { text: (text) => text, name: (name) => name };
     const shown = promotionsShown(records, same);
     const lines = servingLinesOf(records, [], AUDIT_DEFAULTS);
-    return { agent: "agent-1", promotions: shown.promotions, serving: shown.serving.map((one, i) => ({ ...one, ...lines[i], audits_off: null, not_auditable: 0 })) };
+    return { agent: "agent-1", promotions: shown.promotions, serving: shown.serving.map((one, i) => ({ ...one, ...lines[i], audits_off: null, not_auditable: 0, ...(one.digest === null ? { champion: null } : {}) })) };
   };
   return { dir, server, store, logs, seed, start, asks, shadows, audits, read, launchOf };
 }

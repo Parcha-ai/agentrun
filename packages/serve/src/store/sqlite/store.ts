@@ -244,11 +244,29 @@ const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json
 function earlierVersionIn(dataDir: string): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
-  const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+  // A path the server may not look into is not an earlier version's: that version wrote its files as the server's own
+  // user. A disk mounted as the data directory has one such, lost+found (root's, mode 700).
+  const stat = (path: string) => {
+    try {
+      return statSync(path, { throwIfNoEntry: false });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") return undefined;
+      throw error;
+    }
+  };
+  const isFile = (path: string) => stat(path)?.isFile() === true;
   // A directory linked in counts as one (stat follows the link), as the server's check of old homes reads them: an
   // earlier version's home or run kept elsewhere and linked in is still the earlier version's.
-  const isDir = (path: string) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
-  const dirsIn = (path: string) => (isDir(path) ? readdirSync(path).filter((name) => isDir(join(path, name))) : []);
+  const isDir = (path: string) => stat(path)?.isDirectory() === true;
+  const dirsIn = (path: string) => {
+    if (!isDir(path)) return [];
+    try {
+      return readdirSync(path).filter((name) => isDir(join(path, name)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") return [];
+      throw error;
+    }
+  };
   const store = join(dataDir, STORE_FILE);
   if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
   for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);

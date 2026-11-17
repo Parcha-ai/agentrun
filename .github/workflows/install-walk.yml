@@ -3,23 +3,28 @@ name: Install walk
 # The installer (packages/agentrun/install.sh) and `agentrun service` on fresh machines with no Node.js on PATH
 # (packages/agentrun/test/install-walk.sh): an Ubuntu container with no service manager, x64 and arm64; an Ubuntu VM with a
 # systemd user session; a macOS runner with launchd in its Aqua session. On a pull request or push it installs this
-# checkout's launcher, packed; after a release, the published one. No model is called. Not a required check.
+# checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
+# tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
 
 on:
   pull_request:
     paths:
       - 'packages/agentrun/install.sh'
       - 'packages/agentrun/lib/service.mjs'
+      - 'packages/agentrun/lib/tailscale.mjs'
       - 'packages/agentrun/bin/agentrun.mjs'
       - 'packages/agentrun/test/install-walk.sh'
+      - 'packages/agentrun/test/fake-tailscale.sh'
       - '.github/workflows/install-walk.yml'
   push:
     branches: [main]
     paths:
       - 'packages/agentrun/install.sh'
       - 'packages/agentrun/lib/service.mjs'
+      - 'packages/agentrun/lib/tailscale.mjs'
       - 'packages/agentrun/bin/agentrun.mjs'
       - 'packages/agentrun/test/install-walk.sh'
+      - 'packages/agentrun/test/fake-tailscale.sh'
       - '.github/workflows/install-walk.yml'
   workflow_run:
     workflows: ['Publish verified beta']
@@ -47,7 +52,7 @@ jobs:
         with:
           node-version: '24.22.3'
       - name: shellcheck
-        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh && shellcheck --severity=warning packages/agentrun/test/install-walk.sh
+        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh && shellcheck --severity=warning packages/agentrun/test/install-walk.sh
       # After a release the walk installs what npm serves; otherwise this checkout's launcher.
       - name: Pack
         id: pack

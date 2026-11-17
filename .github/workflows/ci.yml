@@ -348,6 +348,12 @@ jobs:
           node-version: '24.22.3'
       - name: The image built, and the stack's smoke
         run: sh deploy/walk/smoke.sh
+      # The same image as the Railway template's service (deploy/railway/template.json) runs: as root on a fresh volume
+      # that is root's, its start command giving /data to the server's user before it starts the server as that user.
+      - name: The Railway template's service, run as Railway runs it
+        run: node deploy/railway/local-walk.mjs
+        env:
+          AGENTRUN_IMAGE: agentrun-walk:local
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the local Chrome provider, the cdp provider, Stagehand's

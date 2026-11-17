@@ -28,9 +28,13 @@ const playwright = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core"
 const chromium = playwright.chromium ?? playwright.default?.chromium;
 if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? "playwright-core"}`);
 const NOTE = "The server printed it in its log: find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.";
-// At Render's own address the field leads with the token's place instead (src/lib/auth.ts setupCodePlaces).
+// At Render's or Railway's own address the field leads with the token's place instead (src/lib/auth.ts setupCodePlaces).
 const RENDER_NOTE = "This server is on Render. In the Render dashboard, open this service's Environment tab and paste the value of AGENTRUN_TOKEN here.";
-const noteAt = (address) => (/\.onrender\.com$/i.test(new URL(address).hostname) ? RENDER_NOTE : NOTE);
+const RAILWAY_NOTE = "This server is on Railway. In the Railway dashboard, open this service's Variables tab and paste the value of AGENTRUN_TOKEN here.";
+const noteAt = (address) => {
+  const host = new URL(address).hostname;
+  return /\.onrender\.com$/i.test(host) ? RENDER_NOTE : /\.up\.railway\.app$/i.test(host) ? RAILWAY_NOTE : NOTE;
+};
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
 const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/gm;

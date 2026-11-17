@@ -298,6 +298,54 @@ test("a run that looked back keeps when its job answered, what the job cost and 
   assert.equal((await unknown.hook(unknown.input)).also[0].row.proposal.look_back_usd, null, "a spend not known once the turn closed: looking back's cost is unknown");
 });
 
+// #3087 r2 (A8): a compile turn's spend is its revision's, never the run's own learning, so the round keeps it apart
+// (`compile_usd`, within `look_back_usd`): the run's spend once the turn closed less its spend as the compile turn was
+// first asked, kept with each attempt's ask (`compile_from_usd`) so a claim that asks it again after a restart reads the
+// earlier claim's. A compile asked alone is the whole look-back.
+test("a compile turn's spend is kept apart within the look-back's: from its first ask (an earlier claim's, after a restart) to the turn's close", async () => {
+  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+  const block = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
+  const due = async () => ({ mode: "new", reference: "REF", notes: [], traces: [], tools: [], judges: false });
+  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
+  const hookOn = (spent, compileKept) => {
+    const reads = [...spent];
+    const asked = [];
+    const hook = createReflectHook({
+      facts: async () => ({ learns: true, costUsd: reads.length > 1 ? reads.shift() : reads[0] }),
+      promptFacts: async () => ({ active: 1, tools: [] }),
+      asked: async () => ({ asked: ["Find the bug."] }),
+      check: async (input) => check(input),
+      compileFacts: due,
+      newRunId: () => "run-learn-1",
+      now: () => AT,
+    });
+    const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async (prompt, opts) => {
+      asked.push(opts);
+      if (opts.step === "compile-1") return compileKept ? { ...block, kept: compileKept } : block;
+      return { ended: true, answer: "```note\n...\n```" };
+    } };
+    return { run: async () => (await hook(input)).also.find((row) => row.table === "learning_proposals").row.proposal, asked };
+  };
+  // The job $0.30, its spend $0.42 as the compile turn is first asked, $0.50 once the turn closed.
+  const fresh = hookOn([0.3, 0.42, 0.5]);
+  const kept = await fresh.run();
+  assert.deepEqual([kept.job_cost_usd, kept.look_back_usd, kept.compile_usd], [0.3, 0.2, 0.08], JSON.stringify(kept));
+  assert.deepEqual(fresh.asked.find((one) => one.step === "compile-1").keep, { compile_from_usd: 0.42 }, "its first ask keeps where it began");
+  // A later claim: the earlier one began the compile turn at $0.35 and was lost mid compile.
+  const again = await hookOn([0.3, 0.42, 0.5], { compile_from_usd: 0.35 }).run();
+  assert.equal(again.compile_usd, 0.15, "the earlier claim's compile spend is the compile's");
+  // Unknown where it began, or at the close: unknown, never $0.
+  assert.equal((await hookOn([0.3, null, 0.5]).run()).compile_usd, null);
+  assert.equal((await hookOn([0.3, 0.42, null]).run()).compile_usd, null);
+  // No compile asked: no compile_usd at all.
+  const none = timedHook({ spent: [0.3, 0.42], at: AT });
+  assert.ok(!("compile_usd" in (await none.hook(none.input)).also[0].row.proposal));
+  // A compile asked alone is the whole look-back.
+  const alone = hookWith({ nothingNew: async () => true, compileFacts: async () => ({ mode: "revise", workflow: "answer", current: flow, held: { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" }, reference: "REF", notes: [], traces: [], tools: [], judges: false }), answer: block, check });
+  const solo = (await alone.hook(alone.input())).also.find((row) => row.table === "learning_proposals").row.proposal;
+  assert.deepEqual([solo.look_back_usd, solo.compile_usd], [0, 0], JSON.stringify(solo));
+});
+
 test("a run that never looked back keeps no answer time and no look-back cost", async () => {
   const { hook, input } = timedHook({ spent: [1], at: 0, facts: { capReached: true } });
   const kept = (await hook(input)).also[0].row.proposal;
