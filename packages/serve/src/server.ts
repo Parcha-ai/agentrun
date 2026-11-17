@@ -1890,12 +1890,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // import and neither ended it nor were stopped (`starts`).
   const importAsked = join(data, IMPORT_ASKED);
   type Asked = { projects?: string[]; agents: string[]; runs: number; starts: number };
-  const askedOf = async (): Promise<Asked> => {
+  /** The yes as kept, or undefined when it cannot be read as one (a file that will not open, text that is no JSON
+   *  object, `projects` that is no list of ids): never taken for "every project", which only an empty file or one that
+   *  names no projects means. */
+  const askedOf = async (): Promise<Asked | undefined> => {
+    const text = await readFile(importAsked, "utf8").catch(() => undefined);
+    if (text === undefined) return undefined;
     // The yes as an earlier version's setup wrote it is empty: every project, and no earlier start took anything.
-    const kept = (await readJson(importAsked)) as { projects?: unknown; agents?: unknown; runs?: unknown; starts?: unknown } | null;
-    const ids = (value: unknown) => (Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : undefined);
-    const projects = ids(kept?.projects);
-    return { ...(projects ? { projects } : {}), agents: ids(kept?.agents) ?? [], runs: typeof kept?.runs === "number" ? kept.runs : 0, starts: typeof kept?.starts === "number" ? kept.starts : 0 };
+    if (!text.trim()) return { agents: [], runs: 0, starts: 0 };
+    let kept: { projects?: unknown; agents?: unknown; runs?: unknown; starts?: unknown };
+    try { kept = JSON.parse(text); } catch { return undefined; }
+    if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return undefined;
+    const ids = (value: unknown) => (Array.isArray(value) && value.every((id) => typeof id === "string") ? (value as string[]) : undefined);
+    const projects = ids(kept.projects);
+    if (kept.projects !== undefined && !projects) return undefined;
+    return { ...(projects ? { projects } : {}), agents: ids(kept.agents) ?? [], runs: typeof kept.runs === "number" ? kept.runs : 0, starts: typeof kept.starts === "number" ? kept.starts : 0 };
   };
   let importing: Promise<void> | undefined;
   /** The import at setup as the owner's console reads it: running, done with what it took, stopped (the next start
@@ -1910,12 +1919,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const giveUp = async (why: string) => {
         await rm(importAsked, { force: true }).catch(() => undefined);
         importState = { state: "failed" };
-        process.stderr.write(`agentrun-serve: the import at setup was given up after ${IMPORT_STARTS} starts that did not end it (${why}): run the import command where the sessions are to try again\n`);
+        process.stderr.write(`agentrun-serve: the import at setup was given up (${why}): run the import command where the sessions are to try again\n`);
       };
       let asked: Asked | undefined;
       try {
         asked = await askedOf();
-        if (asked.starts >= IMPORT_STARTS) return await giveUp("the server ended during each");
+        // A choice that cannot be read is never widened to every project: nothing is imported.
+        if (!asked) return await giveUp("the record of which projects to import could not be read");
+        if (asked.starts >= IMPORT_STARTS) return await giveUp(`${IMPORT_STARTS} starts did not end it: the server ended during each`);
         // This start counted before its worker runs, so one the process does not outlive is counted too.
         await writeDurable(importAsked, JSON.stringify({ ...asked, starts: asked.starts + 1 }));
         const answer = await onWorker("import", asked.projects);
@@ -1940,7 +1951,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (closing) {
           importState = { state: "stopped" };
           if (asked) await writeDurable(importAsked, JSON.stringify(asked)).catch(() => undefined);
-        } else if (asked && asked.starts + 1 >= IMPORT_STARTS) await giveUp((error as Error).message);
+        } else if (asked && asked.starts + 1 >= IMPORT_STARTS) await giveUp(`${IMPORT_STARTS} starts did not end it: ${(error as Error).message}`);
         else {
           importState = { state: "stopped" };
           process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);

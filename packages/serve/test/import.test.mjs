@@ -1910,6 +1910,14 @@ test("the import refuses a data directory whose store an earlier version wrote, 
   assert.deepEqual(readdirSync(data).sort(), ["store.sqlite"], "nothing else was written into the directory");
 });
 
+test("the projects listed for the owner to choose from hold no key's value: a folder named with one is listed as the import would name it", () => {
+  const plan = { projects: [{ agentId: "imp-0", name: `site-${CANARY}`, cwd: `/work/site-${CANARY}`, sessions: [] }] };
+  const [listed] = candidatesOf(plan, ENV);
+  assert.equal(JSON.stringify(listed).includes(CANARY), false, JSON.stringify(listed));
+  assert.equal(listed.id, "imp-0", "the id the owner's choice is matched by is unchanged");
+  assert.equal(candidatesOf({ projects: [{ agentId: "imp-1", name: "site", cwd: "/work/site", sessions: [] }] }, ENV)[0].path, "/work/site", "a folder with no key in it is listed as it is");
+});
+
 test("an import of the projects chosen plans, reads and writes those alone", async (t) => {
   const root = await scratch(t);
   const h = home(root);

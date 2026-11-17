@@ -784,6 +784,23 @@ test("an import that three starts began and none ended is given up: the next sta
   assert.equal(await agentsIn(data), 0, "nothing was imported");
 });
 
+test("a kept choice that cannot be read is never taken for every project: nothing is imported, and the owner is told it failed", { timeout: 120_000 }, async (t) => {
+  for (const kept of ["{not json", JSON.stringify({ projects: "every" }), JSON.stringify({ projects: [1] }), "[]"]) {
+    const { sessionsHome } = await machine(t);
+    const data = join(await scratch(t), "agents");
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, ".import-at-setup"), kept, { mode: 0o600 });
+    const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+    t.after(() => server.close());
+    for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+    assert.equal(existsSync(join(data, ".import-at-setup")), false, `${kept}: the yes is dropped`);
+    const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD } });
+    assert.equal(made.status, 201, made.text);
+    assert.deepEqual((await call(server.port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json, { state: "failed" }, kept);
+    assert.equal(await agentsIn(data), 0, `${kept}: nothing was imported`);
+  }
+});
+
 test("a start that begins the import is counted until it ends: two earlier starts that did not end it leave one more try, which imports", { timeout: 60_000 }, async (t) => {
   const { sessionsHome } = await machine(t);
   const data = join(await scratch(t), "agents");

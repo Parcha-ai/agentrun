@@ -6,7 +6,7 @@
 // Before anything loads node:sqlite, as in the server's own thread: its ExperimentalWarning is not the server's to print.
 import "./quiet-sqlite-warning.js";
 import { parentPort, workerData } from "node:worker_threads";
-import { candidatesOf, type ImportCandidate, ownSecrets, planImport, runImport } from "./import.js";
+import { candidatesOf, type ImportCandidate, ownSecrets, planImport, runImport, sessionsOf } from "./import.js";
 import { importStoreProxy } from "./import-proxy.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 
@@ -33,7 +33,7 @@ const answer = async (): Promise<ImportAnswer> => {
     // A count keeps no transcript: no key scan (a whole history read through secretlint at every start).
     const plan = await planImport({ ...options, keys: false });
     // Sessions as the import takes them: a session written in several files (a resumed thread) is one run.
-    return stop.signal.aborted ? { stopped: true } : { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + new Set(p.sessions.map((s) => `${s.source}:${s.id}`)).size, 0), candidates: candidatesOf(plan) };
+    return stop.signal.aborted ? { stopped: true } : { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + sessionsOf(p.sessions).length, 0), candidates: candidatesOf(plan, env) };
   }
   // No store of its own: the worker reaches the server's one open store over the port. The server holds the exclusive owner
   // lock, so a second opener here would be refused; every read and write the import needs crosses the port instead.

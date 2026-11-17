@@ -131,7 +131,7 @@ function ImportChooser({ offer, chosen, onChange }: { offer: ImportOffer; chosen
   if (offer.sessions === null || offer.projects === null || !candidates.length) {
     return (
       <Field group label={IMPORT_LABEL}>
-        <p className="text-small text-muted-foreground" role="status">This machine's sessions couldn't be listed, so there is nothing to choose here.</p>
+        <p className="text-small text-muted-foreground" role="status">This machine's sessions couldn't be listed, so there is nothing to choose here. To import them later, run agentrun-serve import with the server stopped.</p>
       </Field>
     );
   }

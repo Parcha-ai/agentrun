@@ -263,12 +263,14 @@ const budgetOf = (): Budget => ({ left: MAX_RUN_BYTES });
 const fits = (budget: Budget, bytes: number): boolean => (budget.left -= bytes) >= 0;
 const tooLarge = (listed: Pick<Session, "file" | "source" | "id">): Skipped => ({ what: listed.file, why: `its files and its subagents' are over ${MAX_RUN_BYTES} bytes together`, kind: "large", session: `${listed.source}:${listed.id}` });
 
-/** The projects of `plan` for the owner to choose from, the latest active first (then by folder), at most MAX_CANDIDATES. */
-export function candidatesOf(plan: Pick<Plan, "projects">): ImportCandidate[] {
+/** The projects of `plan` for the owner to choose from, the latest active first (then by folder), at most MAX_CANDIDATES.
+ *  With `env`, a name and a folder are cut as the import writes them: a key's value in a folder's name is never listed. */
+export function candidatesOf(plan: Pick<Plan, "projects">, env?: NodeJS.ProcessEnv): ImportCandidate[] {
+  const text = env ? secretCut(env, SECRET_NAMES).text : (value: string) => value;
   return plan.projects
     .map((project) => {
       const last = project.sessions.reduce<string | undefined>((latest, s) => ((s.endedAt ?? s.startedAt ?? "") > (latest ?? "") ? (s.endedAt ?? s.startedAt) : latest), undefined);
-      return { id: project.agentId, name: project.name, path: project.cwd, sessions: sessionsOf(project.sessions).length, sources: [...new Set(project.sessions.map((s) => s.source))].sort(), last_active: last ?? null };
+      return { id: project.agentId, name: keptName(project, text), path: text(project.cwd), sessions: sessionsOf(project.sessions).length, sources: [...new Set(project.sessions.map((s) => s.source))].sort(), last_active: last ?? null };
     })
     .sort((a, b) => (b.last_active ?? "").localeCompare(a.last_active ?? "") || a.path.localeCompare(b.path))
     .slice(0, MAX_CANDIDATES);
