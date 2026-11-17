@@ -16,9 +16,12 @@ export type PickerOption = { value: string; label: string; disabled?: boolean; t
  *  Field's own label, hint and error are wired to it. `disabled` turns
  *  it off whole; `name` puts its value in a form (a hidden input). `placeholder` is what the field reads while
  *  nothing is picked, in the muted text a field's placeholder has, so the field is never a blank box. The field and
- *  each option carry their value (data-value). `autoFocus`: a Dialog opens with the keyboard on this field. */
-export function Picker({ value, onChange, options, label, id, className, disabled = false, name, small = false, placeholder, autoFocus }: {
-  value: string; onChange: (value: string) => void; options: PickerOption[]; label: string; id?: string; className?: string; disabled?: boolean; name?: string; small?: boolean; placeholder?: string; autoFocus?: boolean;
+ *  each option carry their value (data-value). `autoFocus`: a Dialog opens with the keyboard on this field.
+ *  `steady`: a field sized by its words (no width of its own) keeps one width whatever is picked, the width its
+ *  longest option needs on one line, and its list is at least that wide, so no option wraps; in a space narrower than
+ *  that it shrinks and truncates as any picker does. */
+export function Picker({ value, onChange, options, label, id, className, disabled = false, name, small = false, placeholder, autoFocus, steady = false }: {
+  value: string; onChange: (value: string) => void; options: PickerOption[]; label: string; id?: string; className?: string; disabled?: boolean; name?: string; small?: boolean; placeholder?: string; autoFocus?: boolean; steady?: boolean;
 }) {
   const picked = options.find((o) => o.value === value);
   const wiring = useFieldWiring();
@@ -27,11 +30,18 @@ export function Picker({ value, onChange, options, label, id, className, disable
       <ListboxButton id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} aria-describedby={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
         className={cn("flex min-w-0 items-center justify-between gap-2 border border-input bg-background text-left font-mono hover:border-foreground/60 focus-visible:outline-offset-0 disabled:opacity-60 data-[open]:border-foreground",
           small ? "h-control-sm px-2 text-small" : "h-control-md px-3 text-body", className)}>
-        <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>
+        {steady
+          // Every option's words share one grid cell with the picked ones: the cell, and so the field, is as wide as the longest.
+          ? <span className="grid min-w-0">
+              {options.map((o) => <span key={o.value} data-picker-sizer="" aria-hidden className="invisible col-start-1 row-start-1 h-0 min-w-0 truncate">{o.label}</span>)}
+              <span className={cn("col-start-1 row-start-1 min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>
+            </span>
+          : <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>}
         <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </ListboxButton>
       <ListboxOptions anchor="bottom start" data-picker-list=""
-        className="z-popover max-h-72 w-[var(--button-width)] min-w-[12rem] overflow-auto border border-border-strong bg-background py-1 font-mono text-body shadow-float outline-none [--anchor-gap:2px] [--anchor-padding:8px]">
+        className={cn("z-popover max-h-72 overflow-auto border border-border-strong bg-background py-1 font-mono text-body shadow-float outline-none [--anchor-gap:2px] [--anchor-padding:8px]",
+          steady ? "w-max min-w-[max(12rem,var(--button-width))] max-w-[calc(100vw-1rem)]" : "w-[var(--button-width)] min-w-[12rem]")}>
         {options.map((o) => (
           <ListboxOption key={o.value} value={o.value} disabled={o.disabled} title={o.title} data-value={o.value}
             className="group flex min-h-10 cursor-pointer items-center gap-2 px-3 py-2 data-[disabled]:cursor-not-allowed data-[focus]:bg-accent data-[disabled]:opacity-50 data-[selected]:text-foreground">
