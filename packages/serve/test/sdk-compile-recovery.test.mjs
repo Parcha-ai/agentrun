@@ -57,7 +57,7 @@ function scriptedRoute(corrected) {
 }
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
-  for (const corrected of [true, false]) test(`${runtime} HTTP learning exposes ${corrected ? "a checked draft awaiting promotion" : "exhausted compiler errors and its quiet window"}`, async t => {
+  for (const corrected of [true, false]) test(`${runtime} HTTP learning exposes ${corrected ? "a checked draft awaiting promotion" : "exhausted compiler errors, asked again on the next run"}`, async t => {
     const server = await serve(t, { runner: false });
     const agentId = "sdk-compile-results";
     assert.equal((await server.api("POST", "/agents", { definition: {
@@ -112,9 +112,8 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     const attempts = requests.filter(request => request.compile).length;
     assert.equal(attempts, corrected ? 2 : 4);
     const next = await completeRun();
-    assert.equal(next.learning.compiled, null, "an attempted compile starts the quiet window even when all drafts fail");
-    assert.deepEqual(next.learning.draft_errors, []);
-    assert.equal(requests.filter(request => request.compile).length, attempts, "the next run does not pay for another compiler attempt");
-    assert.deepEqual((await server.api("GET", `/runs/${id}/learning`)).body, learning, "later runs do not erase the original attempt history");
+    assert.equal(next.learning.compiled?.workflow, "release-status", "a compile is never remembered as attempted: the next due run asks again");
+    assert.ok(requests.filter(request => request.compile).length > attempts, "the next run asks the compiler again");
+    assert.deepEqual((await server.api("GET", `/runs/${id}/learning`)).body, learning, "a later run does not erase the original attempt history");
   });
 }

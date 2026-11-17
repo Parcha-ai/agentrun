@@ -278,7 +278,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows"
+    "summary": "The self-learning loop's own record: each compile turn"
   },
   {
     "command": [

@@ -99,9 +99,9 @@ test("the summary's replay is the serving promotion's record, read from the stor
   await end("run-1", { path: "agent" }, 0.9);
   await end("run-2", { path: "workflow", workflow: "answer" }, 0.1);
   assert.equal((await agentCostOverStore(store, "agent-1")).summary.replay, null, "no promotion recorded");
-  const replay = { n: 40, agree: 34, agent_acc: 0.82, wf_acc: 0.86, delta: 0.04, handed_back: 3, of: [] };
-  await recordPromotion(store.settings, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", source: "replay", reason: "as good as the agent", replay }, () => true);
-  assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true });
+  const check = { compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n: 40, agreed: 34, alone: 40, of: [] };
+  await recordPromotion(store.settings, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", reason: "as good as the agent", check }, () => true);
+  assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 85, agent_pct: 100, cleared: true });
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;

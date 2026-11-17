@@ -39,13 +39,6 @@ test("SDK workflows reject model nodes without the backend adapter, including ne
   assert.deepEqual(draftProblems(dsl, JSON.stringify(judged), [], {}, {}, undefined, ["runNode", "runJudge"]), []);
 });
 
-test("SDK guards require an advertised backend capability while managed workflows keep their step guard", () => {
-  const guarded = { ...modelFlow, root: { ...modelFlow.root, guard: { signal: "jev", threshold: 0.9 } } };
-  assert.deepEqual(draftProblems(dsl, JSON.stringify(guarded), [], {}, {}), []);
-  for (const workflow of [guarded, { ...modelFlow, root: { node: "workflow", label: "nested", workflow: guarded, input: {}, out: "Answer", as: "answer" } }]) {
-    assert.match(JSON.stringify(draftProblems(dsl, JSON.stringify(workflow), [], {}, {}, undefined, ["runNode", "runJudge"])), /requires guardStep/);
-  }
-});
 
 const toolFlow = { ...modelFlow, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } };
 test("SDK proposal checks refuse automatic tool retries, including nested workflows, while managed retries remain valid", () => {

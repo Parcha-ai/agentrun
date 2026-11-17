@@ -77,7 +77,7 @@ Route: `GET /agents/{agent_id}/archil`.
 
 ### `agentrun agents get-learning-loop AGENT_ID`
 
-The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows.
+The self-learning loop's own record: each compile turn.
 
 Route: `GET /agents/{agent_id}/learning/loop`.
 

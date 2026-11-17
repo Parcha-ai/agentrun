@@ -7,7 +7,7 @@
 //     hit, recorded or already run in this replay, costs nothing and is never sent again.
 //   - A write is NEVER run in a replay: it is answered from the graded run's recording when a call there has the same
 //     tool and canonical args (its answer, an error included), else the replay of that input stops there and is skipped
-//     (SKIPPED_WRITE): no evidence either way, never scored wrong or failed (learn/refit.ts refitRowsOf).
+//     (SKIPPED_WRITE): no evidence either way, never scored wrong or failed (runner/promotion.ts decideCheck).
 // The recording is the graded run's own journal (a CLI's record shaped as pi's), each tool call by the wire name the
 // harness called it by (catalog.ts wireName): a call node names its tool by catalog name, matched through the same map.
 // Prior art: MCP's tool annotations (readOnlyHint, destructiveHint, 2025-03-26 spec) for the read/write line; VCR-style

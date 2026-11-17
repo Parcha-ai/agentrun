@@ -30,10 +30,11 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { Hearing } from "../heard.js";
+import { learningCommit } from "../learn/commit.js";
 import { type LearningFolder, readLearning, readSnapshot } from "../learn/folder.js";
-import { completedRun, type CompileAsk, lastOwnRuns,type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_QUIET_RUNS, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
+import { completedRun, type CompileAsk, lastOwnRuns, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, type HeldAsk, heldNamesOf } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
-import { type PromotionRecord, promotionOf, promotionsOf, scoreOf } from "../learn/promote.js";
+import { type PromotionRecord, promotionOf, promotionsOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders } from "../learn/skills.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
@@ -247,6 +248,21 @@ export async function gradeCapOf(store: Store, runId: string, round: number, lau
   }
 }
 
+/** A workflow text written straight onto the agent's learning folder as a merge by `runId`, from the claim's `seed`: the
+ *  one direct commit a runner makes outside a learning run (a compile turn's revision). A file changed on main since the
+ *  seed is a conflict, never written over. The learning commit it landed as, or null when it did not (the reason is
+ *  logged). The folder is always released. */
+export async function commitDirect(deps: { readonly folder: () => LearningFolder; readonly log: (line: string) => void }, files: { path: string; text: string }[], reason: string, runId: string, seed?: string): Promise<string | null> {
+  const folder = deps.folder();
+  try {
+    const done = await learningCommit(folder.workspace, { kind: "merge", runId, reason, files, graded: {}, ...(seed ? { seed } : {}) });
+    if (!done.ok) deps.log(`learning: a direct commit could not be written (${done.reason})`);
+    return done.ok ? done.commit : null;
+  } finally {
+    await folder.end();
+  }
+}
+
 /** The learning run of round `round` of run `runId`'s learning: `<runId>-learning` for its first, `<runId>-learning-<n>`
  *  for each later one. */
 export const learningRunIdOf = (runId: string, round = 1): string => (round > 1 ? `${runId}-learning-${round}` : `${runId}-learning`);
@@ -418,13 +434,12 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
 }
 
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
- *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its replay on the
- *  agent's graded inputs, or its graded served runs, fell under the bar; its champion served the run, or the agent did by
- *  hand), its text as main holds it, with the hold's numbers, once per hold (none when any run since the hold compiled
- *  it, read from the agent's kept learning; a check's hold with the inputs it disagreed on, a stopped check's none);
- *  else, when the job is due (compileDue: the run completed, the agent has no learned workflow active or waiting, none
- *  of its last COMPILE_QUIET_RUNS runs compiled, and it has its definition's compile_after completed agent runs), a new
- *  one. Nothing else asks one: a hand-back, a wrong grade of a served answer and the money rule's
+ *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its one check on the
+ *  agent's own runs fell under the bar; its champion served the run, or the agent did by hand), its text as main holds
+ *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold compiled
+ *  it, read from the agent's kept learning; a stopped check's none); else, when the job is due (compileDue: the run
+ *  completed, the agent has no learned workflow active or waiting, and it has its definition's compile_after completed
+ *  agent runs), a new one. Nothing else asks one: a hand-back, a wrong grade of a served answer and the money rule's
  *  stop are single runs, which the hold reads among many. Either way the
  *  agent's active notes whole, the traces of its last COMPILE_TRACES completed runs before this one, the tools a call node
  *  may run (draftTools) with what each takes and gives, its decision providers, the run's input (`input`, its fields for
@@ -433,8 +448,7 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
  *  when the folder can't be read. */
 export async function compileAskOf(deps: LearningEndDeps, input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; input?: unknown; seedWorkflows?: number }): Promise<CompileAsk | undefined> {
   // A revision is asked only of a workflow its promotion holds, once per hold. One run is one sample: a hand-back, a wrong
-  // grade of a served answer or the money rule's stop asks for none (with a 10-15% base error rate on both sides, one
-  // wrong answer says nothing about the workflow); the hold, read over many runs, does.
+  // grade of a served answer or the money rule's stop asks for none; the hold, read over many runs, does.
   // The workflows whose newest revision other than their champion (learn/promote.ts championOf: it serves while that one
   // is held) is held: the run's own may be one (its champion served it, or it went by hand).
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, input.agentId).catch(() => []);
@@ -443,24 +457,13 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);
   // The agent's latest runs, newest first: those after the ending one in the list started before it.
-  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: Math.max(200, 2 * compileAfter + COMPILE_QUIET_RUNS) });
+  const listed = await deps.store.runs.list({ agentId: input.agentId, limit: Math.max(200, 2 * compileAfter) });
   const at = listed.findIndex((run) => run.id === input.runId);
   const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
   const done = earlier.filter(completedRun);
   const byHand = (await lastOwnRuns(deps.store, input.agentId, compileAfter, input.runId)).length;
-  let compiledLately = false;
-  const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compiledLately, compileAfter });
+  const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compileAfter });
   const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
-  // Every learning round a run kept: its newest, and each before it (a follow-up opened the run again after it).
-  const roundsOf = async (runId: string): Promise<(LearningProposal | undefined)[]> => {
-    const newest = await deps.store.learning.proposal(runId).catch(() => undefined);
-    if (!newest) return [];
-    return [newest, ...(await Promise.all(Array.from({ length: Math.max(0, newest.round - 1) }, (_, i) => deps.store.learning.proposal(runId, i + 1).catch(() => undefined))))];
-  };
-  // A compile in any learning round of the agent's last runs (a draft still waiting for its grade, or one that failed)
-  // asks no new one now: a follow-up's round keeps no compile of its own, so a run's earlier rounds are read too.
-  const lately = (await Promise.all(earlier.slice(0, COMPILE_QUIET_RUNS).map((run) => roundsOf(run.id)))).flat();
-  compiledLately = lately.some((kept) => compiledOf(kept) !== undefined);
   // First by what the run started from (its seed's notes and the workflows it was offered): a run not due by them
   // opens no folder, unless one of its workflows is held. Main is read below for the turn itself, and decides again.
   if (!heldNames.size && !dueWith(input.seedWorkflows ?? 0)) return undefined;
@@ -523,11 +526,11 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const since = Date.parse(read.held.at);
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
-    const { workflow, digest, source, reason, replay, check } = read.held;
+    const { workflow, digest, reason, check } = read.held;
     // A check's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is (traceFrom).
     const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
     const checked = check ? { ...check, ...(check.disagreements ? { disagreements: check.disagreements.map((one) => ({ ...one, input: cut(one.input), agent: one.agent === null ? null : cut(one.agent), ...(one.draft !== undefined ? { draft: cut(one.draft) } : {}), ...(one.escalated !== undefined ? { escalated: cut(one.escalated) } : {}) })) } : {}) } : undefined;
-    held = { workflow, digest, source, reason, ...(replay ? { replay: scoreOf(replay) } : {}), ...(checked ? { check: checked } : {}) };
+    held = { workflow, digest, reason, ...(checked ? { check: checked } : {}) };
   }
   if (!held && !dueWith(read.workflows)) return sayLeftOut(), undefined;
   // An earlier run's trace is cut of each value it held (traceFrom); one that still holds a secret (a value in a call's
@@ -541,8 +544,6 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const { tools, decisions, outputSchema, workflowAdapters, described: sdkCatalog } = await draftTools(deps, input.runId);
   const allowed = draftDecisionProviders(decisions);
   const judges = workflowAdapters !== undefined ? workflowAdapters.includes("runJudge") : allowed.length > 0;
-  // No Jev by default: a draft's steps are asked for no Jev guard, whether or not the run can call Jev (per-step Jev guards
-  // gave no judgment that moved a served answer; a check in code does that job).
   const described = sdkCatalog ?? await describedOf(tools, deps.store);
   const object = input.input !== null && typeof input.input === "object" && !Array.isArray(input.input);
   leftOut.input = object && holds(input.input);

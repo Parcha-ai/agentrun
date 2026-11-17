@@ -92,6 +92,7 @@ import { answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown } from "./learn/promote.js";
+import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -4012,9 +4013,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listLearningPromotions": {
         await needAgent(id);
-        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its replays' numbers and decisions,
-        // its refits, its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
-        // (promotionsShown: a reason and a refit guard's label as well as each workflow's name).
+        // Each learned workflow's promotion records, oldest first (learn/promote.ts): its check's numbers and decisions,
+        // its holds. Aggregates only; every text in them cut as the other learning reads cut theirs
+        // (promotionsShown: a reason as well as each workflow's name).
         return send(res, 200, { agent: id, ...promotionsShown(await promotionsOf(store.settings, id), await learningShown(id)) });
       }
       case "createLearningBatch": {
@@ -4049,7 +4050,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "getLearningLoop": {
         await needAgent(id);
-        // The loop's own record over the one store (store-reads/loop.ts): compile turns and guarded steps, aggregates only.
+        // The loop's own record over the one store (store-reads/loop.ts): compile turns, aggregates only.
         // Names cut as the other learning reads cut them; a compile's error texts cut by its run's own cut as its run's
         // learning read cuts them (run-learning-served.ts), and left out when that run's handed values can't be read.
         const shown = await learningShown(id);
@@ -4063,8 +4064,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
           return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
         }));
-        const guards = read.guards.map((one) => ({ ...one, workflow: shown.name(one.workflow), node: shown.text(one.node) }));
-        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles, guards });
+        return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles });
       }
       case "listLearningNotes":
       case "listLearningLog":
@@ -4113,8 +4113,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const extra = unknownFields(body, ["inputs"]);
         if (extra.length) throw invalid(extra);
         const inputs = body.inputs === undefined ? "held" : body.inputs;
-        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= GRADES_KEPT)) {
-          throw new ApiError("bad_request", `inputs is "held" (the graded inputs the revision was last decided on, the default) or a whole number from 1 to ${GRADES_KEPT}: that many of the agent's newest graded inputs.`);
+        if (inputs !== "held" && !(typeof inputs === "number" && Number.isInteger(inputs) && inputs >= 1 && inputs <= COMPILE_AFTER_MAX)) {
+          throw new ApiError("bad_request", `inputs is "held" (the runs the revision was last checked on, the default) or a whole number from 1 to ${COMPILE_AFTER_MAX}: that many of the agent's newest completed runs.`);
         }
         const [, , name, digest] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
         const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));

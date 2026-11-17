@@ -657,7 +657,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // chose them, scoped as the revision's own: each provider the run's gate does not deny, held by the run's one redactor,
   // onto the tools' environment alone. The model's route was built on the revision's keys above, so a decision key never
   // becomes its model's.
-  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  // A replay run lays only the workflow it replays (runner/promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, seedLaid?.workflows ?? []);
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts),
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest

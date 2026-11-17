@@ -137,8 +137,7 @@ Promote once: a new revision is checked once before it serves (`runner/promotion
 run that lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each,
 at workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
 own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of the inputs it ran on, `alone` is the share
-it answered with no escalate and no failed step (a replay reads guards record-only and records a judge's escalate instead
-of obeying it, so an input one of them would hand back at its serving threshold is no answer alone), and `agreement` the
+it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no answer alone), and `agreement` the
 share of those that say what the agent said. A newer revision that comes while a check runs waits and records nothing;
 the claim after the running check is decided starts the newest. It is
 promoted (source `check`) when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
@@ -146,7 +145,7 @@ promoted (source `check`) when agreement is at least `learning.agree_min` (0.8) 
 as data (each one's input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked
 the same way. Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or
 its owner acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that
-stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades, a refit or a queued revision. The
+stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
 Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
 failed input, never left out. A draft with nothing to check it on (none of those runs has an input it takes, or every
@@ -273,7 +272,7 @@ Over a cap is refused, never cut.
   answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
   straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
   are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
-  reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
+  reads the answer a model step wrote, never a judge's field.
   Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
   `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
   `pages`), its body the step that answers, which reads the compact facts and its failed draft through its `state`
@@ -312,12 +311,8 @@ Over a cap is refused, never cut.
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
 
-Whether a note holds one case's data is not the checker's to judge. Before the grader, one Jev question per new note
-(`learn/general.ts`, on the Jev model and keys decision nodes use) asks whether it holds for the job's inputs other than
-the one it came from; a note rated below the bar (0.5, `AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`) is dropped there,
-its reason on the verdict and its cost the grade's. When Jev cannot run, the grader reads every note, the grade's
-entry keeps why (`unchecked`), the run's learning end says so, and the grade's cost is unknown (null). The grader's
-General question is then a gate: it answers `general` for every item, and one it says is not general is never kept.
+Whether a note holds one case's data is not the checker's to judge. The grader's
+General question is a gate: it answers `general` for every item, and one it says is not general is never kept.
 
 ## The grade
 

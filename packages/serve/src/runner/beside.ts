@@ -66,7 +66,7 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   const computers = runnerComputers(store, runs, seal.key, { dockerPaths: () => dockerPathsForRuns(runs, dataDir), hostAddresses: () => hostAddressesOnce(runs), hostWhy: hostCommandRefusals(PROVIDERS, process.env.PATH), ...(hub ? { hub } : {}), ...(dial ? { dial } : {}) });
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; any other runner's runs never do. `mcpOwn`: that server's own addresses (Serve.own), whose ports a run's
-  // loopback read never goes to. A run's log lines (a learning run's skipped generality check) go to
+  // loopback read never goes to. A run's log lines (a sweep that failed) go to
   // stderr with the runner's other lines. `evalFakes`: the template eval's fakes (EvalFakes: a case's web, now, monid and
   // email), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
   // claim's first-use install installs with (the eval's sharedInstaller, which the server beside it takes too).

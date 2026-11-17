@@ -308,18 +308,17 @@ describe("CostPerRun", () => {
 
 describe("the loop on the cost chart", () => {
   const at = (n: number) => sample.runs.find((r) => r.n === n)!.started_at;
-  const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a12596c0a12596c0", at: at(18), decided: "replaying", source: "replay", reason: "replaying on graded inputs", ...over } as Promotion);
+  const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a12596c0a12596c0", at: at(18), decided: "replaying", reason: "being checked on the inputs of the agent's own runs", ...over } as Promotion);
   const promotions = [
     record({}),
-    record({ decided: "promote", at: at(21), replay: { of: [], n: 20, agree: 19, agent_acc: 0.9, wf_acc: 0.95, delta: 0.05, handed_back: 2 } }),
-    record({ decided: "promote", source: "refit", digest: "1a48d30c1a48d30c", at: at(51), refit: { from: "a12596c0a12596c0", guards: [{ node: "classify", was: 0.7, threshold: 0.8 }] } }),
+    record({ decided: "promote", at: at(21), check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 20, agreed: 17, alone: 18, of: [], outcomes: { answered: 18, handed_back: 2, failed: 0, skipped_write: 0 } } }),
   ];
   it("flags each promotion record on its run, lettered, with a key and a table", () => {
     const host = draw(sample, true, 900, promotions);
-    expect([...host.querySelectorAll('[data-testid^="marker-"]:not([data-testid^="marker-key"]):not([data-testid="marker-table"])')].map((g) => g.getAttribute("data-testid"))).toEqual(["marker-revision", "marker-promote", "marker-refit"]);
+    expect([...host.querySelectorAll('[data-testid^="marker-"]:not([data-testid^="marker-key"]):not([data-testid="marker-table"])')].map((g) => g.getAttribute("data-testid"))).toEqual(["marker-revision", "marker-promote"]);
     expect(host.querySelector('[data-testid="marker-key-promote"]')?.textContent).toBe("PPromoted 1");
     const rows = [...host.querySelectorAll('[data-testid="marker-table"] tbody tr')].map((r) => r.textContent);
-    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cReplay on 20 graded inputs: workflow 95% vs agent 90% (+5 pts), 2 handed back");
+    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cChecked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
     expect(text(host)).toContain("Markers: New revision · run 18");
   });
   it("draws no marker lane without records", () => {

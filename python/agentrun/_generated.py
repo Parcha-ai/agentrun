@@ -373,8 +373,6 @@ __all__ = [
     "GetLearningLoopResponse",
     "GetLearningLoopResponseCompilesItem",
     "GetLearningLoopResponseCompilesItemAttemptsItem",
-    "GetLearningLoopResponseGuardsItem",
-    "GetLearningLoopResponseGuardsItemPointsItem",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
@@ -589,11 +587,6 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
     "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
-    "ListLearningPromotionsResponsePromotionsItemRefit",
-    "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
-    "ListLearningPromotionsResponsePromotionsItemReplay",
-    "ListLearningPromotionsResponsePromotionsItemReplayOutcomes",
-    "ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
@@ -2107,7 +2100,6 @@ class GetLearningLoopResponse(TypedDict):
     agent: str
     completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
-    guards: list[GetLearningLoopResponseGuardsItem]
 
 
 class GetLearningLoopResponseCompilesItem(TypedDict):
@@ -2126,28 +2118,6 @@ class GetLearningLoopResponseCompilesItem(TypedDict):
 class GetLearningLoopResponseCompilesItemAttemptsItem(TypedDict):
     ok: bool
     errors: list[str]
-
-
-class GetLearningLoopResponseGuardsItem(TypedDict):
-    workflow: str
-    digest: str
-    node: str
-    signal: Literal["self", "jev", "both"]
-    threshold: float | None
-    runs: int
-    escalated: int
-    right: int
-    wrong: int
-    grades_past: int
-    replays: int
-    points: list[GetLearningLoopResponseGuardsItemPointsItem]
-
-
-class GetLearningLoopResponseGuardsItemPointsItem(TypedDict):
-    run_id: str
-    p: float | None
-    escalated: bool
-    correct: bool | None
 
 
 class GetNativeResponse(TypedDict):
@@ -2221,23 +2191,16 @@ class _ListLearningPromotionsResponsePromotionsItemRequired(TypedDict):
     workflow: str
     digest: str
     at: str
-    decided: Literal["promote", "hold", "replaying", "queued", "skipped"]
-    source: Literal["check", "replay", "dry_run", "refit", "graded"]
+    decided: Literal["promote", "hold", "replaying"]
     reason: str
 
 
 class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsResponsePromotionsItemRequired, total=False):
     check: ListLearningPromotionsResponsePromotionsItemCheck
-    replay: ListLearningPromotionsResponsePromotionsItemReplay
     runs: list[str]
     inputs: list[str]
     replay_id: str
-    refit: ListLearningPromotionsResponsePromotionsItemRefit
-    checked: int
-    since: int
-    held_on: list[str]
     commit: str
-    skipped_by: str
 
 
 class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
@@ -2282,49 +2245,6 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     draft: str
     escalated: str
     failed: Literal[True]
-
-
-class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
-    n: int
-    agree: int
-    agent_acc: float
-    wf_acc: float
-    delta: float
-    handed_back: int
-
-
-class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
-    of: list[str]
-    cost_usd: float | None
-    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
-    outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
-
-
-class ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem(TypedDict):
-    tool: str
-    inputs: int
-    no_read_only_hint: bool
-
-
-class ListLearningPromotionsResponsePromotionsItemReplayOutcomes(TypedDict):
-    answered: int
-    handed_back: int
-    failed: int
-    skipped_write: int
-
-
-ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromotionsResponsePromotionsItemRefit", {"from": "str", "guards": "list[ListLearningPromotionsResponsePromotionsItemRefitGuardsItem]"})
-
-
-class _ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired(TypedDict):
-    node: str
-    was: float | None
-    threshold: float | None
-
-
-class ListLearningPromotionsResponsePromotionsItemRefitGuardsItem(_ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired, total=False):
-    fit: dict[str, Any]
-    escalate: Literal[True]
 
 
 class ListLearningPromotionsResponseServingItem(TypedDict):
@@ -9130,7 +9050,7 @@ class AgentsResource(Group):
         return self._call("getAgentArchil", (agent_id,), None, None, timeout=timeout)
 
     def get_learning_loop(self, agent_id: str, *, timeout: float | None = None) -> GetLearningLoopResponse:
-        """The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop)."""
+        """The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop)."""
         return self._call("getLearningLoop", (agent_id,), None, None, timeout=timeout)
 
     def get_native(self, agent_id: str, *, timeout: float | None = None) -> GetNativeResponse:
