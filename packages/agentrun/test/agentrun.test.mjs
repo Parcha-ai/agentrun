@@ -197,6 +197,16 @@ else if (process.env.STUB_HANG) {
   console.log("agentrun-serve: still getting ready (stub)");
   if (process.env.STUB_HANG === "deaf") process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000);
+// STUB_STARTING: its "Starting " line at once, as a server that has bound its port says, then its banner that many ms
+// later, as one still loading on a slow disk.
+} else if (process.env.STUB_STARTING) {
+  console.log("Starting http://127.0.0.1:7399/ (warming, stub)");
+  setTimeout(() => {
+    console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
+    console.log("Open http://127.0.0.1:7399/");
+  }, Number(process.env.STUB_STARTING));
+  process.on("SIGTERM", () => process.exit(0));
+  setInterval(() => {}, 1000);
 } else {
   console.log("agentrun-serve on http://127.0.0.1:7399/v2 (stub)");
   // STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
@@ -311,11 +321,19 @@ test("a server that never prints its Open line: past the bound (AGENTRUN_START_T
   const run = await throughStub(t, ["--no-open"], { STUB_HANG: "1", AGENTRUN_START_TIMEOUT_MS: "1000" });
   assert.equal(run.code, 1, run.err);
   const failure = failureOf(run.err);
-  assert.match(failure, /^AgentRun did not start: the server was still running after 1 s without printing the address to open, so it was stopped\.$/m, run.err);
+  assert.match(failure, /^AgentRun did not start: the server was still running after 1 s without printing the address to open, so it was stopped\. AGENTRUN_START_TIMEOUT_MS sets a longer wait, in milliseconds\.$/m, run.err);
   assert.match(failure, /^ {2}step: wait for the server to print the address to open \(at most 1 s\)$/m, run.err);
   assert.match(failure, /^ {2}exit: still running after 1 s; stopped with SIGTERM; then signal SIGTERM$/m, run.err);
   assert.match(failure, /^ {2}stdout, last line:\n {4}agentrun-serve: still getting ready \(stub\)$/m, run.err);
   assert.ok(failure.endsWith(`\n  log: ${startLog(run.home)}\n`), run.err);
+});
+
+test("a server that says Starting is listening: the bound no longer applies, the bin names the address on stderr at once, and its stdout is the Open line's URL once it is ready", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open"], { STUB_STARTING: "2500", AGENTRUN_START_TIMEOUT_MS: "1000" });
+  assert.equal(run.code, 0, run.err);
+  assert.equal(run.out, "AgentRun is running at http://127.0.0.1:7399/\n", run.err);
+  assert.match(run.err, /^AgentRun is starting at http:\/\/127\.0\.0\.1:7399\/: it listens there now, and opens once its store is ready\.$/m, run.err);
+  assert.doesNotMatch(run.err, /did not start/, run.err);
 });
 
 test("a server that never prints its Open line and ignores the SIGTERM is SIGKILLed after the grace, and the bin says both", { timeout: 60_000 }, async (t) => {
