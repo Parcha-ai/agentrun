@@ -196,7 +196,7 @@ export async function handedSignInReadsBack(store: Pick<Store, "signIns">, sealK
     const pointer = open(sealKey, run.agentId, row.provider, row.pointerSealed);
     if (pointer !== undefined) known.add(pointerHash(pointer));
   }
-  for (const provider of ["browserbase", "kernel"] as const) {
+  for (const provider of VENDORS) {
     for (const tomb of await store.signIns.tombstones(run.agentId, provider)) {
       const pointer = open(sealKey, run.agentId, provider, tomb.pointerSealed);
       if (pointer !== undefined) known.add(pointerHash(pointer));
@@ -291,6 +291,8 @@ const settleFor = (provider: string): number => (provider === "browserbase" ? BR
 
 /** A browser the server keeps a sign-in for; a local Chrome keeps none. */
 export type Vendor = "browserbase" | "kernel";
+/** Every vendor a sign-in is kept at, for a walk over an agent's tombstones. */
+const VENDORS: readonly Vendor[] = ["browserbase", "kernel"];
 /** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer: its key, provider, state, holder and
  *  verified_at, and its one secret's metadata under `secret` (sign-ins-secrets.ts signInSecretMeta). */
 export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null; secret: SecretMeta };
@@ -406,7 +408,7 @@ export function signInsOverStore(store: SignInsStore, sealKey: Buffer, vendors: 
         }
       }
       const failed: string[] = [];
-      for (const provider of ["browserbase", "kernel"] as const) {
+      for (const provider of VENDORS) {
         for (const tomb of await store.signIns.tombstones(agentId, provider)) {
           const pointer = open(sealKey, agentId, provider, tomb.pointerSealed);
           if (pointer === undefined) continue;
