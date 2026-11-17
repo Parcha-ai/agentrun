@@ -562,9 +562,11 @@ export interface NewTrigger {
 }
 /** A trigger's fields changed; the ones absent stay. */
 /** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
-/** A trigger update's options: `ifUpdatedAt`, a compare-and-set: written only while the row's updatedAt is still this one
- *  (the read the patch was made from), undefined otherwise, as when there is no such trigger. */
-export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number };
+/** A trigger update's options: a compare-and-set, written only while the row is still the read the patch was made from,
+ *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
+ *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
+ *  write that must never land over another source write (a seal, an edit) gives both. */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {

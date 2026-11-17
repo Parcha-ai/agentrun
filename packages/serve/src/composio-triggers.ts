@@ -363,7 +363,7 @@ export class ComposioTriggers implements TriggerUpstream {
    *  words withheld when the server's triggers hold sealed values. When a read fails (Composio down), that is said once,
    *  by a code, and those triggers are left for the next start. The rewrites run inside `around` (the store's
    *  secureRewrite), once, and only when there is one to make. */
-  async sealMarked(rewrite: (id: string, source: Source, updatedAt: number | undefined) => Promise<boolean>, around: (work: () => Promise<number>) => Promise<unknown>): Promise<void> {
+  async sealMarked(rewrite: (id: string, source: Source, updatedAt: number | undefined, read: Source) => Promise<boolean>, around: (work: () => Promise<number>) => Promise<unknown>): Promise<void> {
     const eventOf = (holder: Holder) => `${String(holder.source.server)}\n${String(holder.source.event)}`;
     // A top-level value in the clear its sealed_config doesn't name: one the schema may mark.
     const plain = (source: Source): string[] => {
@@ -404,8 +404,9 @@ export class ComposioTriggers implements TriggerUpstream {
         try {
           for (const [i, name] of fields.entries()) await this.deps.sealed.set(configScope(holder.id, name), configFieldFor(values[i]!), values[i]!);
           // These fields alone masked: any other value is as the row keeps it (sealKept's). Written only while the row is
-          // the one read here (its updatedAt): a PATCH since (an accept) is not undone, a delete since leaves no sealed row.
-          written = await rewrite(holder.id, { ...holder.source, config: { ...config, ...Object.fromEntries(fields.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealedOf(holder.source), ...fields])] }, holder.updatedAt);
+          // the one read here (its updatedAt and its source: one millisecond's writes share an updatedAt): a PATCH since (an
+          // accept) is not undone, a delete since leaves no sealed row.
+          written = await rewrite(holder.id, { ...holder.source, config: { ...config, ...Object.fromEntries(fields.map((name) => [name, SEALED_MASK])) }, [SEALED_FIELD]: [...new Set([...sealedOf(holder.source), ...fields])] }, holder.updatedAt, holder.source);
         } catch (error) {
           await unseal();
           this.deps.say({ condition: "composio_config_not_sealed", trigger: holder.id, fields: fields.join(","), error: told(error, values) });

@@ -1879,6 +1879,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     return changed;
   }
+  /** The records answering trigger `id`'s create once the trigger is gone (deleted, or not read): no trigger is left to
+   *  say which of its fields are sealed, so every field of each answer's config is masked in the map (not saved: the
+   *  caller saves). A replay of a deleted trigger's create needs none of its values. */
+  function maskCachedGone(id: string): string[] {
+    const changed: string[] = [];
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const names = Object.keys(body.source.config);
+      if (names.every((name) => (body.source as { config: Record<string, unknown> }).config[name] === SEALED_MASK)) continue;
+      const config = Object.fromEntries(names.map((name) => [name, SEALED_MASK]));
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: names } } } });
+      changed.push(slot);
+    }
+    return changed;
+  }
   const idempotencySaid = (fields: Record<string, string>) => {
     const line = logLine("idempotency", fields);
     if (log) log(line);
@@ -1893,8 +1909,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   schemaSealed = composioTriggers
     // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
     // start's scrub runs it before it serves).
-    .sealMarked(async (id, source, updatedAt) => {
-      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
+    .sealMarked(async (id, source, updatedAt, read) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? { ifSource: read } : { ifUpdatedAt: updatedAt, ifSource: read })) !== undefined;
       // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
       // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
       if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
@@ -1915,7 +1931,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     for (const id of answered) {
       const row = await sealing.triggers.get(id).catch(() => undefined);
-      if (row && isObject(row.source)) for (const slot of maskCached(id, row.source as Record<string, unknown>)) scrubbed.add(slot);
+      // A trigger gone (deleted before this start, by a server that did not mask its answers at the delete) or not read:
+      // every field of its cached answers is masked, as no trigger is left to say which are sealed.
+      const slots = row && isObject(row.source) ? maskCached(id, row.source as Record<string, unknown>) : row ? [] : maskCachedGone(id);
+      for (const slot of slots) scrubbed.add(slot);
     }
     for (const [slot, v] of idempotency) {
       const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
@@ -4545,6 +4564,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteTrigger": {
         // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
         const said = await triggers.remove(id);
+        // Its cached create answers are masked now and saved, so no later start has to find the trigger to mask them. A
+        // failed save is said by a code; the map is masked already, so a replay is too.
+        if (maskCachedGone(id).length) await keep().catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
         if (said) return send(res, 200, { deleted: true, ...(said as Record<string, unknown>) });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
