@@ -21,6 +21,8 @@ import { differences, loadTemplate, onlyService, renderVariables } from "./templ
 export const API = "https://backboard.railway.com/graphql/v2";
 // The template takes its name, and its published code, from this project.
 export const SOURCE_PROJECT = "AgentRun";
+// The mark of the source project this script made: a project by that name without it is never touched.
+export const SOURCE_DESCRIPTION = "The source of AgentRun's Railway template (deploy/railway/template.json). Never deployed.";
 export const WALK_PROJECT = "agentrun-template-walk";
 const README = new URL("../README.md", import.meta.url);
 const OVERVIEW = new URL("./overview.md", import.meta.url);
@@ -44,7 +46,7 @@ export const PRICE_PER_MINUTE = { CPU_USAGE: 0.00000772 * 60, MEMORY_USAGE_GB: 0
 // Every operation this script sends, each checked against Railway's live schema by --check-api.
 export const OPS = {
   Workspace: `query Workspace($id: String!) { workspace(workspaceId: $id) { id name } }`,
-  Projects: `query Projects($workspaceId: String!) { projects(workspaceId: $workspaceId, first: 100) { edges { node { id name createdAt environments { edges { node { id name } } } services { edges { node { id name } } } } } } }`,
+  Projects: `query Projects($workspaceId: String!) { projects(workspaceId: $workspaceId, first: 100) { edges { node { id name description createdAt environments { edges { node { id name } } } services { edges { node { id name } } } } } } }`,
   ProjectCreate: `mutation ProjectCreate($input: ProjectCreateInput!) { projectCreate(input: $input) { id name workspace { id name } environments { edges { node { id name } } } } }`,
   ServiceCreate: `mutation ServiceCreate($input: ServiceCreateInput!) { serviceCreate(input: $input) { id name } }`,
   VolumeCreate: `mutation VolumeCreate($input: VolumeCreateInput!) { volumeCreate(input: $input) { id name } }`,
@@ -241,10 +243,12 @@ async function inWorkspace(client, project, workspaceId) {
 async function ensureTemplate(client, { workspaceId, config, step }) {
   const { service } = onlyService(config);
   const projects = edges((await client.call("Projects", { workspaceId })).projects);
-  let source = projects.find((p) => p.name === SOURCE_PROJECT);
+  const named = projects.filter((p) => p.name === SOURCE_PROJECT);
+  let source = named.find((p) => p.description === SOURCE_DESCRIPTION);
+  if (!source && named.length > 0) throw new Error(`the workspace has a project named ${SOURCE_PROJECT} (${named[0].id}) that this script did not make: it changed nothing. Rename that project, or publish from another workspace`);
   let environmentId, serviceId;
   if (!source) {
-    const made = (await client.call("ProjectCreate", { input: { name: SOURCE_PROJECT, workspaceId, description: "The source of AgentRun's Railway template (deploy/railway/template.json). Never deployed." } })).projectCreate;
+    const made = (await client.call("ProjectCreate", { input: { name: SOURCE_PROJECT, workspaceId, description: SOURCE_DESCRIPTION } })).projectCreate;
     await inWorkspace(client, made, workspaceId);
     source = made;
     environmentId = edges(made.environments)[0].id;
@@ -279,9 +283,11 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
     step.pass("template", `${had.code} (${had.id}, ${had.status}) already deploys what template.json says`);
     return had;
   }
-  // An earlier run's template that was never published (no button points at it) and deploys something else is deleted.
+  // An earlier run's template (generated from the source project, so named after it, and deploying only AgentRun's
+  // image) that was never published, so no button points at it, and deploys something else is deleted.
   const image = service.source.image.replace(/:[^:/]+$/, ":");
-  for (const t of ours.filter((t) => t.status !== "PUBLISHED" && Object.values(t.serializedConfig?.services ?? {}).some((s) => s.source?.image?.startsWith(image)))) {
+  const generated = (t) => t.name === SOURCE_PROJECT && Object.values(t.serializedConfig?.services ?? {}).every((s) => s.source?.image?.startsWith(image));
+  for (const t of ours.filter((t) => t.status !== "PUBLISHED" && generated(t))) {
     await client.call("TemplateDelete", { id: t.id, input: { workspaceId } });
     step.pass("stale template deleted", `${t.code} (${t.id}): never published, and it deploys something other than template.json`);
   }

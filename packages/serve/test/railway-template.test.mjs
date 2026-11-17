@@ -41,8 +41,9 @@ test("the start command is the image's own entrypoint and command, as the image'
   assert.deepEqual([sh, c, rest], ["/bin/sh", "-c", []]);
   const mount = Object.values(service.volumeMounts)[0].mountPath;
   // Railway's volume is a disk with a lost+found (root's, mode 700): it is given to the server's user too, so an image
-  // whose server can't look into it (released before the store's scan let it be) starts.
-  assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && { [ ! -d ${mount}/lost+found ] || chown 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
+  // whose server can't look into it (released before the store's scan let it be) starts. `-h`: the server's user owns
+  // the volume and could make lost+found a link to /etc, which root must not then follow.
+  assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && { [ ! -d ${mount}/lost+found ] || chown -h 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
   // Railway mounts a volume as root: the container starts as root (RAILWAY_RUN_UID=0) only for the chown above.
   assert.equal(renderValue(service.variables.RAILWAY_RUN_UID.defaultValue, { domain: "x" }), "0");
   assert.ok(cmd.includes(mount) && cmd[cmd.indexOf("--data") + 1] === mount, "the server's data directory is the volume");
@@ -192,21 +193,34 @@ test("a workspace template that already deploys template.json is used again, a p
   assert.equal(client.calls.find((c) => c.op === "TemplateDeploy").variables.input.templateId, "t-pub");
 });
 
-test("before generating, an earlier unpublished AgentRun template that deploys something else is deleted; a published or foreign one is kept", async () => {
+test("before generating, an earlier unpublished AgentRun template that deploys something else is deleted; a published, foreign or teammate's one is kept", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws" });
   const call = client.call.bind(client);
   const off = structuredClone((await call("TemplateGenerate", {})).templateGenerate.serializedConfig);
   Object.values(off.services)[0].deploy.healthcheckPath = "/";
   const foreign = { services: { x: { name: "Other", source: { image: "postgres:17" } } } };
+  const withDb = { services: { ...structuredClone(off.services), ...foreign.services } };
   const ours = [
-    { id: "t-stale", code: "stale", status: "UNPUBLISHED", createdAt: "2026-11-17T12:00:00Z", serializedConfig: off },
-    { id: "t-live", code: "live", status: "PUBLISHED", createdAt: "2026-11-16T12:00:00Z", serializedConfig: off },
-    { id: "t-other", code: "other", status: "UNPUBLISHED", createdAt: "2026-11-15T12:00:00Z", serializedConfig: foreign },
+    { id: "t-stale", name: "AgentRun", code: "stale", status: "UNPUBLISHED", createdAt: "2026-11-17T12:00:00Z", serializedConfig: off },
+    { id: "t-live", name: "AgentRun", code: "live", status: "PUBLISHED", createdAt: "2026-11-16T12:00:00Z", serializedConfig: off },
+    { id: "t-other", name: "Postgres", code: "other", status: "UNPUBLISHED", createdAt: "2026-11-15T12:00:00Z", serializedConfig: foreign },
+    { id: "t-mine", name: "My AgentRun", code: "mine", status: "UNPUBLISHED", createdAt: "2026-11-15T12:00:00Z", serializedConfig: off },
+    { id: "t-db", name: "AgentRun", code: "db", status: "UNPUBLISHED", createdAt: "2026-11-15T12:00:00Z", serializedConfig: withDb },
   ];
   client.call = async (op, v) => (op === "WorkspaceTemplates" ? (await call(op, v), { workspaceTemplates: { edges: ours.map((node) => ({ node })) } }) : call(op, v));
   const rows = await run(client, { workspaceId: "ws", log: quiet });
   assert.deepEqual(client.calls.filter((c) => c.op === "TemplateDelete").map((c) => c.variables.id), ["t-stale"]);
   assert.match(rows.find((r) => r[0] === "template generated")[2], /replaces live/);
+});
+
+test("a project named AgentRun that the script did not make is never patched: the run stops before changing anything", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const call = client.call.bind(client);
+  const theirs = { id: "p-theirs", name: "AgentRun", description: null, environments: { edges: [{ node: { id: "e", name: "production" } }] }, services: { edges: [{ node: { id: "s", name: "AgentRun" } }] } };
+  client.call = async (op, v) => (op === "Projects" ? (await call(op, v), { projects: { edges: [{ node: theirs }] } }) : call(op, v));
+  const rows = await run(client, { workspaceId: "ws", log: quiet });
+  assert.match(rows.find((r) => r[0] === "stopped")[2], /project named AgentRun \(p-theirs\) that this script did not make/);
+  assert.deepEqual(client.calls.map((c) => c.op).filter((op) => !["Workspace", "Projects"].includes(op)), []);
 });
 
 test("a failed deploy is reported with its last log lines, the setup code's line left out, and its project still deleted", async () => {
