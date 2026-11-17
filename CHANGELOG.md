@@ -64,6 +64,7 @@ AgentRun is an open-source platform that supercharges your agents. It adds self-
 **Composio triggers:**
 
 - A config field named like a credential (`api_key`, `client_secret`, `access_token`, `tokens`, `pwd` and the like), one the event's schema marks `format: "password"` or `writeOnly`, a number in such a field, and an address carrying a credential in any scheme are sealed when the trigger is saved; a count such as `max_tokens` is not. The events list names each event's sealed fields, and the console's form takes them as password inputs. A refusal from Composio about a sealed value is answered in the server's own words (#3050, #3094, #3098).
+- An address with a user part (`scheme://user:pass@host`, a raw `/`, `?` or `#` in the password included) is sealed whole. A `PATCH` that carries a `source` no longer undoes a seal made while it ran: it is checked again on the trigger as it is then, up to three times, then answers `412 precondition_failed`. Deleting a trigger masks the create answers kept for it under an Idempotency-Key, and a start masks those of a trigger already gone (#3116).
 
 **Computers:**
 
