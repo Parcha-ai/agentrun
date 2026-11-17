@@ -1117,7 +1117,7 @@ export class Triggers {
     return {
       ...(hook ? { hook_url: `${this.deps.publicUrl ?? ""}${hook}` } : {}),
       ...(adapter?.poll ? { last_check: check ? { at: check.at, ok: check.ok, message: check.message } : null } : {}),
-      id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,
+      id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: adapter?.shown ? adapter.shown(trigger.source) : trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,
       max_active_runs: trigger.maxActiveRuns ?? null, failures_in_a_row: trigger.failuresInARow, disabled: trigger.disabled ?? null, next_at: trigger.nextAt === null ? null : iso(trigger.nextAt), last_run_id: trigger.lastRunId,
       created_at: iso(trigger.createdAt), updated_at: iso(trigger.updatedAt), last_firing: last ? firingView(last) : null,
     };

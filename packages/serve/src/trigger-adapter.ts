@@ -61,6 +61,9 @@ export type TriggerAdapter = {
   parse(value: Json, now: number, bad: (field: string, reason: string, message: string) => void, issues: InputIssue[]): Source | undefined;
   /** Whether a source the store keeps is whole, of its type. */
   wellFormed(source: Json): boolean;
+  /** A kept source as every answer sends it, when that is not as kept: a field that holds a credential masked (a composio
+   *  config's key), by the one rule, whether the source sealed it yet or not. Default: as kept. */
+  shown?(source: Source): Source;
   /** The zone its times are read in, for its runs' provenance line. Default UTC. */
   zone?(source: Source): string;
   /** A clock source's times. */

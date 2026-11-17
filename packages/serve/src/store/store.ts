@@ -1308,6 +1308,14 @@ export interface LiveViewers {
  *  store); a runner never sets anything up, and refuses a schema version it does not know. */
 export type StoreRole = "server" | "runner";
 
+/** What Store.secureRewrite did: how many rows `work` rewrote and, when old bytes may still be in the store's files (the
+ *  marker kept for the next start), why: "busy", a reader in another connection held the log back from the checkpoint;
+ *  "failed", the VACUUM or the checkpoint failed. */
+export interface SecureRewrite {
+  readonly rewritten: number;
+  readonly left?: "busy" | "failed";
+}
+
 export interface Store {
   /** Where this store's data is, as an identity two instances over the same data share and two over different data never
    *  do: "sqlite:" and the database file's real path, or "sqlite:memory:<n>" for an in-memory one (each its own data);
@@ -1345,6 +1353,14 @@ export interface Store {
   readonly signIns: SignIns;
   /** Every sealed value the store keeps, across all its planes, in one read (a runner's redaction set at each claim). */
   readonly sealedSecrets: SealedSecrets;
+  /** Runs `work`, writes that replace a secret the store kept in the clear (it answers how many rows it rewrote), so the
+   *  bytes they replace are not left in the store's files. SQLite: a marker file beside the database is written first;
+   *  secure_delete is on while `work` runs (a rewritten row's old bytes zeroed in its page); then, when a row was rewritten
+   *  or an earlier start left the marker, a VACUUM (no free page or free block keeps a copy an earlier, ordinary update
+   *  left) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
+   *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
+   *  the database's until its vacuum). */
+  secureRewrite?(work: () => Promise<number>): Promise<SecureRewrite>;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

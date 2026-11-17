@@ -385,7 +385,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           <dt className="caps text-label text-muted-foreground">App</dt><dd className="min-w-0 break-words"><a href="#/settings/mcp" className="font-mono hover:underline">{app.source.server}</a><span className="text-small text-muted-foreground"> · a saved Composio server</span></dd>
           <dt className="caps text-label text-muted-foreground">Event</dt><dd className="min-w-0 break-words font-mono">{app.source.event}</dd>
           <dt className="caps text-label text-muted-foreground">Config</dt>
-          <dd className="min-w-0 break-words">{Object.keys(app.source.config).length ? <ul className="space-y-1 font-mono text-small">{Object.entries(app.source.config).map(([k, v]) => <li key={k}>{k}: {typeof v === "string" ? v : JSON.stringify(v)}</li>)}</ul> : "None"}</dd>
+          <dd className="min-w-0 break-words">{Object.keys(app.source.config).length ? <ul className="space-y-1 font-mono text-small">{Object.entries(app.source.config).map(([k, v]) => <li key={k}>{k}: {app.source.sealed_config?.includes(k) ? <span data-sealed-config={k} className="text-muted-foreground">Sealed: kept here, never shown</span> : typeof v === "string" ? v : JSON.stringify(v)}</li>)}</ul> : "None"}</dd>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{app.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{app.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every event of its instance"}</dd>
           <dt className="caps text-label text-muted-foreground">At Composio</dt>
@@ -874,7 +874,7 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const pickServer = (server: string) => edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
   const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
-  const fields: ConfigField[] = configFieldsOf(event?.config);
+  const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
   const send = async (body: TriggerCreate) => {
@@ -1014,7 +1014,7 @@ function ConfigInput({ field: f, value, issue, onChange }: { field: ConfigField;
       <UiField className="min-w-0" label={f.title} required={f.required} optional={!f.required} hint={f.description} error={error}>
         {f.options ? <Picker name={name} label={f.title} className="w-full" value={value} onChange={onChange} options={[...(f.required ? [] : [{ value: "", label: "None" }]), ...f.options.map((o) => ({ value: o, label: o }))]} placeholder="Pick one" />
           : f.type === "json" ? <Textarea name={name} rows={3} className="p-3 font-mono" value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
-          : <Input name={name} inputMode={f.type === "string" ? undefined : "decimal"} value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" spellCheck={false} />}
+          : <Input name={name} type={f.sealed ? "password" : undefined} inputMode={f.type === "string" ? undefined : "decimal"} value={value} onChange={(e) => onChange(e.target.value)} autoComplete={f.sealed ? "new-password" : "off"} spellCheck={false} />}
       </UiField>
     </div>
   );
