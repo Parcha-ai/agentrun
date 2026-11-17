@@ -33,8 +33,8 @@ function restOnly(options = {}, restOptions = {}) {
 }
 
 /** A provider on the fake REST API and gateway; the gateway is closed after the test. */
-async function setup(t, options = {}) {
-	const fake = await fakeMorph();
+async function setup(t, options = {}, fakeOptions = {}) {
+	const fake = await fakeMorph(fakeOptions);
 	t.after(() => fake.sshd.close());
 	const snapshot = fake.rest.snapshot({}).id;
 	const provider = new MorphProvider({ ...fake.options, ...options });
@@ -303,6 +303,16 @@ test("exec logs in to the gateway as the instance id with the instance's own key
 	);
 });
 
+test("Morph answers the instance's key in PKCS#8, which ssh2 does not read: an RSA, EC or Ed25519 one is converted and the gateway takes the login", async (t) => {
+	for (const keyType of ["rsa", "ec", "ed25519"]) {
+		const { fake, snapshot, host } = await setup(t, {}, { keyType });
+		const value = await host.create(request(snapshot), CTX);
+		assert.ok(fake.rest.sshKeys.get(value.id).private.startsWith(`-----BEGIN ${"PRIVATE KEY"}-----\n`), "the fake hands out PKCS#8");
+		assert.deepEqual(await run(host, value.id, ["echo", keyType]), { code: 0, stdout: `${keyType}\n`, stderr: "" }, keyType);
+		assert.ok(fake.logins.some((login) => login.method === "publickey"), keyType);
+	}
+});
+
 test("a login the gateway refuses (a key rotated in the account) is denied with no key in the error, and the next exec reads the key again", async (t) => {
 	const { fake, snapshot, host } = await setup(t);
 	const value = await host.create(request(snapshot), CTX);
@@ -318,7 +328,7 @@ test("a login the gateway refuses (a key rotated in the account) is denied with 
 	assert.equal(host.errorCode(await thrown(host.exec("morphvm_99999999", ["true"], CTX))), "not_found", "no instance, no key, no login");
 	fake.rest.fail("GET", /\/ssh\/key$/, new Response(JSON.stringify({ private_key: "not a key" }), { status: 200 }));
 	const other = await host.create(request(snapshot), CTX);
-	assert.match((await thrown(host.exec(other.id, ["true"], CTX))).message, /no private key in PEM armor/);
+	assert.match((await thrown(host.exec(other.id, ["true"], CTX))).message, /no private key ssh2 can read/);
 	assert.ok(fake.logins.every((login) => !login.username.includes(KEY)));
 });
 

@@ -3,13 +3,41 @@
 // Server on loopback (fake-agent37.mjs's sshd) that takes the user "<instance id>" with that instance's own key, which
 // GET /instance/{id}/ssh/key answers. A command runs as the test machine's bash, except the box build's (anything under
 // /tmp/agentrun-box), which the gateway answers itself, so a test never runs install.sh here.
+import { generateKeyPairSync } from "node:crypto";
 import ssh2 from "ssh2";
-import { fakeSshd, keyPair } from "./fake-agent37.mjs";
+import { fakeSshd } from "./fake-agent37.mjs";
 
 const { utils } = ssh2;
 
 export const KEY = "morph_fake_key_0123456789abcdef";
 export const API_URL = "https://morph.test/api";
+
+/** SSH's wire forms (RFC 4251 §5): a string or an mpint, each behind its uint32 length. */
+const sshString = (bytes) => {
+	const body = Buffer.from(bytes);
+	const length = Buffer.alloc(4);
+	length.writeUInt32BE(body.length);
+	return Buffer.concat([length, body]);
+};
+const sshMpint = (unsigned) => sshString(unsigned[0] & 0x80 ? Buffer.concat([Buffer.from([0]), unsigned]) : unsigned);
+
+/**
+ * A key pair as Morph's GET /instance/{id}/ssh/key answers it: the private key in PKCS#8 (the PEM label "PRIVATE KEY",
+ * which ssh2 does not read: d7/morph-live-2 failed on it) and the public key on one OpenSSH line. type is node:crypto's:
+ * "ed25519", "rsa" or "ec" (P-256). Made fresh each call, never a literal.
+ */
+export function morphKeyPair(type = "ed25519") {
+	const { privateKey, publicKey } = generateKeyPairSync(type, { modulusLength: 2048, namedCurve: "P-256" });
+	const jwk = publicKey.export({ format: "jwk" });
+	const bytes = (field) => Buffer.from(jwk[field], "base64url");
+	const [name, blob] =
+		type === "ed25519"
+			? ["ssh-ed25519", [sshString("ssh-ed25519"), sshString(bytes("x"))]]
+			: type === "rsa"
+				? ["ssh-rsa", [sshString("ssh-rsa"), sshMpint(bytes("e")), sshMpint(bytes("n"))]]
+				: ["ecdsa-sha2-nistp256", [sshString("ecdsa-sha2-nistp256"), sshString("nistp256"), sshString(Buffer.concat([Buffer.from([4]), bytes("x"), bytes("y")]))]];
+	return { private: privateKey.export({ type: "pkcs8", format: "pem" }), public: `${name} ${Buffer.concat(blob).toString("base64")}` };
+}
 
 const json = (status, body) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const detail = (status, words) => json(status, { detail: words });
@@ -17,11 +45,12 @@ const detail = (status, words) => json(status, { detail: words });
 /**
  * The REST API. Instances answer pending once, then ready. ttl decides what POST /instance/{id}/ttl counts from: "now"
  * (default) or "added" (the old end plus the seconds). fail(method, path, response) answers the next call matching with
- * response once; calls lists every call, its method, path, query, auth and body.
+ * response once; calls lists every call, its method, path, query, auth and body. keyType is each instance key's type
+ * (morphKeyPair).
  */
-export function fakeRest({ key = KEY, ttl = "now" } = {}) {
+export function fakeRest({ key = KEY, ttl = "now", keyType = "ed25519" } = {}) {
 	const instances = new Map();
-	/** Each instance's SSH key pair, OpenSSH form; POST /instance/{id}/ssh/key rotates it. */
+	/** Each instance's SSH key pair (morphKeyPair); POST /instance/{id}/ssh/key rotates it. */
 	const sshKeys = new Map();
 	const snapshots = new Map();
 	const calls = [];
@@ -53,7 +82,7 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 			const id = `morphvm_${String(next++).padStart(8, "0")}`;
 			const instance = { id, object: "instance", created: now(), status: "pending", metadata: body.metadata ?? {}, spec: { vcpus: 2, memory: 4096, disk_size: 16384 }, refs: { snapshot_id: body.snapshot_id, image_id: "morphvm-minimal" }, networking: { internal_ip: "10.0.0.2", http_services: [] }, ttl: ttlOf(body.ttl_seconds, body.ttl_action), wake_on: {} };
 			instances.set(id, instance);
-			sshKeys.set(id, keyPair());
+			sshKeys.set(id, morphKeyPair(keyType));
 			return json(200, instance);
 		}
 		if (path === "/instance" && method === "GET") return json(200, { object: "list", data: [...instances.values()] });
@@ -78,7 +107,7 @@ export function fakeRest({ key = KEY, ttl = "now" } = {}) {
 		const sshKey = /^\/instance\/([^/]+)\/ssh\/key$/.exec(path);
 		if (sshKey) {
 			if (!instances.has(sshKey[1])) return detail(404, `Instance ${sshKey[1]} not found`);
-			if (method === "POST") sshKeys.set(sshKey[1], keyPair());
+			if (method === "POST") sshKeys.set(sshKey[1], morphKeyPair(keyType));
 			const pair = sshKeys.get(sshKey[1]);
 			return json(200, { object: "instance_ssh_key", private_key: pair.private, public_key: pair.public, password: "not-a-secret", access_token: "not-a-secret" });
 		}
