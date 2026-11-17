@@ -3,7 +3,9 @@
 // "dial", such as Fly Machines): the run happens inside the server its machines reach. It stands up serve's own attach
 // routes (createAttachRoutes: the minted tokens, the attach socket's upgrade and the daemon route) over a store in memory,
 // on an HTTP server bound to $PORT that answers GET /v2/health 200, and builds the provider with the dial that server
-// gives: AGENTRUN_PUBLIC_URL, the tokens it mints and its attach hub. Then it runs Core, provider.deadline and drift.arch
+// gives: AGENTRUN_PUBLIC_URL, the tokens it mints and its attach hub. It creates nothing until AGENTRUN_PUBLIC_URL's
+// /v2/health is answered by this process (reachesThisRun), as a host swapping instances answers from the old one first.
+// Then it runs Core, provider.deadline and drift.arch
 // among it, and prints the report as JSON between two marker lines, DIAL-CONFORMANCE-REPORT-BEGIN and
 // DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. Then it idles, /v2/health still
 // answered, until SIGTERM or SIGINT ends it with the run's status: a host that restarts an exited process (Render's)
@@ -25,7 +27,7 @@
 // served it. A fixture of this script alone: no serve route knows of it. The report names the copy's sha256 and version,
 // and the versions the twin's refused hellos reported (driftedDaemon), which must be the copy's.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -174,6 +176,42 @@ function answer(res, status, body, headers = {}) {
 	res.end(text);
 }
 
+/** The header this process's GET /v2/health carries: its run's id, which no other process answers with. */
+const RUN_HEADER = "x-dial-conformance-run";
+
+/**
+ * Resolves once `publicUrl`'s GET /v2/health is answered by this process (its run's id in RUN_HEADER) `times` times in a
+ * row, asked every `every` ms; throws after `within` ms. A host that swaps instances (Render's deploy: the new process
+ * listens while the old still holds the address) reaches another process first, and a machine that dials it then is
+ * refused its token there (11-17: a Cloudflare container dialed 14 s after its create, the address still reached the
+ * previous deploy, the machine was answered 401 and the whole of Core failed on "create did not answer").
+ */
+export async function reachesThisRun(publicUrl, run, signal, { within = 600_000, every = 1_000, times = 3, fetch = globalThis.fetch } = {}) {
+	const url = `${publicUrl.replace(/\/+$/, "")}/v2/health`;
+	const start = Date.now();
+	let row = 0;
+	let other = 0;
+	let last = "no answer yet";
+	while (row < times) {
+		signal?.throwIfAborted();
+		if (Date.now() - start > within) throw new Error(`${url} did not reach this process within ${Math.round(within / 1000)} s (last: ${last}): the machines would dial another, so nothing was created`);
+		try {
+			const res = await fetch(url, { headers: { "cache-control": "no-store" }, signal: AbortSignal.timeout(10_000) });
+			await res.arrayBuffer();
+			const mine = res.headers.get(RUN_HEADER) === run;
+			last = mine ? "this process" : `${res.status} from another process`;
+			if (!mine && other++ === 0) say(`${url} reaches another process (a host still swapping instances); waiting until it reaches this one`);
+			row = mine ? row + 1 : 0;
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			last = error instanceof Error ? error.message : String(error);
+			row = 0;
+		}
+		if (row < times) await new Promise((done) => setTimeout(done, every));
+	}
+	say(`${url} reaches this process (${times} answers in a row, after ${Math.round((Date.now() - start) / 1000)} s and ${other} answers from another)`);
+}
+
 /** The run: its exit status. `state.listening` is set once the server listens, from which point a run may have begun. */
 async function main({ provider: name, only, exit }, env, state) {
 	const publicUrl = env.AGENTRUN_PUBLIC_URL;
@@ -181,6 +219,7 @@ async function main({ provider: name, only, exit }, env, state) {
 	const port = Number(env.PORT);
 	if (!env.PORT || !Number.isInteger(port) || port < 0 || port > 65_535) throw new Error(`PORT is the port this process listens on, not ${JSON.stringify(env.PORT ?? "")}\n${USAGE}`);
 	const { module, declared } = await moduleOf(name);
+	const run = randomUUID();
 
 	const store = memoryMintedTokens();
 	const hub = new AttachHub();
@@ -220,7 +259,7 @@ async function main({ provider: name, only, exit }, env, state) {
 	const server = createServer((req, res) => {
 		void (async () => {
 			const { path, query } = targetOf(req);
-			if (req.method === "GET" && path === "/v2/health") return answer(res, 200, { status: "ok" });
+			if (req.method === "GET" && path === "/v2/health") return answer(res, 200, { status: "ok" }, { [RUN_HEADER]: run });
 			if ((req.method === "GET" || req.method === "HEAD") && path === DAEMON_PATH) {
 				const arch = query.get("arch");
 				const file = await attach.daemon(req.headers.authorization, arch);
@@ -302,6 +341,8 @@ async function main({ provider: name, only, exit }, env, state) {
 			if (only.length === 0) throw new Error(`--only names no group or case id\n${USAGE}`);
 			if (unknown.length > 0) throw new Error(`--only: ${unknown.join(", ")} is neither a group nor a case id of the provider's suite\n${USAGE}`);
 		}
+		// Nothing is created until the public address reaches this process: a machine dials it, with a token minted here.
+		await reachesThisRun(publicUrl, run, controller.signal);
 		const report = await runConformance(provider, {
 			image,
 			cases,

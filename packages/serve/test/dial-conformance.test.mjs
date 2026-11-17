@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, patchVersion } from "../scripts/dial-conformance.mjs";
+import { driftedVersion, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -177,6 +177,61 @@ test("a request target no URL parses (//[/) is refused, a socket's and a plain r
   assert.deepEqual(await refused, ["HTTP/1.1 404 Not Found", "HTTP/1.1 404 Not Found"]);
   assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("nothing runs until AGENTRUN_PUBLIC_URL reaches the script: an address still answered by another process (a host's previous instance) is waited out", { skip: BUILT, timeout: 120_000 }, async () => {
+  const port = await freePort();
+  // The public address, as a host that swaps instances moves it over: its first four connections are answered by the
+  // previous instance (its own /v2/health, no run id, the connection closed), and every later one goes to the script
+  // as is (the machine's daemon fetch with its token, and its attach socket).
+  let asked = 0;
+  const front = createServer((socket) => {
+    socket.on("error", () => undefined);
+    if (++asked <= 4) {
+      let said = "";
+      return void socket.on("data", (chunk) => {
+        said += chunk;
+        if (said.includes("\r\n\r\n")) socket.end('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 15\r\nconnection: close\r\n\r\n{"status":"ok"}');
+      });
+    }
+    const behind = connect(port, "127.0.0.1");
+    behind.on("error", () => socket.destroy());
+    socket.pipe(behind).pipe(socket);
+  });
+  await new Promise((done) => front.listen(0, "127.0.0.1", done));
+  try {
+    const ran = await run(["--provider", FIXTURE, "--only", "health.declared"], { PORT: String(port), AGENTRUN_PUBLIC_URL: `http://127.0.0.1:${front.address().port}/` });
+    const lines = ran.stderr.split("\n");
+    const at = (start) => lines.findIndex((line) => line.startsWith(`dial-conformance: ${start}`));
+    const health = `http://127.0.0.1:${front.address().port}/v2/health`;
+    assert.ok(at(`${health} reaches another process`) >= 0, ran.stderr);
+    assert.ok(at(`${health} reaches this process (3 answers in a row, after`) > at(`${health} reaches another process`), ran.stderr);
+    assert.match(ran.stderr, /and 4 answers from another\)/);
+    assert.ok(at("skip health.declared") > at(`${health} reaches this process`), "the run's first case comes after");
+    assert.deepEqual(reportOf(ran.stdout).results.map(({ id }) => id), ["health.declared"]);
+  } finally {
+    await new Promise((done) => front.close(done));
+  }
+});
+
+test("reachesThisRun: three of this run's answers in a row, a miss or a failed ask starting the count again; past its time it refuses in words", async () => {
+  const answers = (said) => {
+    const asked = [];
+    const fetch = async (url) => {
+      asked.push(url);
+      const one = said[asked.length - 1] ?? "old";
+      if (one === "down") throw new Error("connect ECONNREFUSED");
+      return new Response("{}", { headers: one === "mine" ? { "x-dial-conformance-run": "run-1" } : {} });
+    };
+    return { asked, fetch };
+  };
+  const ok = answers(["old", "mine", "mine", "down", "mine", "old", "mine", "mine", "mine"]);
+  await reachesThisRun("https://dial.example.test/", "run-1", undefined, { every: 1, fetch: ok.fetch });
+  assert.deepEqual([ok.asked.length, new Set(ok.asked)], [9, new Set(["https://dial.example.test/v2/health"])]);
+  const never = answers([]);
+  await assert.rejects(reachesThisRun("https://dial.example.test", "run-1", undefined, { within: 50, every: 5, fetch: never.fetch }), {
+    message: /^https:\/\/dial\.example\.test\/v2\/health did not reach this process within 0 s \(last: 200 from another process\): the machines would dial another, so nothing was created$/,
+  });
 });
 
 test("the script refuses in words, and exits 1, without --provider, AGENTRUN_PUBLIC_URL or PORT, or with an --only that names nothing in the suite", async () => {
