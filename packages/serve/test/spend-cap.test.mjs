@@ -16,7 +16,8 @@ const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.u
 /** A server whose runs go to a fresh Responses endpoint answering `text` with `tokens` each way, at `price`. */
 async function gateway(t, { price, text = "42", tokens = 10, incomplete = false }) {
   const endpoint = await responsesEndpoint(t, text, tokens, { incomplete });
-  withEnv(t, { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "cap-model", AGENT_MODEL_PRICE: price }, GATEWAY_VARS);
+  // The gateway takes the server's key (a server with none needs each run's: run-model-key.ts).
+  withEnv(t, { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, AGENT_MODEL: "cap-model", AGENT_MODEL_PRICE: price }, GATEWAY_VARS);
   const server = await serve(t, { faux: undefined });
   const posts = () => endpoint.asked.filter((line) => line.startsWith("POST ")).length;
   return { ...server, endpoint, posts };

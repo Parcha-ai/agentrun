@@ -2,7 +2,7 @@
 // trigger path (store.triggers.fire) both write a run's launch row inside their own transaction, through one
 // helper, with no second copy of the SQL. The launch body itself is opaque here (run-launch.ts owns its shape); sealed
 // bytes are the caller's, which the store never opens.
-import { type RunLaunchInput, type RunLaunchRow, StoreLaunchMissing } from "../store.js";
+import { type LaunchSealed, type RunLaunchInput, type RunLaunchRow, StoreLaunchMissing } from "../store.js";
 import type { Dialect } from "../dialect.js";
 import type { SqliteExecutor } from "./connection.js";
 
@@ -14,6 +14,17 @@ const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, bo
  *  trigger path both call it, so the row lands with its run or not at all. */
 export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, launch: RunLaunchInput, at: number): Promise<void> {
   return tx.run("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES (?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), launch.sealed ?? null, at);
+}
+
+/** A message's launch secrets written over the run's (runs.command, runs.reopen), inside `tx`: the bytes as given, or a
+ *  function's answer to the bytes the launch holds now, read in the same transaction. */
+export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, launchSealed: LaunchSealed): Promise<void> {
+  let next: Uint8Array | null;
+  if (typeof launchSealed === "function") {
+    const row = await tx.get<{ sealed: Uint8Array | null }>("SELECT sealed FROM run_launch WHERE run_id = ?", runId);
+    next = launchSealed(row?.sealed == null ? null : Uint8Array.from(row.sealed));
+  } else next = launchSealed;
+  await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", next, runId);
 }
 
 /** The run's launch row, read by the runner at its claim (and the server for views). StoreLaunchMissing when the run has
