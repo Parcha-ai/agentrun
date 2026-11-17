@@ -148,8 +148,12 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 // shared count let a large root leave the next unsearched. Each root has its own budget, and a bound reached is said.
 func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootItsOwnBudget(t *testing.T) {
 	big := shortDir(t)
+	many := filepath.Join(big, "many")
+	if err := os.Mkdir(many, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 20; i++ {
-		if err := os.WriteFile(filepath.Join(big, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(many, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -172,5 +176,9 @@ func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootIts
 	words := strings.Join(search.Incomplete, "; ")
 	if len(search.Incomplete) != 2 || !strings.Contains(words, big) || !strings.Contains(words, "10 entries") || !strings.Contains(words, deep) || !strings.Contains(words, "deeper than 2") {
 		t.Fatalf("Incomplete = %q; want the large root (its entry budget) and the deep one (its depth), each named", search.Incomplete)
+	}
+	// The root itself, then many and 8 of its files fill the 10: the words name the folder that filled the budget.
+	if !strings.Contains(words, "(most under "+many+" 9)") {
+		t.Fatalf("Incomplete = %q; want the stopped walk to name %s, which filled its budget, with its 9 entries", search.Incomplete, many)
 	}
 }
