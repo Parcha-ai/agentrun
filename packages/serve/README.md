@@ -833,7 +833,8 @@ passes the binding's conformance cases (below) needs no change here.
 - **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
   run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
   (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. The image's default command starts its runner apart; give the image the server's options alone
+  so. Such a server says it sooner: its pairing code, the pair answer and each paired computer carry `runs_refused`,
+  which the console shows with the code and on the computer's row. The image's default command starts its runner apart; give the image the server's options alone
   (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
   second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases

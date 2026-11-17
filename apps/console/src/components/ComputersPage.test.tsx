@@ -41,7 +41,7 @@ const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: tru
 /** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
 /** A paired computer of no OS the page knows: it is shown by what its hello says. */
 const DESK: PairedComputer = {
-  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
+  id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
   driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
@@ -374,6 +374,28 @@ describe("Settings → Computers", () => {
     }
   });
 
+  it("on a server whose runner runs in a process of its own, says with the code, and on the computer it paired, that no run here can use a paired computer, in the server's words", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
+    try {
+      const APART = "no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+      const apart: PairedComputer = { ...DESK, runs_refused: APART };
+      const { v2 } = server([view(), view(), { ...view(), paired: [apart] }], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z", runs_refused: APART }));
+      const { section, click, settle } = await open(v2);
+      const mine = section("Your computers");
+      await click(mine, /^Pair a computer$/);
+      expect(mine.querySelector("[data-pairing] [data-runs-refused]")?.textContent, "said with the code, before it pairs").toBe(APART);
+      const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); await settle(); };
+      await tick(2_000);
+      await tick(2_000);
+      expect(mine.querySelector("[data-code]"), "the code was used").toBeNull();
+      const row = mine.querySelector('[data-paired="cmp-abc"]')!;
+      expect(row.textContent).toContain("No run here can use it");
+      expect(row.querySelector("[data-runs-refused]")?.textContent).toBe(APART);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps its own code up when a second tab's pairing adds a computer, and names only the computer its own code made", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
     try {
@@ -413,6 +435,7 @@ describe("Settings → Computers", () => {
     expect(row("cmp-old")!.querySelector("[data-offers]")?.textContent).toBe("Offers screen, input.pointer, input.keys · ui.tree off: no accessibility grant");
     expect(row("cmp-old")!.textContent).toContain("Open its driver on that computer: it dials this server.");
     expect(row("cmp-abc")!.querySelector("[data-unserved]")).toBeNull();
+    expect(row("cmp-abc")!.querySelector("[data-runs-refused]"), "its runs can use it").toBeNull();
     expect(row("cmp-old")!.textContent).toContain("No agent can use it");
     expect(row("cmp-old")!.querySelector("[data-unserved]")?.textContent).toBe(UNSERVED);
     await click(row("cmp-old")!, /^Remove$/);

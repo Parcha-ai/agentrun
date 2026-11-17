@@ -3815,6 +3815,7 @@ class CreatePairingResponse(TypedDict):
     id: str
     code: str
     expires_at: str
+    runs_refused: str | None
 
 
 class DeleteComposioSubscriptionResponse(TypedDict):
@@ -4032,6 +4033,7 @@ class ListComputersResponsePairedItem(TypedDict):
     kind: str
     serves: list[Literal["none", "sandbox", "desktop", "phone", "browser"]]
     unserved: str | None
+    runs_refused: str | None
     os: str
     os_version: str | None
     device: ListComputersResponsePairedItemDevice | None

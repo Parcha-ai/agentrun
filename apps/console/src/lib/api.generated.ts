@@ -1654,6 +1654,7 @@ export interface operations {
       id: string;
       code: string;
       expires_at: string;
+      runs_refused: string | null;
     };
   };
   createQuote: {
@@ -3691,6 +3692,7 @@ export interface operations {
         kind: string;
         serves: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
         unserved: string | null;
+        runs_refused: string | null;
         os: string;
         os_version: string | null;
         device: {
@@ -4510,6 +4512,7 @@ export interface operations {
     answer: {
       computer: string;
       token: string;
+      runs_refused: string | null;
     };
   };
   pauseRun: {

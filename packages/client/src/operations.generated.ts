@@ -2529,6 +2529,7 @@ export type CreatePairingResponse = {
   id: string;
   code: string;
   expires_at: string;
+  runs_refused: string | null;
 };
 
 /** Forget this server's calendar (DELETE /settings/calendar). */
@@ -2723,6 +2724,7 @@ export type ListComputersResponse = {
     kind: string;
     serves: Array<"none" | "sandbox" | "desktop" | "phone" | "browser">;
     unserved: string | null;
+    runs_refused: string | null;
     os: string;
     os_version: string | null;
     device: {
