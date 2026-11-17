@@ -72,10 +72,8 @@ $3 a month at $10 per GB-month. The volume is $0.15 per GB-month, and each run a
 Hobby plan is $5 a month and includes $5 of usage. Use Hobby or above, because the trial's 0.5 GB volume can't hold
 Claude Code and Codex (about 1 GB, installed onto the volume on first use).
 
-The button goes on the line below once the template is published.
-
 <!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->
-<!-- [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=agentrun) -->
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
 
 Once you click, Railway shows the service's variables, all filled in: the token and the seal key are made for you, and
 there's nothing to type. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
@@ -99,6 +97,7 @@ password. The console says where to look and never shows the code. It is in one 
 | Server | Where the code is |
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
+| Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
 
