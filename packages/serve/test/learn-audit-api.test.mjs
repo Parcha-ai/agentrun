@@ -1,8 +1,9 @@
 // The shadow audit over HTTP v2, API first: what an owner reads of the runs a promoted learned workflow serves and of
 // their audits, with nothing console-only. A served run (answered by the workflow alone, or handed back to the agent)
-// reads like any run: its answer text in GET /runs/{id}, its timeline in the documented row kinds, its cost.usd all in
-// (its own requests, its hand-back's, and its shadow's). The shadow reads as the audit of its run (`audit_of`) and is no
-// row of the owner's run list. The workflow's state (serving, checking, held, stopped), its check's numbers and its audit
+// reads like any run: its answer text in GET /runs/{id}, its timeline in the documented row kinds, its path, its cost.usd
+// its own requests (its hand-back's among them), its shadow's on cost.learning_usd and both in cost.all_in_usd. The shadow
+// reads as the audit of its run (`audit_of`), is no row of the owner's run lists and sends no webhook (w): a host never
+// sees it but as the run's learning_usd. The workflow's state (serving, checking, held, stopped), its check's numbers and its audit
 // line are in GET /agents/{id}/learning/promotions; the rows are GET /agents/{id}/learning/audits. And (f): an owner's
 // grade on a served run is a row of the same ledger (source grade, agreed = the grade), opening no round and asking no
 // compile by itself.
@@ -16,6 +17,7 @@ import { seedOf } from "../dist/learning.js";
 import { git, resnap } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+import { outboxOf, PRIVATE_OK, receiver } from "./webhook-support.mjs";
 
 /** The faux model at $100 per million output tokens, 400 a request: every model request costs $0.04. */
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
@@ -40,9 +42,9 @@ const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 
 /** Agent `source` learning with `learning` (granted `tools`: none by default, so every tool it can call reads), the
  *  workflow landed on its learning folder's main and promoted by its check. */
-async function world(t, learning, tools = []) {
+async function world(t, learning, tools = [], options = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
-  const server = await serve(t, { learning: "on", faux: PRICED });
+  const server = await serve(t, { learning: "on", faux: PRICED, ...options });
   const { api, data, baseUrl, store } = server;
   assert.equal((await api("POST", "/agents", agent("source", { learning, tools }))).status, 201);
   await seedOf(data, "source");
@@ -101,21 +103,29 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
     const rows = (await api("GET", `/runs/${id}/timeline`)).body.rows;
     assert.ok(rows.length > 0);
     for (const row of rows) assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/TimelineRow" }, row), [], JSON.stringify(row));
-    // cost.usd all in: its own requests (its hand-back's among them) and its shadow's.
+    // Its path; cost.usd its own requests (its hand-back's among them); its shadow's on learning_usd (its revision's
+    // check ran no replay run here: nothing else to pass on), all_in_usd the two.
+    assert.equal(view.path, path);
     const own = (await store.runs.get(id)).costUsd;
     const shadow = shadows[id];
     assert.ok(own > 0 && shadow.costUsd > 0, `${own} ${shadow.costUsd}`);
-    assert.equal(Math.round(view.cost.usd * 1e6), Math.round((own + shadow.costUsd) * 1e6), `all in: ${JSON.stringify(view.cost)}`);
-    // The shadow reads as the audit of its run, at its own cost.
+    assert.equal(Math.round(view.cost.usd * 1e6), Math.round(own * 1e6), `its own: ${JSON.stringify(view.cost)}`);
+    assert.equal(Math.round(view.cost.learning_usd * 1e6), Math.round(shadow.costUsd * 1e6), `its shadow's: ${JSON.stringify(view.cost)}`);
+    assert.equal(Math.round(view.cost.all_in_usd * 1e6), Math.round((own + shadow.costUsd) * 1e6), `all in: ${JSON.stringify(view.cost)}`);
+    // The shadow reads as the audit of its run, at its own cost, carried by the run it audits.
     const audit = (await api("GET", `/runs/${shadow.id}`)).body;
     meets("/runs/{run_id}", audit);
     assert.equal(audit.audit_of, id);
+    assert.equal(audit.path, "audit");
     assert.equal(Math.round(audit.cost.usd * 1e6), Math.round(shadow.costUsd * 1e6));
+    assert.deepEqual([audit.cost.learning_usd, audit.cost.all_in_usd], [0, 0], "its spend is on the run it audits");
     assert.equal(view.audit_of, null, "a served run audits nothing");
   }
-  // No shadow is a row of the owner's run list.
+  // No shadow is a row of the owner's run lists, the agent's or every agent's.
   const listed = (await api("GET", "/agents/source/runs")).body.runs.map((one) => one.run_id);
   assert.deepEqual([...listed].sort(), [alone, escalated, later].sort(), JSON.stringify(listed));
+  const everyone = (await api("GET", "/runs?agent=source")).body.runs.map((one) => one.run_id);
+  assert.deepEqual([...everyone].sort(), [alone, escalated, later].sort(), JSON.stringify(everyone));
 
   // The rows: one per finished audit, both costs.
   const audits = (await api("GET", "/agents/source/learning/audits")).body;
@@ -170,4 +180,25 @@ test("(f) an owner's grade (wrong) on a served run writes a disagreeing row of s
   // The next run is served again: nothing held it.
   const next = await run({ content: "What is 5 plus 37?" });
   assert.equal((await store.runs.get(next)).metrics.path, "workflow");
+});
+
+test("(w) a shadow run sends no webhook of any kind and is in no run list: the host sees the served run's ends alone", { timeout: 300_000 }, async (t) => {
+  const { api, data, run, shadowOf } = await world(t, { audit_every: 1 }, [], PRIVATE_OK);
+  const hook = await receiver(t);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const served = await run({ content: "What is 1 plus 41?" });
+  const shadow = await shadowOf(served);
+  // A run after the shadow ended: its end is told after the shadow's end was read off the run-change feed, in order.
+  const later = await run({ content: "What is 3 plus 39?" });
+  const told = (id) => hook.got.some((one) => JSON.parse(one.body).data?.run_id === id && JSON.parse(one.body).type === "run.ended");
+  await hook.when(() => told(served) && told(later), "the run.ended of the served run and the later one", data);
+  const shadowsOf = (body) => JSON.stringify(body).includes(shadow.id);
+  assert.deepEqual(hook.got.filter((one) => shadowsOf(one.body)).map((one) => JSON.parse(one.body).type), [], "no message names the shadow");
+  const outbox = outboxOf(data);
+  assert.deepEqual(outbox.messages.filter((one) => shadowsOf(one.body)), [], "none is queued for it");
+  assert.equal(outbox.notices[shadow.id], undefined, "nothing of it in the ledger");
+  for (const path of ["/agents/source/runs", "/runs", "/runs?agent=source"]) {
+    const ids = (await api("GET", path)).body.runs.map((one) => one.run_id);
+    assert.ok(ids.includes(served) && !ids.includes(shadow.id), `${path}: ${JSON.stringify(ids)}`);
+  }
 });
