@@ -77,6 +77,9 @@ export interface PromotionRecord {
   readonly reason: string;
   /** A compiled draft's one check (runner/promotion.ts): its bar while it replays, its numbers once decided. */
   readonly check?: CheckRecord;
+  /** A serving revision's audit hold (runner/audit.ts): the rows that held it. A hold with it is the audit's; one without
+   *  it, its check's. */
+  readonly audit?: AuditHold;
   readonly runs?: readonly string[];
   /** A replaying record's runs, one per `runs` entry in order: the agent run whose input each reserved replay run replays,
    *  so a launch interrupted after the reservation is finished by a later claim (runner/promotion.ts relaunch). */
@@ -93,6 +96,30 @@ export interface PromotionRecord {
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
    *  recorded it. What the digest serves from as the champion (championOf) once a newer revision is on the folder's main. */
   readonly commit?: string;
+}
+
+/** One audit row a hold was decided on that disagreed: the served run (`served`) and its input, the run whose answer is
+ *  the agent's (`run`: the shadow run, else the served run for a grade), the agent's answer (`agent`: the shadow's, null
+ *  for a grade, which says only that the served answer was wrong) and the served answer (`draft`); `graded`, a row an
+ *  owner's grade wrote. Each text cut to CHECK_TEXT_MAX: what the one recompile reads as data. */
+export interface AuditDisagreement {
+  readonly run: string;
+  readonly served: string;
+  readonly input: string;
+  readonly agent: string | null;
+  readonly draft: string | null;
+  readonly graded?: true;
+}
+
+/** An audit hold (runner/audit.ts): the definition's `hold_window` and `hold_disagree` it was decided at, how many rows
+ *  it read (`rows`, at most the window), the disagreeing ones, and `stopped` when it was a second hold within
+ *  `stop_window` served runs of the first: no compile is asked, nothing serves again until a new revision lands. */
+export interface AuditHold {
+  readonly window: number;
+  readonly disagree: number;
+  readonly rows: number;
+  readonly disagreements: readonly AuditDisagreement[];
+  readonly stopped?: true;
 }
 
 /** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), and
@@ -118,8 +145,9 @@ export interface CheckDisagreement {
 
 /** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone with
  *  the agent's recorded answer (sameAnswer), `alone` answered alone (no escalate, no failed step); the inputs (`of`, the
- *  agent's runs), what its replay runs cost, their outcomes, the tools that stopped its skipped inputs, the inputs it did
- *  not agree on, and `stopped` when a recompile's check held it too (nothing compiles again). */
+ *  agent's runs), what its replay runs cost, their outcomes (one per input: a replay run never created by the deadline
+ *  failed), how many of its replay runs were never created (`unstarted`, when any), the tools that stopped its skipped
+ *  inputs, the inputs it did not agree on, and `stopped` when a recompile's check held it too (nothing compiles again). */
 export type CheckRecord = CheckBar & {
   readonly n?: number;
   readonly agreed?: number;
@@ -127,6 +155,7 @@ export type CheckRecord = CheckBar & {
   readonly of?: readonly string[];
   readonly cost_usd?: number | null;
   readonly outcomes?: ReplayOutcomes;
+  readonly unstarted?: number;
   readonly skipped_tools?: readonly SkippedTool[];
   readonly disagreements?: readonly CheckDisagreement[];
   readonly stopped?: true;
@@ -240,6 +269,22 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
   const last = lastPromotedOf(records, workflow);
   const now = last === undefined ? undefined : promotionOf(records, workflow, last);
   return now?.decided === "promote" ? now : undefined;
+}
+
+/** The newest promotion of `workflow` at `digest`: the promote record that began its newest run of promote records (its
+ *  first, or the first after a record of that digest that was not promote: an owner's replay that promoted a held
+ *  revision), or undefined when none was ever promoted. Its `at` names that promotion: an audit row keeps the one serving
+ *  when its evidence began (learn/audit.ts promoted_at), and the hold rule counts only the rows of the one serving now,
+ *  so a digest its owner's replay promotes again after a hold starts on no rows. */
+export function promotionStartOf(records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined {
+  let start: PromotionRecord | undefined;
+  let streak = false;
+  for (const one of records) {
+    if (one.workflow !== workflow || one.digest !== digest) continue;
+    if (one.decided !== "promote") streak = false;
+    else if (!streak) [start, streak] = [one, true];
+  }
+  return start;
 }
 
 /** The digest of `workflow` promoted last: the one of its newest promote record. */

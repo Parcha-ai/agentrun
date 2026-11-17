@@ -344,6 +344,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "list-learning-audits"
+    ],
+    "operationId": "listLearningAudits",
+    "method": "GET",
+    "path": "/agents/{agent_id}/learning/audits",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The audit ledger of the agent's serving learned workflows"
+  },
+  {
+    "command": [
+      "agents",
       "list-learning-promotions"
     ],
     "operationId": "listLearningPromotions",

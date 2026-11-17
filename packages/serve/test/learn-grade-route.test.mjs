@@ -108,7 +108,8 @@ test("the promotions list answers a hold, a promote on its dry run and a replayi
   assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));
   assert.deepEqual(read.body.promotions.map((one) => one.decided), ["promote", "hold", "replaying"]);
   assert.deepEqual(read.body.promotions[1].check, held.check);
-  assert.deepEqual(read.body.serving, [{ workflow: "answer", digest: "d0", replaying: "d2" }]);
+  // Beside what serves, its state, its newest decided check's numbers and its audit line (#3061).
+  assert.deepEqual(read.body.serving, [{ workflow: "answer", digest: "d0", replaying: "d2", state: "checking", check: { n: 6, agreed: 0, alone: 0, attempt: 1 }, audit: { window: 10, disagree: 3, rows: 0, disagreed: 0 }, audits_off: null, not_auditable: 0 }]);
   // The schema closes a record: a field it does not name is refused.
   const extra = structuredClone(read.body);
   extra.promotions[0].source = "replay";

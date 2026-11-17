@@ -527,17 +527,23 @@ __all__ = [
     "ListLearnedWorkflowRevisionsResponseRevisionsItem",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy1",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy2",
+    "ListLearningAuditsResponse",
+    "ListLearningAuditsResponseAuditsItem",
     "ListLearningLogResponse",
     "ListLearningLogResponseItemsItem",
     "ListLearningLogResponseItemsItemBy1",
     "ListLearningLogResponseItemsItemBy2",
     "ListLearningPromotionsResponse",
     "ListLearningPromotionsResponsePromotionsItem",
+    "ListLearningPromotionsResponsePromotionsItemAudit",
+    "ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem",
     "ListLearningPromotionsResponsePromotionsItemCheck",
     "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
     "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
+    "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
@@ -1266,6 +1272,12 @@ class DefinitionLearning(TypedDict, total=False):
     compile_after: int
     agree_min: float
     alone_min: float
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
 
 
 class Source(TypedDict):
@@ -1737,6 +1749,12 @@ class DefinitionInputLearning(TypedDict, total=False):
     compile_after: int
     agree_min: float
     alone_min: float
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -2119,6 +2137,30 @@ class AgentList(TypedDict):
     next_cursor: str | None
 
 
+class ListLearningAuditsResponse(TypedDict):
+    agent: str
+    audits: list[ListLearningAuditsResponseAuditsItem]
+
+
+class _ListLearningAuditsResponseAuditsItemRequired(TypedDict):
+    run: str
+    shadow_run: str | None
+    workflow: str
+    digest: str
+    promoted_at: str | None
+    source: Literal["shadow", "grade"]
+    agreed: bool | None
+    served_cost: float | None
+    shadow_cost: float | None
+    at: str
+
+
+class ListLearningAuditsResponseAuditsItem(_ListLearningAuditsResponseAuditsItemRequired, total=False):
+    turn: str
+    skipped: Literal["no allowance"]
+    parked: Literal[True]
+
+
 class ListLearningPromotionsResponse(TypedDict):
     agent: str
     promotions: list[ListLearningPromotionsResponsePromotionsItem]
@@ -2139,6 +2181,7 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     inputs: list[str]
     replay_id: str
     commit: str
+    audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
 class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
@@ -2155,6 +2198,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     of: list[str]
     cost_usd: float | None
     outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
+    unstarted: int
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
     stopped: Literal[True]
@@ -2185,10 +2229,52 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     failed: Literal[True]
 
 
+class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem]
+
+
+class ListLearningPromotionsResponsePromotionsItemAudit(_ListLearningPromotionsResponsePromotionsItemAuditRequired, total=False):
+    stopped: Literal[True]
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired(TypedDict):
+    run: str
+    served: str
+    input: str
+    agent: str | None
+    draft: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired, total=False):
+    graded: Literal[True]
+
+
 class ListLearningPromotionsResponseServingItem(TypedDict):
     workflow: str
     digest: str | None
     replaying: str | None
+    state: Literal["serving", "checking", "held", "stopped"]
+    check: ListLearningPromotionsResponseServingItemCheck | None
+    audit: ListLearningPromotionsResponseServingItemAudit | None
+    audits_off: str | None
+    not_auditable: int
+
+
+class ListLearningPromotionsResponseServingItemCheck(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemAudit(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreed: int
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -2892,7 +2978,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     n: int
     run_id: str
     started_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     learned_revision: str | None
     cost_usd: float | None
@@ -4508,6 +4594,7 @@ class Run(_RunRequired, total=False):
     pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
+    audit_of: str | None
 
 
 class _RunResultRequired(TypedDict):
@@ -4755,7 +4842,7 @@ class _GradeRunResponseRequired(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["correction"] | None
@@ -4939,7 +5026,7 @@ class GetRunLearningResponseObjectGraded(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
     feedback: Literal["correction"] | None
@@ -8203,6 +8290,7 @@ OPERATIONS: dict[str, Operation] = {
     "getLearningLoop": Operation(method="GET", path="/agents/{agent_id}/learning/loop", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getNative": Operation(method="GET", path="/agents/{agent_id}/native", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listLearningAudits": Operation(method="GET", path="/agents/{agent_id}/learning/audits", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8392,6 +8480,10 @@ class AgentsResource(Group):
     def list(self, *, limit: int | None = None, cursor: str | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAgentsResponse:
         """List agents (GET /agents)."""
         return self._call("listAgents", (), None, {"limit": limit, "cursor": cursor, "archived": archived}, timeout=timeout)
+
+    def list_learning_audits(self, agent_id: str, *, timeout: float | None = None) -> ListLearningAuditsResponse:
+        """The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits)."""
+        return self._call("listLearningAudits", (agent_id,), None, None, timeout=timeout)
 
     def list_learning_promotions(self, agent_id: str, *, timeout: float | None = None) -> ListLearningPromotionsResponse:
         """Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions)."""

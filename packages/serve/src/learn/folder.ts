@@ -17,7 +17,8 @@
 //   in a local folder) is rebuilt from main whole (learningRepair: the script's read, then its snapshot op), the next
 //   time a write finds main moved under it.
 // The snapshot's shape is v1: what the learning routes and a run's seed read. The folder holds the owner's
-// corrections (corrections.md, served whole) and the compiled workflows (workflows/<name>/), nothing else.
+// corrections (corrections.md, served whole), the compiled workflows (workflows/<name>/) and the host's audit ledger
+// (audits.jsonl, never served to a run), nothing else.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -31,6 +32,8 @@ import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR 
 export const HOST_DIR = ".agentrun";
 export const SNAPSHOT_FILE = `${HOST_DIR}/snapshot.json`;
 export const DIFFS_DIR = `${HOST_DIR}/diffs`;
+/** The audit ledger at the folder's top (learn/audit.ts): one JSON row per line. */
+export const AUDITS_FILE = "audits.jsonl";
 /** The most changes the snapshot's log keeps, newest first; `log_more` says older exist. */
 export const LOG_KEEP = 200;
 /** A file main holds over this is no learned file: a workflow's file is at most 16 KB (check.ts CAPS.file). */
@@ -75,6 +78,8 @@ export type Snapshot = {
   v: 1; main: string; at: string;
   /** corrections.md's blob, present only when main holds it. */
   corrections?: SnapFile;
+  /** The audit ledger (learn/audit.ts AUDITS_FILE), once a row was written: the host's, never laid into a run. */
+  audits?: { oid: string; bytes: number };
   workflows: SnapLearned[];
   log: SnapChange[]; log_more: boolean;
 };
@@ -240,6 +245,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
   const orderOf = (path: string) => order.get(path) ?? Number.MAX_SAFE_INTEGER;
   const historyOf = (path: string) => history.get(path) ?? { at };
   const corrections = tree.find((entry) => entry.path === CORRECTIONS_FILE && regular(entry));
+  const audits = tree.find((entry) => entry.path === AUDITS_FILE && regular(entry));
   const folders = new Map<string, { files: SnapFile[]; links: string[] }>();
   for (const entry of tree) {
     const name = folderOf(entry.path);
@@ -260,7 +266,7 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
     });
     if (item) workflows.push(item);
   }
-  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), workflows: workflows.sort(byName), log, log_more: more };
+  return { v: 1, main, at, ...(corrections ? { corrections: { path: CORRECTIONS_FILE, oid: corrections.oid, bytes: corrections.bytes } } : {}), ...(audits ? { audits: { oid: audits.oid, bytes: audits.bytes } } : {}), workflows: workflows.sort(byName), log, log_more: more };
 }
 
 /** A draft from its folder's files: listed when its folder is well named and its README.md and workflow.json are there,
@@ -288,8 +294,8 @@ function learnedItem(name: string, files: SnapFile[], links: readonly string[], 
  *  that must be on main as they are on another commit (a run's seed). The script checks both on main as it commits. */
 export type FolderChange = {
   /** A run's merge names the run and its reason, and its `round` past the first (a follow-up's correction): its diff is
-   *  kept under runDiffKey. */
-  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number };
+   *  kept under runDiffKey. The host's own book-keeping (an audit row) names what it kept. */
+  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number } | { host: string };
   writes: readonly { path: string; text: string }[];
   deletes?: readonly string[];
   absent?: readonly string[];
@@ -302,6 +308,11 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
   const clean = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ");
   const paragraphs = (parts: string[]) => parts.map((part) => (part.endsWith("\n") ? part : `${part}\n`)).join("\n");
   if (!by) return { message: `${INIT_SUBJECT}\n`, subject: INIT_SUBJECT, body: "", runId: "", changedBy: "", approvedVia: "" };
+  // The host's own book-keeping (an audit row): no trailer, so no change in the log a person reads.
+  if ("host" in by) {
+    const subject = `host: ${clean(by.host).trim() || "kept"}`;
+    return { message: `${subject}\n`, subject, body: "", runId: "", changedBy: "", approvedVia: "" };
+  }
   if ("run" in by) {
     const subject = `learning: ${by.run}: merged`;
     const reason = clean(by.reason).trim() || "merged";
@@ -316,11 +327,12 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
 /** A time in whole seconds as every snapshot says a commit's time: UTC, ending "Z" (commitTime's form). */
 const isoSeconds = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 
-/** Every path `snapshot` names a blob for: corrections.md and each draft's files. */
+/** Every path `snapshot` names a blob for: corrections.md, the audit ledger and each draft's files. */
 function oidsOf(snapshot: Snapshot | undefined): Map<string, string> {
   const out = new Map<string, string>();
   if (!snapshot) return out;
   if (snapshot.corrections) out.set(CORRECTIONS_FILE, snapshot.corrections.oid);
+  if (snapshot.audits) out.set(AUDITS_FILE, snapshot.audits.oid);
   for (const item of snapshot.workflows) for (const file of item.files) out.set(file.path, file.oid);
   return out;
 }
@@ -340,6 +352,8 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
 
   const written = writes.get(CORRECTIONS_FILE);
   const corrections = written ? { path: CORRECTIONS_FILE, oid: written.oid, bytes: written.bytes } : deletes.has(CORRECTIONS_FILE) ? undefined : before?.corrections;
+  const ledger = writes.get(AUDITS_FILE);
+  const audits = ledger ? { oid: ledger.oid, bytes: ledger.bytes } : deletes.has(AUDITS_FILE) ? undefined : before?.audits;
 
   const list = before?.workflows ?? [];
   const hit = new Set(changed.map(folderOf).filter((name): name is string => name !== undefined));
@@ -368,7 +382,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   const entry = change && isChange(commit) ? changeEntry(commit, PLACEHOLDER, changed) : undefined;
   const log = [...(entry ? [entry] : []), ...(before?.log ?? [])];
   const snapshot: Snapshot = {
-    v: 1, main: PLACEHOLDER, at: commit.at, ...(corrections ? { corrections } : {}),
+    v: 1, main: PLACEHOLDER, at: commit.at, ...(corrections ? { corrections } : {}), ...(audits ? { audits } : {}),
     workflows: workflows.sort(byName),
     log: log.slice(0, LOG_KEEP), log_more: Boolean(before?.log_more) || log.length > LOG_KEEP,
   };

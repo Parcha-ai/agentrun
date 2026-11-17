@@ -12,9 +12,11 @@ import { ApiError } from "./errors.js";
  *  rule for a run with nothing new to look back on, runner/learning-end.ts onlyLearnedWorkflows); `handed_back`, a
  *  learned workflow ran and the agent went on (it handed back, failed, escalated, or the agent did more work after it);
  *  `agent`, no learned workflow ran; `replay`, a replay run deciding whether a learned workflow's new revision serves
- *  (runner/promotion.ts: the workflow alone on a graded run's input, at workflow cost). One classifier (store-reads/learning.ts runPathOverStore) writes it on the run's
+ *  (runner/promotion.ts: the workflow alone on a graded run's input, at workflow cost); `audit`, a shadow run auditing a
+ *  run a learned workflow served (runner/audit.ts: the agent on its input with learning off; its cost is that run's
+ *  learning). One classifier (store-reads/learning.ts runPathOverStore) writes it on the run's
  *  record at its end (metrics.path). */
-export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay"] as const;
+export const RUN_PATHS = ["agent", "handed_back", "workflow", "replay", "audit"] as const;
 export type RunPath = (typeof RUN_PATHS)[number];
 
 /** What a run that looked back kept of its costs as it answered (runner/reflect-hook.ts: store-reads/learning.ts
@@ -27,17 +29,18 @@ const usd = (value: number) => Math.round(value * 1e6) / 1e6;
  *  person asked of it after) and what it kept as it answered (`looked`, none for a run that did not look back):
  *  - `cost_usd`: the job's own $: its row's cost less its look-back, never under what it had cost when it answered (a
  *    later turn's spend is the job's too); its row's cost for a run that did not look back;
- *  - `learning_usd`: what learning cost for it: its look-back (its compile turn), 0 for a run that does not learn; null
- *    when unknown (a turn stopped mid-ask spent what no one knows);
+ *  - `learning_usd`: what learning cost for it: its look-back (its compile turn) and what was spent beside it
+ *    (`besideUsd`: its audit's shadow run), 0 for a run that does not learn; null when unknown (a turn stopped mid-ask
+ *    spent what no one knows, or a shadow still running);
  *  - `total_usd`: their sum, the run's all-in $; null when either is. */
-export function runCostOf(rowUsd: number | null, looked: CostLooked | null): { cost_usd: number | null; learning_usd: number | null; total_usd: number | null } {
+export function runCostOf(rowUsd: number | null, looked: CostLooked | null, besideUsd: number | null = 0): { cost_usd: number | null; learning_usd: number | null; total_usd: number | null } {
   const answered = looked?.answered_at !== undefined;
   const asAnswered = answered ? (looked!.job_cost_usd ?? null) : rowUsd;
   const back = answered ? (looked!.look_back_usd ?? null) : 0;
   // What the row holds past the answer and its look-back is a later turn's spend, unknown once the row's cost is; with the
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !answered || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
-  const spent = back;
+  const spent = back === null || besideUsd === null ? null : back + besideUsd;
   return { cost_usd: job === null ? null : usd(job), learning_usd: spent === null ? null : usd(spent), total_usd: job === null || spent === null ? null : usd(job + spent) };
 }
 

@@ -30,7 +30,7 @@ import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, record
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
-import { MIN_SECRET, redactSecrets } from "../learn/secrets.js";
+import { excerptShown, MIN_SECRET, redactSecrets } from "../learn/secrets.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { META_TOOLS } from "../meta-tool-names.js";
 import { holdsSecret, LEARNING_LABEL, secretsShown } from "../learning.js";
@@ -38,7 +38,8 @@ import type { RunPath } from "../learning-cost.js";
 import { said, STOPPED } from "../learning-words.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { costOf, type SignInReader } from "../run-view.js";
-import type { LearningProposal, McpServerRow, Store } from "../store/store.js";
+import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
+import { shadowRunId } from "../learn/audit.js";
 import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
@@ -91,9 +92,10 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     round,
     // A run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be kept within it. The cap
     // is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests were admitted under. Its
-    // spend under that cap is what the run's own gates read (metrics.ts bookedCapSpend: a request with no price of its own
-    // at the figure it was held at), never the cost a person is shown, which is unknown once one request's is. A person's
-    // stop comes to the hook as its `cut`.
+    // spend under that cap is what the run's own gates read (capSpendOf: a request with no price of its own at the figure
+    // it was held at, and what an earlier end's audit shadow took beside it), never the cost a person is shown, which is
+    // unknown once one request's is. Either unknown: the spend is unknown, never read as the whole cap. A person's stop
+    // comes to the hook as its `cut`.
     facts: async (runId) => {
       const [rows, entries] = await Promise.all([
         runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }),
@@ -110,7 +112,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const costUsd = unknown ? null : costOf(rows);
       if (launch.maxCostUsd === undefined) return { learns: true, costUsd };
       const capUsd = capNowOf(launch.maxCostUsd, entries)!;
-      const spentUsd = bookedCapSpend(entries);
+      const spentUsd = await capSpendOf(deps.store, runId, entries);
       return { learns: true, costUsd, capUsd, spentUsd, capReached: spentUsd !== null && spentUsd >= capUsd };
     },
     // A grade's feedback round always has something new, the grade's words (feedback-round.ts), whatever the job did.
@@ -168,6 +170,54 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     const prior = await deps.store.learning.proposal(input.runId);
     return hookFor(start.seed!, prior ? prior.round + 1 : 1)(input);
   };
+}
+
+/** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): its
+ *  audit's shadow run (shadowBesideOf), for a capped run with a learning start, the only run whose end may start one;
+ *  none for any other, whose gates read only its own sessions. */
+export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "runs">, runId: string): (() => Promise<number | null>) | undefined {
+  if (launch.maxCostUsd === undefined || !learningStartOf(launch)) return undefined;
+  return () => shadowBesideOf(store, runId);
+}
+
+/** What run `runId`'s audit's shadow run took beside it (runner/audit.ts, started at its end with what its cap left): at
+ *  its cost once it ended, at its own cap while it has not (the most it may take) or when it ended at a cost not known,
+ *  0 when none was started. Null: unknown. */
+export async function shadowBesideOf(store: Pick<Store, "runs">, runId: string): Promise<number | null> {
+  const id = shadowRunId(runId);
+  const shadow = await store.runs.get(id);
+  if (!shadow) return 0;
+  const figure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
+  if (FINAL_STATES.includes(shadow.state) && figure(shadow.costUsd)) return shadow.costUsd;
+  const cap = readLaunchBody((await store.runs.launch(id)).body)?.maxCostUsd;
+  return figure(cap) ? cap : null;
+}
+
+/** What run `runId`'s cap leaves its audit's shadow run at its end (runner/audit.ts startAudit): the cap it is held to now
+ *  (capNowOf: its newest raise's, else `launchCapUsd`), less what it spent under it (capSpendOf over `entries`, its
+ *  journal: its job, its follow-ups, its compile turns). Null when that spend is unknown. */
+export async function auditRoomOf(store: Pick<Store, "runs">, runId: string, launchCapUsd: number, entries: readonly EntryLike[]): Promise<number | null> {
+  const capUsd = capNowOf(launchCapUsd, entries)!;
+  const spent = await capSpendOf(store, runId, entries);
+  return spent === null ? null : capUsd - spent;
+}
+
+/** What capped run `runId` has spent under its cap, as every gate of the run reads it: its sessions' booking as the kernel
+ *  cap counts it (metrics.ts bookedCapSpend over `entries`, its journal) and what its audit's shadow took beside it
+ *  (shadowBesideOf). Null when either is unknown.
+ *
+ *  The rule for a cost no one knows (a request answered with no price of its own, one cut short or lost): under a cap it
+ *  counts at the figure the cap held it at when it was admitted (its worst case at the model's price, and a lost one's
+ *  cache-miss bound), as the kernel cap's own admissions count it (sessionSpendOf). Never $0, which could overspend, and
+ *  never the whole cap, which reads a run that spent $2 as one with nothing left. The cost a person is shown stays
+ *  unknown (a held figure is the cap's, never a charge). Only a request held at no figure (none is, under a cap) leaves
+ *  the spend itself unknown: then nothing more is sent under the cap, and the words say the spend is unknown, as the
+ *  kernel's unknownSpend refusal does, never "no room". */
+export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entries: readonly EntryLike[]): Promise<number | null> {
+  const spent = bookedCapSpend(entries);
+  if (spent === null) return null;
+  const beside = await shadowBesideOf(store, runId);
+  return beside === null ? null : spent + beside;
 }
 
 /** `read` over agent `agentId`'s learning folder, opened for it and always ended after. */
@@ -432,7 +482,8 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
  *  shape. */
 export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
   const rows = withoutFeedbackRounds(timeline).filter((row) => row.agent_label !== LEARNING_LABEL);
-  const cut = (text: string | null | undefined) => redactSecrets(String(text ?? ""), refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim().slice(0, TRACE_TEXT);
+  const shown = { text: (text: string) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim() };
+  const cut = (text: string | null | undefined) => excerptShown(String(text ?? ""), shown, TRACE_TEXT);
   const messages = rows.filter(isMessageRow);
   const failed = new Set(rows.filter((row) => row.kind === "tool_result" && row.tool_status === "failed").map((row) => row.tool_use_id));
   const models = modelsOwn(rows);
@@ -505,7 +556,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
         for (const one of workflows) if (one.status === "active" && heldNames.has(one.name)) { const text = await textOf(one.name); if (text !== undefined) active.push({ name: one.name, workflow: text }); }
         const fitting = active.filter((one) => fits(one as never, input.input, dsl.resolveSchemaForWorkflow as never));
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
-        if (record?.decided === "hold") [held, current] = [record, fitting[0]!.workflow];
+        if (record?.decided === "hold" && !record.check?.stopped && !record.audit?.stopped) [held, current] = [record, fitting[0]!.workflow];
       }
       return { workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}), ...(snapshot?.main ? { main: snapshot.main } : {}) };
     };
@@ -535,11 +586,13 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const since = Date.parse(read.held.at);
     const kept = await deps.store.learning.proposals(input.agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
     if (!kept || kept.some((one) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow)) return sayLeftOut(), undefined;
-    const { workflow, digest, reason, check } = read.held;
-    // A check's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is (traceFrom).
+    const { workflow, digest, reason, check, audit } = read.held;
+    // A check's or an audit's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is
+    // (traceFrom).
     const cut = (text: string) => redactSecrets(text, input.refuse, Number.POSITIVE_INFINITY);
     const checked = check ? { ...check, ...(check.disagreements ? { disagreements: check.disagreements.map((one) => ({ ...one, input: cut(one.input), agent: one.agent === null ? null : cut(one.agent), ...(one.draft !== undefined ? { draft: cut(one.draft) } : {}), ...(one.escalated !== undefined ? { escalated: cut(one.escalated) } : {}) })) } : {}) } : undefined;
-    held = { workflow, digest, reason, ...(checked ? { check: checked } : {}) };
+    const audited = audit ? { ...audit, disagreements: audit.disagreements.map((one) => ({ ...one, input: cut(one.input), agent: one.agent === null ? null : cut(one.agent), draft: one.draft === null ? null : cut(one.draft) })) } : undefined;
+    held = { workflow, digest, reason, ...(checked ? { check: checked } : {}), ...(audited ? { audit: audited } : {}) };
   }
   if (!held && (stopped || !dueWith(read.workflows))) return sayLeftOut(), undefined;
   // An earlier run's trace is cut of each value it held (traceFrom); one that still holds a secret (a value in a call's
