@@ -6,14 +6,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { agentIdOf, importCommand, planImport, runImport } from "../dist/import.js";
+import { agentIdOf, candidatesOf, importCommand, MAX_RUN_BYTES, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -1908,4 +1908,47 @@ test("the import refuses a data directory whose store an earlier version wrote, 
   // Nothing written: the earlier store is byte for byte as it was, and no store of this version was made beside it.
   assert.ok(readFileSync(file).equals(before), "the earlier version's store is untouched");
   assert.deepEqual(readdirSync(data).sort(), ["store.sqlite"], "nothing else was written into the directory");
+});
+
+test("an import of the projects chosen plans, reads and writes those alone", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const every = await planImport(options(h));
+  assert.deepEqual(candidatesOf(every).map((c) => [c.name, c.sessions, c.sources]).sort(), [["acme-site", 3, ["claude-code", "codex"]], ["field-notes", 1, ["pi"]], ["test-runner", 1, ["codex"]]], "what the owner chooses from: each project, its sessions as the import takes them");
+  assert.deepEqual(candidatesOf(every).map((c) => c.id).sort(), [h.site, h.notes, h.tests].map(agentIdOf).sort());
+  const chosen = options(h, { only: [agentIdOf(h.notes)] });
+  const plan = await planImport(chosen);
+  assert.deepEqual(plan.projects.map((p) => p.cwd), [h.notes]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, plan, chosen);
+  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]), [["field-notes", 1]]);
+  assert.deepEqual((await store.agents.list()).map((a) => a.name), ["field-notes"], "no agent of a project not chosen");
+  assert.equal((await rowsOf(store)).length, 1);
+  assert.deepEqual((await planImport(options(h, { only: [] }))).projects, [], "a choice of none plans none");
+});
+
+test("a session whose subagents are over the run's cap together is left out whole and said, and the rest of a large history imports", { timeout: 300_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [big, small] = [join(at, "code", "big"), join(at, "code", "small")];
+  for (const dir of [big, small]) mkdirSync(dir, { recursive: true });
+  claudeSession(at, big, 1);
+  claudeSession(at, big, 2, { prompt: "Fix the header." });
+  claudeSession(at, small, 3);
+  // Session 1's subagents: one file of about 20 MB under as many names as pass the cap (hard links, 20 MB on disk). Read
+  // together, as a run's subagents are, they are more than a run may hold.
+  const notes = Array.from({ length: 400_000 }, (_, i) => `line ${i} of the subagent's notes, read and kept`).join("\n");
+  const first = claudeSubagent(at, big, 1, 1, { answer: notes });
+  const names = Math.ceil(MAX_RUN_BYTES / statSync(first).size) + 1;
+  for (let k = 2; k <= names; k++) linkSync(first, join(dirname(first), `agent-a${k}.jsonl`));
+  const h = { at, temp: join(root, "tmp") };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, await planImport(options(h)), options(h));
+  const large = report.skipped.filter((s) => s.kind === "large");
+  assert.deepEqual(large.map((s) => s.session), [`claude-code:${sessionId(1)}`], "the one run over the cap, once");
+  assert.match(large[0].why, new RegExp(`over ${MAX_RUN_BYTES} bytes together`));
+  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 1], ["small", 1]], "every other session, its own project's too");
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(3)], "no run of the session left out, whole or cut short");
 });

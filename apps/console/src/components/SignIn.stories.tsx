@@ -15,7 +15,11 @@ const refusal = (name: string) => {
 export const SignInCard: Story = { render: () => <SignIn mode="sign_in" onSubmit={async () => null} /> };
 export const WrongPassword: Story = { render: () => <SignIn mode="sign_in" problem={refusal("auth.sign-in-wrong")} onSubmit={async () => null} /> };
 export const FirstVisit: Story = { render: () => <SignIn mode="setup" onSubmit={async () => null} /> };
-export const FirstVisitOnThisMachine: Story = { render: () => <SignIn mode="setup" offer={{ projects: 3, sessions: 41 }} onSubmit={async () => null} /> };
+export const FirstVisitOnThisMachine: Story = { render: () => <SignIn mode="setup" offer={{ projects: 3, sessions: 41, candidates: [
+  { id: "imp-1", name: "acme-site", path: "/home/dev/code/acme-site", sessions: 28, sources: ["claude-code", "codex"], last_active: new Date(Date.now() - 3 * 3600_000).toISOString() },
+  { id: "imp-2", name: "billing-api", path: "/home/dev/code/billing-api", sessions: 12, sources: ["claude-code"], last_active: new Date(Date.now() - 4 * 86_400_000).toISOString() },
+  { id: "imp-3", name: "field-notes", path: "/home/dev/notes/field-notes", sessions: 1, sources: ["pi"], last_active: new Date(Date.now() - 90 * 86_400_000).toISOString() },
+] }} onSubmit={async () => null} /> };
 export const FirstVisitCounting: Story = { render: () => <SignIn mode="setup" offer={{ counting: true }} onSubmit={async () => null} /> };
 export const FirstVisitWithCode: Story = { render: () => <SignIn mode="setup" code="" onSubmit={async () => null} /> };
 export const PasswordTooShort: Story = { render: () => <SignIn mode="setup" problem={refusal("auth.setup-short")} onSubmit={async () => null} /> };
