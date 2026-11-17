@@ -18,13 +18,13 @@ const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const AGENT = "agent-1";
 const FLOWS = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow() }];
 
-test("a definition's learning is true, false or \"notes\"; anything else is refused, naming the three", () => {
+test("a definition's learning is true, false, \"notes\" or an object of the loop's numbers; anything else is refused, naming the four", () => {
   const base = { version: 1, name: "a", instructions: "Answer.", skills: [], tools: [] };
-  for (const learning of [true, false, "notes"]) assert.deepEqual(definitionIssues({ ...base, learning }), [], `learning: ${JSON.stringify(learning)}`);
-  for (const learning of ["yes", "workflows", 1]) {
+  for (const learning of [true, false, "notes", {}, { compile_after: 5, agree_min: 0.9, alone_min: 0.5 }]) assert.deepEqual(definitionIssues({ ...base, learning }), [], `learning: ${JSON.stringify(learning)}`);
+  for (const learning of ["yes", "workflows", 1, null, []]) {
     const issues = definitionIssues({ ...base, learning });
     assert.equal(issues.length, 1, JSON.stringify(issues));
-    assert.match(issues[0].message, /true, false or "notes"/);
+    assert.match(issues[0].message, /true, false, "notes" or an object of the loop's numbers/);
   }
 });
 

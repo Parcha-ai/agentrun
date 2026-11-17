@@ -62,7 +62,7 @@ Use the same server, API key, server grading model and backend credentials descr
 The sequence is:
 
 1. Teach a reusable two-tool procedure: read a fictional release's status, then pass that unchanged status to the existing formatter.
-2. Require an accepted run-generated skill. Make up to four fresh practice runs: teaching plus four completed practice runs reaches the ordinary five-run compile threshold. The host asks a separate compiler turn when there is no workflow and no recent compilation; three kept notes can also make a job eligible.
+2. Require an accepted run-generated skill. Make up to four fresh practice runs: teaching plus four completed practice runs reaches the agent's compile threshold, which the demo sets at registration with `learning: { compile_after: 5 }` (20 by default). The host asks a separate compiler turn when there is no workflow and no recent compilation.
 3. Require an active workflow generated and checked by the normal learning pipeline. A pending proposal stops the demo for owner review; the script never approves it.
 4. Request a different service in a fresh native session. Require the accepted workflow revision, a successful `learned_workflow` MCP invocation, and both original tool callbacks executing inside that workflow with the new service/version.
 5. Give a learning-Off agent the same request. Verify its tools still work and no learned workflow was offered or executed.

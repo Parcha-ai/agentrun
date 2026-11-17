@@ -19,7 +19,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -110,7 +110,9 @@ async function piRun(t, { guard, confidence, env = {} }) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flowOf(guard) }]);
+  const flows = [{ name: "answer", description: "Answers a question as a number", workflow: flowOf(guard) }];
+  const seed = await landWorkflows(dir, "agent-1", flows);
+  await promoteChecked(server.settings, "agent-1", flows);
   const launch = { input: { content: `${QUESTION}?`, question: QUESTION }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt(seed) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -205,7 +207,9 @@ test("CLI: a guard under its threshold hands back to the harness with the guard'
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say your thinking.", harness: HARNESS, tools: ["read"], learning: true } });
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flowOf({ signal: "self", threshold: 0.5 }) }]);
+  const flows = [{ name: "answer", description: "Answers a question as a number", workflow: flowOf({ signal: "self", threshold: 0.5 }) }];
+  const seed = await landWorkflows(dir, "agent-1", flows);
+  await promoteChecked(server.settings, "agent-1", flows);
   const launch = { input: { content: `${QUESTION}?`, question: QUESTION }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-6.1-terra" }, learning: startAt(seed) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();

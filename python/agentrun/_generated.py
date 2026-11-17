@@ -178,6 +178,7 @@ __all__ = [
     "DefinitionInput",
     "DefinitionInputComputer",
     "DefinitionInputComputerGpu",
+    "DefinitionInputLearning",
     "DefinitionInputModelTiers",
     "DefinitionInputNative",
     "DefinitionInputNativeCapabilities",
@@ -210,6 +211,7 @@ __all__ = [
     "DefinitionInputToolSettingsWebFetch",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
+    "DefinitionLearning",
     "DefinitionModelTiers",
     "DefinitionNative",
     "DefinitionNativeCapabilities",
@@ -583,6 +585,10 @@ __all__ = [
     "ListLearningNotesResponseItemsItemRuns",
     "ListLearningPromotionsResponse",
     "ListLearningPromotionsResponsePromotionsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheck",
+    "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
+    "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponsePromotionsItemRefit",
     "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
     "ListLearningPromotionsResponsePromotionsItemReplay",
@@ -1112,7 +1118,7 @@ class Definition(_DefinitionRequired, total=False):
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
+    learning: Literal[True, False, "notes"] | DefinitionLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1323,6 +1329,12 @@ class DefinitionToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
 
 
 class Source(TypedDict):
@@ -1580,7 +1592,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
+    learning: Literal[True, False, "notes"] | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1788,6 +1800,12 @@ class DefinitionInputToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionInputToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionInputLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -2088,6 +2106,7 @@ class GetAgentArchilResponseArchilDisk(TypedDict):
 
 class GetLearningLoopResponse(TypedDict):
     agent: str
+    completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
     guards: list[GetLearningLoopResponseGuardsItem]
 
@@ -2204,11 +2223,12 @@ class _ListLearningPromotionsResponsePromotionsItemRequired(TypedDict):
     digest: str
     at: str
     decided: Literal["promote", "hold", "replaying", "queued", "skipped"]
-    source: Literal["replay", "dry_run", "refit", "graded"]
+    source: Literal["check", "replay", "dry_run", "refit", "graded"]
     reason: str
 
 
 class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsResponsePromotionsItemRequired, total=False):
+    check: ListLearningPromotionsResponsePromotionsItemCheck
     replay: ListLearningPromotionsResponsePromotionsItemReplay
     runs: list[str]
     inputs: list[str]
@@ -2219,6 +2239,50 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     held_on: list[str]
     commit: str
     skipped_by: str
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    cost_usd: float | None
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
+    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    stopped: Literal[True]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
 
 
 class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):

@@ -22,11 +22,12 @@ const row = (node, p, threshold = 0.7, signal = "jev", workflow = "sort-invoice"
 
 /** A store with just what the read reads: the agent's runs, its settings (grades, promotions) and each run's kept learning
  *  (a row, or a list of rounds' rows `{ at, row }` oldest first). proposal(id) is the newest round, as the store's. */
-function storeOf({ runs, grades = [], promotions = [], kept = {} }) {
+function storeOf({ runs, grades = [], promotions = [], kept = {}, learning = true }) {
   const settings = new Map([["learning.grades.sorter", { v: 1, items: grades }], ["learning.promotions.sorter", { v: 1, items: promotions }]]);
   const roundsOf = (id) => (kept[id] === undefined ? [] : Array.isArray(kept[id]) ? kept[id].map(({ at, row }, i) => ({ round: i + 1, createdAt: at, proposal: row })) : [{ round: 1, createdAt: T0 + 3_600_000, proposal: kept[id] }]);
   return {
     runs: { list: async () => runs },
+    agents: { get: async () => ({ currentRevision: "rev" }), revision: async () => ({ body: { learning } }) },
     settings: { get: async (key) => settings.get(key) },
     learning: { proposal: async (id, round) => (round === undefined ? roundsOf(id).at(-1) : roundsOf(id)[round - 1]) },
   };
@@ -71,6 +72,23 @@ test("the loop's read: compile turns newest first with their standing, a failed 
   ], "a grade is the step's only where the workflow answered alone: a hand-back carries none");
   assert.deepEqual([at(D1, "Pick the code").signal, at(D1, "Pick the code").escalated], ["both", 1]);
   assert.deepEqual(at(D2, "classify").points.map((p) => p.run_id), ["r5"], "each revision its own step");
+});
+
+// Review on #3032: a draft its check had nothing to run on stops, and the loop shows why as its compile's draft error.
+test("a draft its check had nothing to check it on: its stop's reason is the compile's draft error; a recompile's stop on numbers adds none", async () => {
+  const runs = [runOf("r1", 1, { path: "agent" }), runOf("r2", 2, { path: "agent" })];
+  const kept = {
+    r1: { compiled: { workflow: "sort-invoice", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: D1 } },
+    r2: { compiled: { workflow: "sort-invoice", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: D2 } },
+  };
+  const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  const nothing = "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts";
+  const promotions = [
+    { workflow: "sort-invoice", digest: D1, at: new Date(T0).toISOString(), decided: "hold", source: "check", reason: nothing, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], stopped: true } },
+    { workflow: "sort-invoice", digest: D2, at: new Date(T0 + 1).toISOString(), decided: "hold", source: "check", reason: "checked on 6 of the agent's inputs: held, and this was the recompile's check, so it stops", check: { ...bar, attempt: 2, n: 6, agreed: 1, alone: 6, of: [], stopped: true } },
+  ];
+  const { compiles } = await agentLoopOverStore(storeOf({ runs, promotions, kept }), "sorter");
+  assert.deepEqual(compiles.map((one) => [one.run_id, one.digest, one.promoted, one.draft_errors]), [["r2", D2, false, []], ["r1", D1, false, [nothing]]]);
 });
 
 test("a guarded step keeps its newest LOOP_POINTS_MAX runs' p", async () => {
@@ -172,7 +190,21 @@ test("GET /agents/{id}/learning/loop: empty before any compile, in the schema's 
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.equal((await api("POST", "/agents", agent("sorter"))).status, 201);
   const read = await api("GET", "/agents/sorter/learning/loop");
-  assert.deepEqual([read.status, read.body], [200, { agent: "sorter", compiles: [], guards: [] }]);
+  assert.deepEqual([read.status, read.body], [200, { agent: "sorter", completed_runs: 0, compiles: [], guards: [] }]);
   assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning/loop"].get.responses["200"].content["application/json"].schema, read.body), []);
   assert.equal((await api("GET", "/agents/nobody/learning/loop")).status, 404);
+});
+
+test("the loop's read counts the agent's own completed runs toward its compile, at most compile_after: 150 of 200 for 150 runs", async () => {
+  const own = (n) => Array.from({ length: n }, (_, i) => runOf(`own-${i}`, i, { path: "agent" }, { outcome: "completed" }));
+  const others = [
+    runOf("served", 500, { path: "workflow" }, { outcome: "completed" }),
+    runOf("replayed", 501, { path: "replay" }, { outcome: "completed" }),
+    runOf("failed", 502, { path: "agent" }, { outcome: "failed" }),
+    runOf("imported", 503, { path: "agent" }, { outcome: "completed", importedFrom: "x" }),
+  ];
+  const at = async (n, learning) => (await agentLoopOverStore(storeOf({ runs: [...own(n), ...others], learning }), "sorter")).completed_runs;
+  assert.equal(await at(150, { compile_after: 200 }), 150);
+  assert.equal(await at(250, { compile_after: 200 }), 200);
+  assert.equal(await at(7, true), 7);
 });

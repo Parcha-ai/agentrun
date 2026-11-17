@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Switch } from "@/components/ui/switch";
-import type { AgentFields } from "@/lib/agentForm";
+import { type AgentFields, learningOn, type LearningSetting } from "@/lib/agentForm";
 import { cn } from "@/lib/utils";
 
 /** "Learns from its runs": the agent's learning switch (its definition's `learning`), named, said in one line, with a
@@ -30,23 +30,27 @@ export function LearningSwitch({ id, checked, onChange, busy, disabled, quiet, s
  *  holds it, on when the form says so, else as the definition was saved (`saved`). Put back off on an agent that never
  *  said, it says nothing again, so the switch alone makes no new revision. `error` and `warning`: a refused save's and a
  *  save's, for the field. */
-export function LearningField({ fields, onFields, saved, server, error, warning }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: boolean | "notes"; server?: "on" | "off"; error?: string; warning?: string }) {
+export function LearningField({ fields, onFields, saved, server, error, warning }: { fields: AgentFields; onFields: (patch: AgentFields) => void; saved?: LearningSetting; server?: "on" | "off"; error?: string; warning?: string }) {
   const value = fields.learning ?? saved;
-  const on = value === true || value === "notes";
+  const on = learningOn(value);
+  // Full learning, as the definition says it: true, or an object of the loop's numbers (on, with those set), which
+  // choosing full again keeps.
+  const full: LearningSetting = typeof saved === "object" ? saved : true;
+  const kindOf = (setting: LearningSetting | undefined) => (setting === "notes" ? "notes" : learningOn(setting) ? "full" : undefined);
   // A value equal to the saved one is no change of the form's, so choosing back what was saved makes no new revision.
-  // Back to a saved true or "notes" is sent as that value (an undefined key would read as removing the field); off on an
-  // agent that never said stays undefined, saying nothing.
-  const pick = (next: boolean | "notes") => onFields({ learning: next === false && saved === undefined ? undefined : next });
+  // Back to a saved setting is sent as that value (an undefined key would read as removing the field); off on an agent
+  // that never said stays undefined, saying nothing.
+  const pick = (next: LearningSetting) => onFields({ learning: next === false && saved === undefined ? undefined : next });
   return (
     <div>
       <div className="mb-2"><span className="caps text-small font-semibold">Learning</span></div>
       <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server}
-        onChange={(next) => pick(next ? (saved === "notes" ? "notes" : true) : false)} />
+        onChange={(next) => pick(next ? (saved === "notes" ? "notes" : full) : false)} />
       {on && (
         <fieldset aria-label="What it learns" className="mt-2 space-y-2">
-          {([[true, "Notes, skills and workflows", "Once a job repeats, it can learn it as a workflow and run it as one step."], ["notes", "Notes and skills only", "It never runs a learned workflow, and is never asked to draft one."]] as const).map(([kind, label, note]) => (
-            <label key={String(kind)} className={cn("flex items-start gap-3 border px-3 py-2.5", value === kind && "border-foreground")}>
-              <input type="radio" name="learning-kind" className="mt-1 accent-primary" checked={value === kind} onChange={() => pick(kind)} />
+          {([["full", "Notes, skills and workflows", "Once a job repeats, it can learn it as a workflow and run it as one step."], ["notes", "Notes and skills only", "It never runs a learned workflow, and is never asked to draft one."]] as const).map(([kind, label, note]) => (
+            <label key={kind} className={cn("flex items-start gap-3 border px-3 py-2.5", kindOf(value) === kind && "border-foreground")}>
+              <input type="radio" name="learning-kind" className="mt-1 accent-primary" checked={kindOf(value) === kind} onChange={() => pick(kind === "full" ? full : "notes")} />
               <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
             </label>
           ))}

@@ -8,6 +8,21 @@ const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { readSnapshot } = await import("../dist/learn/folder.js");
 const { seedOf } = await import("../dist/learning.js");
+const { recordPromotion } = await import("../dist/learn/promote.js");
+const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+
+/** The promotion records of `flows` (each `{ name, workflow }`) as their one check promoted them (runner/promotion.ts
+ *  decideCheck): a landed workflow serves first only once its check promoted it, and with no run of the agent's to check
+ *  it on it is never promoted (it stops). What a test of serving starts from. */
+export const checkedOf = (flows) => flows.map(({ name, workflow }) => ({
+  workflow: name, digest: workflowDigest({ workflow: JSON.stringify(workflow) }), at: new Date(0).toISOString(), decided: "promote", source: "check",
+  reason: "checked on 1 of the agent's inputs: promoted", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: [] },
+}));
+
+/** Records `flows` promoted by their checks (checkedOf) in `settings`, agent `agentId`'s promotion records. */
+export async function promoteChecked(settings, agentId, flows) {
+  for (const record of checkedOf(flows)) assert.equal((await recordPromotion(settings, agentId, record, () => true)).won, true);
+}
 
 /** A learned workflow's README.md, as a merge keeps it: its name and the line its tool's description says it with. */
 export const readmeOf = (name, description, extra = "") => `---\nname: ${name}\ndescription: ${description}\n${extra}---\n`;
