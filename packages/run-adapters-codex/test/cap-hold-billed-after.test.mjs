@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { LOCAL_COUNT_MARGIN, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { LOCAL_COUNT_MARGIN, responsesInputAfter, startModelProxy } from '@parcha/agentrun-kernel/host';
 import { beforeRequestOf, pricingOf } from '@parcha/agentrun-kernel/kernel/cap';
 import { codexPolicy, responsesOutputLeast, usageOf } from '../dist/host/policy.js';
 import { answerOf, billedOf, costOf, requestOf, SOL, STEPS, TOOL_NAMES } from './fixtures/gmail-walk.mjs';
@@ -79,7 +79,7 @@ test('a later request that differs from the billed one in anything but appended 
   const second = roundtrip(2);
   const edits = {
     'the same request (the control)': (body) => body,
-    'its instructions': (body) => ({ ...body, instructions: `${body.instructions} Answer briefly.` }),
+    'its tool choice': (body) => ({ ...body, tool_choice: 'required' }),
     'its tools': (body) => ({ ...body, tools: body.tools.slice(0, -1) }),
     'its reasoning': (body) => ({ ...body, reasoning: { effort: 'high' } }),
     'an earlier item edited': (body) => ({ ...body, input: body.input.map((item, i) => (i === 1 ? { ...item, content: [{ type: 'input_text', text: 'edited' }] } : item)) }),
@@ -96,6 +96,31 @@ test('a later request that differs from the billed one in anything but appended 
     const expected = name.endsWith('(the control)') ? Math.min(local, figure) : local;
     assert.equal(asked[1].inputTokensMax, expected, `${name}: held at ${asked[1].inputTokensMax}`);
   }
+});
+
+test('the figure itself: none for a later body whose instructions, model, include or any other billed field differ, or whose input is not the earlier one with items appended', () => {
+  // Codex's policy refuses a body with `instructions` before it is measured, so the kernel's figure is checked on its own.
+  const policy = codexPolicy(MINI);
+  const earlier = { body: policy.apply(roundtrip(1), ROUTE), inputTokens: billedIn(ROUNDTRIP_ANSWERS[0]) };
+  const later = policy.apply(roundtrip(2), ROUTE);
+  assert.equal(responsesInputAfter(earlier, later), after(earlier.inputTokens, earlier.body, later), 'the control: appended items only');
+  assert.equal(responsesInputAfter(earlier, { ...later, max_output_tokens: 7, stream: false, metadata: { a: 'b' } }), after(earlier.inputTokens, earlier.body, later), 'fields that bill no input');
+  const differs = {
+    'instructions added': { ...later, instructions: 'Answer briefly.' },
+    'instructions changed': responsesInputAfter({ ...earlier, body: { ...earlier.body, instructions: 'A' } }, { ...later, instructions: 'B' }),
+    model: { ...later, model: 'gpt-6.1-sol' },
+    include: { ...later, include: [] },
+    'prompt cache key': { ...later, prompt_cache_key: 'other' },
+    'a field the earlier body had and this one drops': (({ tool_choice: _choice, ...rest }) => rest)({ ...later, tool_choice: 'auto' }),
+    'input as a string': { ...later, input: 'hello' },
+    'fewer items': { ...later, input: later.input.slice(0, 2) },
+  };
+  for (const [name, body] of Object.entries(differs)) {
+    const figure = typeof body === 'object' && body !== null ? responsesInputAfter(earlier, body) : body;
+    assert.equal(figure, undefined, name);
+  }
+  assert.equal(responsesInputAfter({ ...earlier, inputTokens: 0 }, later), undefined, 'no billed figure');
+  assert.equal(responsesInputAfter(earlier, { ...later, input: [...later.input, { type: 'message', role: 'user', content: [{ type: 'input_file', file_id: 'f' }] }] }), undefined, 'an appended file');
 });
 
 test("a Responses answer's usage says the reasoning tokens it billed", () => {
