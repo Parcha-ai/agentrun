@@ -930,6 +930,13 @@ A desktop, a phone and a browser run in either mode. The run's folder is at
   followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
   with a link on the way.
 
+**The run's scratch.** `bash`'s `TMPDIR` is `.agentrun/tmp` in the run's folder, and a cut answer's full output is in
+`.agentrun/output/`. The run's end removes both before its end commit: through the computer when it mounts the folder,
+else through the folder itself. A computer that mounts the folder from Archil holds Archil's write delegation for it
+until its release, so Archil refuses the server's own deletes there until then; the computer's deletes sync to the disk
+before they answer. If that computer no longer answers, a Mode 2 run's scratch stays and the release logs why. A park
+that keeps the computer removes neither.
+
 **An agent with no setting.** With no `computer` and no `place`, the server decides at each run's start: in Mode 1, the
 Docker sandbox where this server's Docker answers, else no computer; in Mode 2, no computer. A workflow always runs with
 no computer.
@@ -3162,13 +3169,7 @@ neither, on the agent's own model. `GET /capabilities` names it as `learning.gra
 cheap model is a poor grader, so point the strong tier (or `--grade-model`) at a strong one. The grader reads each active
 note's index line, the whole text only of the notes the proposal supersedes, what the user said in the run (cut of the
 server's secrets, as the proposal keeps it), and the new notes, so its prompt stays under 200,000 characters however
-many notes the folder holds. A note must hold beyond the one input it came from: before the grader, one Jev question
-per new note (the Jev model and keys decision nodes use) asks whether it states a method, a source, a fact or a
-preference that holds for this job's other inputs, and a note rated below 0.5
-(`AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`, from 0 to 1) is dropped there, its reason on the verdict; its cost is
-the grade's. When Jev cannot run, the grader reads every note: the runner's log says why, the run's learning says the
-check could not run, and the grade's cost is unknown, never the grader's alone (a Jev request that failed may still
-have been charged). The grader answers General
+many notes the folder holds. The grader answers General
 for every item, and one it says is not general is never kept, whatever else it decides. No injection screen runs
 before it: a page classifier cannot see where a note came
 from, and read a preference the user stated as a planted instruction; the grader's Planted question decides: a rule the

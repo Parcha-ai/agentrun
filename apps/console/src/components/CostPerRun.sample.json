@@ -901,7 +901,7 @@
   "times_cheaper": 7.7,
   "hand_backs": { "ran": 59, "back": 3 },
   "withheld": null,
-  "replay": { "n": 40, "workflow_pct": 95, "agent_pct": 94, "cleared": true }
+  "replay": { "n": 40, "workflow_pct": 95, "agent_pct": 100, "cleared": true, "agreed": 38, "alone": 40, "agree_min": 0.8 }
  },
  "workflows": []
 }

@@ -73,9 +73,11 @@ export const COST_WINDOW = 10;
 export const COST_RUNS_DEFAULT = 1000;
 export const COST_RUNS_MAX = 10_000;
 
-/** The serving promotion's replay (store-reads/learning.ts servingReplayOf): on `n` inputs, the workflow's accuracy and the
- *  agent's in percent to a tenth, and whether it `cleared` the bar promotion reads (learn/promote.ts withinBar). */
-export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; cleared: boolean };
+/** The serving promotion's check (store-reads/learning.ts servingReplayOf): on `n` inputs, the workflow's agreement and the
+ *  agent's own in percent to a tenth, whether it `cleared` the bar (learn/promote.ts checkPasses), and the agreement check
+ *  itself: `agreed` of the `alone` inputs it answered alone said what the agent said, against the bar `agree_min` (0-1).
+ *  Passing that bar is all it says: never that the workflow is as accurate as the agent. */
+export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; cleared: boolean; agreed: number; alone: number; agree_min: number };
 
 /** The paths a learned workflow served a run on: it ran first and answered alone (`workflow`) or handed back
  *  (`handed_back`). A `replay` checks a new revision on a graded input and serves no one; an `agent` run is by hand. */

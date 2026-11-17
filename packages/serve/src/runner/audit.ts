@@ -12,7 +12,7 @@
 //     the two answers say the same, learn/promote.ts sameAnswer), oldest served run first; then, rows added or not, the
 //     hold rule reads the serving revisions' rows: a hold is a function of the ledger alone.
 //   applyHold: at least hold_disagree disagreements in the newest hold_window rows of the digest's current promotion
-//     hold the workflow (a promotion hold, source `audit`, with those rows, each text cut of the host's secrets before
+//     hold the workflow (a promotion hold carrying `audit`, with those rows, each text cut of the host's secrets before
 //     it is shortened, learn/secrets.ts excerptShown): the agent's next run asks one recompile with them as data
 //     (runner/learning-end.ts compileAskOf), which S3a's check decides on its inputs plus the disagreeing ones. A second
 //     hold within stop_window served runs of the first stops it: no compile, the stop said on the record.
@@ -296,7 +296,7 @@ async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<
 
 /** The hold rule on `workflow` at `digest` over the ledger `rows`, when it serves now (its newest record promotes it),
  *  on the rows of its current promotion alone (promotionStartOf: a digest its owner's replay promoted again after a hold
- *  starts on none): a hold (source audit) with the disagreeing rows, or a stop when an earlier audit hold of the
+ *  starts on none): a hold carrying `audit` with the disagreeing rows, or a stop when an earlier audit hold of the
  *  workflow is within stop_window served runs. Kept only while the record it read is still the digest's (of two claims,
  *  one holds). */
 async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: AuditLoop, workflow: string, digest: string): Promise<void> {
@@ -306,7 +306,7 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
   if (current?.decided !== "promote") return;
   const hold = holdOf(rows, workflow, digest, promotionStartOf(records, workflow, digest)?.at ?? null, loop);
   if (!hold) return;
-  const first = records.findLast((one) => one.workflow === workflow && one.source === "audit" && one.decided === "hold");
+  const first = records.findLast((one) => one.workflow === workflow && one.decided === "hold" && one.audit !== undefined);
   const since = first ? Date.parse(first.at) : undefined;
   const servedSince = since === undefined ? 0 : (await servedRuns(store, agentId, loop.stop_window, workflow, undefined, (row) => row.startedAt >= since)).length;
   const stopped = first !== undefined && servedSince < loop.stop_window;
@@ -323,7 +323,7 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
   const said = `it disagreed with the agent's own answer on ${hold.disagreed.length} of its last ${hold.rows.length} audited runs (the bar: ${loop.hold_disagree} of ${loop.hold_window})`;
   const reason = stopped ? STOPPED_TWICE : `held: ${said}; the agent's next run recompiles it once with them`;
   const record: PromotionRecord = {
-    workflow, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", source: "audit", reason,
+    workflow, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason,
     audit: { window: loop.hold_window, disagree: loop.hold_disagree, rows: hold.rows.length, disagreements, ...(stopped ? { stopped: true as const } : {}) },
     ...(current.commit ? { commit: current.commit } : {}),
   };

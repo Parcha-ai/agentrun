@@ -5,11 +5,7 @@
 //     alone at workflow cost (path `replay`, no agent request, no end-of-run turn);
 //   - a later run, every replay ended, is served first once the draft answered enough inputs alone and enough of those
 //     said what the agent said;
-//   - a replay the workflow hands back on is never an answer alone: one that hands back every input is held. An escalate
-//     on a judge's field is recorded in a replay, not obeyed, and the check reads it as it serves (it hands back when it
-//     fired): held, and nothing refits it;
-//   - a guard is read at its serving threshold (a replay reads it record-only): an input it would hand back when serving
-//     is no answer alone, and no disagreement of its answer either;
+//   - a replay the workflow hands back on is never an answer alone: one that hands back every input is held;
 //   - a replay whose answers differ from the agent's holds the digest: the run after it is the agent's;
 //   - no completed run of the agent's it fits: never promoted; it stops, its record naming why ("nothing to check it on");
 //   - every reserved input counts: a replay run never created by the check's deadline is a failed input;
@@ -44,8 +40,6 @@ const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
-const { CANARY } = await import("./fixtures/faux-jev.mjs");
-const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const MODEL = "claude-sonnet-5-5";
@@ -68,6 +62,17 @@ const answerFlow = {
 const FLOWS = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }];
 const DIGEST = workflowDigest({ workflow: JSON.stringify(answerFlow) });
 const FINAL = ["ended", "failed", "stopped"];
+
+/** DIGEST's records once run-2 (the agent's: its check held the draft) ended. Its end asked the one revision; the faux
+ *  model's answer holds no draft, so that revision's failed draft is the newest record (compile once: the recompile's
+ *  attempt, stopped). */
+async function heldThenRevisionFailed(server) {
+  const records = await promotionsOf(server.settings, "agent-1");
+  const failed = records.at(-1);
+  assert.deepEqual([failed.workflow, failed.decided, failed.check?.attempt, failed.check?.n, failed.check?.stopped], ["answer", "hold", 2, 0, true], JSON.stringify(failed));
+  assert.match(failed.reason, /^its draft failed its checks: .+It was the recompile, so it stops/);
+  return records.filter(({ digest }) => digest === DIGEST);
+}
 const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
 const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
 const isNode = (request) => offers(request.body, "submit");
@@ -228,7 +233,7 @@ test("a new digest is checked before it serves: the agent takes the run meanwhil
   assert.equal(second.metrics?.path, "workflow", JSON.stringify(second.metrics));
   assert.equal(gw.requests.filter((request) => !isNode(request)).length, agentRequests, "no agent request for the served run");
   const records = await promotionsOf(server.settings, "agent-1");
-  assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "check"], ["promote", "check"]]);
+  assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
   const { check } = records[1];
   assert.deepEqual({ ...check, of: [...check.of].sort() }, { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 6, agreed: 6, alone: 6, of: PRIORS, cost_usd: check.cost_usd, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
   assert.ok(check.cost_usd > 0, "what the check cost is on its record");
@@ -246,45 +251,12 @@ test("a check the workflow hands back on every input is held (it would never ans
   const second = await start("run-2", "What is seven times six");
   // Every input handed back: it never answered alone: held, and nothing serves: the next run is the agent's.
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
-  const records = await promotionsOf(server.settings, "agent-1");
-  assert.deepEqual(records.map(({ decided, source }) => [decided, source]), [["replaying", "check"], ["hold", "check"]]);
+  const records = await heldThenRevisionFailed(server);
+  assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["hold"]]);
   const decided = records.at(-1);
   assert.deepEqual({ n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed, handed_back: decided.check.outcomes.handed_back }, { n: 6, alone: 0, agreed: 0, handed_back: 6 });
   assert.deepEqual(decided.check.disagreements.map((one) => [one.agent, typeof one.escalated, one.draft]), decided.check.disagreements.map(() => [AGENT_SAYS, "string", undefined]));
   assert.match(decided.reason, /^checked on 6 of the agent's inputs: answered 0 alone \(0\.0%, the bar 70\.0%\).*: held; the agent's next run recompiles it once/);
-});
-
-/** answerFlow with a judge of its draft and an escalate on the judge's field (the MCC shape): the faux Jev says yes to
- *  every question, so `unsupported` is true and the escalate fires on every input, the draft right or not. */
-const judgedFlow = {
-  ...answerFlow,
-  schemas: { ...answerFlow.schemas, Check: { type: "object", required: ["unsupported"], properties: { unsupported: { type: "boolean", description: "Is the answer unsupported by the question?" } } } },
-  root: { node: "chain", steps: [
-    answerFlow.root.steps[0],
-    { node: "judge", label: "check", state: { answer: "{answer.answer}", question: "{question}" }, out: "Check", as: "check" },
-    { node: "escalate", label: "unsupported", when: { predicate: "field_equals", path: "check.unsupported", value: true }, kind: "unsupported", stage: "check", summary: "the check says {answer.answer} is unsupported" },
-  ] },
-};
-
-test("a judge-driven escalate is recorded in the replay, not obeyed, and the check reads it as it serves: it fired on every input, so nothing answered alone: held, and nothing refits it", { timeout: 180_000 }, async (t) => {
-  const env = { TYPESAFE_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_JEV: FAUX_JEV };
-  const { server, start, replaysEnded, logs } = await world(t, { flows: [{ name: "answer", description: "Answers a question as a number", workflow: judgedFlow }], env });
-  const first = await start("run-1", "What is six times seven");
-  assert.equal(first.metrics?.path, "agent");
-  // Recorded, not obeyed: each replay went on to its draft, the escalate's row saying it fired.
-  for (const row of await replaysEnded(6)) {
-    assert.equal(row.metrics?.replay?.outcome, "answered", JSON.stringify(row.metrics));
-    assert.deepEqual(row.metrics.guards.map(({ node, signal, p, escalated }) => [node, signal, p, escalated]), [["unsupported", "escalate", 0, false]]);
-  }
-  const second = await start("run-2", "What is seven times six");
-  assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}`);
-  const records = await promotionsOf(server.settings, "agent-1");
-  const digest = workflowDigest({ workflow: JSON.stringify(judgedFlow) });
-  assert.deepEqual(records.map((one) => [one.digest, one.decided, one.source]), [[digest, "replaying", "check"], [digest, "hold", "check"]], "no refit, no second revision");
-  const held = records.at(-1);
-  assert.deepEqual({ n: held.check.n, alone: held.check.alone, agreed: held.check.agreed, answered: held.check.outcomes.answered }, { n: 6, alone: 0, agreed: 0, answered: 6 });
-  assert.deepEqual(held.check.disagreements.map((one) => one.escalated), held.check.disagreements.map(() => "step unsupported hands it back when serving (its escalate fired)"));
-  assert.ok(!logs.some((line) => /refit/.test(line)), logs.join("\n"));
 });
 
 test("a check whose answers differ from the agent's holds the digest: the next run is the agent's", { timeout: 180_000 }, async (t) => {
@@ -293,8 +265,8 @@ test("a check whose answers differ from the agent's holds the digest: the next r
   await replaysEnded(6);
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", source: "check", n: 6, alone: 6, agreed: 0 });
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 6, alone: 6, agreed: 0 });
   assert.deepEqual(decided.check.disagreements.map((one) => [one.agent, one.draft]), decided.check.disagreements.map(() => [AGENT_SAYS, JSON.stringify({ answer: 41, sure: true })]));
   assert.match(decided.reason, /answered 6 alone \(100\.0%, the bar 70\.0%\), and 0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held/);
   assert.ok(logs.some((line) => line.includes(`answer at ${DIGEST} held:`)), logs.join("\n"));
@@ -309,7 +281,7 @@ test("nothing to check it on (no completed run of the agent's it takes): never p
   assert.deepEqual(await replays(), [], "no replay run");
   const [record, ...more] = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(more, []);
-  assert.deepEqual({ decided: record.decided, source: record.source, digest: record.digest, n: record.check.n, stopped: record.check.stopped, attempt: record.check.attempt }, { decided: "hold", source: "check", digest: DIGEST, n: 0, stopped: true, attempt: 1 });
+  assert.deepEqual({ decided: record.decided, digest: record.digest, n: record.check.n, stopped: record.check.stopped, attempt: record.check.attempt }, { decided: "hold", digest: DIGEST, n: 0, stopped: true, attempt: 1 });
   assert.equal(record.reason, "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts");
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
@@ -334,8 +306,8 @@ test("a check whose launch was interrupted after 1 of its 20 runs, decided past 
   await restart();
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", `never promoted on the one input that ran: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", source: "check", n: 20, alone: 1, agreed: 1 }, JSON.stringify(decided));
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 20, alone: 1, agreed: 1 }, JSON.stringify(decided));
   assert.equal(decided.check.disagreements.filter((one) => one.failed).length, 19, "each one never created is a failed input");
   assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\), and 1 of those said what the agent said \(100\.0%, the bar 80\.0%\) \(19 never started by the check's deadline/);
   assert.equal(await server.runs.get(missing[0]), undefined, "past its deadline nothing is created for it");
@@ -368,44 +340,6 @@ test("a check none of whose runs was ever created, decided past its deadline: v2
   assert.deepEqual({ status: view.status, decided: view.decided, inputs: view.inputs, failed: view.outcomes.failed }, { status: "failed", decided: "hold", inputs: 6, failed: 6 }, JSON.stringify(view));
 });
 
-/** One guarded agent step (its own confidence, `self`), its guard at `threshold`. */
-const guardedFlow = (threshold) => ({
-  v: 2, name: "answer",
-  schemas: {
-    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-    Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
-  },
-  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
-  root: { node: "agent", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", tools: [], tier: "fast", guard: { signal: "self", threshold } },
-});
-
-test("a check reads each guard at its serving threshold: an input its guard hands back when serving is no answer alone and no disagreement; nothing refits the guard", { timeout: 180_000 }, async (t) => {
-  // Question 5: a wrong answer at confidence 0.3, under the guard's 0.5; every other: right at 0.9. The replay reads the
-  // guard record-only, so every replay answers; served, question 5 is handed back. At agree_min 0.9, counting question 5's
-  // answer as the draft's would hold it (5 of 6 agree); read at 0.5 it is a hand-back, and 5 of 5 agree.
-  const submit = (text) => (text.includes("Question 5") ? { answer: 41, confidence: 0.3 } : { answer: 42, confidence: 0.9 });
-  const flow = guardedFlow(0.5);
-  const { server, start, replaysEnded, logs } = await world(t, { learning: { agree_min: 0.9 }, says: JSON.stringify({ answer: 42 }), flows: [{ name: "answer", description: "Answers a question as a number", workflow: flow }], submit });
-  const first = await start("run-1", "What is six times seven");
-  assert.equal(first.metrics?.path, "agent");
-  for (const row of await replaysEnded(6)) {
-    assert.equal(row.metrics?.replay?.outcome, "answered", JSON.stringify(row.metrics));
-    assert.deepEqual(row.metrics.guards.map(({ threshold, escalated }) => [threshold, escalated]), [[1e-9, false]], "read record-only in the replay");
-  }
-  const second = await start("run-2", "Question 4");
-  const records = await promotionsOf(server.settings, "agent-1");
-  const digest = workflowDigest({ workflow: JSON.stringify(flow) });
-  assert.deepEqual(records.map((one) => [one.digest, one.decided, one.source]), [[digest, "replaying", "check"], [digest, "promote", "check"]], "no refit, no second revision");
-  const { check } = records.at(-1);
-  assert.deepEqual({ n: check.n, alone: check.alone, agreed: check.agreed, agree_min: check.agree_min }, { n: 6, alone: 5, agreed: 5, agree_min: 0.9 });
-  assert.deepEqual(check.disagreements, [{ run: "prior-5", input: JSON.stringify({ content: "Question 5?", question: "Question 5" }), agent: JSON.stringify({ answer: 42 }), escalated: "step answer hands it back when serving (p 0.3 under 0.5)" }]);
-  assert.ok(!logs.some((line) => /refit/.test(line)), logs.join("\n"));
-  // Promoted at its own threshold: it serves the next even question, and hands question 5 back to the agent.
-  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", digest], JSON.stringify(second.metrics));
-  const third = await start("run-3", "Question 5");
-  assert.equal(third.metrics?.path, "handed_back", JSON.stringify(third.metrics));
-});
-
 /** answerFlow's revision: its step's instructions changed (a recompile), so its digest is new. */
 const revisedFlow = { ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions: "Answer the question, revision two; say whether you are sure." }, answerFlow.root.steps[1]] } };
 const REVISED = workflowDigest({ workflow: JSON.stringify(revisedFlow) });
@@ -427,7 +361,7 @@ async function landRevision(w, runId, flow, seed) {
  *  is checked on the agent's six earlier runs. */
 async function championWorld(t, opts = {}) {
   const w = await world(t, opts);
-  await recordPromotion(w.server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "check", reason: "promoted", commit: w.seed }, (was) => was === undefined);
+  await recordPromotion(w.server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "promoted", commit: w.seed }, (was) => was === undefined);
   const served = await w.start("run-1", "What is six times seven");
   assert.deepEqual([served.metrics?.path, served.metrics?.workflow_digest], ["workflow", DIGEST], "the champion serves");
   await landRevision(w, "compile-1", revisedFlow, w.seed);
@@ -448,7 +382,7 @@ test("champion/challenger: the champion serves while its revision is checked; on
   const third = await start("run-3", "What is six times seven, again");
   assert.deepEqual([third.metrics?.path, third.metrics?.workflow_digest], ["workflow", REVISED], JSON.stringify(third.metrics));
   const records = await promotionsOf(server.settings, "agent-1");
-  assert.deepEqual(records.filter((one) => one.digest === REVISED).map(({ decided, source }) => [decided, source]), [["replaying", "check"], ["promote", "check"]]);
+  assert.deepEqual(records.filter((one) => one.digest === REVISED).map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
   assert.ok(records.every((one) => typeof one.commit === "string"), "every record names the learning commit its text is at");
   assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: REVISED, replaying: null }]);
 });
@@ -519,7 +453,7 @@ test("one check at a time, and a running check finishes: revisions that come mea
   records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual([decidedOf(records, REVISED), decidedOf(records, THIRD), decidedOf(records, FOURTH)], [["replaying", "promote"], [], ["replaying"]], JSON.stringify(records));
   const fourthCheck = records.findLast((one) => one.digest === FOURTH);
-  assert.deepEqual([fourthCheck.source, fourthCheck.runs.length, fourthCheck.check.attempt], ["check", 6, 1], "revision four is checked on the agent's six earlier runs (every run since was served): a first check");
+  assert.deepEqual([fourthCheck.runs.length, fourthCheck.check.attempt], [6, 1], "revision four is checked on the agent's six earlier runs (every run since was served): a first check");
   for (const id of fourthCheck.runs) digestOf.set(id, FOURTH);
   assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: REVISED, replaying: FOURTH }]);
   await until(async () => {
@@ -532,7 +466,7 @@ test("one check at a time, and a running check finishes: revisions that come mea
   assert.equal((await replays()).length, 12, "every replay run is revision two's or four's (6 and 6), none of revision three");
   const after = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(decidedOf(after, FOURTH), ["replaying", "promote"]);
-  assert.deepEqual(after.filter((one) => one.digest !== DIGEST).map((one) => one.source), ["check", "check", "check", "check"], "no queued, skipped or replay record");
+  assert.deepEqual(after.filter((one) => one.digest !== DIGEST).map((one) => one.decided), ["replaying", "promote", "replaying", "promote"], "no queued, skipped or replay record");
   assert.deepEqual(servingOf(after), [{ workflow: "answer", digest: FOURTH, replaying: null }]);
   for (const line of [`${THIRD} waits: ${REVISED} is being checked (one check at a time)`, `${FOURTH} waits: ${REVISED} is being checked (one check at a time)`, `${REVISED} promoted:`, `${FOURTH} is new: checking it on 6 inputs`]) assert.ok(logs.some((one) => one.includes(line)), `${line}\n${logs.join("\n")}`);
 });
@@ -545,8 +479,8 @@ test("a check whose workflow fails on every input (a step failed: a credential o
   assert.deepEqual(runs.map((row) => row.metrics?.replay?.outcome), runs.map(() => "failed"), JSON.stringify(runs.map((row) => row.metrics)));
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}`);
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
-  assert.deepEqual({ decided: decided.decided, source: decided.source, n: decided.check.n, alone: decided.check.alone, failed: decided.check.outcomes.failed }, { decided: "hold", source: "check", n: 6, alone: 0, failed: 6 });
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
+  assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, failed: decided.check.outcomes.failed }, { decided: "hold", n: 6, alone: 0, failed: 6 });
   assert.match(decided.reason, /answered 0 alone .*\(6 failed: a step failed, or it was still at work at the check's deadline\): held/);
 });
 
@@ -561,7 +495,7 @@ test("a replay run its claim cannot lay at its digest ends failed: the agent is 
 
 test("a replay run whose revision was decided already never runs, its cancel lost or not", { timeout: 120_000 }, async (t) => {
   const { server, gw, launchOf, ended, seed } = await world(t, { prior: 0 });
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", source: "check", reason: "held at its deadline", runs: ["replay-orphan"] }, (was) => was === undefined);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "hold", reason: "held at its deadline", runs: ["replay-orphan"] }, (was) => was === undefined);
   await server.runs.create({ id: "replay-orphan", agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launchOf("Question 0", seed), replay: { of: "graded-0", workflow: "answer", digest: DIGEST } } });
   const row = await ended("replay-orphan");
   assert.equal(row.state, "failed", JSON.stringify(row));
@@ -573,8 +507,8 @@ test("a held replay's leftover run never runs once its revision replays again: o
   const { server, gw, launchOf, ended, seed } = await world(t, { prior: 0 });
   const at = () => new Date().toISOString();
   // Replay A held at its deadline, its cancel lost: run replay-a-left is still queued. Its owner then starts replay B.
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: at(), decided: "hold", source: "replay", reason: "held at its deadline", runs: ["replay-a-left"], inputs: ["graded-0"], replay_id: "replay-a" }, (was) => was === undefined);
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: at(), decided: "replaying", source: "replay", reason: "replaying again", runs: ["replay-b-0"], inputs: ["graded-0"], replay_id: "replay-b" }, (was) => was?.decided === "hold");
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: at(), decided: "hold", reason: "held at its deadline", runs: ["replay-a-left"], inputs: ["graded-0"], replay_id: "replay-a" }, (was) => was === undefined);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: at(), decided: "replaying", reason: "replaying again", runs: ["replay-b-0"], inputs: ["graded-0"], replay_id: "replay-b" }, (was) => was?.decided === "hold");
   const replayBody = { ...launchOf("Question 0", seed), replay: { of: "graded-0", workflow: "answer", digest: DIGEST } };
   await server.runs.create({ id: "replay-a-left", agentId: "agent-1", revisionId: "rev-1" }, { body: replayBody });
   const left = await ended("replay-a-left");
@@ -608,7 +542,7 @@ test("a run pinned to an older revision, launched after the newest one's check s
 test("a revision that adds a required input field leaves its champion serving the inputs the champion takes", { timeout: 180_000 }, async (t) => {
   const w = await world(t, { prior: 0 });
   const { server, start, seed } = w;
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "check", reason: "promoted", commit: seed }, (was) => was === undefined);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "promoted", commit: seed }, (was) => was === undefined);
   // The revision asks for a locale too: a run with a question alone does not fit it, and does fit the champion.
   const wide = { ...answerFlow, schemas: { ...answerFlow.schemas, In: { type: "object", required: ["question", "locale"], properties: { question: { type: "string" }, locale: { type: "string" } } } } };
   await landRevision(w, "compile-1", wide, seed);
@@ -619,13 +553,13 @@ test("a revision that adds a required input field leaves its champion serving th
 test("a held revision whose input the champion does not take: the agent takes the run, and its learned_workflow tool runs the champion, never the held revision", { timeout: 180_000 }, async (t) => {
   const w = await world(t, { prior: 0 });
   const { server, gw, logs, seed, dir, ended, launchOf } = w;
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "check", reason: "promoted", commit: seed }, (was) => was === undefined);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "promoted", commit: seed }, (was) => was === undefined);
   // The revision on the folder's main takes a `query` where the champion takes a `question`; its check held it.
   const renamed = { ...answerFlow, schemas: { ...answerFlow.schemas, In: { type: "object", required: ["query"], properties: { query: { type: "string" } } } } };
   await landRevision(w, "compile-1", renamed, seed);
   const main = (await seedOf(dir, "agent-1")).sha;
   const held = workflowDigest({ workflow: JSON.stringify(renamed) });
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: held, at: new Date().toISOString(), decided: "hold", source: "check", reason: "checked on 6 of the agent's inputs: held", commit: main }, (was) => was === undefined);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest: held, at: new Date().toISOString(), decided: "hold", reason: "checked on 6 of the agent's inputs: held", commit: main }, (was) => was === undefined);
   // A run whose input the held revision takes and the champion does not: nothing serves it first.
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launchOf("What is six times seven", main), input: { content: "What is six times seven?", query: "What is six times seven" } } });
   const run = await ended("run-1");

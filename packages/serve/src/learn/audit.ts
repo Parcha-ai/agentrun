@@ -214,7 +214,7 @@ export function servingLinesOf(records: readonly PromotionRecord[], rows: readon
   return servingOf(records).map(({ workflow, digest }) => {
     const own = records.filter((one) => one.workflow === workflow);
     const newest = own.at(-1);
-    const state = newest?.decided === "replaying" && newest.source === "check" ? "checking"
+    const state = newest?.decided === "replaying" ? "checking"
       : digest !== null ? "serving"
       : newest?.decided === "hold" && (newest.check?.stopped || newest.audit?.stopped) ? "stopped"
       : "held";

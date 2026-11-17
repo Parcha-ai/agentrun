@@ -132,22 +132,25 @@ turn that is due is asked alone. An SDK task carries no owner feedback, so its r
 alone. The compile turn asks for the first workflow once the agent has its definition's `learning.compile_after` completed
 runs of its own (20 by default; a run its learned workflow answered alone and a check's replay run are not counted), and
 for a revision of one only when its promotion record holds it, once per hold. A hand-back, a stop by the money rule and a
-wrong grade of a served run ask for none: each is one sample, and the hold reads it among the workflow's others.
+wrong grade of a served run ask for none: each is one sample, and the hold reads it among the workflow's others. A job
+compiles once: while a passing draft waits on its grade nothing more is asked, and a turn whose drafts all fail their
+checks is the compile's attempt all the same, kept as a promotion record (a hold with nothing checked, `n` 0, its reason
+starting "its draft failed its checks" and naming them). A first compile's earns the one recompile, as a check's hold
+does; a recompile's stops (`check.stopped`).
 
 Promote once: a new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first
 run that lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each,
 at workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
 own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of the inputs it ran on, `alone` is the share
-it answered with no escalate and no failed step (a replay reads guards record-only and records a judge's escalate instead
-of obeying it, so an input one of them would hand back at its serving threshold is no answer alone), and `agreement` the
+it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no answer alone), and `agreement` the
 share of those that say what the agent said. A newer revision that comes while a check runs waits and records nothing;
 the claim after the running check is decided starts the newest. It is
-promoted (source `check`) when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
+promoted when agreement is at least `learning.agree_min` (0.8) and alone at least `learning.alone_min`
 (0.7). Under either bar it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on
 as data (each one's input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked
 the same way. Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or
 its owner acts. The record keeps `check`: the bar it was held to, `n`, `agreed`, `alone`, the runs it read, the tools that
-stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades, a refit or a queued revision. The
+stopped skipped inputs (`skipped_tools`) and, on a hold, the disagreements. A promotion by check is never moved by grades. The
 inputs are the agent's last `compile_after` runs of its own picked first, however many runs its workflow served since.
 Every reserved input counts in `n`: one whose replay run was never created, or never ended, by the check's deadline is a
 failed input, never left out, in `n` and in `outcomes` alike (the record's `unstarted` counts the never created; every
@@ -191,8 +194,8 @@ open one, each claim's batch oldest served run first. GET .../learning/audits re
 the ledger: every such claim applies the rule again over the rows as they are, rows added or not, so a hold a crash lost
 after its rows were committed is made at the next claim. The hold rule (`applyHold`) reads the newest
 `learning.hold_window` (10) rows with a verdict of the serving revision's current promotion (so a revision its owner's
-replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (source
-`audit`, the record's `audit` keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
+replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (a hold
+record carrying `audit`, keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
 agent's answer and the workflow's, each text cut of the host's secrets whole before it is shortened to 1,200 characters,
 `learn/secrets.ts` excerptShown, as a check's are). The agent takes the runs, and its next run it fits asks one recompile with those
 disagreements as data; S3a's check decides it on its usual inputs plus the disagreeing ones. A second audit hold within
@@ -319,7 +322,7 @@ Over a cap is refused, never cut.
   answers (4.7%) quoting text no page held from the rest. The predicate compares lowercased text with curly quotes
   straight, dashes as `-` and whitespace runs as one space, then letters and digits alone; quotes under 8 characters
   are not checked; its `escalate.evaluated` event says how many quotes it checked and missed, never their text. It
-  reads the answer a model step wrote, never a judge's field, so a replay obeys it (softEscalates leaves it hard).
+  reads the answer a model step wrote, never a judge's field.
   Once the checks hold, the answer re-picks once before one hands back: the top-level step writing the answer is a
   `loop` with `maxIters` 2 whose `until` is `not` of the check's `quote_missing` (the same `path`, `field` and
   `pages`), its body the step that answers, which reads the compact facts and its failed draft through its `state`
@@ -358,12 +361,8 @@ Over a cap is refused, never cut.
   the run gave is read whole for what must never be stored (`unstorable`), an edit or a file over its cap included,
   which the checks refuse before they read its text.
 
-Whether a note holds one case's data is not the checker's to judge. Before the grader, one Jev question per new note
-(`learn/general.ts`, on the Jev model and keys decision nodes use) asks whether it holds for the job's inputs other than
-the one it came from; a note rated below the bar (0.5, `AGENTRUN_SERVE_LEARNING_GENERAL_THRESHOLD`) is dropped there,
-its reason on the verdict and its cost the grade's. When Jev cannot run, the grader reads every note, the grade's
-entry keeps why (`unchecked`), the run's learning end says so, and the grade's cost is unknown (null). The grader's
-General question is then a gate: it answers `general` for every item, and one it says is not general is never kept.
+Whether a note holds one case's data is not the checker's to judge. The grader's
+General question is a gate: it answers `general` for every item, and one it says is not general is never kept.
 
 ## The grade
 

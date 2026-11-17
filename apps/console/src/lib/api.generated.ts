@@ -2572,6 +2572,9 @@ export interface operations {
           workflow_pct: number;
           agent_pct: number;
           cleared: boolean;
+          agreed: number;
+          alone: number;
+          agree_min: number;
         } | null;
       };
     };
@@ -2595,25 +2598,6 @@ export interface operations {
         promoted: boolean | null;
         draft_errors: string[];
         withheld: boolean;
-      }[];
-      guards: {
-        workflow: string;
-        digest: string;
-        node: string;
-        signal: "self" | "jev" | "both";
-        threshold: number | null;
-        runs: number;
-        escalated: number;
-        right: number;
-        wrong: number;
-        grades_past: number;
-        replays: number;
-        points: {
-          run_id: string;
-          p: number | null;
-          escalated: boolean;
-          correct: boolean | null;
-        }[];
       }[];
     };
   };
@@ -3973,8 +3957,7 @@ export interface operations {
         workflow: string;
         digest: string;
         at: string;
-        decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-        source: "check" | "replay" | "dry_run" | "refit" | "audit";
+        decided: "promote" | "hold" | "replaying";
         reason: string;
         check?: {
           compile_after: number;
@@ -4008,45 +3991,10 @@ export interface operations {
           }[];
           stopped?: true;
         };
-        replay?: {
-          n: number;
-          agree: number;
-          agent_acc: number;
-          wf_acc: number;
-          delta: number;
-          handed_back: number;
-          of?: string[];
-          cost_usd?: number | null;
-          skipped_tools?: {
-            tool: string;
-            inputs: number;
-            no_read_only_hint: boolean;
-          }[];
-          outcomes?: {
-            answered: number;
-            handed_back: number;
-            failed: number;
-            skipped_write: number;
-          };
-        };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
-        refit?: {
-          from: string;
-          guards: {
-            node: string;
-            was: number | null;
-            threshold: number | null;
-            fit?: Record<string, unknown>;
-            escalate?: true;
-          }[];
-        };
-        checked?: number;
-        since?: number;
-        held_on?: string[];
         commit?: string;
-        skipped_by?: string;
         audit?: {
           window: number;
           disagree: number;

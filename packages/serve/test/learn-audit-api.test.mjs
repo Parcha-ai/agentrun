@@ -56,7 +56,7 @@ async function world(t, learning, tools = []) {
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, "source");
   const main = git(repo, ["rev-parse", "main"]);
-  await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "check", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: main }] });
+  await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: main }] });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const meets = (path, value, method = "get", status = "200") => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[status].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
   /** Starts a run of `input` that learns nothing new (`use`) and follows it to its end. */

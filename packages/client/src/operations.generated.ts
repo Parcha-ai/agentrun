@@ -1412,7 +1412,7 @@ export type GetAgentArchilResponse = {
   } | null;
 };
 
-/** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
+/** The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop). */
 export type GetLearningLoopResponse = {
   agent: string;
   completed_runs: number;
@@ -1430,25 +1430,6 @@ export type GetLearningLoopResponse = {
     promoted: boolean | null;
     draft_errors: Array<string>;
     withheld: boolean;
-  }>;
-  guards: Array<{
-    workflow: string;
-    digest: string;
-    node: string;
-    signal: "self" | "jev" | "both";
-    threshold: number | null;
-    runs: number;
-    escalated: number;
-    right: number;
-    wrong: number;
-    grades_past: number;
-    replays: number;
-    points: Array<{
-      run_id: string;
-      p: number | null;
-      escalated: boolean;
-      correct: boolean | null;
-    }>;
   }>;
 };
 
@@ -1524,8 +1505,7 @@ export type ListLearningPromotionsResponse = {
     workflow: string;
     digest: string;
     at: string;
-    decided: "promote" | "hold" | "replaying" | "queued" | "skipped";
-    source: "check" | "replay" | "dry_run" | "refit" | "audit";
+    decided: "promote" | "hold" | "replaying";
     reason: string;
     check?: {
       compile_after: number;
@@ -1559,45 +1539,10 @@ export type ListLearningPromotionsResponse = {
       }>;
       stopped?: true;
     };
-    replay?: {
-      n: number;
-      agree: number;
-      agent_acc: number;
-      wf_acc: number;
-      delta: number;
-      handed_back: number;
-      of?: Array<string>;
-      cost_usd?: number | null;
-      skipped_tools?: Array<{
-        tool: string;
-        inputs: number;
-        no_read_only_hint: boolean;
-      }>;
-      outcomes?: {
-        answered: number;
-        handed_back: number;
-        failed: number;
-        skipped_write: number;
-      };
-    };
     runs?: Array<string>;
     inputs?: Array<string>;
     replay_id?: string;
-    refit?: {
-      from: string;
-      guards: Array<{
-        node: string;
-        was: number | null;
-        threshold: number | null;
-        fit?: Record<string, unknown>;
-        escalate?: true;
-      }>;
-    };
-    checked?: number;
-    since?: number;
-    held_on?: Array<string>;
     commit?: string;
-    skipped_by?: string;
     audit?: {
       window: number;
       disagree: number;
@@ -2257,6 +2202,9 @@ export type GetLearningCostResponse = {
       workflow_pct: number;
       agent_pct: number;
       cleared: boolean;
+      agreed: number;
+      alone: number;
+      agree_min: number;
     } | null;
   };
 };
@@ -5786,7 +5734,7 @@ export function resources(call: Call) {
       get: (agentId: string, options?: RequestOptions): Promise<Tagged<GetAgentResponse>> => call("getAgent", [agentId], undefined, undefined, options),
       /** The agent's own Archil disk, once its first run made it (GET /agents/{agent_id}/archil). */
       getAgentArchil: (agentId: string, options?: RequestOptions): Promise<GetAgentArchilResponse> => call("getAgentArchil", [agentId], undefined, undefined, options),
-      /** The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop). */
+      /** The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop). */
       getLearningLoop: (agentId: string, options?: RequestOptions): Promise<GetLearningLoopResponse> => call("getLearningLoop", [agentId], undefined, undefined, options),
       /** Read a native connection (GET /agents/{agent_id}/native). */
       getNative: (agentId: string, options?: RequestOptions): Promise<GetNativeResponse> => call("getNative", [agentId], undefined, undefined, options),

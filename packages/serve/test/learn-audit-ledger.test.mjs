@@ -6,7 +6,7 @@
 // that stops on that cap: a `capped` row, no verdict). Once both ended, a later claim writes one row to audits.jsonl in the agent's git learning
 // folder ({run, shadow_run, workflow, digest, source, agreed, served_cost, shadow_cost, at}, agreed by sameAnswer of the
 // two answers). The hold rule reads those rows: when the last `hold_window` rows of the serving digest hold at least
-// `hold_disagree` disagreements, the workflow stops serving (a hold, source `audit`) and the agent's next run asks ONE
+// `hold_disagree` disagreements, the workflow stops serving (a hold carrying `audit`) and the agent's next run asks ONE
 // recompile with those rows as data; a second hold within `stop_window` served runs of the first stops it, asks no
 // compile, and says so on the record.
 //   (a) with k = 10, exactly the drawn served runs start a shadow, and the draw is a function of the run id;
@@ -140,7 +140,7 @@ async function world(t, { learning, prior = 0, submit, paused = false, env = {},
   }
   const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }]);
   // Promoted by its check, as S3a's claim records it: it serves every fitting run first from here.
-  await server.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "check", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }] });
+  await server.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }] });
   /** The shadow runs: those whose launch names the run they audit, whatever their state. */
   const shadows = async () => {
     const out = [];
@@ -270,7 +270,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   assert.equal(rows.length, 10, JSON.stringify(rows));
   assert.deepEqual(rows.filter((one) => one.agreed === false).map((one) => one.run).sort(), ["served-10", "served-8", "served-9"]);
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.digest, held.decided, held.source, held.audit.window, held.audit.disagree, held.audit.rows, held.audit.stopped], [DIGEST, "hold", "audit", 10, 3, 10, undefined], JSON.stringify(held));
+  assert.deepEqual([held.digest, held.decided, held.audit.window, held.audit.disagree, held.audit.rows, held.audit.stopped], [DIGEST, "hold", 10, 3, 10, undefined], JSON.stringify(held));
   assert.deepEqual(held.audit.disagreements.map((one) => one.served).sort(), ["served-10", "served-8", "served-9"]);
   for (const one of held.audit.disagreements) {
     assert.equal(one.agent, AGENT_SAYS, "the agent's answer: the shadow's");
@@ -298,7 +298,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   const back = await w.start("served-30", "Question 30");
   assert.deepEqual([back.metrics?.path, back.metrics?.workflow_digest], ["workflow", DIGEST_2], JSON.stringify(back.metrics));
   const promoted = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([promoted.digest, promoted.decided, promoted.source, promoted.check.attempt, promoted.check.n], [DIGEST_2, "promote", "check", 2, 8], JSON.stringify(promoted.check));
+  assert.deepEqual([promoted.digest, promoted.decided, promoted.check.attempt, promoted.check.n], [DIGEST_2, "promote", 2, 8], JSON.stringify(promoted.check));
   for (const one of held.audit.disagreements) assert.ok(promoted.check.of.includes(one.run), `the check ran on ${one.run}, a disagreeing input`);
 
   // It disagrees again, 3 times, within stop_window (100) served runs of the first hold: stopped, no compile, said.
@@ -306,7 +306,7 @@ test("(d, e) 3 disagreements in the last 10 rows hold the workflow and ask exact
   const after = await w.start("run-40", "Question 40");
   assert.equal(after.metrics?.path, "agent", JSON.stringify(after.metrics));
   const stopped = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([stopped.digest, stopped.decided, stopped.source, stopped.audit.stopped, stopped.reason], [DIGEST_2, "hold", "audit", true, "stopped: the workflow disagreed with the agent twice"], JSON.stringify(stopped));
+  assert.deepEqual([stopped.digest, stopped.decided, stopped.audit.stopped, stopped.reason], [DIGEST_2, "hold", true, "stopped: the workflow disagreed with the agent twice"], JSON.stringify(stopped));
   assert.deepEqual(w.asks.get("run-40"), [], "no compile: it stopped");
   const later = await w.start("run-41", "Question 41");
   assert.equal(later.metrics?.path, "agent");
@@ -324,7 +324,7 @@ test("(g) the definition's numbers stand in: audit_every 5 draws at 1/5, and hol
   const next = await w.start("g-next", "Question next");
   assert.equal(next.metrics?.path, "agent", "held on 2 of the last 5 rows");
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", "audit", 5, 2, 2], JSON.stringify(held));
+  assert.deepEqual([held.decided, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", 5, 2, 2], JSON.stringify(held));
 });
 
 test("(r2) three shadows that end between two claims are written oldest first: hold_window 2 holds on the 2 newest", { timeout: 240_000 }, async (t) => {
@@ -342,7 +342,7 @@ test("(r2) three shadows that end between two claims are written oldest first: h
   assert.deepEqual((await w.audits()).map((row) => row.run), ["batch-1", "batch-2", "batch-3"], "the batch is appended oldest first");
   assert.equal(next.metrics?.path, "agent", "held: the 2 newest rows disagree");
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.rows], ["hold", "audit", 2], JSON.stringify(held));
+  assert.deepEqual([held.decided, held.audit.rows], ["hold", 2], JSON.stringify(held));
   assert.deepEqual(held.audit.disagreements.map((one) => one.served).sort(), ["batch-2", "batch-3"]);
 });
 
@@ -356,7 +356,7 @@ test("(r2) the hold is the ledger's: rows committed with 3 disagreements whose h
   for (const method of ["replaceIf", "putIfAbsent"]) {
     const real = w.store.settings[method].bind(w.store.settings);
     w.store.settings[method] = async (...args) => {
-      if (failing && JSON.stringify(args).includes('"source":"audit"')) throw new Error("the settings write failed");
+      if (failing && JSON.stringify(args).includes('"audit":{"window"')) throw new Error("the settings write failed");
       return real(...args);
     };
   }
@@ -374,7 +374,7 @@ test("(r2) the hold is the ledger's: rows committed with 3 disagreements whose h
   assert.equal((await w.audits()).length, rows.length, "this claim added no row");
   assert.equal(next.metrics?.path, "agent", `held from the ledger: ${JSON.stringify(next.metrics)}`);
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.disagreements.length], ["hold", "audit", 3], JSON.stringify(held));
+  assert.deepEqual([held.decided, held.audit.disagreements.length], ["hold", 3], JSON.stringify(held));
 });
 
 test("(r2) a run a trigger started (GitHub's) is never audited: drawn by its id, it starts no shadow, and is counted not auditable; a run over the API beside it is audited", { timeout: 240_000 }, async (t) => {
@@ -411,7 +411,7 @@ test("(r3) a secret straddling char 1,200 of an audited input leaves no 8 charac
   const next = await w.start("leak-next", "Question 99");
   assert.equal(next.metrics?.path, "agent", `held on the one disagreement: ${JSON.stringify(next.metrics)}`);
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.disagreements.length], ["hold", "audit", 1], JSON.stringify(held));
+  assert.deepEqual([held.decided, held.audit.disagreements.length], ["hold", 1], JSON.stringify(held));
   assert.ok(held.audit.disagreements[0].input.includes("Leaky"), "the hold quotes the input");
   const [ask] = w.asks.get("leak-next");
   assert.ok(fenceOf(ask ?? "").includes("Leaky"), `the recompile ask quotes it: ${(ask ?? "").slice(0, 300)}`);
@@ -442,14 +442,14 @@ test("(r3) an audit hold, then the owner's replay promotes it again: the next cl
   assert.equal((await w.start(quiet[0], `Question for ${quiet[0]}`)).metrics?.path, "agent", "held on its 2 disagreements");
   const records = await promotionsOf(w.server.settings, "agent-1");
   const held = records.at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.stopped], ["hold", "audit", undefined], JSON.stringify(held));
-  // The owner's replay of the held digest passes: the record runner/promotion.ts settle writes (source replay, its since).
-  const promoted = { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "replay", reason: "replayed on 5 graded runs: within 5 pts", replay: { n: 5, wf_acc: 1, agent_acc: 1, alone: 5, of: [], cost_usd: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 } }, since: 0, commit: records[0].commit };
+  assert.deepEqual([held.decided, held.audit.stopped], ["hold", undefined], JSON.stringify(held));
+  // The owner's replay of the held digest passes: the record runner/promotion.ts decideCheck writes (a check's promote).
+  const promoted = { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked on 5 of the agent's inputs: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [], cost_usd: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 } }, commit: records[0].commit };
   assert.equal((await recordPromotion(w.server.settings, "agent-1", promoted, (was) => was?.at === held.at)).won, true);
   const next = await w.start(quiet[1], `Question for ${quiet[1]}`);
   assert.deepEqual([next.metrics?.path, next.metrics?.workflow_digest], ["workflow", DIGEST], `served again: ${JSON.stringify(next.metrics)}\n${w.logs.filter((line) => line.includes("workflow-first")).join("\n")}`);
   const after = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([after.decided, after.source, after.audit], ["promote", "replay", undefined], `no hold, no stop: ${JSON.stringify(after)}`);
+  assert.deepEqual([after.decided, after.check?.n, after.audit], ["promote", 5, undefined], `no hold, no stop: ${JSON.stringify(after)}`);
 });
 
 // Review on #3061 r3 (PRRT_kwDOUmdVMs64P8Kj): an audit is found by the `started` row startAudit writes, never by a window
@@ -468,7 +468,7 @@ test("(r3) a shadow that ends after 1,300 newer runs of the agent started still 
   assert.deepEqual(rows.map((row) => [row.run, row.agreed]), [["late-1", false]], JSON.stringify(rows));
   assert.equal(next.metrics?.path, "agent", `held on it: ${JSON.stringify(next.metrics)}`);
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.disagreements.map((one) => one.served)], ["hold", "audit", ["late-1"]], JSON.stringify(held));
+  assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["late-1"]], JSON.stringify(held));
 });
 
 /** A store of `served` runs the learned workflow `answer` served at `digest` and a shadow of each (newest first, as the
@@ -560,7 +560,7 @@ test("(r4) a shadow that stops on its cap is `capped`: no verdict, never counted
   const after = await w.start("wide-next", "Question 98");
   assert.equal(after.metrics?.path, "agent", `held on the uncapped disagreement: ${JSON.stringify(after.metrics)}`);
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
-  assert.deepEqual([held.decided, held.source, held.audit.disagreements.map((one) => one.served)], ["hold", "audit", ["wide-1"]], JSON.stringify(held));
+  assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["wide-1"]], JSON.stringify(held));
 });
 
 test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend not known) starts no shadow: its row says skipped \"no allowance\", no verdict", async (t) => {

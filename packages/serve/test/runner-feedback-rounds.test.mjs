@@ -106,7 +106,7 @@ async function world(t, { wrong = new Set(), calls = new Set(), outputSchema, re
   const seed = await landWorkflows(dir, "agent-1", FLOWS);
   // `answer` passed its check when it landed (runner/promotion.ts): the stream reads its grades, never a check of its own.
   const digest = workflowDigest({ workflow: JSON.stringify(answerFlow) });
-  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest, at: new Date().toISOString(), decided: "promote", source: "check", reason: "checked before the stream", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5 } }, () => true);
+  await recordPromotion(server.settings, "agent-1", { workflow: "answer", digest, at: new Date().toISOString(), decided: "promote", reason: "checked before the stream", check: { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5 } }, () => true);
   const price =(_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: () => {} };

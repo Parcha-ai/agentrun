@@ -143,7 +143,7 @@ test('direct native grading refuses an oversized UTF8 policy instead of truncati
  assert.throws(()=>gradePrompt({run:'oversized-policy',active:[],superseded:[],proposed:[NOTE],nativeInstructions:true,instructions:'🌱'.repeat(16_385)}),/64 KiB grading evidence limit/);
 });
 
-test('an oversized native grading prompt is refused and keeps the generality check cost',async t=>{
+test('an oversized native grading prompt is refused before any model is asked: nothing is spent',async t=>{
  const note=(name,supersedes)=>{
   const front=`---\nname: ${name}\ndescription: A standing review policy\ntype: reference\n${supersedes?`supersedes: [${supersedes}]\n`:''}---\n`;
   return front+'review guidance '.repeat(Math.floor((4000-front.length)/16));
@@ -160,14 +160,12 @@ test('an oversized native grading prompt is refused and keeps the generality che
   readMain:async()=>({active,superseded,graded:{}}),
   merged:async()=>undefined,
   mainTexts:async()=>({}),
-  general:async proposed=>({scores:Object.fromEntries(proposed.map(({file})=>[file,1])),usd:0.02}),
   ask:async request=>{requests.push(request);assert.fail('An oversized grading request must not reach a model.');},
   commit:async()=>assert.fail('An ungraded proposal must not be promoted.'),
  })});
  assert.equal(result.end.state,'ended');assert.equal(result.requests.length,0);
  assert.equal(result.view.state,'dropped');assert.equal(result.view.reason,'checker');assert.match(result.view.detail,/over its cap of 200000/);
- assert.equal(result.run.costUsd,0.02,'the completed generality pre-check was paid even though the grader was never called');
- assert.equal(result.view.cost_usd.grade,0.02);
+ assert.equal(result.run.costUsd,0,'no model was asked');
 });
 
 for (const cacheWrite of [0,20,null]) test(`native Codex grading separates uncached input and both caches with cache writes ${cacheWrite}`,async t=>{

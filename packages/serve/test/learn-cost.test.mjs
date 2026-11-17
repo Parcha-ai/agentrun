@@ -119,23 +119,22 @@ test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bo
 });
 
 test("the summary carries the serving promotion's replay as it is given", () => {
-  const replay = { n: 40, workflow_pct: 86, agent_pct: 82, cleared: true };
+  const replay = { n: 40, workflow_pct: 86, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 };
   const runs = series([["agent", 0.9], ["workflow", 0.1]]);
   assert.deepEqual(costSummary(runs, replay).replay, replay);
   assert.equal(costSummary(runs).replay, null);
 });
 
-test("the serving promotion's replay: the champion of the workflow the newest served run ran, its numbers, and whether it cleared the bar (withinBar)", () => {
-  const score = (wf, agent, n = 40) => ({ n, agree: n - 4, agent_acc: agent, wf_acc: wf, delta: Math.round((wf - agent) * 1e4) / 1e4, handed_back: 2, of: [] });
-  const rec = (digest, decided, extra = {}) => ({ workflow: "classify", digest, at: "2026-11-12T00:00:00Z", decided, source: "replay", reason: "r", ...extra });
+test("the serving promotion's check: the champion of the workflow the newest served run ran, the share of its inputs that said what the agent said, against the agent's own 100%", () => {
+  const check = (alone, agreed, n = 40) => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n, agreed, alone, of: [] });
+  const rec = (digest, decided, extra = {}) => ({ workflow: "classify", digest, at: "2026-11-12T00:00:00Z", decided, reason: "r", ...extra });
   const runs = series([["agent", 0.9], ["workflow", 0.1], ["handed_back", 0.5]]);
-  assert.deepEqual(servingReplayOf([rec("d1", "promote", { replay: score(0.8613, 0.8204) })], runs), { n: 40, workflow_pct: 86.1, agent_pct: 82, cleared: true });
-  assert.deepEqual(servingReplayOf([rec("d1", "promote", { replay: score(0.8, 0.82) })], runs)?.cleared, true, "2 pts under the agent is at the bar");
-  assert.deepEqual(servingReplayOf([rec("d1", "promote", { replay: score(0.7, 0.82) })], runs)?.cleared, false, "12 pts under it is below the bar");
-  assert.equal(servingReplayOf([rec("d1", "promote", { source: "dry_run" })], runs), null, "promoted on a dry run: no replay yet");
-  assert.equal(servingReplayOf([rec("d1", "promote", { replay: score(0.9, 0.82) }), rec("d1", "hold", { source: "graded" })], runs), null, "held: nothing serves");
-  assert.equal(servingReplayOf([rec("d1", "promote", { replay: score(0.9, 0.82) })], series([["agent", 0.9]])), null, "no run a learned workflow served");
-  assert.equal(servingReplayOf([{ ...rec("d1", "promote", { replay: score(0.9, 0.82) }), workflow: "other" }], runs), null, "another workflow's champion");
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 });
+  assert.equal(servingReplayOf([rec("d1", "promote", { check: check(0, 0, 0) })], runs), null, "promoted on a dry run: no inputs checked");
+  assert.equal(servingReplayOf([rec("d1", "promote")], runs), null, "no check kept");
+  assert.equal(servingReplayOf([rec("d1", "promote", { check: check(38, 33) }), rec("d1", "hold", { check: check(10, 2) })], runs), null, "held: nothing serves");
+  assert.equal(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], series([["agent", 0.9]])), null, "no run a learned workflow served");
+  assert.equal(servingReplayOf([{ ...rec("d1", "promote", { check: check(38, 33) }), workflow: "other" }], runs), null, "another workflow's champion");
 });
 
 test("the summary's hand-backs are over every run since the takeover, never only the latest a read lists", () => {

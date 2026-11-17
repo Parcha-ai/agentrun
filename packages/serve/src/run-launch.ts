@@ -70,9 +70,8 @@ export interface RunLaunch {
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
-  /** A replay run (runner/promotion.ts): learned workflow `workflow` at `digest`, run alone on graded run `of`'s input to
-   *  decide whether that revision serves first (learn/promote.ts). Its guards read record-only (learn/promote.ts recordOnly), a hand-back ends it
-   *  with no agent turn, and it asks nothing at its end. Absent: a run of its own. */
+  /** A replay run (runner/promotion.ts): learned workflow `workflow` at `digest`, run alone on the agent's own run `of`'s input to
+   *  decide whether that revision serves first (learn/promote.ts). A hand-back ends it with no agent turn, and it asks nothing at its end. Absent: a run of its own. */
   readonly replay?: Replay;
   /** A shadow run (runner/audit.ts): the audit of run `of`, which learned workflow `workflow` at `digest` served. The same
    *  agent on the same input with learning off: its answer is what the served answer is compared with (learn/audit.ts),

@@ -1,21 +1,12 @@
-// A replay's read (runner/promotion.ts replayView) settles it as a claim would; review on #2823 r2:
+// A replay's read (runner/promotion.ts replayView) settles it as a claim would:
 //   - two reads settling one replay at once write once: an older replay's late result never lands over a newer replay
 //     of the same revision (the settle and the supersede match the replay's id);
-//   - a replay reserved and then interrupted before its first run existed: a GET never starts its runs (r3, TL ruling); it
-//     reads running until its deadline, then is decided as failed with why (and to POST it again): never "running" forever;
+//   - a replay reserved and then interrupted before its first run existed: a GET never starts its runs; it reads
+//     running until its deadline, then is decided as failed with why: never "running" forever;
 //   - a revision promoted, then held, then replayed and promoted again serves again: the champion is the revision whose
-//     latest promotion (a promote after anything else) is newest, never only its first, and its graded check counts only
-//     the grades after it;
+//     latest promotion (a promote after anything else) is newest, never only its first;
 //   - a running replay's cost is null while one of its runs' costs is unknown, never 0;
-//   - a replay's counts are its own runs' (and, once decided, its record's), never shrinking as newer grades roll the
-//     graded runs it replayed out of the grades kept;
-//   - r7: a revision held on runs it served graded wrong keeps them (held_on); its owner's replay always covers them and
-//     promotes it only once it answered on them; promoted again, its check counts only the grades after `since`.
-//   - r8: a promotion's `since` names it: each run it serves keeps it, and its check counts only those runs' grades (a run
-//     served before a re-promotion and graded after never counts for the new one); a check whose promotion was replaced
-//     meanwhile writes nothing.
-//   - a revision held on its served runs graded wrong never re-promotes by answering them as wrongly again: on a wrong
-//     grade the bar is the grade, and the agent's side of a run it never answered is right.
+//   - an owner's replay stopped after some of its runs is finished by a later claim on the owner's launch.
 // The replay runs are records the read reads (row, launch, metrics, and the answer said(): a real run's journal); the
 // learning folder is real (landWorkflows).
 import assert from "node:assert/strict";
@@ -32,7 +23,7 @@ const { askReplay, promotionGate, replayView } = await import("../dist/runner/pr
 const { launchBody } = await import("../dist/run-launch.js");
 const { sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { REPLAY_DEADLINE_MS, REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
-const { championOf, GRADES_KEPT, gradesKey, gradesOf, promotionOf, promotionsOf, putGrade, recordPromotion, servingOf, trimPromotions, PROMOTIONS_KEPT } = await import("../dist/learn/promote.js");
+const { championOf, promotionOf, promotionsOf, recordPromotion, servingOf, trimPromotions, PROMOTIONS_KEPT } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { learningFolderOf, secretsShown } = await import("../dist/learning.js");
 
@@ -43,14 +34,17 @@ const FLOW = {
     Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
   },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
-  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer", guard: { signal: "self", threshold: 0.8 } }] },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
 };
 const DIGEST = workflowDigest({ workflow: JSON.stringify(FLOW) });
 const T0 = Date.parse("2026-11-14T12:00:00.000Z");
+/** What a graded run graded wrong said (world's said): 41. A replay that answers 42 now is right by the grade. */
+const SAID = "41";
+const FIXED = () => "42";
 
-/** An agent that learned `answer`, `graded` graded runs on the agent's path (graded `agentCorrect`), and replay runs the
+/** An agent that learned `answer`, `graded` runs of the agent's own, and replay runs the
  *  test sets (`replayRun`): rows and launches the read reads, never run. `now` moves with `clock.at`. */
-async function world(t, { graded = 5, agentCorrect = true } = {}) {
+async function world(t, { graded = 5 } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-replay-settle-"));
   let store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => {
@@ -62,7 +56,6 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   const launchOf = (question) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, learning: startAt(seed) });
   const gradedRuns = Array.from({ length: graded }, (_, i) => `graded-${i}`);
   const old = new Map(gradedRuns.map((run, i) => [run, launchOf(`Question ${i}`)]));
-  for (const run of gradedRuns) await putGrade(store.settings, "agent-1", { run, correct: agentCorrect, source: "eval", at: new Date(T0).toISOString(), path: "agent" });
   const fake = new Map();
   /** How many more runs a create makes before the server "stops" (`left`, undefined: no stop). */
   const creates = { left: undefined };
@@ -73,6 +66,11 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
     const runs = Object.create(inner.runs);
     for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(inner.runs) ?? {})) if (typeof inner.runs[key] === "function" && key !== "constructor") runs[key] = inner.runs[key].bind(inner.runs);
     runs.get = async (id) => {
+      if (gate.armed && fake.has(id)) {
+        gate.armed = false;
+        gate.reached?.();
+        await gate.hold;
+      }
       if (old.has(id)) return { id, agentId: "agent-1", revisionId: "rev-1", state: "ended", metrics: { path: "agent" }, archivedAt: null, importedFrom: null, costUsd: 0.01, startedAt: 1, endedAt: 2 };
       const one = fake.get(id);
       return one ? { id, agentId: "agent-1", revisionId: "rev-1", state: one.state, metrics: { path: "replay", replay: { outcome: one.outcome }, guards: one.guards }, archivedAt: null, importedFrom: null, costUsd: one.costUsd, startedAt: 1, endedAt: 2 } : inner.runs.get(id);
@@ -82,28 +80,16 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
       const one = fake.get(id);
       return one ? { runId: id, body: { ...old.get(one.of), replay: { of: one.of, workflow: "answer", digest: DIGEST } }, sealed: null, createdAt: 1 } : inner.runs.launch(id);
     };
+    runs.list = async (...args) => [...[...old.keys()].reverse().map((id) => ({ id, agentId: "agent-1", revisionId: "rev-1", state: "ended", outcome: null, metrics: { path: "agent" }, archivedAt: null, importedFrom: null, costUsd: 0.01, startedAt: 1, endedAt: 2 })), ...(await inner.runs.list(...args))];
     runs.create = async (...args) => {
       if (creates.left !== undefined && creates.left-- <= 0) throw new Error("the server stopped mid-launch");
       return inner.runs.create(...args);
     };
     return runs;
   };
-  /** The settings' reads of the grades, held once at `gate.hold` (a promise) while `gate.armed`: a read caught mid-settle. */
+  /** The first read of a replay run's row a settle makes, held once at `gate.hold` (a promise) while `gate.armed`: a read
+   *  caught mid-settle, after it read the replay's record and before it writes its decision. */
   const gate = { armed: false, hold: undefined, reached: undefined };
-  const settingsOf = (inner) => new Proxy(inner.settings, {
-    get: (target, key) => {
-      const value = target[key];
-      if (key !== "get") return typeof value === "function" ? value.bind(target) : value;
-      return async (name) => {
-        if (gate.armed && name === gradesKey("agent-1")) {
-          gate.armed = false;
-          gate.reached?.();
-          await gate.hold;
-        }
-        return target.get(name);
-      };
-    },
-  });
   /** What a run's final answer says (answerOf reads it from the run's timeline): `said(id, text)` points run `id`'s journal
    *  at a real run whose one turn answered `text` (one per text). A run with none answers nothing (null). */
   const saying = new Map();
@@ -123,9 +109,8 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   };
   const storeOf = (inner) => {
     const runs = runsOf(inner);
-    const settings = settingsOf(inner);
     const readJournal = (id) => inner.readJournal(saying.get(id) ?? id);
-    return new Proxy(inner, { get: (target, key) => (key === "runs" ? runs : key === "settings" ? settings : key === "readJournal" ? readJournal : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    return new Proxy(inner, { get: (target, key) => (key === "runs" ? runs : key === "readJournal" ? readJournal : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
   };
   const clock = { at: T0 };
   const logs = [];
@@ -137,7 +122,7 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
   });
   /** The replaying record a reservation writes: `runs` reserved for the graded runs in order, and the launch they run with. */
   const reserve = (replayId, runs, extra = {}) => recordPromotion(store.settings, "agent-1", {
-    workflow: "answer", digest: DIGEST, at: new Date(clock.at).toISOString(), decided: "replaying", source: "replay", reason: "replaying, as its owner asked",
+    workflow: "answer", digest: DIGEST, at: new Date(clock.at).toISOString(), decided: "replaying", reason: "replaying, as its owner asked",
     runs, inputs: runs.map((_, i) => gradedRuns[i % gradedRuns.length]), replay_id: replayId, commit: seed, launch: { revision: "rev-1", body: launchBody({ ...launchOf("asked"), input: null }) }, ...extra,
   }, (was) => was?.decided !== "replaying");
   const reopen = async () => {
@@ -152,6 +137,8 @@ async function world(t, { graded = 5, agentCorrect = true } = {}) {
 test("two reads settling one replay at once write it once: a newer replay of the same revision started meanwhile stays replaying", async (t) => {
   const w = await world(t);
   const runs = w.gradedRuns.map((of, i) => (w.replayRun(`a-${i}`, of), `a-${i}`));
+  for (const run of w.gradedRuns) await w.said(run, SAID);
+  for (const run of runs) await w.said(run, FIXED());
   await w.reserve("replay-a", runs);
   // The second read is caught after it read A replaying, before it writes A's decision.
   let release;
@@ -160,7 +147,7 @@ test("two reads settling one replay at once write it once: a newer replay of the
   w.gate.armed = true;
   const late = w.read("replay-a");
   await reached;
-  // The first read decides A (held: the workflow's answers are wrong where the agent's were right).
+  // The first read decides A (held: the workflow's answers differ from the agent's).
   const first = await w.read("replay-a");
   assert.deepEqual([first.status, first.decided], ["done", "hold"], JSON.stringify(first));
   // Its owner replays the held revision again: replay B reserved.
@@ -195,8 +182,8 @@ test("a replay interrupted before its first run existed: a GET never starts its 
   w.clock.at = T0 + REPLAY_DEADLINE_MS + 1_000;
   const late = await w.read("replay-a");
   assert.deepEqual([late.status, late.decided], ["failed", "hold"], JSON.stringify(late));
-  assert.match(late.reason, /none of its 5 replay runs started by the replay's deadline/);
-  assert.match(late.reason, /start it again with POST .*\/replays/);
+  assert.match(late.reason, /none of its 5 check runs started by the check's deadline/);
+  assert.match(late.reason, /nothing was checked: held/);
   assert.equal(await count(), before, "past its deadline a GET decides it and still creates no run");
 
   // Another revision's replay that was never launched and is found only past its deadline: failed, and says why.
@@ -206,38 +193,36 @@ test("a replay interrupted before its first run existed: a GET never starts its 
   v.clock.at = T0 + REPLAY_DEADLINE_MS + 1_000;
   const failed = await v.read("replay-x");
   assert.deepEqual([failed.status, failed.decided], ["failed", "hold"], JSON.stringify(failed));
-  assert.match(failed.reason, /none of its 5 replay runs started by the replay's deadline/);
+  assert.match(failed.reason, /none of its 5 check runs started by the check's deadline/);
   assert.equal(failed.inputs, 5);
   assert.deepEqual(failed.outcomes, { answered: 0, handed_back: 0, failed: 0, skipped_write: 0 });
   assert.equal(promotionOf(await v.records(), "answer", DIGEST)?.decided, "hold", "held: its owner may replay it again");
 });
 
-test("a revision promoted, held, then promoted again by a replay serves again; its graded check counts only the grades after", async (t) => {
-  // The champion is the digest whose latest promotion is newest; a routine check of a promoted digest is no new one.
-  const rec = (digest, decided, extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source: "replay", reason: "r", ...extra });
+test("a revision promoted, held, then promoted again by a replay serves again", async (t) => {
+  // The champion is the digest whose latest promotion is newest.
+  const rec = (digest, decided, extra = {}) => ({ workflow: "answer", digest, at: "t", decided, reason: "r", ...extra });
   const items = [rec("A", "promote", { source: "dry_run" }), rec("A", "hold", { source: "graded" }), rec("B", "promote"), rec("A", "replaying"), rec("A", "promote")];
   assert.equal(championOf(items, "answer")?.digest, "A");
-  assert.equal(championOf([...items, rec("B", "promote", { checked: 40 })], "answer")?.digest, "A", "B's routine check is no new promotion");
   assert.equal(championOf([...items, rec("B", "hold"), rec("B", "replaying"), rec("B", "promote")], "answer")?.digest, "B", "B replayed and promoted again after A");
   const filler = Array.from({ length: PROMOTIONS_KEPT }, (_, i) => ({ ...rec(`o${i}`, "replaying"), workflow: "other" }));
   assert.equal(championOf(trimPromotions([...items, ...filler]), "answer")?.digest, "A", "the trim keeps A's latest promotion");
 
-  // Through the read: A served (25 graded runs), was held by them, B promoted, then A's replay promotes it.
-  const w = await world(t, { agentCorrect: false });
-  for (let i = 0; i < 25; i++) await putGrade(w.store().settings, "agent-1", { run: `served-${i}`, correct: false, source: "eval", at: "t", path: "workflow", workflow: "answer", digest: DIGEST });
+  // Through the read: A served, was held, B promoted, then A's replay (its runs say what the agent said) promotes it.
+  const w = await world(t);
   const settings = w.store().settings;
-  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t1", decided: "promote", source: "dry_run", reason: "r", commit: w.seed }, () => true);
-  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t2", decided: "hold", source: "graded", reason: "r" }, () => true);
-  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: "bbbbbbbbbbbbbbbb", at: "t3", decided: "promote", source: "dry_run", reason: "r", commit: w.seed }, () => true);
+  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t1", decided: "promote", reason: "r", commit: w.seed }, () => true);
+  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t2", decided: "hold", reason: "r" }, () => true);
+  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: "bbbbbbbbbbbbbbbb", at: "t3", decided: "promote", reason: "r", commit: w.seed }, () => true);
   const runs = w.gradedRuns.map((of, i) => (w.replayRun(`a-${i}`, of), `a-${i}`));
+  for (const run of w.gradedRuns) await w.said(run, FIXED());
+  for (const run of runs) await w.said(run, FIXED());
   await w.reserve("replay-a", runs);
   const view = await w.read("replay-a");
   assert.deepEqual([view.status, view.decided], ["done", "promote"], JSON.stringify(view));
   const records = await w.records();
   assert.equal(championOf(records, "answer")?.digest, DIGEST, "A serves again");
   assert.deepEqual(servingOf(records), [{ workflow: "answer", digest: DIGEST, replaying: null }]);
-  const seqs = (await gradesOf(settings, "agent-1")).map((one) => one.seq);
-  assert.equal(promotionOf(records, "answer", DIGEST)?.since, Math.max(...seqs), "its graded check counts only the grades after the ones it was held on");
 });
 
 test("a running replay's cost is null while a run's cost is unknown, never 0; once decided, what its runs cost", async (t) => {
@@ -254,45 +239,6 @@ test("a running replay's cost is null while a run's cost is unknown, never 0; on
   const done = await w.read("replay-a");
   assert.equal(done.status, "done");
   assert.equal(done.cost_usd, 0.05);
-});
-
-test("a replay's counts never shrink as newer grades roll its graded runs out of the grades kept", async (t) => {
-  const w = await world(t);
-  w.gradedRuns.forEach((of, i) => w.replayRun(`a-${i}`, of, { state: i < 2 ? "ended" : "running" }));
-  await w.reserve("replay-a", w.gradedRuns.map((_, i) => `a-${i}`));
-  const roll = () => w.store().settings.put(gradesKey("agent-1"), { v: 1, items: Array.from({ length: GRADES_KEPT }, (_, i) => ({ run: `newer-${i}`, correct: true, source: "eval", at: "t", path: "agent", seq: 1_000 + i })) });
-  const before = await w.read("replay-a");
-  assert.equal(before.outcomes.answered, 2);
-  const kept = (await w.store().settings.get(gradesKey("agent-1"))).items;
-  await roll();
-  const running = await w.read("replay-a");
-  assert.equal(running.outcomes.answered, 2, `its two ended runs still count: ${JSON.stringify(running)}`);
-  await w.store().settings.put(gradesKey("agent-1"), { v: 1, items: kept });
-  w.gradedRuns.forEach((of, i) => w.replayRun(`a-${i}`, of));
-  const decided = await w.read("replay-a");
-  assert.deepEqual([decided.status, decided.outcomes.answered, decided.score.n], ["done", 5, 5], JSON.stringify(decided));
-  await roll();
-  const later = await w.read("replay-a");
-  assert.deepEqual([later.outcomes, later.score.n], [{ answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, 5], `read again after the grades rolled: ${JSON.stringify(later)}`);
-});
-
-test("a run answered under its guard's threshold counts answered while the replay runs and once it is decided; the score hands it back", async (t) => {
-  // #2823 review: the decided counts were derived from the score, so a run moved from answered to handed_back as it was
-  // decided. The record keeps its runs' outcomes; the thresholds' reading stays in `score`.
-  const w = await world(t);
-  const low = w.gradedRuns.length - 1;
-  w.gradedRuns.forEach((of, i) => w.replayRun(`g-${i}`, of, { p: i === low ? 0.2 : 0.9, state: i === low ? "running" : "ended" }));
-  await w.reserve("replay-g", w.gradedRuns.map((_, i) => `g-${i}`));
-  const running = await w.read("replay-g");
-  assert.deepEqual([running.status, running.outcomes.answered, running.outcomes.handed_back], ["running", 4, 0], JSON.stringify(running));
-  w.replayRun(`g-${low}`, w.gradedRuns[low], { p: 0.2 });
-  const seen = await w.read("replay-g");
-  assert.equal(seen.status, "done", JSON.stringify(seen));
-  assert.deepEqual(seen.outcomes, { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, `each run as it ended: ${JSON.stringify(seen)}`);
-  assert.deepEqual([seen.score.n, seen.score.handed_back], [5, 1], `the threshold reads the low one as handed back: ${JSON.stringify(seen)}`);
-  const record = (await w.records()).findLast((one) => one.replay_id === "replay-g");
-  assert.deepEqual(record.replay.outcomes, seen.outcomes, "kept with the decision, read as kept");
-  assert.equal("skipped_write" in record.replay, false, "one count: outcomes");
 });
 
 test("#2823 review: an owner's replay stopped after 2 of its 5 runs is finished by a later claim on the owner's launch (model, revision, no per_run credentials), never the claim's", async (t) => {

@@ -33,7 +33,7 @@ const NOTES = [{ file: "rule-1.md", text: note({ name: "Rule 1", description: "F
 const ASK = (extra = {}) => ({ mode: "new", reference: compile.compileReference(dsl, { tools: ["web_fetch"], judges: false }), notes: NOTES, traces: [], tools: ["web_fetch"], judges: false, ...extra });
 
 test("compileDue: a completed run of an agent with its definition's compile_after completed runs and no learned workflow, not compiled lately", () => {
-  const due = (facts) => compile.compileDue({ completed: true, runs: 0, workflows: 0, compiledLately: false, compileAfter: 20, ...facts });
+  const due = (facts) => compile.compileDue({ completed: true, runs: 0, workflows: 0, compileAfter: 20, ...facts });
   assert.equal(compile.COMPILE_RETRIES, 3);
   assert.equal("COMPILE_AFTER_NOTES" in compile || "COMPILE_AFTER_RUNS" in compile, false, "no engine constant says when: the definition does");
   assert.equal(due({ runs: 20 }), true);
@@ -41,7 +41,6 @@ test("compileDue: a completed run of an agent with its definition's compile_afte
   assert.equal(due({ runs: 5, compileAfter: 5 }), true);
   assert.equal(due({ runs: 4, compileAfter: 5 }), false);
   assert.equal(due({ runs: 20, workflows: 1 }), false, "a learned workflow already: the revision path asks, not this one");
-  assert.equal(due({ runs: 20, compiledLately: true }), false, "one compile in the last runs is enough");
   assert.equal(due({ runs: 20, completed: false }), false, "a failed run compiles nothing");
 });
 
@@ -53,8 +52,6 @@ test("the compile reference is generated from the DSL's own author contract, wit
     assert.equal(host.nodeKinds.includes("judge"), judges);
     for (const kind of ["extract", "decide", "agent", "call", "escalate"]) assert.ok(host.nodeKinds.includes(kind), kind);
     assert.match(ref, /`web_fetch`/);
-    assert.match(ref, /Author no step guard \(no `guard` field, no confidence threshold\): code checks and escalate steps hand a case back\./, "no guard asked of any step");
-    assert.doesNotMatch(ref, /"guard": \{"signal"/, "no guard given to copy");
     assert.match(ref, /A model step off the fast tier \(no `"tier": "fast"`: the answering step among them\) never reads a page a call step fetched\./, "the compact state rule");
     assert.doesNotMatch(ref, /"predicate": "lt", "path": "<as>\.confidence"/, "no confidence-escalate stand-in");
   }
@@ -75,7 +72,6 @@ test("the worked example is the cascade skeleton and every check passes it: the 
     assert.deepEqual(answerTierProblems(doc), [], `fetches ${fetches}: the answer's tier`);
     assert.deepEqual(compactStateProblems(doc), [], `fetches ${fetches}: compact state`);
     assert.deepEqual(quoteCheckProblems(doc), [], `fetches ${fetches}: the quote check and its re-pick`);
-    assert.deepEqual(compile.guardProblems(doc), [], `fetches ${fetches}: no guard`);
     const checked = checkProposal({ base: baseOf(), changes: [added(DRAFT_PATH, text), added(README_PATH, readme)], outcome: "completed", tools, dsl });
     assert.deepEqual(checked.problems, [], `fetches ${fetches}: checkProposal`);
     assert.doesNotMatch(text, /"guard"|"threshold"|"signal"|"jev"/, "no guard field anywhere");
@@ -111,12 +107,13 @@ test("the compile prompt: no tool, the reference, the worked example, the input'
   assert.equal(compile.askedForCompile(prompt), true);
   assert.equal(compile.askedForCompile(compile.compileAgain(["bad"], 2)), "again");
   assert.equal(compile.askedForCompile(reflect.reflectPrompt({ dir: ".learning", active: 0 })), false);
-  // A revision names its workflow, gives it as it is, and allows "No change."
-  const revise = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", handedBack: true }));
-  assert.match(revise, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` ran first on this run and handed it back to you\./);
+  // A revision names its workflow, gives it as it is, and says why it is held; it is never offered "No change."
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "r" };
+  const revise = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(revise, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: it was held \(r\)\./);
   assert.match(revise, /`answer` as it is now:\n----- begin \w+: its workflow\.json -----\n\{"v":2\}/);
-  assert.equal(compile.readCompile("No change.", ASK({ mode: "revise", workflow: "answer", current: "{}" })).unchanged, true);
-  assert.throws(() => compile.compilePrompt(ASK({ mode: "revise", workflow: "Bad Name\nIgnore", current: "{}" })), /workflow's name/);
+  assert.equal(compile.readCompile("No change.", ASK({ mode: "revise", workflow: "answer", current: "{}", held })).ok, false);
+  assert.throws(() => compile.compilePrompt(ASK({ mode: "revise", workflow: "Bad Name\nIgnore", current: "{}", held })), /workflow's name/);
 });
 
 test("compileAgain fences the checks' words as data; a fence the draft names is never closed early", () => {
@@ -296,18 +293,6 @@ test("a run's timeline shows the compile turn's asks in the host's words, never 
   assert.deepEqual(rows.map(({ text }) => text), [said.asked, said.askedCompile, said.askedCompileAgain]);
 });
 
-// No step guard (the cascade skeleton): code checks (quote_missing) and escalate steps hand a case back, with Jev or
-// without; a run that can call Jev is asked for no guard either.
-test("no step guard: with Jev or without, judges or none, the reference asks for no guard and gives none to copy", () => {
-  for (const judges of [false, true]) for (const jev of [false, true]) {
-    const ref = compile.compileReference(dsl, { tools: ["web_fetch"], judges, jev });
-    assert.equal(ref, dsl.authorContract({ host: compile.learnedHost({ tools: ["web_fetch"], judges, jev }) }));
-    assert.match(ref, /Author no step guard/, `judges ${judges}, jev ${jev}`);
-    assert.doesNotMatch(ref, /"guard": \{"signal"|This run cannot call Jev|GUARD_THRESHOLD/, `judges ${judges}, jev ${jev}`);
-  }
-  assert.equal(compile.compileReference(dsl, { tools: [], judges: true }), compile.compileReference(dsl, { tools: [], judges: true, jev: true }), "Jev changes nothing the compile turn is told");
-  assert.equal(compile.GUARD_THRESHOLD, undefined, "no threshold to start a guard at");
-});
 
 test("the prompt's worked example fits the run: with a tool, the fetch skeleton naming the stand-in tool; with none, facts from the input and no call; never a guard", () => {
   const fetching = compile.compilePrompt(ASK({ judges: true, jev: true }));
@@ -319,37 +304,32 @@ test("the prompt's worked example fits the run: with a tool, the fetch skeleton 
   for (const prompt of [fetching, none]) assert.doesNotMatch(prompt, /"guard":/);
 });
 
-// A workflow its promotion holds (runner/promotion.ts: its replay on the agent's graded inputs fell under the bar) asks
-// the compile turn for a revision, with the replay's numbers.
-test("held by its replay: the revise ask says the replay's numbers and offers no 'No change.'", () => {
-  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "replayed ...", replay: { n: 20, agree: 14, agent_acc: 0.9, wf_acc: 0.75, delta: -0.15, handed_back: 3 } };
+// A workflow its promotion holds (runner/promotion.ts: its one check on the agent's own runs fell short) asks the compile
+// turn for a revision, with the check's numbers.
+test("held by its check: the revise ask says the check's numbers and offers no 'No change.'", () => {
+  const check = { n: 20, compile_after: 20, alone: 12, agreed: 9, alone_min: 0.8, agree_min: 0.9 };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "checked ...", check };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
-  assert.match(prompt, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: replayed on 20 of the agent's graded inputs, it was right 75\.0% of the time \(3 handed back, each scored on the agent's answer\), against the agent's 90\.0%: -15\.0 pts, more than 2 pts under\./);
-  assert.match(prompt, /It stays held until a new revision of it\./);
+  assert.match(prompt, /^One more turn: revise your learned workflow `answer`\.\nYour learned workflow `answer` does not run first: checked on 20 inputs of your last 20 completed runs, it answered 12 alone \(60\.0%, at least 80\.0% needed\), and 9 of those said what you said \(75\.0%, at least 90\.0% needed\)\./);
   assert.doesNotMatch(prompt, /No change\./, "a held workflow stays held unchanged: no such answer offered");
   assert.equal(compile.askedForCompile(prompt), true);
-  const graded = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { workflow: "answer", digest: "0123456789abcdef", source: "graded", reason: "20 graded runs it served were right 70.0% of the time" } }));
-  assert.match(graded, /Your learned workflow `answer` does not run first: it was held \(20 graded runs it served were right 70\.0% of the time\)\./);
-  // Held for handing back every input: never "pts under" (its accuracy is the agent's own), but that it never answers alone.
-  const alone = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { ...held, reason: "it handed back every one of its 20 replayed inputs", replay: { n: 20, agree: 0, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 20 } } }));
-  assert.match(alone, /does not run first: replayed on 20 of the agent's graded inputs, it handed back every one: it would never answer alone\. A check or an escalate that stops every draft, right or wrong, is the step to change\./);
-  assert.doesNotMatch(alone, /pts under/);
+  const plain = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "the check could not run" } }));
+  assert.match(plain, /Your learned workflow `answer` does not run first: it was held \(the check could not run\)\. It stays held until a new revision of it\./);
 });
 
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
 // promotion records when the run's learning is read.
-test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own graded hold asks too", () => {
-  const rec = (digest, decided, source = "replay", extra = {}) => ({ workflow: "answer", digest, at: "t", decided, source, reason: "r", ...extra });
-  const champion = rec("c1", "promote", "dry_run");
+test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own hold asks too", () => {
+  const rec = (digest, decided, extra = {}) => ({ workflow: "answer", digest, at: "t", decided, reason: "r", ...extra });
+  const champion = rec("c1", "promote");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying")])], [], "replaying: nothing to revise yet");
-  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c3", "queued"), rec("c4", "queued"), rec("c3", "skipped", "replay", { skipped_by: "c4" })])], [], "skipped for a newer revision queued: nothing to revise yet");
-  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c3", "queued"), rec("c2", "hold")])], [], "the replay ahead of a queued revision held: the queued one replays next, nothing to revise yet");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "hold"), { ...champion, checked: 20 }])], ["answer"], "held behind a champion checked after it");
-  assert.deepEqual([...compile.heldNamesOf([champion, rec("c1", "hold", "graded")])], ["answer"], "the champion's own graded hold");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c1", "hold")])], ["answer"], "the champion's own hold");
+  assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "hold", { check: { stopped: true } })])], [], "a hold a check stopped: nothing compiles it again");
   assert.deepEqual([...compile.heldNamesOf([champion, rec("c2", "replaying"), rec("c2", "promote")])], [], "promoted: the new champion");
 });
 
-test("a kept compile records its draft's digest, and promotedOf reads it against the promotion records: promote, refit from it, hold or skipped, or not decided yet (queued included)", async () => {
+test("a kept compile records its draft's digest, and promotedOf reads it against the promotion records: promote, hold, or not decided yet", async () => {
   const { workflowDigest } = await import("../dist/runner/workflow-first.js");
   const text = JSON.stringify(compile.compileExample(false));
   const result = await compile.compileTurn({
@@ -360,14 +340,11 @@ test("a kept compile records its draft's digest, and promotedOf reads it against
   const digest = workflowDigest({ workflow: text });
   assert.equal(result.record.digest, digest, "the digest a run serving it records");
   const at = new Date(0).toISOString();
-  const rec = (extra) => ({ workflow: "refund-request", digest, at, source: "replay", reason: "r", ...extra });
+  const rec = (extra) => ({ workflow: "refund-request", digest, at, reason: "r", ...extra });
   assert.equal(compile.promotedOf([], "refund-request", digest), undefined);
   assert.equal(compile.promotedOf([rec({ decided: "replaying" })], "refund-request", digest), undefined);
   assert.equal(compile.promotedOf([rec({ decided: "replaying" }), rec({ decided: "promote" })], "refund-request", digest), true);
-  assert.equal(compile.promotedOf([rec({ decided: "promote" }), rec({ decided: "hold", source: "graded" })], "refund-request", digest), false);
-  assert.equal(compile.promotedOf([rec({ decided: "queued" })], "refund-request", digest), undefined, "queued: not decided yet");
-  assert.equal(compile.promotedOf([rec({ decided: "queued" }), rec({ decided: "skipped", skipped_by: "fedcba9876543210" })], "refund-request", digest), false, "skipped for a newer revision: it never serves");
-  assert.equal(compile.promotedOf([rec({ decided: "hold" }), rec({ digest: "fedcba9876543210", decided: "promote", source: "refit", refit: { from: digest, guards: [] } })], "refund-request", digest), true, "a refit of it serves");
+  assert.equal(compile.promotedOf([rec({ decided: "promote" }), rec({ decided: "hold" })], "refund-request", digest), false);
   assert.equal(compile.promotedOf([rec({ decided: "promote", workflow: "other" })], "refund-request", digest), undefined);
 });
 
@@ -378,40 +355,6 @@ test("GET /runs/{id}/learning: compiled.promoted is null until its promotion is 
   assert.deepEqual([body({}).promoted, body({}).digest], [null, "0123456789abcdef"]);
   assert.equal(body({ promoted: true }).promoted, true);
   assert.equal(body({ promoted: false }).promoted, false);
-});
-
-// #2641 review (class A), the cascade skeleton: a draft the checks keep is held to learnedHost's rules before it is
-// accepted, and those ask for no step guard: a guard on any step goes back through the retry loop with which step.
-const GUARDED = (kind, label) => `the ${kind} step "${label}" has a guard: author no step guard (drop its "guard"); code checks and escalate steps hand a case back`;
-const guardedExample = () => {
-  const doc = compile.compileExample(false);
-  doc.root.steps[1].guard = { signal: "self", threshold: 0.7 };
-  return doc;
-};
-test("guardProblems: any step's guard is refused, nested steps included; the worked example has none", () => {
-  for (const fetches of [true, false]) assert.deepEqual(compile.guardProblems(compile.compileExample(fetches)), [], `fetches ${fetches}`);
-  assert.deepEqual(compile.guardProblems(guardedExample()), [GUARDED("decide", "answer")]);
-  const extract = compile.compileExample(false);
-  extract.root.steps[0].guard = { signal: "jev", threshold: 0.7 };
-  assert.deepEqual(compile.guardProblems(extract), [GUARDED("extract", "facts")]);
-  // Nested steps are read too (a map's body).
-  const nested = { v: 2, name: "n", schemas: {}, root: { node: "map", label: "each", itemsPath: "items", body: { node: "agent", label: "inner", guard: { signal: "both", threshold: 0.7 } } } };
-  assert.deepEqual(compile.guardProblems(nested), [GUARDED("agent", "inner")]);
-});
-
-test("compileTurn: a draft the checks keep but carrying a guard goes back with which step, and the one without is kept", async () => {
-  const guarded = JSON.stringify(guardedExample());
-  const plain = JSON.stringify(compile.compileExample(false));
-  const asked = [];
-  const result = await compile.compileTurn({
-    ask: async (prompt, attempt) => (asked.push(prompt), { answer: `\`\`\`\`workflow refund-request\n---\ndescription: d\n---\n${attempt === 1 ? guarded : plain}\n\`\`\`\`` }),
-    compile: ASK(), answer: "",
-    check: async (answer) => ({ state: "proposed", workflows: 1, proposal: { files: [{ file: "workflows/refund-request/workflow.json", text: answer.includes(guarded) ? guarded : plain }] } }),
-  });
-  assert.equal(asked.length, 2, "asked again");
-  assert.match(asked[1], /guard: the decide step "answer" has a guard/);
-  assert.deepEqual(result.record.attempts, [{ ok: false, errors: [`guard: ${GUARDED("decide", "answer")}`] }, { ok: true, errors: [] }]);
-  assert.doesNotMatch(result.kept.answer, /"guard"/);
 });
 
 // #2641 review (class B): the compile turn reads the agent's notes whole; notes past NOTES_MAX compile nothing and say
@@ -455,19 +398,6 @@ test("a compile trace's feedback is the person's messages alone: the server's an
   assert.equal(learningEnd.traceFrom([{ id: "e1", kind: "phase", origin: "trigger", text: "Webhook w-1: refund order 1043" }, { id: "e2", kind: "final_answer", text: "done" }], []).input, "Webhook w-1: refund order 1043");
 });
 
-// #2641 review (class A, again): guardProblems reads the workflow's steps alone (skills.ts childNodes), never a literal
-// `state` or `args` value that happens to hold a `node` key.
-test("guardProblems walks steps alone: a call's args or a step's state holding a `node` key is data, never a step", () => {
-  const doc = { v: 2, name: "n", schemas: {}, root: { node: "chain", steps: [
-    { node: "call", label: "file", via: "tool", tool: "web_fetch", args: { node: "agent", guard: { signal: "self", threshold: 0.7 }, nested: [{ node: "decide", guard: {} }] }, out: "R", as: "r", deadline_s: 30 },
-    { node: "decide", label: "answer", state: { r: "{r}", shape: { node: "judge", guard: {} } }, out: "A", as: "a" },
-  ] } };
-  assert.deepEqual(compile.guardProblems(doc), []);
-  // The steps under a parallel, a loop and a route are steps.
-  const guard = { signal: "self", threshold: 0.7 };
-  const deep = { root: { node: "parallel", branches: [{ node: "loop", body: { node: "agent", label: "a", guard } }, { node: "route", branches: { x: { body: { node: "decide", label: "d", guard } } } }] } };
-  assert.deepEqual(compile.guardProblems(deep).map((line) => line.split(" has ")[0]), ['the agent step "a"', 'the decide step "d"']);
-});
 
 // Track A, A1 (H1, 300 merchants out of sample): the workflow that held the agent's accuracy at 11% of its cost does its
 // legwork on the fast model and answers on the agent's own; the same answering step on the fast model scored 8.5-9.6
@@ -986,37 +916,6 @@ test("a draft whose answer is text passes the dry run against a many-field outpu
   assert.match(broken.detail, /^its dry run failed: the agent's output schema /);
 });
 
-// #2641 review (P2): the cooldown reads every learning round of the agent's last runs. A run whose first round compiled a
-// draft (failed or dropped) and whose follow-up's round kept none still compiled lately: the next run asks no compile.
-test("compileAskOf: a compile in an earlier run's first round holds the cooldown though its newest round (a follow-up's) kept none", async () => {
-  const rounds = { "run-1": [{ round: 1, proposal: { compiled: { workflow: "answer", attempts: [{ ok: false }] } } }, { round: 2, proposal: { state: "proposed" } }] };
-  const opened = [];
-  const deps = (byRun) => ({
-    store: {
-      runs: {
-        list: async () => [{ id: "run-2", agentId: "agent-1", state: "ended", outcome: "completed", archivedAt: null }, { id: "run-1", agentId: "agent-1", state: "ended", outcome: "completed", archivedAt: null }],
-        get: async (id) => ({ id, agentId: "agent-1", revisionId: "rev-1" }),
-      },
-      // Its definition compiles at 2 completed runs: run-2 ending is its second.
-      agents: { revision: async () => ({ id: "rev-1", body: { learning: { compile_after: 2 } } }) },
-      learning: {
-        proposal: async (runId, round) => {
-          const kept = byRun[runId] ?? [];
-          return round === undefined ? kept.at(-1) : kept.find((one) => one.round === round);
-        },
-        proposals: async () => Object.values(byRun).flat(),
-      },
-    },
-    learningFolder: (agentId) => { opened.push(agentId); throw new Error("the folder is not read in this test"); },
-  });
-  const ask = { runId: "run-2", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 };
-  assert.equal(await learningEnd.compileAskOf(deps(rounds), ask).catch(() => undefined), undefined);
-  assert.deepEqual(opened, [], "compiled lately: the folder is never opened for a compile turn");
-  // No compile in any round: due, and the folder is read.
-  await learningEnd.compileAskOf(deps({ "run-1": [rounds["run-1"][1]] }), ask).catch(() => undefined);
-  assert.deepEqual(opened, ["agent-1"], "not compiled lately: the compile turn reads the folder");
-});
-
 // #2641 review r5 (P1): the dry run's answers are placeholders ("x" for a string), so it decides only the answer's shape
 // against the agent's output schema: its fields exist, their types can line up, every required one is produced. A value
 // constraint (a pattern, an enum, a bound, a format, a length) stays undecided on a placeholder, never refused, as a real
@@ -1084,8 +983,8 @@ test("a draft's dry run reads the agent's oneOf as anyOf on placeholders: branch
 // #2641 review r5 (P2): a held revision's prompt offers no `No change.` (it stays held until a new revision). Answered so
 // anyway, the reply is refused as an unreadable one is: asked again, and every attempt recorded, so the once-per-hold
 // check sees the compile and later runs never pay for the same held revision again.
-test("a held revision answered `No change.` is refused, asked again and recorded; an unheld revision's `No change.` still ends the turn", async () => {
-  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
+test("a held revision answered `No change.` is refused, asked again and recorded", async () => {
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "r" };
   const heldAsk = ASK({ mode: "revise", workflow: "answer", current: "{}", held });
   const read = compile.readCompile("No change.", heldAsk);
   assert.equal(read.ok, false);
@@ -1098,7 +997,4 @@ test("a held revision answered `No change.` is refused, asked again and recorded
   assert.equal(result.record.attempts.length, 1 + compile.COMPILE_RETRIES, JSON.stringify(result.record));
   assert.ok(result.record.attempts.every((one) => !one.ok && /held until a new revision/.test(one.errors[0])), JSON.stringify(result.record));
   assert.match(result.draftErrors[0], /held until a new revision/);
-  // Unheld: the model kept it as it is, and nothing is recorded.
-  const unheld = await compile.compileTurn({ ask: async () => ({ answer: "No change." }), compile: ASK({ mode: "revise", workflow: "answer", current: "{}" }), answer: "", check: async () => assert.fail("nothing to check") });
-  assert.deepEqual(unheld, { draftErrors: [] });
 });
