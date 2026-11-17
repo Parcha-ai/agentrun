@@ -61,6 +61,17 @@ const answerFlow = {
 const FLOWS = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }];
 const DIGEST = workflowDigest({ workflow: JSON.stringify(answerFlow) });
 const FINAL = ["ended", "failed", "stopped"];
+
+/** DIGEST's records once run-2 (the agent's: its check held the draft) ended. Its end asked the one revision; the faux
+ *  model's answer holds no draft, so that revision's failed draft is the newest record (compile once: the recompile's
+ *  attempt, stopped). */
+async function heldThenRevisionFailed(server) {
+  const records = await promotionsOf(server.settings, "agent-1");
+  const failed = records.at(-1);
+  assert.deepEqual([failed.workflow, failed.decided, failed.check?.attempt, failed.check?.n, failed.check?.stopped], ["answer", "hold", 2, 0, true], JSON.stringify(failed));
+  assert.match(failed.reason, /^its draft failed its checks: .+It was the recompile, so it stops/);
+  return records.filter(({ digest }) => digest === DIGEST);
+}
 const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
 const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
 const isNode = (request) => offers(request.body, "submit");
@@ -239,7 +250,7 @@ test("a check the workflow hands back on every input is held (it would never ans
   const second = await start("run-2", "What is seven times six");
   // Every input handed back: it never answered alone: held, and nothing serves: the next run is the agent's.
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
-  const records = await promotionsOf(server.settings, "agent-1");
+  const records = await heldThenRevisionFailed(server);
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["hold"]]);
   const decided = records.at(-1);
   assert.deepEqual({ n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed, handed_back: decided.check.outcomes.handed_back }, { n: 6, alone: 0, agreed: 0, handed_back: 6 });
@@ -253,7 +264,7 @@ test("a check whose answers differ from the agent's holds the digest: the next r
   await replaysEnded(6);
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 6, alone: 6, agreed: 0 });
   assert.deepEqual(decided.check.disagreements.map((one) => [one.agent, one.draft]), decided.check.disagreements.map(() => [AGENT_SAYS, JSON.stringify({ answer: 41, sure: true })]));
   assert.match(decided.reason, /answered 6 alone \(100\.0%, the bar 70\.0%\), and 0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held/);
@@ -294,7 +305,7 @@ test("a check whose launch was interrupted after 1 of its 20 runs, decided past 
   await restart();
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", `never promoted on the one input that ran: ${JSON.stringify(second.metrics)}\n${logs.join("\n")}`);
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 20, alone: 1, agreed: 1 }, JSON.stringify(decided));
   assert.equal(decided.check.disagreements.filter((one) => one.failed).length, 19, "each one never created is a failed input");
   assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\), and 1 of those said what the agent said \(100\.0%, the bar 80\.0%\) \(19 never started by the check's deadline/);
@@ -440,7 +451,7 @@ test("a check whose workflow fails on every input (a step failed: a credential o
   assert.deepEqual(runs.map((row) => row.metrics?.replay?.outcome), runs.map(() => "failed"), JSON.stringify(runs.map((row) => row.metrics)));
   const second = await start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", `held: the agent takes the run: ${JSON.stringify(second.metrics)}`);
-  const decided = (await promotionsOf(server.settings, "agent-1")).at(-1);
+  const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, failed: decided.check.outcomes.failed }, { decided: "hold", n: 6, alone: 0, failed: 6 });
   assert.match(decided.reason, /answered 0 alone .*\(6 failed: a step failed, or it was still at work at the check's deadline\): held/);
 });

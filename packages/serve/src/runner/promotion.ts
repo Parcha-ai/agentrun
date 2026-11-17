@@ -515,7 +515,11 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
     return stopUnchecked(deps, name, digest, bar, why, still, numbers, extra);
   }
   const aside = [...(failed ? [`${failed} failed: a step failed, or it was still at work at the check's deadline`] : []), ...(skipped ? [`${skipped} skipped: ${skipWhy}`] : []), ...(read.unstarted ? [`${read.unstarted} never started by the check's deadline (the server stopped after reserving it, say), each a failed input`] : [])].join("; ");
-  const said = `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)}), and ${score.agreed} of those said what the agent said (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})${aside ? ` (${aside})` : ""}`;
+  // Every input reserved and none started (a launch interrupted before its first run existed): each counts failed in n,
+  // and the words say none ran.
+  const said = read.unstarted === score.n
+    ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)}), and ${score.agreed} of those said what the agent said (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})${aside ? ` (${aside})` : ""}`;
   const reason = ok ? `${said}: promoted` : stopped ? `${said}: held, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held; the agent's next run recompiles it once with the inputs it did not agree on`;
   const check: CheckRecord = { ...bar, ...score, ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}) };
   const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra }, still);
