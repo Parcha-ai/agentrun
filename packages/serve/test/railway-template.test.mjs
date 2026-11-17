@@ -163,6 +163,24 @@ test("the first run: the model key goes in the deploy's form, never in the outpu
   assert.ok(times.clicked <= times.healthy && times.healthy <= times.finished && times.finished <= times.deleted);
 });
 
+test("a workspace template that already deploys template.json is used again, a published one first, and none is generated", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const call = client.call.bind(client);
+  const generated = (await call("TemplateGenerate", {})).templateGenerate.serializedConfig;
+  const other = structuredClone(generated);
+  Object.values(other.services)[0].deploy.healthcheckPath = "/";
+  const ours = [
+    { id: "t-new", code: "new", status: "UNPUBLISHED", createdAt: "2026-11-17T12:00:00Z", serializedConfig: generated },
+    { id: "t-pub", code: "pub", status: "PUBLISHED", createdAt: "2026-11-16T12:00:00Z", serializedConfig: generated },
+    { id: "t-off", code: "off", status: "PUBLISHED", createdAt: "2026-11-18T12:00:00Z", serializedConfig: other },
+  ];
+  client.call = async (op, v) => (op === "WorkspaceTemplates" ? (await call(op, v), { workspaceTemplates: { edges: ours.map((node) => ({ node })) } }) : call(op, v));
+  const rows = await run(client, { workspaceId: "ws", log: quiet });
+  assert.deepEqual(rows.filter((r) => r[1] !== "PASS"), []);
+  assert.ok(!client.calls.some((c) => c.op === "TemplateGenerate" && c.variables.projectId));
+  assert.equal(client.calls.find((c) => c.op === "TemplateDeploy").variables.input.templateId, "t-pub");
+});
+
 test("a workspace not named as expected stops the run before anything is made", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws", workspaceName: "Someone else" });
   const rows = await run(client, { workspaceId: "ws", expectWorkspace: "Parcha", log: quiet });

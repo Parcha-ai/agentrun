@@ -49,7 +49,7 @@ export const OPS = {
   ServiceDomainCreate: `mutation ServiceDomainCreate($input: ServiceDomainCreateInput!) { serviceDomainCreate(input: $input) { id domain targetPort } }`,
   EnvironmentConfig: `query EnvironmentConfig($id: String!) { environment(id: $id) { id config } }`,
   EnvironmentPatchCommit: `mutation EnvironmentPatchCommit($environmentId: String!, $patch: EnvironmentConfig!, $commitMessage: String) { environmentPatchCommit(environmentId: $environmentId, patch: $patch, commitMessage: $commitMessage, skipDeploys: true) }`,
-  TemplateSource: `query TemplateSource($projectId: String!) { templateSourceForProject(projectId: $projectId) { id code status serializedConfig } }`,
+  WorkspaceTemplates: `query WorkspaceTemplates($workspaceId: String!) { workspaceTemplates(workspaceId: $workspaceId, first: 100) { edges { node { id code status createdAt serializedConfig } } } }`,
   TemplateGenerate: `mutation TemplateGenerate($projectId: String!, $environmentId: String) { templateGenerate(input: { projectId: $projectId, environmentId: $environmentId }) { id code status serializedConfig } }`,
   Template: `query Template($code: String!) { template(code: $code) { id code status serializedConfig } }`,
   TemplateDeploy: `mutation TemplateDeploy($input: TemplateDeployV2Input!) { templateDeployV2(input: $input) { projectId workflowId } }`,
@@ -145,7 +145,7 @@ export async function checkApi(client, log) {
     VolumeCreate: { input: { projectId: id, environmentId: id, serviceId: id, mountPath: "/data" } },
     ServiceDomainCreate: { input: { environmentId: id, serviceId: id, targetPort: 7340 } },
     EnvironmentConfig: { id }, EnvironmentPatchCommit: { environmentId: id, patch: {}, commitMessage: "check" },
-    TemplateSource: { projectId: id }, TemplateGenerate: { projectId: id, environmentId: id },
+    WorkspaceTemplates: { workspaceId: id }, TemplateGenerate: { projectId: id, environmentId: id },
     Template: { code: "agentrun-check-api" },
     TemplateDeploy: { input: { templateId: id, serializedConfig: formValues(config), workspaceId: id } },
     ProjectRename: { id, name: WALK_PROJECT }, WorkflowStatus: { id }, Project: { id },
@@ -264,13 +264,18 @@ async function ensureTemplate(client, { workspaceId, config, step }) {
   await client.call("EnvironmentPatchCommit", { environmentId, patch: sourcePatch(service, serviceId, current), commitMessage: "deploy/railway/template.json" });
   step.pass("source in step", `image ${service.source.image}, ${Object.keys(service.variables).length} variables, deploy settings; committed with skipDeploys`);
 
-  const had = (await client.call("TemplateSource", { projectId: source.id })).templateSourceForProject;
-  if (had && differences(config, had.serializedConfig).length === 0) {
-    step.pass("template", `${had.code} (${had.id}) already deploys what template.json says`);
+  // A workspace token may not read a project's template (templateSourceForProject), so the workspace's templates are
+  // read instead: one that already deploys template.json is used again, a published one first.
+  const ours = edges((await client.call("WorkspaceTemplates", { workspaceId })).workspaceTemplates).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const same = ours.filter((t) => differences(config, t.serializedConfig).length === 0);
+  const had = same.find((t) => t.status === "PUBLISHED") ?? same[0];
+  if (had) {
+    step.pass("template", `${had.code} (${had.id}, ${had.status}) already deploys what template.json says`);
     return had;
   }
   const made = (await client.call("TemplateGenerate", { projectId: source.id, environmentId })).templateGenerate;
-  const moved = had && had.id !== made.id ? `; it replaces ${had.code}, whose button must move to the new code` : "";
+  const before = ours.find((t) => t.status === "PUBLISHED");
+  const moved = before ? `; it replaces ${before.code}, whose button must move to the new code` : "";
   step.pass("template generated", `${made.code} (${made.id}) from ${SOURCE_PROJECT}${moved}`);
   return made;
 }
@@ -483,7 +488,7 @@ export function planClient({ log, workspaceId, workspaceName = "<workspace>" }) 
     ServiceDomainCreate: () => ({ serviceDomainCreate: { id: "<source domain>", domain: "agentrun-template-source.up.railway.app", targetPort: 7340 } }),
     EnvironmentConfig: () => ({ environment: { id: "<source environment>", config: { services: {} } } }),
     EnvironmentPatchCommit: () => ({ environmentPatchCommit: "<patch>" }),
-    TemplateSource: () => ({ templateSourceForProject: null }),
+    WorkspaceTemplates: () => ({ workspaceTemplates: { edges: [] } }),
     TemplateGenerate: () => ({ templateGenerate: { id: "<template>", code: "<code>", status: "UNPUBLISHED", serializedConfig: generated } }),
     Template: (v) => ({ template: { id: "<template>", code: v.code, status: "PUBLISHED", serializedConfig: generated } }),
     TemplateDeploy: (v) => {
