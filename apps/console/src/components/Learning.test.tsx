@@ -5,7 +5,8 @@ import { LearningTab, type LearningProps } from "./Learning";
 import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, LearningNote } from "@/lib/learning";
-import type { LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
+import { BILL, hour } from "@/lib/learningBill.fixture";
+import type { AuditRow, LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
 
 // The agent's Learning tab: its notes with where each came from, edit (its version named), retire after a confirm, a
 // note a person adds, what runs did not keep and why, the before and after, and the switch.
@@ -50,7 +51,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.restoreAllMocks(); });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
-type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent>; promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost>; batches?: boolean };
+type Fake = { learning?: () => Promise<AgentLearning>; runs?: Run[]; read?: (file: string) => Promise<{ note: string; etag: string | null }>; write?: (file: string, text: string, on: unknown) => Promise<unknown>; retire?: (file: string, etag: string) => Promise<unknown>; approve?: (file: string, etag: string) => Promise<unknown>; restore?: (file: string, etag: string) => Promise<unknown>; caps?: unknown; notes?: (cursor: string) => Promise<{ items: LearningNote[]; total: number; next_cursor: string | null }>; log?: (cursor: string) => Promise<AgentLearning["log"]>; runsNext?: string | null; update?: (body: unknown, etag: string | null) => Promise<{ agent: Agent; etag: string }>; promote?: (name: string, key: string) => Promise<Agent>; promotions?: () => Promise<Promotions>; loop?: () => Promise<LearningLoop>; cost?: () => Promise<LearningCost>; batches?: boolean; audits?: AuditRow[] };
 async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {}) {
   const calls: string[] = [];
   const agents: Agent[] = [];
@@ -78,6 +79,7 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
     learningPromotions: async () => (fake.promotions ?? (async () => ({ agent: a.agent_id, promotions: [], serving: [] })))(),
     learningLoop: async () => (fake.loop ?? (async () => ({ agent: a.agent_id, completed_runs: 0, compiles: [] })))(),
     learningEvals: async () => ({ agent: a.agent_id, latest: null, evals: [] }),
+    learningAudits: async () => ({ agent: a.agent_id, audits: fake.audits ?? [] }),
     promoteWorkflow: async (_id: string, name: string, key: string) => { calls.push(`promote ${name}`); return (fake.promote ?? (async (n: string) => ({ ...a, agent_id: n, kind: "workflow", definition: { version: 1, name: n, workflow: {}, harness: "pi", skills: [], tools: [] } } as Agent)))(name, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -1931,5 +1933,27 @@ describe("learning-loop refresh integration", () => {
     await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle();
     await act(async () => { release(); }); await settle();
     expect(t.text()).toContain(marker);
+  });
+});
+
+describe("the bill", () => {
+  it("shows the booked bill against the agent for all of it, the break-even marker and the audit line, and no equal-cache figure", async () => {
+    const digest = "d".repeat(16);
+    const runs = BILL.points.map((p) => ({ n: p.n, run_id: p.run_id, started_at: hour(p.n), path: p.n < 4 ? "agent" as const : "workflow" as const, workflow: p.n < 4 ? null : "answer", learned_revision: null, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
+    const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
+    const promotions: Promotions = {
+      agent: "refunds",
+      promotions: [{ workflow: "answer", digest, at: hour(4), decided: "promote", reason: "checked", check: { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 10, agreed: 9, alone: 9 } }],
+      serving: [{ workflow: "answer", digest, replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 4, disagreed: 1 }, audits_off: null, not_auditable: 0 }],
+    };
+    const audits = [true, true, false, true, true].map((agreed, i) => ({ run: `run-${i + 5}`, shadow_run: `audit.run-${i + 5}`, workflow: "answer", digest, promoted_at: hour(4), source: "shadow" as const, agreed, served_cost: 0.1, shadow_cost: 0.4, at: hour(i + 5) }));
+    const t = await open(agent(true), { cost: async () => cost, promotions: async () => promotions, audits });
+    expect(t.host.querySelector("[data-testid=bill-actual]")).not.toBeNull();
+    expect(t.host.querySelector("[data-testid=bill-agent]")).not.toBeNull();
+    expect(t.host.querySelector("[data-testid=bill-break-even]")).not.toBeNull();
+    expect(t.text()).toContain("Break-even at run 5");
+    expect(t.text()).toContain("Last 4 audits: 3 agreed");
+    expect(t.text()).toContain("All time: 4 of 5 agreed");
+    expect(t.text()).not.toMatch(/equal[- ]cache/i);
   });
 });
