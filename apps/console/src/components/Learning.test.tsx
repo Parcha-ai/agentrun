@@ -480,6 +480,34 @@ describe("the switch and the empty states", () => {
     expect(t.text()).toContain("Another revision was saved first. · precondition_failed");
     expect(sw.getAttribute("aria-checked")).toBe("false");
   });
+  it("enabling an existing eve agent enables learning for its next ordinary task", async () => {
+    const t = await open(agent(false, { sdk: { runtime: "eve" } }));
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    const put = t.calls.find((call) => call.startsWith("put "))!;
+    expect(JSON.parse(put.slice(4, put.lastIndexOf(" ")))).toMatchObject({
+      definition: { learning: true, sdk: { runtime: "eve" }, version: 2 }, note: "Learning on",
+    });
+    expect(put.endsWith('"rv1"')).toBe(true);
+    expect(t.agents.at(-1)?.definition.learning).toBe(true);
+  });
+  it("turning eve learning Off still saves false", async () => {
+    const t = await open(agent(undefined, { learning: true, sdk: { runtime: "eve" } }));
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(t.agents.at(-1)?.definition.learning).toBe(false);
+  });
+  it("an enable click preserves learning enabled by another writer without another revision", async () => {
+    const learning = true;
+    const current = agent(false, { sdk: { runtime: "eve" } });
+    const t = await open(current);
+    // Another client saved a mode after this page rendered Off. getAgent reads that latest value.
+    current.definition.learning = learning;
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(t.calls.some(call => call.startsWith("put "))).toBe(false);
+    expect(t.agents.at(-1)?.definition.learning).toBe(learning);
+  });
   it("with learning on and nothing learned yet: says so, how many runs looked back, and the corrections can be written", async () => {
     const t = await open(agent(true), { learning: async () => none(), runs: [RUNS[0], RUNS[2]] });
     expect(t.text()).toContain("Nothing learned yet");

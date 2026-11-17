@@ -113,7 +113,7 @@ node connect.mjs --workflows
 npm run dev -- --port 7443
 ```
 
-The mount supplies the existing workflow interpreter, the exact two callback references, their schemas, explicit native tool names and a live allow policy. The example's `agent.ts` keeps `@parcha/agentrun-dsl` in `build.externalDependencies` so eve preserves its package-relative schema assets. It does not automatically expose any other eve tools. Keep the generated mount named `agentrun.ts`; other names require setting the extension's `workflows.toolName` to its actual namespaced eve tool name.
+The mount supplies the existing workflow interpreter, the exact two callback references, their schemas, explicit native tool names and a live allow policy. The extension's package metadata preserves the interpreter's schema assets; the application's `agent.ts` needs no build override. It does not automatically expose any other eve tools. Keep the generated mount named `agentrun.ts`; other names require setting the extension's `workflows.toolName` to its actual namespaced eve tool name.
 
 In another terminal with the same connection variables and audit path:
 

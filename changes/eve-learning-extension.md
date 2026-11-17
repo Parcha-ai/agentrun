@@ -18,3 +18,11 @@ Show the actual harness mark beside connected agents and observed sessions, incl
 Claude Code and Codex. Workflow agents keep a distinct workflow icon.
 
 Keep the workflow schema discoverable by production dependency tracers when embedding the interpreter in an eve application.
+
+Package the extension with its runtime asset requirements and include it in release archive verification.
+An existing eve application can install the candidate archives and add one extension mount without
+workspace links or changes to its model, tools or build options. Document notes/skills onboarding and
+the additional explicit read-only bindings required for executable workflows.
+Enabling learning on an Off eve agent in the console now selects notes and skills, so ordinary
+connected tasks can learn without requiring a workflow catalog. Preserve an already-enabled
+learning mode when another client saves it before the switch's update.

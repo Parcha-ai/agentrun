@@ -9,8 +9,6 @@ const provider = createOpenAICompatible({
   includeUsage: true,
 });
 export default defineAgent({
-  // Keep the optional interpreter's package-relative schema/author assets intact.
-  build: { externalDependencies: ['@parcha/agentrun-dsl'] },
   model: provider.chatModel(process.env.EVE_MODEL ?? 'anthropic/claude-haiku-4.5'),
   modelContextWindowTokens: 200_000,
   limits: {

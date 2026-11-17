@@ -15,6 +15,7 @@ import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from 
 import { importsOf } from './package-imports.mjs';
 import { RECORD as DAEMON_RECORD, sourceDigest as daemonSourceDigest } from '../packages/computer/scripts/daemon-source.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
+import { verifyEvePackage } from './verify-eve-package.mjs';
 import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
@@ -176,6 +177,7 @@ const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
   computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
+  eve: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.mjs', 'package/dist/index.d.ts', 'package/dist/tools/index.mjs', 'package/dist/tools/index.d.ts', 'package/dist/extension/_manifest.json', 'package/dist/extension/extension.mjs', 'package/dist/extension/hooks/learning.mjs', 'package/dist/extension/instructions.mjs', 'package/dist/extension/tools/learned_workflow.mjs'],
 };
 
 try {
@@ -187,7 +189,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -342,6 +344,10 @@ syncBuiltinESMExports();
   receipt.starter.status = 'passed';
   receipt.checks.push('Standalone TypeScript starter installed only DSL/Jev tarballs and its own dependencies; strict build, component tests, success and missing-evidence exit 2 passed offline.');
   console.log('Standalone starter: installed packages, strict compilation, tests, evidence selection and missing-evidence exit 2 passed without runtime network.');
+  receipt.eve = await verifyEvePackage({ root, parentDirectory: temporary,
+    tarballs: Object.fromEntries(['client', 'dsl', 'eve'].map(directory => [directory, tarballs[packageDirectories.indexOf(directory)]])) });
+  receipt.checks.push('Standalone eve project installed client/DSL/eve archives; mount types, production build without agent overrides, deployed schema assets and original callback execution passed offline.');
+  console.log('Installed eve extension: mount, production build, package assets and workflow callback passed without network.');
   const offlineNode = args => run(process.execPath, ['--import', './deny-network.mjs', ...args], consumer);
   for (const scenario of ['billing', 'technical', 'ambiguous']) {
     const result = JSON.parse((await offlineNode(['node_modules/@parcha/agentrun-dsl/dist/cli.js', 'demo', '--scenario', scenario, '--json'])).stdout);
@@ -370,6 +376,8 @@ import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 import * as decisions from '@parcha/agentrun-decisions';
 import * as client from '@parcha/agentrun-client';
+import agentrunEve from '@parcha/agentrun-eve';
+import { learned_workflow as eveWorkflow } from '@parcha/agentrun-eve/tools';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import * as adapters from '@parcha/agentrun-kernel';
@@ -408,7 +416,8 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
 { assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); const mounts=computer.descriptorOf(id)?.mounts; assert.ok(Array.isArray(mounts)&&mounts.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' mounts'); assert.equal(module.MOUNT,undefined,id+' exports no MOUNT: the descriptor holds its mounts'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
 { const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
-console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
+assert.equal(typeof agentrunEve,'function'); assert.ok(eveWorkflow);
+console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,eve:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);

@@ -4,11 +4,22 @@ An additive extension for an existing [eve](https://github.com/vercel/eve) agent
 model, tools, credentials, permissions, channels and durable execution. AgentRun records each
 turn and supplies independently checked notes, skills and opt-in workflows to later turns.
 
-This package currently builds from this repository and is held from npm publication. It targets
-**eve 1.0.0** and requires the matching AgentRun server with the `eve` SDK runtime contract.
-See the [cookbook](../../docs/tutorials/eve-learning.md) and [live example](../../examples/eve-learning/README.md).
+Targets **eve 1.0.0** and **Node 24.22.3 or newer**. The AgentRun server must support the `eve`
+SDK runtime and have a reflection/grading model configured to enable self-improvement.
+The package is a tested release candidate, held from npm publication. Install the candidate's
+three archives together in your **existing eve project**:
 
-Mount the built package in `agent/extensions/agentrun.ts`:
+```sh
+npm install /path/to/candidate/parcha-agentrun-client-*.tgz \
+  /path/to/candidate/parcha-agentrun-dsl-*.tgz \
+  /path/to/candidate/parcha-agentrun-eve-*.tgz
+```
+
+These are built packages, not workspace links; no AgentRun checkout is needed in the application.
+After a reviewed release publishes them, the registry install will be `npm install @parcha/agentrun-eve`.
+Do not use that registry command for this unpublished candidate.
+
+Add one file, `agent/extensions/agentrun.ts`:
 
 ```ts
 import agentrun from '@parcha/agentrun-eve';
@@ -17,16 +28,39 @@ import { instructions } from '../lib/policy.js';
 export default agentrun({
   baseUrl: process.env.AGENTRUN_BASE_URL!, // Your server's /v2 API
   apiKey: process.env.AGENTRUN_API_KEY!,
-  agentId: 'release-assistant',
-  name: 'Release assistant',
+  agentId: process.env.AGENTRUN_AGENT_ID!,
+  name: 'Release assistant', // Your existing application's display name.
   instructions, // Share the complete original standing policy, not the learning supplement.
 });
 ```
 
-The first normal eve turn registers the connected agent with learning off. Enable
-**Self-improving** on its AgentRun page; the next turn pins its learning revision. Alternatively,
-`learning: true` opts in on first registration only. An existing agent's setting always wins.
+Use the same original standing instructions as the existing eve agent, including its restrictions.
+Set `AGENTRUN_BASE_URL` (the server's API URL ending `/v2`), `AGENTRUN_API_KEY` (an AgentRun key),
+and a stable `AGENTRUN_AGENT_ID` in the eve backend's environment. Keep secrets out of this file.
+The agent's existing model and tool keys stay where they are.
+
+Restart or redeploy eve normally and run one ordinary task. It registers the connected agent with
+learning off. Open that agent's **Learning** tab and enable **Self-improving** for notes and skills.
+The next fresh turn pins its accepted learning revision. Alternatively, `learning: true` in this
+mount opts in on first registration only; without workflow bindings it selects notes/skills mode.
+An existing agent's console setting always wins. The extension declares its own build dependencies;
+the application's model, tools and `agent.ts` build configuration need no changes.
+
 Removing the extension restores the original eve integration; it does not delete AgentRun history.
+See the [cookbook](https://github.com/Parcha-ai/agentrun/blob/main/docs/tutorials/eve-learning.md)
+and [runnable example](https://github.com/Parcha-ai/agentrun/tree/main/examples/eve-learning)
+in the matching source release. The candidate source includes these files before they reach main.
+
+To check setup, teach a harmless preference in a fresh eve task, wait for its learning result in
+AgentRun, then start another fresh task without repeating the preference. Confirm that run names
+the accepted learning revision. Switching self-improvement Off should leave the original tools
+working without a learning revision on the next fresh task.
+
+If setup fails, check the backend's environment and API URL first. An unsupported `eve` runtime
+means the server needs the matching release; an agent-id/runtime conflict needs a separate id for
+this eve application. If runs are recorded but nothing learns, check the server's model route and
+select notes/skills mode. Full workflow mode needs explicit tool bindings and repeated procedures;
+it does not reflect on every successful task without feedback.
 
 ## What happens per turn
 
@@ -50,6 +84,10 @@ Notes and skills work with the mount above. To enable executable workflows, add 
 `workflows` configuration containing a trusted workflow engine, live policy and read-only
 callbacks. Bind the **same original functions** used by your eve tools; do not recreate their
 permissions, credentials or business logic in the extension.
+
+If you import the interpreter in application code as below, also declare `@parcha/agentrun-dsl`
+as a direct dependency at the candidate's matching version (the archive install above already does).
+The extension's build metadata preserves its package assets; no application-level build override is required.
 
 ```ts
 import { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow } from '@parcha/agentrun-dsl';
@@ -78,11 +116,14 @@ eve runtime name, for example `my_learning__learned_workflow`. Alias matching is
 similar-looking tool names are never inferred. The typed mount configuration carries callbacks
 locally; only schemas and permission metadata are sent to AgentRun.
 
-Enable **Self-improving** after connecting. The ordinary AgentRun reflection/checking process can
+Start with notes/skills mode to learn the procedure. After binding the original tools, select
+**Notes, skills and workflows** in the agent's learning settings. The ordinary reflection/checking process can
 learn a workflow from complete native traces. The next fresh turn receives only workflows pinned
 to that turn's accepted learning revision. When eve chooses `learned_workflow`, the extension
 creates a local MCP bridge inside that native tool step and invokes the original callbacks through
-the bridge's schema checks and live policy. No model-visible URL, auth token or capability is needed.
+the bridge's schema checks and live policy. This MCP server is temporary and listens only on
+localhost inside the eve application; it is not a public MCP endpoint on the AgentRun server.
+No model-visible URL, auth token or capability is needed.
 Arguments and callback results stay with eve; signed, run-scoped lifecycle metadata survives durable
 replay and lets AgentRun distinguish actual workflow execution from an unverified claim.
 

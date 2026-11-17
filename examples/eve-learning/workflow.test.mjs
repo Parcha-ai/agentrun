@@ -183,11 +183,9 @@ test('example source keeps workflows opt-in and binds explicit original native t
   const connect = await readFile(new URL('./connect.mjs', import.meta.url), 'utf8');
   const formatter = await readFile(new URL('./agent/tools/format_release_brief.ts', import.meta.url), 'utf8');
   const mount = await readFile(new URL('./connection/agentrun-workflows.ts', import.meta.url), 'utf8');
-  const agent = await readFile(new URL('./agent/agent.ts', import.meta.url), 'utf8');
   assert.match(connect, /COPYFILE_EXCL/); assert.match(connect, /--workflows/);
   assert.match(formatter, /EVE_WORKFLOW_AUDIT_PATH \? tool : null/);
   assert.match(mount, /tools: releaseWorkflowTools/);
-  assert.match(agent, /externalDependencies: \['@parcha\/agentrun-dsl'\]/);
   assert.deepEqual(releaseWorkflowTools.map(tool => tool.nativeName), ['release_status', 'format_release_brief']);
   assert.ok(releaseWorkflowTools.every(tool => tool.readOnly && tool.permission === 'allow'));
 });
