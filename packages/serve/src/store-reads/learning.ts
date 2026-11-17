@@ -28,8 +28,7 @@ import { journalEntries } from "../runner/journal-reader.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import { keptOf, learnedOf, lostOf, type DroppedData, type GradedData, type KeptProposal, type MergedData } from "../runner/learning-loop.js";
 import { promotedOf } from "../learn/compile.js";
-import { championOf, gradesOf, gradeView, type PromotionRecord, promotionsOf, withinBar } from "../learn/promote.js";
-import { GENERAL_NO_BUDGET, GENERAL_NO_ROOM, GENERAL_UNCHECKED } from "../learn/general.js";
+import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -138,26 +137,20 @@ async function endOfKept(store: Store, kept: NonNullable<Awaited<ReturnType<Stor
   // What the grade spent: the graded entry's, or what a grade that failed spent before it did.
   const spent = graded ?? (dropped && "usd" in dropped ? { usd: dropped.usd ?? null, tokens: dropped.tokens ?? null } : undefined);
   const cost = spent ? { cost_usd: { grade: spent.usd }, tokens: { grade: spent.tokens ?? null } } : {};
-  // A generality check that could not run (learning-loop.ts `unchecked`) is said after the end's words: the grader read
-  // every note. Its provider's error stays in the journal.
-  // One skipped for no room under the cap (GENERAL_NO_BUDGET) says so.
-  const unchecked = graded?.unchecked ?? dropped?.unchecked;
-  const skip = unchecked === undefined ? undefined : unchecked === GENERAL_NO_BUDGET ? GENERAL_NO_ROOM : GENERAL_UNCHECKED;
-  const withSkip = (detail: string | null) => (skip ? [detail, skip].filter(Boolean).join(" ") : detail);
   if (merged && graded) {
     // Each item as the merge settled it: its record's verdict (a note it left out is no longer kept, and says why). A merge
     // recorded with none (before the record kept it) reads no item decisions.
     const verdict = merged.verdict;
     const what = verdict ? learnedOf(keptOf(row.proposal, verdict), verdict) : { learned: [], pending: [], skills: [], workflows: [] };
     return {
-      state: "merged", reason: null, detail: withSkip(merged.detail), at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
+      state: "merged", reason: null, detail: merged.detail, at: endedAt, ...left, ...(verdict ? { verdict } : {}), graded: { ...graded.graded }, ...cost, merged: merged.commit,
       learned: what.learned, ...(what.pending.length ? { pending: what.pending } : {}), ...(what.skills.length ? { skills: what.skills } : {}), ...(what.workflows.length ? { workflows: what.workflows } : {}),
     };
   }
   const reason = (dropped?.reason ?? null) as Learning["reason"];
   const lost = reason === "grader" ? lostOf(row.proposal) : [];
   return {
-    state: "dropped", reason, detail: withSkip(dropped?.detail ?? null), at: endedAt,
+    state: "dropped", reason, detail: dropped?.detail ?? null, at: endedAt,
     ...(dropped?.problems?.length ? { problems: [...dropped.problems] as Learning["problems"] } : left),
     // The verdict, when one was given; the blobs it read only go with a merge (the server kept them for its merge alone).
     ...(graded ? { verdict: graded.verdict } : {}), ...cost, ...(lost.length ? { lost } : {}),
@@ -300,16 +293,17 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs, replay), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows };
 }
 
-/** The replay the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
- *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's `replay` numbers
- *  and whether they cleared the bar (withinBar, promotion's own). Null when no run was served, nothing serves now (held,
- *  or never promoted), or it was promoted with no replay (a dry run). */
+/** The check the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
+ *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's check numbers
+ *  (the share of the inputs it ran on that said what the agent said, against the agent's own 100%). `cleared`: it passed
+ *  (a champion is promoted), with the agreement check it passed (`agreed` of `alone`, its bar `agree_min`). Null when no run was served, nothing serves now (held, or never promoted), or it was promoted
+ *  on no input (a dry run). */
 export function servingReplayOf(records: readonly PromotionRecord[], runs: readonly CostRun[]): CostReplay | null {
   const name = runs.findLast((run) => (run.path === "workflow" || run.path === "handed_back") && run.workflow !== null)?.workflow;
-  const score = name ? championOf(records, name)?.replay : undefined;
-  if (!score) return null;
-  const pct = (acc: number) => Math.round(acc * 1000) / 10;
-  return { n: score.n, workflow_pct: pct(score.wf_acc), agent_pct: pct(score.agent_acc), cleared: withinBar(score) };
+  const check = name ? championOf(records, name)?.check : undefined;
+  if (!check?.n) return null;
+  const agreed = check.agreed ?? 0, alone = check.alone ?? 0;
+  return { n: check.n, workflow_pct: Math.round(checkShares({ n: check.n, agreed, alone }).agreement * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: check.agree_min };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what

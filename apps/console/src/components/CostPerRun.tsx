@@ -14,7 +14,7 @@ import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 // before learning as a dashed line, a marker where a learned workflow first finished a run alone, and the level held
 // after it, with "N times cheaper" once 20 runs or more stand behind it. One y axis, in dollars; a table of every run.
 // Under it, on the same run axis, the execution mix: in blocks of runs, the share each path took. Above the plot, a lane of
-// the loop's markers on the same axis (the agent's promotion records): a new revision replaying, promoted, held, refit,
+// the loop's markers on the same axis (the agent's promotion records): a new revision replaying, promoted or held,
 // each a lettered flag on the first run it bore on. A replay run is a hollow muted dot, out of the rolling mean.
 
 /** How many runs the chart reads: the server's default. */
@@ -66,7 +66,7 @@ const H = 260;
 /** The chart itself, from the server's answer. `on`: the agent learns (the notes under it say what to do when not). */
 export function CostChart({ data, on, width: fixed, promotions = [], execution = "hosted" }: { execution?: LearningExecution; data: LearningCost; on: boolean; width?: number; promotions?: readonly Promotion[] }) {
   const points = useMemo(() => plotted(data.runs), [data.runs]);
-  // The line is the job's cost: a replay run (a revision run alone on a graded input, learning's spend) is drawn, not meant.
+  // The line is the job's cost: a replay run (a revision run alone on an input, learning's spend) is drawn, not meant.
   const job = useMemo(() => points.filter(counted), [points]);
   const window = windowOf(job.length);
   const mean = useMemo(() => rollingMean(job, window), [job, window]);
@@ -438,10 +438,10 @@ function Card({ title, headline, unknown = 0, children }: { title: string; headl
   );
 }
 
-/** Each marker kind's line and flag border: the workflow's own colour for a promotion, the warning pair for a hold, ink
- *  for a refit, muted for a new revision, a queued one and a skipped one; its letter says the kind, never the colour alone. */
-const FLAG_STROKE: Record<Marker["kind"], string> = { promote: "stroke-chart-workflow", hold: "stroke-warning", refit: "stroke-foreground", revision: "stroke-muted-foreground", queued: "stroke-muted-foreground", skipped: "stroke-muted-foreground" };
-const FLAG_TEXT: Record<Marker["kind"], string> = { promote: "fill-foreground", hold: "fill-warning-text", refit: "fill-foreground", revision: "fill-muted-foreground", queued: "fill-muted-foreground", skipped: "fill-muted-foreground" };
+/** Each marker kind's line and flag border: the workflow's own colour for a promotion, the warning pair for a hold,
+ *  muted for a new revision; its letter says the kind, never the colour alone. */
+const FLAG_STROKE: Record<Marker["kind"], string> = { promote: "stroke-chart-workflow", hold: "stroke-warning", revision: "stroke-muted-foreground" };
+const FLAG_TEXT: Record<Marker["kind"], string> = { promote: "fill-foreground", hold: "fill-warning-text", revision: "fill-muted-foreground" };
 
 /** A marker's flag: a 14px card square with the kind's border and letter. */
 function Flag({ x, y, kind }: { x: number; y: number; kind: Marker["kind"] }) {

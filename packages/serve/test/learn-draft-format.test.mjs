@@ -58,7 +58,7 @@ async function folderWith(data, id, files) {
 
 test("the compile ask says the draft's output is the job's answer in the runs' and the skill's own output format, written by its last node (#2412)", () => {
   const base = { reference: "(the DSL reference)", notes: [], traces: [], tools: ["read"], judges: false };
-  for (const ask of [{ mode: "new", ...base }, { mode: "revise", workflow: "card-report", current: "{}", handedBack: true, ...base }]) {
+  for (const ask of [{ mode: "new", ...base }, { mode: "revise", workflow: "card-report", current: "{}", held: { workflow: "card-report", digest: "0123456789abcdef", reason: "r" }, ...base }]) {
     const prompt = compilePrompt(ask);
     assert.ok(prompt.includes(OUTPUT_FORMAT), ask.mode);
   }

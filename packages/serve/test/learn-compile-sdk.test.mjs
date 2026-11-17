@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { compileReference, compilePrompt, compileTurn, guardProblems, askedForCompile } from "../dist/learn/compile.js";
+import { compileReference, compilePrompt, compileTurn, askedForCompile } from "../dist/learn/compile.js";
 import { draftProblems } from "../dist/learn/skills.js";
 const tool = "mcp:backend/status";
 const ask = (adapters = []) => ({ mode: "new", workflowAdapters: adapters, reference: compileReference(dsl, { tools: [tool], judges: false, workflowAdapters: adapters }), tools: [tool], described: [{ name: tool, does: "Takes a release name and gives its ready boolean." }], judges: false, notes: [{ file: "release-policy.md", text: "Preserve the published release policy." }], traces: [], input: { release: "current" } });
@@ -12,11 +12,11 @@ test("SDK compiler contract describes only explicitly registered adapters and br
  const ref = ask().reference;
  assert.match(ref, /NO runNode/); assert.match(ref, /NO runJudge/);
  assert.match(ref, /explicit.*bridge/i); assert.doesNotMatch(ref, /runs first on later runs|runs on the agent's model|\"tier\": \"fast\"/);
- assert.match(ref, /128/); assert.match(ref, /no.*guardStep/i);
+ assert.match(ref, /128/);
  const model = ask(["runNode"]).reference;assert.match(model, /runNode/);assert.match(model, /NO runJudge/);
  const judge = ask(["runJudge"]).reference;assert.match(judge, /NO runNode/);assert.doesNotMatch(judge, /NO runJudge/);
 });
-test("SDK compiler prompt keeps callback catalog, notes and explicit execution without managed guards", () => {
+test("SDK compiler prompt keeps callback catalog, notes and explicit execution", () => {
  const prompt = compilePrompt(ask());
  assert.match(prompt, /explicit.*bridge/i);assert.doesNotMatch(prompt, /on later runs it runs first|runs on your model/);
  assert.match(prompt, /mcp:backend\/status/);assert.match(prompt, /ready boolean/);assert.match(prompt, /release-policy.md/);
@@ -25,15 +25,8 @@ test("SDK compiler prompt keeps callback catalog, notes and explicit execution w
 test("SDK compile checks use the declared callback contract, without requiring an undeclared guardStep", async () => {
  const doc = flow({ node: "decide", label: "answer", instructions: "Return readiness.", out: "Answer", as: "answer" });
  assert.deepEqual(draftProblems(dsl, JSON.stringify(doc), [], {}, {}, undefined, ["runNode"]), []);
- assert.deepEqual(guardProblems(doc, { jev: false, workflowAdapters: ["runNode"] }), []);
  const out = await compileTurn({ compile: ask(["runNode"]), answer: "", ask: async () => ({ answer: block(doc) }), check: async () => checked(doc) });
  assert.ok(out.kept, JSON.stringify(out));assert.equal(out.record.attempts.length, 1);
- assert.deepEqual(guardProblems(doc), [], "managed compilation asks for no guard either");
-});
-test("SDK compiler rejects guards because no guardStep callback is declared, even with runNode", () => {
- const doc = flow({ node: "decide", label: "answer", instructions: "Return readiness.", out: "Answer", as: "answer", guard: { signal: "self", threshold: 0.7 } });
- assert.match(guardProblems(doc, { jev: false, workflowAdapters: ["runNode"] }).join(" "), /guardStep/);
- assert.match(guardProblems(doc).join(" "), /has a guard: author no step guard/, "managed compilation refuses it too");
 });
 test("each stateless SDK retry carries the original contract/catalog/notes and the bounded redacted failed draft", async () => {
  const doc = flow({ node: "call", label: "status", via: "tool", tool, args: {}, out: "Answer", as: "answer", deadline_s: 5 });

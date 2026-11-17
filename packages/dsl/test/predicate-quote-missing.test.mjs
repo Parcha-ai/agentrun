@@ -94,12 +94,6 @@ test('a missing quote escalates the run; its event says how many quotes were che
   assert.deepEqual([clean.evaluated.detail.fired, clean.evaluated.detail.quotes_checked, clean.evaluated.detail.quotes_missed], [false, 2, 0]);
 });
 
-test('a soft escalate records the miss and the run goes on', async () => {
-  const { result, evaluated } = await run(answerOf('Our workshop opened in Porto'), PAGE, { softEscalate: (label) => label === 'quotes' });
-  assert.equal(result.status, 'complete');
-  assert.deepEqual([evaluated.detail.fired, evaluated.detail.soft, evaluated.detail.quotes_missed], [true, true, 1]);
-});
-
 test('a quote from a page another run fetched is a miss: only this run\'s state is read', async () => {
   const quote = 'board games for children of all ages';
   assert.equal((await run(answerOf(quote), OTHER_PAGE)).result.status, 'complete', 'the run that fetched it');

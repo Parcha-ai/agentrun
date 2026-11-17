@@ -574,7 +574,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The keys the claim hands the run (its web tools and its learned workflow's call nodes run on them): never learned
   // (learningEndOfRun).
   let handedKeys: string[] = [];
-  // A replay run lays the workflow it replays record-only (runner/promotion.ts replayLaid).
+  // A replay run lays only the workflow it replays (runner/promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, seedLaid?.workflows ?? []);
   // The learned workflow the run starts on, before its agent's first turn, when one fits its input (workflow-first.ts),
   // chosen before the learned_workflow tool is bound, so the tool runs the text that serves. Only a promoted digest

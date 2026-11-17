@@ -953,9 +953,7 @@ const unrunnableNodes = (dsl: DraftReader, doc: unknown, decisions?: DraftDecisi
   // Managed runs name the providers their host can ask; SDK runs supply their own explicit adapter capabilities.
   const judging = decisions ? { ...(adapters === undefined || adapters.includes("runJudge") ? { runJudge: async () => ({}) } : {}), decisionProviders: { providers: decisions.providers, default: decisions.default } } : {};
   const callbacks = Object.fromEntries((adapters ?? ["runNode"]).map((name) => [name, async () => ({})]));
-  // Managed learned runs supply step guards; the SDK bridge advertises only the callbacks its backend implements.
-  const guards = adapters === undefined ? { guardStep: async () => ({ p: 1 }) } : {};
-  const runner = { runEffect: async () => ({}), ...callbacks, ...judging, ...guards };
+  const runner = { runEffect: async () => ({}), ...callbacks, ...judging };
   try {
     dsl.assertWorkflowCapabilities(workflow.root, runner as never, workflow);
     return [];
@@ -991,7 +989,7 @@ export function draftProblems(dsl: DraftReader, text: string, tools?: readonly s
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   let out: DraftProblem[];
   try {
-    // A label names one step (workflow-nodes.ts repeatedLabels): its guard's threshold, replay score and refit included.
+    // A label names one step (workflow-nodes.ts repeatedLabels): its events and escalation read by it.
     out = [...repeatedLabels(doc).map((label) => ({ rule: "workflow" as const, detail: `the label "${label}" names two steps: give each step its own label` })), ...toolingNodes(dsl, doc), ...executableNodes(dsl, doc), ...unrunnableNodes(dsl, doc, decisions, adapters), ...longNodes(dsl, doc), ...sdkNodeLimit(dsl, doc, adapters), ...sdkRetries(doc, adapters), ...gatedNodes(dsl, doc, gated, deniedBy), ...gatedDecisions(dsl, doc, decisions), ...[...synthesisProblems(doc, dsl), ...loopProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail }))];
     // A learned workflow answers the value at its output's path: one that names none would answer its whole state, which
     // fails its output schema when the call ends, after every node spent.

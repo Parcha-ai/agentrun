@@ -282,7 +282,7 @@ export async function workflowRevisions(data: string, agentId: string, name: str
       const texts = await textsAt(ws, change.commit, [path]).catch((error: unknown) => { throw routeFailure(error); });
       const raw = texts?.[path];
       // Its digest, read from the text as it is (workflow-first.ts workflowDigest's): the one a run's metrics and the
-      // promotion records name, so a revision's runs, guards and promotion are found by it.
+      // promotion records name, so a revision's runs and promotion are found by it.
       revisions.push({ commit: change.commit, at: change.at, by: change.by, reason: shown.text(change.reason), text: raw === undefined ? null : shown.text(raw), digest: raw === undefined ? null : createHash("sha256").update(raw).digest("hex").slice(0, 16) });
     }
     return { revisions, total: touched.length, truncated: snapshot.log_more };

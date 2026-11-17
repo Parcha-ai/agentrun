@@ -1,4 +1,4 @@
-// The one walk over a learned workflow's nodes (learn/skills.ts callNodes, learn/promote.ts walkGuards): only the
+// The one walk over a learned workflow's nodes (learn/skills.ts callNodes): only the
 // workflow's node positions, never an object in a call's args, a schema or any other data, however it is shaped.
 
 /** One node of a workflow document, with the prefix the DSL puts on its step's name when it runs: `parent/` for each
@@ -32,8 +32,7 @@ export function workflowNodes(doc: unknown): WorkflowNodeAt[] {
 }
 
 /** The labels of `doc` that name more than one node, each once, in document order, as the DSL names a step when it runs
- *  (`parent/child` in a child workflow). A label names one step: its events, its escalation and its guard rows (whose
- *  `node` keys the serving thresholds, a replay's score and a refit) read by it, and the durable runner refuses a workflow
+ *  (`parent/child` in a child workflow). A label names one step: its events and its escalation read by it, and the durable runner refuses a workflow
  *  that repeats one (DUPLICATE_LABEL). */
 export function repeatedLabels(doc: unknown): string[] {
   const seen = new Set<string>();
