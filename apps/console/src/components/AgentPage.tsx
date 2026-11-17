@@ -1,4 +1,5 @@
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
+import { useScrollQuiet } from "@/lib/useScrollQuiet";
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Search, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -122,6 +123,9 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
 }) {
   const history = useRunHistory(agent, v2, reread, () => reread(false, false));
   const [factsOpen, setFactsOpen] = useState(false);
+  // Each scrolling box shows its scrollbar only while it is being scrolled.
+  const detailsScroll = useScrollQuiet<HTMLDivElement>();
+  const workspaceScroll = useScrollQuiet<HTMLElement>();
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
   const sdk = backendSdkOf(d);
@@ -170,14 +174,19 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           {!agent.archived_at && <CodingAgentAction variant="primary" label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
         </div>
       </header>
-      <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] md:p-8">
-        <aside className="min-w-0 space-y-6" aria-label="Agent overview">
-          <div>
+      {/* Each scrolling box reaches 16px into the space beside it: 6px of scrollbar (.scroll-quiet) and 10px between the bar
+          and the cards, so the cards keep the width of the name above them and the bar lies over none of them. */}
+      {/* Side by side (lg), the page itself does not scroll: the agent's name stays put, its details scroll under it, and
+          the workspace scrolls beside them. In one column the whole page scrolls, as before. */}
+      <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] lg:items-stretch lg:overflow-hidden md:p-8">
+        <aside className="min-w-0 space-y-6 lg:flex lg:min-h-0 lg:flex-col" aria-label="Agent overview">
+          <div className="lg:shrink-0">
             <h1 className="text-2xl font-semibold">{d.name}</h1>
             {d.approvals === "never" && <Chip tone="warning" className="mt-2" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
             {d.description && <p id="agent-description" className={cn("mt-2 text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
             <p className="mt-3 break-all font-mono text-label text-muted-foreground">{agent.agent_id}</p>
           </div>
+          <div ref={detailsScroll} data-agent-details className="scroll-quiet min-w-0 space-y-6 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5">
           <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((value) => !value)} className="flex w-full min-w-0 items-center gap-2 text-left font-mono text-small text-muted-foreground sm:hidden">
             <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden /><span className="truncate">{overviewFacts.map(([, value]) => value).join(" · ")}</span>
           </button>
@@ -212,8 +221,9 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
             {live.length ? <ul className="space-y-3">{live.map((run) => <li key={run.run_id}><a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="flex items-center gap-2 text-small hover:text-primary-text"><StatusBadge run={run} /><span className="min-w-0 flex-1 truncate">{runTitle(run)}</span><ArrowUpRight className="size-3 shrink-0" aria-hidden /></a></li>)}</ul>
               : <p className="text-small leading-relaxed text-muted-foreground">{!history.runs ? "Loading live jobs…" : agent.runs?.live ? "Live jobs are outside the loaded history. Load more runs to find them." : history.error ? "Live jobs could not be refreshed." : "No live jobs."}</p>}
           </section>
+          </div>
         </aside>
-        <section className="min-w-0" aria-label="Agent workspace">
+        <section ref={workspaceScroll} className="scroll-quiet min-w-0 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5" aria-label="Agent workspace">
           <Tabs id="agent-views" label="Agent views" value={at.id} onChange={(value) => go(agentHash(agent.agent_id, value))} tabs={tabs.map((t) => ({ id: t.id, label: <>{t.label}{t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}</> }))} className="mb-5 overflow-x-auto px-0 md:px-0" />
           <div {...tabPanelProps("agent-views", at.id)} aria-label={waiting ? undefined : at.label}>
             {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}

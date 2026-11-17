@@ -156,3 +156,38 @@ svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-fam
 .wf .rcell.held .cell { fill: hsl(var(--warning) / 0.08); stroke: hsl(var(--warning)); stroke-dasharray: 4 2; }
 .wf .rcell.held .cell-edge { fill: hsl(var(--warning)); }
 .wf .rcell.held .cell-out { fill: hsl(var(--warning-text)); }
+
+/* A box that scrolls inside a page, beside other things (an agent's details under its name). Its scrollbar is slim, has a
+   gutter of its own that is there whether or not the box overflows (so nothing in the box shifts, and the bar never lies
+   over a card's edge), and is quiet: no track, and a thumb that shows only while the box is being scrolled (`data-scrolling`, lib/useScrollQuiet) or
+   the pointer is on the bar itself, then fades away. Where
+   the content goes on past an edge, that edge fades out; an edge the content ends at stays sharp. The fade follows the
+   scroll position itself (a scroll timeline), so it is not motion on a clock and needs no reduced-motion case; a browser
+   without scroll timelines shows no fade. */
+@property --scroll-fade-start { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --scroll-fade-end { syntax: "<length>"; inherits: false; initial-value: 0px; }
+/* The thumb's colour, as a property so it can fade: a scrollbar's own colour takes no transition. */
+@property --scroll-thumb { syntax: "<color>"; inherits: true; initial-value: transparent; }
+.scroll-quiet { scrollbar-gutter: stable; --scroll-thumb: transparent; transition: --scroll-thumb var(--duration-slow); }
+.scroll-quiet[data-scrolling] { --scroll-thumb: hsl(var(--muted-foreground) / 0.45); transition-duration: var(--duration-fast); }
+.scroll-quiet::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-quiet::-webkit-scrollbar-track, .scroll-quiet::-webkit-scrollbar-corner { background: transparent; }
+.scroll-quiet::-webkit-scrollbar-thumb { background: var(--scroll-thumb); }
+.scroll-quiet::-webkit-scrollbar-thumb:hover, .scroll-quiet::-webkit-scrollbar-thumb:active { background: hsl(var(--muted-foreground) / 0.8); }
+/* Firefox has no ::-webkit-scrollbar: the standard properties, which Chrome would take in place of the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  .scroll-quiet { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+}
+@supports (animation-timeline: scroll()) {
+  .scroll-quiet {
+    mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-start), black calc(100% - var(--scroll-fade-end)), transparent);
+    animation: scroll-quiet-fade linear both;
+    animation-timeline: scroll(self block);
+  }
+  @keyframes scroll-quiet-fade {
+    0% { --scroll-fade-start: 0px; --scroll-fade-end: 2rem; }
+    10% { --scroll-fade-start: 2rem; }
+    90% { --scroll-fade-end: 2rem; }
+    100% { --scroll-fade-start: 2rem; --scroll-fade-end: 0px; }
+  }
+}

@@ -93,6 +93,21 @@ describe("AgentPage overview and run workspace", () => {
   });
 
 
+  // Side by side, the agent's name stays put and its details scroll under it. jsdom lays nothing out, so this holds the
+  // structure the scrolling comes from: the name outside the one scrolling box of the overview, every detail inside it.
+  it("keeps the agent's name outside the overview's scrolling details, and the workspace scrolling by itself", async () => {
+    const page = await open(agentFixture("invoice-checker"));
+    const overview = page.host.querySelector<HTMLElement>('aside[aria-label="Agent overview"]')!;
+    const details = overview.querySelector<HTMLElement>("[data-agent-details]")!;
+    expect(details.className).toContain("lg:overflow-y-auto");
+    // The scrollbar has a gutter of its own beside the cards (styles.css .scroll-quiet), reaching into the space between the columns.
+    for (const c of ["scroll-quiet", "lg:-mr-4", "lg:pr-2.5"]) expect(details.className.split(" ")).toContain(c);
+    expect(details.contains(overview.querySelector("h1"))).toBe(false);
+    for (const inside of ['[aria-label="Current revision"]', '[aria-label="Agent configuration"]', '[aria-label="Live jobs"]']) expect(details.querySelector(inside), inside).not.toBeNull();
+    expect(overview.parentElement!.className).toContain("lg:overflow-hidden");
+    expect(page.host.querySelector('[aria-label="Agent workspace"]')!.className).toContain("lg:overflow-y-auto");
+  });
+
   it("keeps the agent overview beside a scoped runs table, with no embedded execution composer or transcript", async () => {
     const page = await open(agentFixture("invoice-checker"));
     expect(page.host.querySelector('aside[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
