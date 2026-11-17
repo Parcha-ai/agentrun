@@ -19,7 +19,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The release's preconditions, checked once before anything else starts: the tag is a reviewed beta tag, the run was
+  # dispatched at it, and the tagged commit passed CI on main. Every other job needs it, so the jobs the npm-release
+  # approval holds (publish, pypi, box) all ask for it at the same moment and one approval covers them.
+  gate:
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate requested tag
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: The tagged commit passed CI on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-ci-gate.mjs
+
   publish:
+    needs: gate
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -88,46 +121,50 @@ jobs:
           # does not apply to a command substitution in a for-list, so a failed import there would run the loop zero times and pass.
           packages="$(node --input-type=module -e "import { releasePackages } from './scripts/release-preflight.mjs'; console.log(releasePackages.join(' '))")"
           [ -n "$packages" ] || { echo 'empty publish set' >&2; exit 1; }
-          # The publish set in dependency layers (release-preflight.mjs's `releaseLayers`), one layer per line. Each layer is published,
-          # then every package of it waits for the registry and is verified at once; a failure there stops the release before the
-          # next layer, so no package is published before the packages it depends on are verified.
+          # Every layer is published in dependency order (release-preflight.mjs's `releaseLayers`, one layer per line), back to
+          # back: npm accepts a package whose dependencies it does not show yet. Then every package published waits for the
+          # registry and is verified at once, so the release waits once, as long as its slowest package, not once per layer.
+          # A probe that is not an authoritative 404, or a failed publish, stops publishing there; what was published before it
+          # is still verified, so its receipts say what the registry holds, and the step fails.
+          published=()
+          stopped=''
           layers="$(node --input-type=module -e "import { releaseLayers } from './scripts/release-preflight.mjs'; for (const layer of releaseLayers(process.argv[1].split(' '))) console.log(layer.join(' '))" "$packages")"
           [ -n "$layers" ] || { echo 'empty layer set' >&2; exit 1; }
           while read -r layer; do
-            published=()
-            publish_failed=''
             for package in $layer; do
               if node scripts/verify-published.mjs --package "$package" --allow-absent; then
                 echo "Verified existing $package at its planned version; resuming without republishing."
                 continue
               else
                 status=$?
-                if [ "$status" -ne 3 ]; then exit "$status"; fi
+                if [ "$status" -ne 3 ]; then
+                  stopped="the registry check of $package stopped the release (exit $status)"
+                  break 2
+                fi
               fi
               # Exit 3 means an authoritative registry 404. Unknown failures and
               # mismatched published bytes stop the release; they never publish.
               archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
               # Published as latest: npm's package page shows the README of the publish that carried the latest tag, and moving
               # latest later with dist-tag carries no README.
-              # A failed publish stops the layer, but the packages it already published are still verified below, so their
-              # receipts say what the registry holds; the release then stops before the next layer.
               if ! npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/; then
-                publish_failed="$package"
-                break
+                status=1
+                stopped="publishing $package failed"
+                break 2
               fi
               published+=("$package")
             done
-            # Each verification writes its own receipt (.release/published-<package>.json), so they run side by side.
-            pids=()
-            for package in "${published[@]}"; do
-              node scripts/verify-published.mjs --package "$package" &
-              pids+=("$!")
-            done
-            failed=0
-            for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
-            [ -z "$publish_failed" ] || { echo "publishing $publish_failed failed; the packages this layer published before it were verified, later layers were not published" >&2; exit 1; }
-            [ "$failed" -eq 0 ] || { echo "a package of the layer '$layer' failed verification; later layers were not published" >&2; exit 1; }
           done <<< "$layers"
+          # Each verification writes its own receipt (.release/published-<package>.json), so they run side by side.
+          pids=()
+          for package in "${published[@]}"; do
+            node scripts/verify-published.mjs --package "$package" &
+            pids+=("$!")
+          done
+          bad=()
+          for index in "${!pids[@]}"; do wait "${pids[$index]}" || bad+=("${published[$index]}"); done
+          [ -z "$stopped" ] || { echo "$stopped; the packages published before it were verified, nothing after it was published" >&2; exit "$status"; }
+          [ "${#bad[@]}" -eq 0 ] || { echo "a published package failed verification against the registry: ${bad[*]}" >&2; exit 1; }
       - name: Verify a fresh installation from the registry
         run: node scripts/verify-published.mjs --package all
       - name: Retain exact release archives and evidence
@@ -140,10 +177,11 @@ jobs:
           if-no-files-found: ignore
 
   # The Python client, parcha-agentrun (python/), on its own version line (python/pyproject.toml; docs/releasing.md), published to
-  # PyPI from the same reviewed tag once the npm packages are published and verified. PyPI trusted publishing: no token or secret,
-  # only this job's OIDC token, so every action is pinned by commit. A version already on PyPI is not published again.
+  # PyPI from the same reviewed tag, beside the npm packages: it depends on none of them, and waiting for them would ask for the
+  # npm-release approval a second time. PyPI trusted publishing: no token or secret, only this job's OIDC token, so every action is
+  # pinned by commit. A version already on PyPI is not published again.
   pypi:
-    needs: publish
+    needs: gate
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -189,13 +227,25 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
-  # AgentRun Server's container image, built from the same reviewed tag once the packages are published and verified.
-  # It runs only after the approved publish job and pushes with this run's GITHUB_TOKEN, so it needs no environment.
-  # Every action is pinned by commit, and the images buildx runs (binfmt for QEMU, BuildKit) by digest.
+  # AgentRun Server's container image, built from the same reviewed tag (packages/serve/docker/Dockerfile) for linux/amd64 and
+  # linux/arm64, each on its own native runner: under QEMU the arm64 build took over half an hour. The image builds from the
+  # checkout and never reads npm, so it starts with the run, before the approval, and pushes each build by its digest alone;
+  # image-release tags them once the approved publish job passes, so nothing is tagged for a release that did not publish.
+  # It pushes with this run's GITHUB_TOKEN, so it needs no environment. Every action is pinned by commit, and BuildKit by digest.
   image:
-    needs: publish
+    needs: gate
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -209,10 +259,6 @@ jobs:
           persist-credentials: false
       - name: Match the checkout to the provenance commit
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-        with:
-          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-          cache-image: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver-opts: image=docker.io/moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
@@ -221,29 +267,80 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: packages/serve/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
           provenance: mode=max
           sbom: true
-          tags: |
-            ${{ env.IMAGE }}:${{ inputs.tag }}
-            ${{ env.IMAGE }}:beta
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      # Kept as long as the publish job keeps its evidence: a re-run of a failed image-release, days later, still finds them.
+      - name: Keep the build's digest for image-release
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the build gave '$DIGEST', not an image digest" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  # Tags the two builds as one image, ghcr.io/parcha-ai/agentrun-server:<tag> and :beta, once the approved publish job has
+  # published and verified the packages. A manifest list over the two digests, each with its SBOM and max provenance: seconds.
+  image-release:
+    needs: [publish, image]
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/parcha-ai/agentrun-server
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: image-digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: image=docker.io/moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the release from the two digests
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -- *
+          [ "$#" -eq 2 ] || { echo "::error::expected the amd64 and arm64 digests, found $#: $*" >&2; exit 1; }
+          refs=()
+          for digest in "$@"; do refs+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create --tag "$IMAGE:$RELEASE_TAG" --tag "$IMAGE:beta" "${refs[@]}"
+          docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG"
 
   # The box image (packages/computer/box): what a remote computer with an Archil mount starts from, published once per
   # recipe as ghcr.io/parcha-ai/agentrun-box:<recipe hash> (box/recipe.mjs recipeHash) and tagged with the release, for
-  # linux/amd64.
-  # Like `image`, it runs after the approved publish job with this run's GITHUB_TOKEN alone, every action pinned by commit
-  # and BuildKit by digest. Its context is box/, which the npm package ships whole; the image copies the helper alone
-  # from it, and the build takes no secret.
+  # linux/amd64; then the public E2B template agentrun-archil-<recipe hash>, built from that image, so an owner's E2B team
+  # starts from it with nothing built. One job under the npm-release approval, beside publish: it reads E2B_API_KEY, the
+  # environment's only secret it needs, and a second job under the approval would ask for it again. It depends on no npm
+  # package; a recipe image is keyed by its hash, so publishing it for a tag whose npm publish then fails is harmless.
+  # Every action is pinned by commit and BuildKit by digest. Its context is box/, which the npm package ships whole; the image
+  # copies the helper alone from it, and the build takes no secret.
   box:
-    needs: publish
+    needs: gate
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    environment: npm-release
     permissions:
       contents: read
       packages: write
@@ -310,37 +407,16 @@ jobs:
         env:
           RECIPE: ${{ steps.recipe.outputs.hash }}
         run: docker buildx imagetools create --tag "$IMAGE:$RELEASE_TAG" "$IMAGE:$RECIPE"
-
-  # The box image as a public E2B template, agentrun-archil-<recipe hash>, built from the image the box job published, so
-  # an owner's E2B team starts from it with nothing built. It runs under the same approval as the packages (npm-release),
-  # whose E2B_API_KEY is the only secret it reads: the step stops, saying so, without it. E2B pulls the image with no
-  # credentials, so a private package stops the job before the build.
-  box-e2b:
-    needs: box
-    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment: npm-release
-    permissions:
-      contents: read
-    env:
-      BOX_IMAGE: ghcr.io/parcha-ai/agentrun-box:${{ needs.box.outputs.recipe }}
-    steps:
+      # The E2B template. Without the key it stops here, saying so, with the box image published.
       - name: The npm-release environment has the E2B key
         env:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
         run: |
           [ -n "$E2B_API_KEY" ] || { echo "::error::needs secret E2B_API_KEY in the npm-release environment: the key of the E2B team the public template agentrun-archil-<recipe> is built in" >&2; exit 1; }
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ inputs.tag }}
-          persist-credentials: false
-      - name: Match the checkout to the provenance commit
-        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24.22.3'
+      # E2B pulls the image with no credentials, so a private package stops the job before the build.
       - name: The image is public
+        env:
+          BOX_IMAGE: ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}
         run: |
           repo="${BOX_IMAGE#ghcr.io/}"; repo="${repo%:*}"
           token="$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>console.log(JSON.parse(s).token))')" || token=''
@@ -349,5 +425,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Build the template from the image and make it public
         env:
+          BOX_IMAGE: ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
         run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public

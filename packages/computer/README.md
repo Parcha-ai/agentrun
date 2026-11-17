@@ -1749,7 +1749,7 @@ made instead of making a second.
 An E2B computer is a sandbox made from an E2B template. The descriptor names no default: it says `prepareImage`, and
 `prepareImage()` answers the box template, `boxE2bTemplate()` (`src/box-image.ts`), with no call and no wait. That is
 `<BOX_E2B_PUBLISHER>/agentrun-archil-<recipe hash>`, the box image (`box/Dockerfile`: the archil client and helper,
-the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box-e2b` job builds as a template in the publishing
+the tool user, FUSE, Xvfb, xfwm4 and the apps) that the release's `box` job builds as a template in the publishing
 team and makes public, so any E2B account starts it by that name. A sandbox and a desktop both start from it, in either
 mode. It is kind `desktop`: computerd starts the X server and xfwm4 itself (`src/desktop.ts`), as on a Docker desktop,
 and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any template, with no display: the same
@@ -2037,7 +2037,8 @@ of the key's workspace on its first run ([below](#the-desktop-agentrun-box)).
 `create(options)` takes the workspace's API key as `options.apiKey` and the private half of an SSH key registered on
 the same workspace (`POST /v1/ssh-keys`, or `agent37 ssh-keys add`) as `options.sshKey`, its contents, never a path:
 the provider reads no file and no environment. A key pasted into Settings comes back on one line (a password field
-drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. REST takes the API key as
+drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. A PKCS#8 key (PEM label
+`PRIVATE KEY`), which ssh2 does not read, is converted first: RSA to PKCS#1, EC to SEC1, Ed25519 to OpenSSH's format. REST takes the API key as
 `Authorization: Bearer <key>`; the SSH tunnel's edge takes the same key in `X-Agent37-Key` (npm `agent37@0.4.1`
 `src/cli.js`, `wsHandshake` and `runTunnel`). Neither key appears in an error, a note or a label: the sweep's scope
 names the API key by its sha256 prefix alone.
@@ -2189,7 +2190,7 @@ A Morph computer is kind `linux`, an instance (a VM) started from a snapshot thr
 | `list` | `GET /instance`, the account's every instance; the adapter matches the labels (the `metadata[...]` filter is not used: whether a dotted key survives it is **unverified**) |
 | `delete` | `DELETE /instance/{id}`, then this host's SSH connections to it end |
 | `extend` | `POST /instance/{id}/ttl`, never past the max-deadline label, its read-back end held to the call's now plus the seconds; then `POST /instance/{id}/metadata` with the deadline label moved |
-| `exec` | SSH through the gateway `ssh.cloud.morph.so:22` as `<instance id>` with the instance's own key (`GET /instance/{id}/ssh/key`, read once and kept until delete or a refused login); one channel per process on the shared connection, and the shared pid wrapper for `kill` |
+| `exec` | SSH through the gateway `ssh.cloud.morph.so:22` as `<instance id>` with the instance's own key (`GET /instance/{id}/ssh/key`, PKCS#8, converted to a form ssh2 reads; read once and kept until delete or a refused login); one channel per process on the shared connection, and the shared pid wrapper for `kill` |
 | `check` | an image is a snapshot id (`snapshot_...`); a size is the snapshot's, so `cpus` and `memoryMb` are refused |
 
 Morph's REST exec (`POST /instance/{id}/exec`) answers when the command ends, with no stdin, so it is not used. Both

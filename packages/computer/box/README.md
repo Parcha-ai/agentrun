@@ -22,6 +22,6 @@ Its tag is the recipe's hash: the first 12 hex of the sha256 of `Dockerfile`, `i
 files it copies (`recipe.mjs`). A changed recipe is a new image, and the same recipe is the one built before.
 
 Each release publishes it (`.github/workflows/release.yml`, the `box` job) as `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
-and `:<release tag>`, for linux/amd64, and builds the public E2B template `agentrun-archil-<recipe hash>` from it (the
-`box-e2b` job), which E2B's provider starts in any account as `boxE2bTemplate()` (`src/box-image.ts`). The build-*
+and `:<release tag>`, for linux/amd64, and builds the public E2B template `agentrun-archil-<recipe hash>` from it in the
+same job, which E2B's provider starts in any account as `boxE2bTemplate()` (`src/box-image.ts`). The build-*
 scripts here say how to build it for each provider.

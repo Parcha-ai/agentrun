@@ -3,6 +3,7 @@
 // the machine's sshd (Agent37's WebSocket tunnel) and as the login the host gives (Agent37's root and key). Every error it throws or
 // rejects with is redacted of the login's secrets. The host's own ssh2 package does the protocol; this package names
 // only the slice it uses (Ssh2Module) and imports nothing at load.
+import { createPrivateKey, type KeyObject, randomBytes } from "node:crypto";
 import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
 import { boundOf, redact } from "./process.js";
@@ -516,7 +517,8 @@ export class SshExec {
 /**
  * A private key in the PEM armor ssh2 reads (its parser wants the BEGIN and END lines on lines of their own), or
  * undefined when text is not one. A key pasted into Settings → Computers comes back on one line, since a password
- * field drops line breaks: its body is wrapped again at 70 characters, as ssh-keygen writes it.
+ * field drops line breaks: its body is wrapped again at 70 characters, as ssh-keygen writes it. A PKCS#8 key
+ * (the PEM label "PRIVATE KEY", Morph's GET /instance/{id}/ssh/key) is converted (fromPkcs8).
  */
 export function pemOf(text: string): string | undefined {
 	const armor = /^-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----([\s\S]*?)-----END \1-----$/.exec(text.replace(/\r/g, "").trim());
@@ -527,5 +529,59 @@ export function pemOf(text: string): string | undefined {
 	if (lines.some((line) => line.includes(":"))) return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
 	const body = lines.join("").replace(/\s+/g, "");
 	if (body === "" || !/^[A-Za-z0-9+/=]+$/.test(body)) return undefined;
-	return `-----BEGIN ${label}-----\n${body.match(/.{1,70}/g)?.join("\n")}\n-----END ${label}-----\n`;
+	const pem = armored(label, Buffer.from(body, "base64"));
+	return label === "PRIVATE KEY" ? fromPkcs8(pem) : pem;
+}
+
+/** bytes as base64 between BEGIN and END lines of label, 70 characters a line. */
+function armored(label: string, bytes: Buffer): string {
+	return `-----BEGIN ${label}-----\n${bytes.toString("base64").match(/.{1,70}/g)?.join("\n")}\n-----END ${label}-----\n`;
+}
+
+/**
+ * A PKCS#8 key as the same key in a form ssh2 reads, or undefined for a body node:crypto can't read or a type SSH has
+ * no use for here. ssh2 reads OpenSSH's own form, PKCS#1 RSA, SEC1 EC, DSA and PuTTY's, never PKCS#8 (ssh2@1.17.0
+ * lib/protocol/keyParser.js parseKey: no parser matches, "Unsupported key format"). node:crypto writes RSA as PKCS#1 and
+ * EC as SEC1; Ed25519 it writes only as PKCS#8, and ssh2 reads Ed25519 only in OpenSSH's form, so openSshEd25519 writes it.
+ */
+function fromPkcs8(pem: string): string | undefined {
+	let key: KeyObject;
+	try {
+		key = createPrivateKey(pem);
+	} catch {
+		return undefined;
+	}
+	if (key.asymmetricKeyType === "rsa") return key.export({ type: "pkcs1", format: "pem" }) as string;
+	if (key.asymmetricKeyType === "ec") return key.export({ type: "sec1", format: "pem" }) as string;
+	if (key.asymmetricKeyType === "ed25519") return openSshEd25519(key);
+	return undefined;
+}
+
+/** An SSH string (RFC 4251 §5): its uint32 length, then its bytes. */
+const sshString = (bytes: Uint8Array | string): Buffer => {
+	const body = Buffer.from(bytes);
+	const length = Buffer.alloc(4);
+	length.writeUInt32BE(body.length);
+	return Buffer.concat([length, body]);
+};
+
+/**
+ * An Ed25519 private key in OpenSSH's own format, unencrypted (openssh-portable PROTOCOL.key; sshkey.c writes it so):
+ * "openssh-key-v1\0", cipher "none", KDF "none", empty KDF options, the key count 1, the public key blob (RFC 8709 §4:
+ * "ssh-ed25519", the 32-byte public key), then the private section as one string: two equal random check words, the
+ * key type, the public key, the 64-byte private key (the 32-byte seed, then the public key), an empty comment, and
+ * the padding bytes 1, 2, 3, ... to a multiple of 8, the block size of cipher "none".
+ */
+function openSshEd25519(key: KeyObject): string {
+	const { d, x } = key.export({ format: "jwk" });
+	const seed = Buffer.from(d ?? "", "base64url");
+	const publicKey = Buffer.from(x ?? "", "base64url");
+	const blob = Buffer.concat([sshString("ssh-ed25519"), sshString(publicKey)]);
+	const check = randomBytes(4);
+	const section = Buffer.concat([check, check, blob, sshString(Buffer.concat([seed, publicKey])), sshString("")]);
+	const padding = Buffer.from(Array.from({ length: (8 - (section.length % 8)) % 8 }, (_, index) => index + 1));
+	const count = Buffer.alloc(4);
+	count.writeUInt32BE(1);
+	const body = Buffer.concat([Buffer.from("openssh-key-v1\0", "latin1"), sshString("none"), sshString("none"), sshString(""), count, sshString(blob), sshString(Buffer.concat([section, padding]))]);
+	return armored("OPENSSH PRIVATE KEY", body);
 }

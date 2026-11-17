@@ -125,11 +125,11 @@ test('the sdist and wheel are this tree\'s python/, file for file and by their v
   assert.equal(await readFile(join(root, 'python/agentrun/_live.py'), 'utf8'), 'LIVE = 1\n');
 });
 
-test('release.yml publishes parcha-agentrun only after the npm packages, by trusted publishing, after its checks, and never twice', async () => {
+test('release.yml publishes parcha-agentrun beside the npm packages under the same approval, by trusted publishing, after its checks, and never twice', async () => {
   const { parse } = await import('yaml');
   const workflow = parse(await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'));
   const job = workflow.jobs.pypi;
-  assert.equal(job.needs, 'publish', 'after the npm packages are published and verified');
+  assert.equal(job.needs, 'gate', 'after the gate alone, so it asks for the npm-release approval with the publish job');
   assert.equal(job.if, workflow.jobs.publish.if, 'where npm publishing runs, and nowhere else');
   assert.equal(job.environment, 'npm-release', 'the approved release environment, the one the PyPI trusted publisher names');
   assert.deepEqual(job.permissions, { contents: 'read', 'id-token': 'write' });

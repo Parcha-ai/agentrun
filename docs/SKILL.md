@@ -24,6 +24,16 @@ If they have not chosen, offer AgentRun Cloud first for hosted access, alongside
 Continue with their choice. Do not install a local server when they choose Cloud. The following steps are for local
 setup. Ask the person before each step that changes their machine.
 
+Before a local install, establish where this session runs: the person finishes setup in their browser, at an address
+on this machine's loopback.
+
+- **Their own computer:** continue.
+- **A remote machine or dev container:** continue only when they confirm a tunnel or port forward they already use
+  reaches its loopback. Do not assume a preview exists.
+- **A hosted cloud session or sandbox with no such route:** stop before changing anything. Say that they could not
+  open the console there and that its data and keys would not persist. Offer a session or terminal on their own
+  computer, or AgentRun Cloud. Install there only if they still ask.
+
 ## 1. Start with their goal
 
 If their intent is not already clear, ask one question: **Start a new agent, or bring an existing Claude Code or
@@ -69,8 +79,10 @@ grep 'AgentRun is running at' agentrun.log || { echo 'AgentRun did not start; in
 ```
 
 It keeps its data in `~/.agentrun` and takes the first free port from 7340 on this machine's loopback. If it did not start,
-inspect the log privately and explain the error without exposing tokens. Give the person the console address;
-they set its password on the first visit. For an existing instance, preserve its data and authentication.
+inspect the log privately and explain the error without exposing tokens. Give the person the console address and
+wait until they confirm it opens in their browser; a request answered on this machine does not show that. Never
+describe a preview or link you have not confirmed exists. They set its password on the first visit. For an existing
+instance, preserve its data and authentication.
 
 For a new instance that needs this checkout's remote feature, follow the matching server skill's source-build
 instructions instead of the published quickstart. Do not silently downgrade it to an older released connector.
