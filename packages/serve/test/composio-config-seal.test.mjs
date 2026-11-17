@@ -869,6 +869,61 @@ test("an address in any scheme that carries a credential is sealed whole: a pass
   assert.deepEqual(composio.configSecrets(config).map((found) => found.name).sort(), ["/nested/mongo_uri", "database_url"], "and found at any depth in a trigger an earlier server kept");
 });
 
+test("an address whose password holds a raw '/', '?' or '#' is sealed: any scheme:// with an '@' before whitespace", async () => {
+  const composio = await import("../dist/trigger-composio.js");
+  const secret = fakeKey();
+  const carrying = [`mongodb://u:pa/ss${secret}@h.example.com/main`, `postgres://u:pa?ss${secret}@db.example.com/main`, `redis://:pa#ss${secret}@cache.example.com:6379`, `amqp://u:${secret}/x?y#z@mq.example.com`];
+  for (const value of carrying) assert.equal(composio.credentialUrl(value), true, `carries a credential: ${value.replace(secret, "<secret>")}`);
+  // No '@' after scheme:// before whitespace: nothing to seal.
+  for (const value of ["https://hooks.example.com/a/b?page=2#top", "postgres://db.example.com/main", "see https://example.com then mail a@b.example.com"]) assert.equal(composio.credentialUrl(value), false, `carries none: ${value}`);
+});
+
+test("a PATCH carrying a source that read the trigger before the after-start seal wrote it never writes the clear value back: it is checked again on the sealed row", async (t) => {
+  const { s, value, id } = await raced(t, (row) => ({ source: { ...row.source, config: { ...row.source.config, hub_value: MASK }, sealed_config: ["hub_value"] } }));
+  // The source as the PATCH read it (before the seal): the value in the clear, as an answer showed it then.
+  const res = await s.api("PATCH", `/triggers/${id}`, { name: "renamed", source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu", hub_value: value } } });
+  assert.notEqual(res.status, 200, `a PATCH read before the seal is not written over it: ${JSON.stringify(res.body).replace(value, "<value>")}`);
+  assert.ok(!JSON.stringify(res.body).includes(value), "its answer holds no value");
+  const read = await s.api("GET", `/triggers/${id}`);
+  assert.equal(read.body.source.config.hub_value, MASK, "the trigger stays masked");
+  assert.deepEqual(read.body.source.sealed_config, ["hub_value"], "and sealed");
+  assert.equal(read.body.name, "form", "nothing of the PATCH written");
+});
+
+test("a PATCH carrying a source on a trigger another write changed meanwhile (its next time) is checked again on the row as it is now, and written", async (t) => {
+  const { s, id } = await raced(t, () => ({ nextAt: null }));
+  const before = (await s.api("GET", `/triggers/${id}`)).body;
+  const res = await s.api("PATCH", `/triggers/${id}`, { name: "renamed", source: before.source });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.name, "renamed");
+  assert.equal((await s.api("GET", `/triggers/${id}`)).body.name, "renamed");
+});
+
+/** A Composio trigger kept with a field only its event's schema marks, in the clear, and a store whose next trigger
+ *  write that carries a source is preceded by `meanwhile(row)`'s write (another writer's, after the PATCH read it). */
+async function raced(t, meanwhile) {
+  const s = await setup(t, { composio: { triggerTypes: { hubspot: [DEAL_STAGE, FORM_EVENT] } } });
+  const value = fakeKey();
+  const made = await s.api("POST", "/triggers", { ...dealTrigger(""), name: "form", source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu" } } });
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  const triggers = s.server.store.triggers;
+  const kept = await triggers.get(made.body.id);
+  await triggers.update(made.body.id, { source: { ...kept.source, config: { ...kept.source.config, hub_value: value } } });
+  const update = triggers.update.bind(triggers);
+  let once = false;
+  triggers.update = async (id, patch, ...rest) => {
+    if (!once && id === made.body.id && patch.source) {
+      once = true;
+      await new Promise((r) => setTimeout(r, 5));
+      await update(id, meanwhile(await triggers.get(id)));
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return update(id, patch, ...rest);
+  };
+  t.after(() => void (triggers.update = update));
+  return { s, value, id: made.body.id };
+}
+
 test("a trigger update given the updatedAt it was read at: refused (undefined, nothing written) once the trigger changed or went; written while it is the same", async (t) => {
   const s = await setup(t);
   const made = await s.api("POST", "/triggers", dealTrigger(fakeKey()));
