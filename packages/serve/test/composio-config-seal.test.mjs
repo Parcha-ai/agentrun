@@ -8,7 +8,7 @@
 // sealed at the next start. An Idempotency-Key's record keeps a keyed digest of the body and the masked answer; one an
 // older server wrote is scrubbed at the start.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -32,6 +32,8 @@ const DEAL_STAGE = {
 
 /** A fake key, new each test: never a real one. */
 const fakeKey = () => `fake-hubspot-dev-${randomBytes(10).toString("hex")}`;
+/** A fake numeric key, 13 digits, new each test. */
+const fakeNumber = () => 9_000_000_000_000 + randomInt(0, 2 ** 40);
 
 /** A server with a saved HubSpot Composio server `hs`, connected, and an agent `triage`. Every answer and log line is
  *  kept, for the key's check. */
@@ -237,10 +239,88 @@ test("the name rule: a field named like a key, token, secret, password or creden
   const composio = await import("../dist/trigger-composio.js");
   assert.equal(typeof composio.sealedConfigFields, "function", "trigger-composio.ts says which config fields are sealed");
   const sealed = ["developer_api_key", "api_key", "apiKey", "APIKey", "apikey", "key", "private_key", "access_key", "client_secret", "secret", "webhook_secret", "access_token", "token", "refreshToken", "bot_token", "password", "passwd", "passphrase", "credential", "credentials", "auth_token", "signing_key", "token_count", "authorization", "Authorization", "bearer", "bearer_value", "cookie", "session_cookie", "setCookie"];
-  const kept = ["app_id", "owner", "repo", "key_id", "keyword", "keywords", "channel_id", "max_tokens", "monkey", "turkey", "secretary", "tokenizer", "author"];
+  const kept = ["app_id", "owner", "repo", "key_id", "keyword", "keywords", "channel_id", "monkey", "turkey", "secretary", "tokenizer", "author"];
   const config = Object.fromEntries([...sealed, ...kept].map((name) => [name, `value-of-${name}`]));
   assert.deepEqual(composio.sealedConfigFields(config).sort(), [...sealed].sort());
-  assert.deepEqual(composio.sealedConfigFields({ api_key: 42, token: true, secret: { nested: "x" }, password: "" }), [], "a non-string or empty value is no credential to seal");
+  assert.deepEqual(composio.sealedConfigFields({ token: true, secret: { nested: "x" }, password: "", apikey: null }), [], "a switch, an object, an empty string or null is no credential to seal");
+});
+
+test("the name rule, wider: a plural (tokens, secrets, api_keys), hapikey, pat, pwd, passcode, jwt, dsn and connection_string are sealed; key_id, keyword, status, pattern, path and address are not", async () => {
+  const composio = await import("../dist/trigger-composio.js");
+  // max_tokens reads token once its plural is read as one: a count so named is sealed too, on the conservative side.
+  const sealed = ["tokens", "secrets", "api_keys", "apiKeys", "private_keys", "passwords", "access_tokens", "client_secrets", "cookies", "credentials", "hapikey", "HAPIKEY", "pat", "github_pat", "pwd", "db_pwd", "passcode", "jwt", "jwt_value", "dsn", "sentry_dsn", "connection_string", "connectionString", "db_connection_string", "connection_strings", "max_tokens"];
+  const kept = ["key_id", "keyword", "keywords", "status", "pattern", "patterns", "path", "paths", "address", "addresses", "patch", "process", "progress", "connection", "connection_id", "string", "string_value", "string_connection", "keys_count", "app_id"];
+  const config = Object.fromEntries([...sealed, ...kept].map((name) => [name, `value-of-${name}`]));
+  assert.deepEqual(composio.sealedConfigFields(config).sort(), [...sealed].sort(), "each of these names is sealed, and none of the kept ones");
+});
+
+test("a number under a credential's name is sealed as a string is: the answer masks it, Composio's instance gets the number, no file holds its digits, and a PATCH that leaves it out keeps it", async (t) => {
+  const composio = await import("../dist/trigger-composio.js");
+  assert.deepEqual(composio.sealedConfigFields({ api_key: 12345678901, pin_secret: 0, token: true, count: 3 }).sort(), ["api_key", "pin_secret"], "a number under a credential's name is sealed; a switch is not");
+  const s = await setup(t);
+  const number = fakeNumber();
+  const made = await s.api("POST", "/triggers", dealTrigger(number));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  assert.equal(made.body.source.config.developer_api_key, MASK);
+  assert.deepEqual(made.body.source.sealed_config, ["developer_api_key"]);
+  const instance = [...s.composio.instances.values()][0];
+  assert.equal(instance.trigger_config.developer_api_key, number, "Composio's instance gets the number, as a number");
+  const read = await s.api("GET", `/triggers/${made.body.id}`);
+  assert.equal(read.body.source.config.developer_api_key, MASK);
+  assert.equal((await sealedRowsOf(s.server.store, made.body.id)).length, 1);
+  assert.deepEqual(filesUnder(s.server.data).filter((path) => readFileSync(path).includes(String(number))), [], "no file under the data directory holds its digits");
+  const kept = await s.api("PATCH", `/triggers/${made.body.id}`, { source: { kind: "composio", server: "hs", event: DEAL_STAGE.slug, config: { app_id: "4242" } } });
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.ok(![...s.answers, ...s.lines].some((one) => one.includes(String(number))), "no answer or log line holds its digits");
+});
+
+test("a number an earlier server kept in the clear, at the top level and below it: masked on reads, sealed at the next start with no file holding its digits, and a PATCH that leaves the nested one out keeps it", async (t) => {
+  const s = await setup(t);
+  const key = fakeNumber();
+  const inner = fakeNumber();
+  const made = await s.api("POST", "/triggers", dealTrigger(fakeKey()));
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  const { sealed_config: _, ...source } = made.body.source;
+  await s.server.store.triggers.update(made.body.id, { source: { ...source, config: { app_id: "4242", developer_api_key: key, auth: { api_key: inner, region: "eu" } } } });
+  const one = await s.api("GET", `/triggers/${made.body.id}`);
+  assert.ok(![key, inner].some((n) => JSON.stringify(one.body).includes(String(n))), `GET masks a number at any depth: ${JSON.stringify(one.body.source.config)}`);
+  assert.equal(one.body.source.config.auth.api_key, MASK);
+  assert.deepEqual([...one.body.source.sealed_config].sort(), ["/auth/api_key", "developer_api_key"]);
+  await s.server.stop();
+  const lines = [];
+  const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl }, log: (line) => lines.push(line) });
+  assert.equal((await sealedRowsOf(again.store, made.body.id)).length, 3, "both numbers are sealed at the start, beside the key the create sealed");
+  assert.deepEqual(filesUnder(again.data).filter((path) => [key, inner].some((n) => readFileSync(path).includes(String(n)))), [], "no file under the data directory holds either's digits");
+  assert.ok(!lines.some((l) => [key, inner].some((n) => l.includes(String(n)))), "no log line holds either");
+  const left = await again.api("PATCH", `/triggers/${made.body.id}`, { source: { kind: "composio", server: "hs", event: DEAL_STAGE.slug, config: { app_id: "4242", auth: { region: "eu" } } } });
+  assert.equal(left.status, 200, `a PATCH that leaves the nested number out keeps it: ${JSON.stringify(left.body)}`);
+  assert.equal((await again.api("GET", `/triggers/${made.body.id}`)).body.source.config.auth.api_key, MASK);
+});
+
+/** An event whose schema marks its credentials as JSON Schema does (format: password, writeOnly), under names the name rule
+ *  passes over, and a numeric one under a credential's name. */
+const FORM_EVENT = {
+  ...DEAL_STAGE, slug: "HUBSPOT_FORM_SUBMITTED_TRIGGER", name: "Form Submitted",
+  config: { type: "object", required: ["app_id"], properties: { app_id: { type: "string" }, hub_value: { type: "string", format: "password" }, signing_material: { type: "string", writeOnly: true }, secret_pin: { type: "integer" }, region: { type: "string" } } },
+};
+
+test("a field whose schema says format: password or writeOnly is sealed whatever its name, and a numeric credential is listed too: the events list names them, a create seals them and Composio gets them", async (t) => {
+  const s = await setup(t, { composio: { triggerTypes: { hubspot: [DEAL_STAGE, FORM_EVENT] } } });
+  const events = await s.api("GET", "/settings/mcp-servers/hs/composio/events");
+  assert.equal(events.status, 200, JSON.stringify(events.body));
+  const form = events.body.events.find((event) => event.slug === FORM_EVENT.slug);
+  assert.deepEqual([...form.sealed].sort(), ["hub_value", "secret_pin", "signing_material"], "the events list names the schema's credentials, and a numeric one by its name");
+  const hub = fakeKey();
+  const signing = fakeKey();
+  const pin = fakeNumber();
+  const made = await s.api("POST", "/triggers", { ...dealTrigger(""), source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", hub_value: hub, signing_material: signing, secret_pin: pin, region: "eu" } } });
+  assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
+  assert.deepEqual(made.body.source.config, { app_id: "4242", hub_value: MASK, signing_material: MASK, secret_pin: MASK, region: "eu" }, "a create seals what the schema marks");
+  assert.deepEqual([...made.body.source.sealed_config].sort(), ["hub_value", "secret_pin", "signing_material"]);
+  assert.deepEqual([...s.composio.instances.values()][0].trigger_config, { app_id: "4242", hub_value: hub, signing_material: signing, secret_pin: pin, region: "eu" }, "Composio gets each as given");
+  assert.ok(![hub, signing, String(pin)].some((v) => [...s.answers, ...s.lines].some((one) => one.includes(v))), "no answer or log line holds any");
+  const kept = await s.api("PATCH", `/triggers/${made.body.id}`, { source: { kind: "composio", server: "hs", event: FORM_EVENT.slug, config: { app_id: "4242", region: "eu" } } });
+  assert.equal(kept.status, 200, `a PATCH that leaves them out keeps them: ${JSON.stringify(kept.body)}`);
 });
 
 test("the API document: a composio source's sealed_config is read-only, and config's words say a key-named field is answered [sealed]", async (t) => {
@@ -631,4 +711,36 @@ test("a busy checkpoint (a reader in another connection holds the log) keeps the
   const again = await serve(t, { data: s.server.data, publicUrl: PUBLIC, composioControl: { baseUrl: s.composio.baseUrl } });
   assert.deepEqual(filesUnder(again.data).filter((path) => readFileSync(path).includes(key)), [], "the next start finishes the scrub");
   assert.equal(existsSync(markerIn(again.data)), false, "and clears the marker");
+});
+
+/** A store opened with a short busy wait (200 ms), and another connection holding its write lock. */
+async function storeHeld(t) {
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  const dataDir = join(await scratch(t), "agents");
+  const store = await openSqliteStore({ dataDir, busyTimeoutMs: 200 });
+  const holder = new DatabaseSync(join(dataDir, "store.sqlite"));
+  holder.exec("BEGIN IMMEDIATE");
+  t.after(async () => {
+    if (holder.isTransaction) holder.exec("ROLLBACK");
+    holder.close();
+    await store.close().catch(() => undefined);
+  });
+  return { store, holder, marker: join(dataDir, "store.sqlite.scrub") };
+}
+
+test("the scrub's VACUUM, the write lock held past the store's busy wait and let go before its one retry: it waits, tries again and the scrub is done", async (t) => {
+  const { store, holder, marker } = await storeHeld(t);
+  // Let go after the first try's busy wait (200 ms) has run out, and before the retry (about 400 ms after it).
+  const timer = setTimeout(() => holder.isOpen && holder.isTransaction && holder.exec("COMMIT"), 450);
+  t.after(() => clearTimeout(timer));
+  const done = await store.secureRewrite(async () => 1);
+  assert.deepEqual(done, { rewritten: 1 }, "the retry runs the scrub through");
+  assert.equal(existsSync(marker), false, "and clears the marker");
+});
+
+test("the scrub's VACUUM, the write lock never let go: one retry, then the marker is kept and the rewrite says busy", async (t) => {
+  const { store, marker } = await storeHeld(t);
+  const done = await store.secureRewrite(async () => 1);
+  assert.deepEqual(done, { rewritten: 1, left: "busy" }, "a lock held through the retry is said as busy");
+  assert.equal(existsSync(marker), true, "the marker stays for the next start");
 });

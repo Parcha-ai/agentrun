@@ -204,6 +204,11 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const page = all.slice(from, from + size);
       return reply(200, { items: page, next_cursor: from + size < all.length ? String(from + size) : null, total_pages: 1, current_page: 1, total_items: all.length });
     }
+    const typeOne = /^\/api\/v3\/triggers_types\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "GET" && typeOne) {
+      const type = Object.values(triggerTypes).flat().find((t) => t.slug === decodeURIComponent(typeOne[1]));
+      return type ? reply(200, type) : reply(404, { error: { message: `Trigger type ${typeOne[1]} not found` } });
+    }
     const upsert = /^\/api\/v3\/trigger_instances\/([^/]+)\/upsert$/.exec(url.pathname);
     if (req.method === "POST" && upsert) {
       const type = Object.values(triggerTypes).flat().find((t) => t.slug === upsert[1]);
