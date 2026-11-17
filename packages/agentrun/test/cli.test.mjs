@@ -94,7 +94,8 @@ function run(env, args, { input, extra = {}, timeout } = {}) {
 
 function cliOf(env, seen) {
   return (args, { input, extra = {} } = {}) => {
-    const run = spawnSync(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, input, encoding: "utf8", timeout: 60_000 });
+    // maxBuffer: `server openapi` prints the whole document, past spawnSync's 1 MiB default.
+    const run = spawnSync(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, input, encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
     // A spawn that failed (a timeout, or output past maxBuffer: the CLI killed, its stdout cut short) is the test's failure,
     // never a short answer read as the CLI's.
     assert.ifError(run.error);
