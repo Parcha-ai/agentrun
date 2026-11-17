@@ -129,11 +129,22 @@ export const agentLongDescription = {
       check(reached.ends && reached.inWindow, `${at}: the last of the details cannot be brought into view`);
       check(await name.evaluate((h) => h.getBoundingClientRect().top) === before, `${at}: scrolling the details moved the agent's name`);
     }
+    // A name long enough to fill its half scrolls the block, which then is a named stop for the keyboard; the description keeps a line.
+    const long = await api("POST", "/agents", { definition: { id: "titled", name: "A name that goes on and on ".repeat(12).trim(), description: "Reads invoices.", instructions: "Answer in one line.", tools: [] } });
+    check(long.status === 201, `creating the third agent answered ${long.status}`);
+    await page.goto(`${base}/#/agents/titled`);
+    await page.reload();
+    await page.locator("[data-agent-details] [aria-label='Live jobs']").waitFor({ timeout: 45_000 });
+    const block = page.locator("[data-agent-heading]");
+    check(await block.evaluate((box) => box.scrollHeight > box.clientHeight && box.tabIndex === 0 && box.getAttribute("aria-label") === "Agent name and description"), "a name block that scrolls cannot take the keyboard's focus");
+    check(await page.locator("[data-agent-description]").evaluate((box) => box.clientHeight >= 28), "the description under a long name keeps no line");
+    check(await page.locator("[data-agent-details]").evaluate((box) => box.clientHeight >= 60), "the details under a long name keep no room");
     // A description that fits is no stop for the keyboard.
     await page.goto(`${base}/#/agents/terse`);
     await page.reload();
     await page.getByRole("heading", { level: 1, name: "Terse" }).waitFor({ timeout: 45_000 });
     check(await page.locator("[data-agent-description]").evaluate((box) => !box.hasAttribute("tabindex") && !box.hasAttribute("role")), "a description that fits takes the keyboard's focus");
+    check(await page.locator("[data-agent-heading]").evaluate((box) => !box.hasAttribute("tabindex") && !box.hasAttribute("role")), "a name block that fits takes the keyboard's focus");
   },
 };
 

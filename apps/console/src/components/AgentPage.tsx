@@ -127,19 +127,23 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const detailsScroll = useScrollQuiet<HTMLDivElement>();
   const workspaceScroll = useScrollQuiet<HTMLElement>();
   const descriptionScroll = useScrollQuiet<HTMLDivElement>();
-  // A description that scrolls in its box takes the keyboard's focus, so its end can be read without a pointer (Safari
-  // puts no scrolling box in the tab order by itself). One that fits is no stop.
-  const [descriptionScrolls, setDescriptionScrolls] = useState(false);
+  // A box that scrolls (a long description, or a name long enough to scroll the block) takes the keyboard's focus, so
+  // its end can be read without a pointer (Safari puts no scrolling box in the tab order by itself). One that fits is no stop.
+  const headingScroll = useRef<HTMLDivElement>(null);
+  const [scrolling, setScrolling] = useState({ heading: false, description: false });
   useEffect(() => {
-    const box = descriptionScroll.current;
-    if (!box || typeof ResizeObserver === "undefined") return;
-    const measure = () => setDescriptionScrolls(box.scrollHeight > box.clientHeight + 1);
+    const heading = headingScroll.current, description = descriptionScroll.current;
+    if (!heading || !description || typeof ResizeObserver === "undefined") return;
+    const overflows = (box: HTMLElement) => box.scrollHeight > box.clientHeight + 1;
+    const measure = () => setScrolling((was) => {
+      const now = { heading: overflows(heading), description: overflows(description) };
+      return now.heading === was.heading && now.description === was.description ? was : now;
+    });
     const sizes = new ResizeObserver(measure);
-    sizes.observe(box);
-    if (box.firstElementChild) sizes.observe(box.firstElementChild);
+    for (const box of [heading, description]) { sizes.observe(box); for (const child of box.children) sizes.observe(child); }
     measure();
     return () => sizes.disconnect();
-  }, [descriptionScroll, agent.definition.description]);
+  }, [descriptionScroll, agent.definition.name, agent.definition.description, agent.definition.approvals]);
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
   const sdk = backendSdkOf(d);
@@ -197,11 +201,11 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           {/* The name block takes at most half the column, so the details under it always have room. A description too long
               for that scrolls in a box of its own between the name and the id, which both stay. The block reaches into
               the space beside it so that box's scrollbar has its gutter; a name that fills the half by itself scrolls
-              the block, which shows no scrollbar of its own. */}
-          <div data-agent-heading className="lg:-mr-4 lg:flex lg:max-h-[50%] lg:shrink-0 lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden lg:pr-4 lg:[scrollbar-width:none]">
+              the block, which shows no scrollbar of its own, and the description keeps a line of it. */}
+          <div ref={headingScroll} data-agent-heading {...(scrolling.heading ? { tabIndex: 0, role: "region", "aria-label": "Agent name and description" } : {})} className="lg:-mr-4 lg:flex lg:max-h-[50%] lg:shrink-0 lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden lg:pr-4 lg:[scrollbar-width:none]">
             <h1 className="text-2xl font-semibold lg:shrink-0">{d.name}</h1>
             {d.approvals === "never" && <Chip tone="warning" className="mt-2 lg:shrink-0 lg:self-start" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
-            <div ref={descriptionScroll} data-agent-description {...(descriptionScrolls ? { tabIndex: 0, role: "region", "aria-label": "Agent description" } : {})} className="scroll-quiet min-w-0 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-2.5">
+            <div ref={descriptionScroll} data-agent-description {...(scrolling.description ? { tabIndex: 0, role: "region", "aria-label": "Agent description" } : {})} className={cn("scroll-quiet min-w-0 lg:-mr-4 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-2.5", d.description ? "lg:min-h-7" : "lg:min-h-0")}>
               {d.description && <p id="agent-description" className={cn("mt-2 break-words text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
             </div>
             <p className="mt-3 break-all font-mono text-label text-muted-foreground lg:shrink-0">{agent.agent_id}</p>
