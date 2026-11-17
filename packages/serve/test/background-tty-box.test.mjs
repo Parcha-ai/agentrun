@@ -3,7 +3,7 @@
 // the option, and without it always exits 0, so a terminal process's exit code would be lost). The box here is this
 // machine's own environment with a search path that lacks `script`, or holds a stand-in for busybox's.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { backgroundTools } from "../dist/background.js";
+import { fakeBin } from "./fake-bin.mjs";
 
 test("a box with no script refuses tty: true in plain words, and makes nothing; without tty it starts", async (t) => {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "bg-tty-box-"));
@@ -19,15 +20,7 @@ test("a box with no script refuses tty: true in plain words, and makes nothing; 
   const bin = join(dir, "bin");
   const work = join(dir, "work");
   await Promise.all([bin, work, join(dir, "tmp")].map((d) => import("node:fs/promises").then((fs) => fs.mkdir(d))));
-  // Each name once, the first directory's: a name already linked is skipped by name, never by existsSync, which follows
-  // the link and reads a dangling one (a runner image's broken /usr/bin entry) as absent, so the second link threw EEXIST.
-  const linked = new Set();
-  for (const from of ["/usr/bin", "/bin"]) {
-    for (const name of readdirSync(from)) if (name !== "script" && !linked.has(name)) {
-      linked.add(name);
-      symlinkSync(join(from, name), join(bin, name));
-    }
-  }
+  fakeBin(bin, ["script"]);
   const local = new NodeExecutionEnv({ cwd: work });
   const env = { cwd: work, exec: (command, options, context) => local.exec(command, { ...options, env: { PATH: bin, TMPDIR: join(dir, "tmp") }, inheritEnv: false }, context) };
   const [start, output, , signal] = backgroundTools();
@@ -46,15 +39,7 @@ test("a box whose script is not util-linux's (busybox's takes no -e and always e
   const bin = join(dir, "bin");
   const work = join(dir, "work");
   await Promise.all([bin, work, join(dir, "tmp")].map((d) => import("node:fs/promises").then((fs) => fs.mkdir(d))));
-  // Each name once, the first directory's: a name already linked is skipped by name, never by existsSync, which follows
-  // the link and reads a dangling one (a runner image's broken /usr/bin entry) as absent, so the second link threw EEXIST.
-  const linked = new Set();
-  for (const from of ["/usr/bin", "/bin"]) {
-    for (const name of readdirSync(from)) if (name !== "script" && !linked.has(name)) {
-      linked.add(name);
-      symlinkSync(join(from, name), join(bin, name));
-    }
-  }
+  fakeBin(bin, ["script"]);
   // A stand-in for busybox 1.36's script, as its source answers: getopt "ac:fqt::" refuses -e (and --version) with its
   // usage, and a session it runs always ends with EXIT_SUCCESS.
   writeFileSync(join(bin, "script"), [

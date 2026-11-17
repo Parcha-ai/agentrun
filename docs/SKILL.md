@@ -153,6 +153,40 @@ wait until they confirm it opens in their browser; a request answered on this ma
 describe a preview or link you have not confirmed exists. They set its password on the first visit. For an existing
 instance, preserve its data and authentication.
 
+**Hand over the setup code with the address.** A server at a public address (Render, a container, any
+`AGENTRUN_PUBLIC_URL`) asks for a **setup code** before it takes the first password; its `GET /v2/auth/session`
+answers `setup_code: true`. The quickstart above asks for none. The console never shows the code, so in the same
+message as the console address, tell the person where it is:
+
+- **Render:** in the Render dashboard, the service's **Environment** tab holds `AGENTRUN_TOKEN`; they paste its value
+  into **Setup code**. The service's **Logs** tab holds the line below too.
+- **Docker or a terminal:** the server's log (`docker logs <container>`, `docker compose logs`, or the terminal
+  it runs in) has a line `Set up this server: <address>/setup#code=<code>`. The newest one counts.
+
+When you can read that log, read it privately and give them the newest `Set up this server:` link itself: it opens the
+page with the code filled in. Never put the API token (`AGENTRUN_TOKEN`, or `.token` in the data folder) in the chat;
+name where it is.
+
+The message that hands over the link or the code's place must itself say all three:
+
+1. The link works **once**.
+2. It **expires 30 minutes** after the server printed it. Give the clock time it expires, with its time zone, when you
+   can tell: the line's timestamp in the log plus 30 minutes, or `expires_at` in the answer below.
+3. What to do when it has expired: press **Get a new code** under the Setup code field, then use the newest
+   `Set up this server:` line in the same place; or ask you for a new link.
+
+To renew for them, do not restart the server. Read the log again for the newest `Set up this server:` line. If that
+line is older than 30 minutes, or you cannot tell, send this request, which takes no credential:
+
+```sh
+curl -sS -X POST "$CONSOLE_ADDRESS/v2/setup/code"
+```
+
+It answers `{"printed": true|false, "expires_at": "<time>"}` and never the code. `printed: true`: the server wrote a
+new line to its log; read it and send that link. `printed: false`: the last code is still good until `expires_at`, and
+is the newest line. A 403 means the owner is already set (they sign in), is being set at that moment, or the server takes no code. A server from an
+older release answers 404: restart it, which prints a new code. Wait until they confirm the password is set.
+
 For a new instance that needs this checkout's remote feature, follow the matching server skill's source-build
 instructions instead of the published quickstart. Do not silently downgrade it to an older released connector.
 
