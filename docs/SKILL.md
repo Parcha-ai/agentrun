@@ -124,10 +124,11 @@ message), agree on when to stop it, and restart that same service with its own s
 
 ### My always-on machine
 
-Continue in a session on that machine, or an SSH session they already use; it needs Tailscale signed in to their own
-tailnet. Read its name with `tailscale status --json | jq -r .Self.DNSName` (drop the trailing dot), start AgentRun as
-above with `AGENTRUN_PUBLIC_URL=https://<that name>/` in front of `npx`, and with their OK share it on the tailnet
-only: `tailscale serve --bg <port it printed>`, never `tailscale funnel`. It asks for a setup code (below).
+Continue in a session on that machine, or an SSH session they already use. With their OK, run
+`curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale`: it installs AgentRun as a service, shares it on their
+own tailnet only (`tailscale serve`, never Funnel) and prints its `https://<machine>.<tailnet DNS name>/` address. When
+Tailscale is missing or signed out, or Linux needs operator rights, it prints the steps and the command to run again;
+pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code (below).
 
 ### A hosted service
 

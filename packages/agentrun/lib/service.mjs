@@ -2,13 +2,15 @@
 // keeps running after the terminal closes and starts again at login. A launchd LaunchAgent on macOS, a systemd --user
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
-// port, and writes to ~/.agentrun/logs/agentrun.log. `agentrun stop` stops the AgentRun the installer starts in the
+// port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
+// (tailscale.mjs). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TAILNET_PORT, tailnetOf, targetOf } from "./tailscale.mjs";
 
 export const LABEL = "ai.agentrun.server";
 export const UNIT = "agentrun.service";
@@ -24,9 +26,10 @@ const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(
 const unxml = (text) => text.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 
 /** The LaunchAgent: started at login (RunAtLoad), started again when it exits with a failure (KeepAlive), its output in
- *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker). */
-export function plistText({ program, args, path, log }) {
+ *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. */
+export function plistText({ program, args, path, log, env = {} }) {
   const strings = [program, ...args].map((arg) => `    <string>${xml(arg)}</string>`).join("\n");
+  const vars = Object.entries({ PATH: path, ...env }).map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -39,8 +42,7 @@ ${strings}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    <string>${xml(path)}</string>
+${vars}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -78,15 +80,15 @@ export function systemdWords(line) {
 }
 
 /** The systemd --user unit: started at login (default.target) and at boot when lingering is on, started again when it
- *  fails, its output appended to `log`, with the PATH of the shell that installed it. */
-export function unitText({ program, args, path, log }) {
+ *  fails, its output appended to `log`, with the PATH of the shell that installed it and `env`. */
+export function unitText({ program, args, path, log, env = {} }) {
   return `[Unit]
 Description=AgentRun, an open-source platform for your agents
 After=network-online.target
 
 [Service]
 ExecStart=${[program, ...args].map(systemdWord).join(" ")}
-Environment=${systemdWord(`PATH=${path}`)}
+${Object.entries({ PATH: path, ...env }).map(([key, value]) => `Environment=${systemdWord(`${key}=${value}`)}`).join("\n")}
 Restart=on-failure
 RestartSec=2
 StandardOutput=append:${log.replace(/%/g, "%%")}
@@ -290,20 +292,41 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
   }
 
   return {
-    async install({ data, port }) {
+    async install({ data, port, tailscale }) {
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
       need();
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(port !== undefined ? ["--port", port] : [])];
+      // --tailscale or --no-tailscale on an installed service changes its sharing only: its data folder and port stay
+      // unless named (the installer passes the flag alone).
+      if (tailscale !== undefined && installed()) {
+        const now = argsNow();
+        const option = (name) => (now.includes(name) ? now[now.indexOf(name) + 1] : undefined);
+        data ??= option("--data");
+        port ??= option("--port");
+      }
+      const again = (flag) => [`agentrun service install ${flag}`, ...(port !== undefined ? [`--port ${port}`] : []), ...(data !== undefined ? [`--data ${resolve(data)}`] : [])].join(" ");
+      const tailnet = tailnetOf({ platform, root, uid, exec, say, fail, again: again("--tailscale") });
+      // --no-tailscale takes it off the tailnet; with neither flag, a service on the tailnet stays there.
+      const share = tailscale ?? tailnet.recorded() !== undefined;
+      // On the tailnet the port is fixed, so the serve entry and the server still agree after a restart.
+      const served = share ? (port ?? TAILNET_PORT) : port;
+      if (share && Number(served) === 0) throw fail(2, `--tailscale serves a fixed port, and --port 0 has the system pick another at each start: name a port, or leave --port out for ${TAILNET_PORT}.`);
+      if (!share) tailnet.off(again("--no-tailscale"));
+      // The server knows the address people open: its host check takes the name, and its setup takes the printed code.
+      const at = share ? tailnet.address(targetOf(served)) : undefined;
+      const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : [])];
+      const vars = at ? { AGENTRUN_PUBLIC_URL: at.url, AGENTRUN_TRUSTED_PROXIES: "loopback" } : {};
       mkdirSync(join(root, "logs"), { recursive: true, mode: 0o700 });
       mkdirSync(join(manager.file, ".."), { recursive: true });
-      writeFileSync(manager.file, manager.text({ program, args, path: env.PATH ?? "/usr/bin:/bin", log }));
+      writeFileSync(manager.file, manager.text({ program, args, path: env.PATH ?? "/usr/bin:/bin", log, env: vars }));
       const since = Date.now();
       manager.install();
       say(`Installed AgentRun's service (${manager.file}): it keeps running after this terminal closes, and starts again at login.`);
-      return started(since, dataOf(args, home));
+      const code = await started(since, dataOf(args, home));
+      if (code === 0 && at) tailnet.serve(served, at.host);
+      return code;
     },
     async status() {
       need();
@@ -359,6 +382,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     },
     async uninstall() {
       need();
+      tailnetOf({ platform, root, uid, exec, say, fail, again: "agentrun service uninstall" }).off();
       if (!installed()) return say("AgentRun's service is not installed."), 0;
       manager.remove();
       unlinkSync(manager.file);
@@ -437,14 +461,14 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340)"], ["--data DIR", "the data directory (default ~/.agentrun)"]], { port: { type: "string" } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"]], { port: { type: "string" }, tailscale: { type: "boolean" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],
   ["restart", "Restart the service and wait until it answers", [], {}],
   ["logs", "Print the service's log, ~/.agentrun/logs/agentrun.log", [["--lines N", "how many of its last lines (default 50)"], ["--follow", "and keep printing what comes (-f)"]], { lines: { type: "string" }, follow: { type: "boolean", short: "f" } }],
   ["upgrade", "Install another version with the installer, then restart the service on it", [["--version V", "the version or npm tag (default: latest)"]], { version: { type: "string" } }],
-  ["uninstall", "Stop the service and remove it; the data directory stays", [], {}],
+  ["uninstall", "Stop the service and remove it, and the tailscale serve entry --tailscale added; the data directory stays", [], {}],
 ];
 
 /** The CLI's entries (cli.mjs LOCAL), one per verb. */
