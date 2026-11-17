@@ -19,34 +19,37 @@ timers (the system's and the person's own), launchd jobs and the project's CI wo
 one runs, because a list of timers or launchd labels alone does not show it.
 
 ```sh
-agents='claude|codex'
-{ crontab -l; cat /etc/crontab /etc/cron.d/*; } 2>/dev/null | awk -v re="$agents" '
-  $1 ~ /^(@|[0-9*])/ && match($0, re) {
+name() { grep -oE '(^|[^A-Za-z0-9_.-])(claude|codex)([^A-Za-z0-9_.-]|$)' | grep -oE 'claude|codex' | head -n 1; }
+{ crontab -l; cat /etc/crontab /etc/cron.d/*; } 2>/dev/null | awk '
+  $1 ~ /^(@|[0-9*])/ && match($0, /(^|[^A-Za-z0-9_.-])(claude|codex)([^A-Za-z0-9_.-]|$)/) {
     n = ($1 ~ /^@/) ? 1 : 5; when = $1; for (i = 2; i <= n; i++) when = when " " $i
-    print "cron: " when " " substr($0, RSTART, RLENGTH) }'
+    print "cron: " when " " (substr($0, RSTART, RLENGTH) ~ /codex/ ? "codex" : "claude") }'
 for scope in --system --user; do
   systemctl $scope list-timers --all --no-legend --plain 2>/dev/null | tr ' ' '\n' | grep '\.timer$' | while read -r timer; do
     unit=$(systemctl $scope show -p Unit --value "$timer")
-    run=$(systemctl $scope show -p ExecStart --value "$unit" | grep -oE "$agents" | head -n 1)
+    run=$(systemctl $scope show -p ExecStart --value "$unit" | name)
     when=$(systemctl $scope show -p TimersCalendar -p TimersMonotonic --value "$timer" | tr '\n' ' ')
     [ -z "$run" ] || echo "systemd $scope: $timer $run $when"
   done
 done
 for plist in ~/Library/LaunchAgents/*.plist /Library/LaunchAgents/*.plist /Library/LaunchDaemons/*.plist; do
-  run=$(plutil -p "$plist" 2>/dev/null | grep -oE "$agents" | head -n 1)
+  run=$(for key in Program ProgramArguments; do plutil -extract $key xml1 -o - "$plist"; done 2>/dev/null | name)
   [ -z "$run" ] || echo "launchd: $plist $run"
 done
 for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
-  run=$(grep -oE "$agents" "$workflow" 2>/dev/null | head -n 1)
+  [ -f "$workflow" ] || continue
+  run=$({ name; grep -oE 'uses:.*(claude|codex)[a-z-]*action' "$workflow" | grep -oE 'claude|codex'; } < "$workflow" 2>/dev/null | head -n 1)
   [ -z "$run" ] || echo "ci: $workflow $run $(grep -oE "cron: *['\"][^'\"]*['\"]" "$workflow" | tr '\n' ' ')"
 done
 ```
 
-For each job that names Claude Code (`claude -p`) or Codex (`codex exec`) it prints where the job is, its schedule
-and that one word. The rest of the command line stays on the machine, so a prompt, a key or an environment value
-written into a job is never returned to you. For the same reason do not run a bare `crontab -l`, `systemctl cat` or
-`launchctl print`, or open a unit, plist or script file. For how often a launchd job runs, read only its
-`StartInterval` and `StartCalendarInterval` keys with `plutil -extract`.
+For each job that runs Claude Code (`claude -p`) or Codex (`codex exec`) it prints where the job is, its schedule
+and that one word. It counts the name only as a word of its own in the command a job runs, or as a Claude Code or
+Codex action a workflow uses: a path, package or job that merely contains the name is not listed. The rest of the
+command line stays on the machine, so a prompt, a key or an environment value written into a job is never returned
+to you. For the same reason do not run a bare `crontab -l`, `systemctl cat` or `launchctl print`, or open a unit,
+plist or script file. For how often a launchd job runs, read only its `StartInterval` and `StartCalendarInterval`
+keys with `plutil -extract`.
 
 A job that starts an agent through a wrapper script or an agent SDK program does not name it on its command line,
 so the filter cannot see it. Before concluding that there are none, ask the person which of their jobs start

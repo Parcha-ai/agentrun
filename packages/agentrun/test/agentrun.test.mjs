@@ -622,9 +622,18 @@ test("the setup skill's discovery step names scheduled Claude Code and Codex job
   *"-p ExecStart --value logrotate.service") ${exec("/usr/sbin/logrotate", "/etc/private-fixture.conf")} ;;
   "--user show -p TimersCalendar"*"nightly-review.timer") echo "{ OnCalendar=*-*-* 03:00:00 ; next_elapse=n/a }" ;;
 esac`,
-    plutil: `case "$2" in
-  */triage.plist) printf '%s\n' '{' '  "EnvironmentVariables" => { "ANTHROPIC_API_KEY" => "private-fixture-key" }' '  "ProgramArguments" => [ 0 => "/opt/bin/claude" 1 => "-p" 2 => "the private-fixture-prompt" ]' '}' ;;
-  *) printf '%s\n' '{' '  "Program" => "/usr/bin/private-fixture-sync"' '}' ;;
+    // Only the two keys that hold a job's command are asked for, so no other key's value is ever read.
+    plutil: `test "$1 $3 $4 $5" = "-extract xml1 -o -" || exit 2
+case "$2 $6" in
+  "ProgramArguments "*/triage.plist) echo "<array><string>/opt/bin/claude</string><string>-p</string><string>the private-fixture-prompt</string></array>" ;;
+  "Program "*/sync.plist) echo "<string>/usr/bin/private-fixture-claude-sync</string>" ;;
+  "Program "*|"ProgramArguments "*) exit 1 ;;
+  *) echo "<dict><key>KEY</key><string>claude private-fixture-key</string></dict>" ;;
+esac`,
+    // The system's crontabs are this fixture's, not the machine's: a job the developer really runs never reaches the result.
+    cat: `case "$1" in
+  /etc/cron*) echo "SHELL=/bin/sh"; echo "0 5 * * * root /usr/local/bin/codex exec 'audit the private-fixture-prompt'"; echo "17 * * * * root cd / && run-parts --report /etc/private-fixture.hourly" ;;
+  *) exec /bin/cat "$@" ;;
 esac`,
   });
   for (const name of ["triage", "sync"]) {
@@ -632,19 +641,22 @@ esac`,
     writeFileSync(join(f.dir, "Library", "LaunchAgents", `${name}.plist`), "");
   }
   mkdirSync(join(f.dir, ".github", "workflows"), { recursive: true });
-  writeFileSync(join(f.dir, ".github", "workflows", "nightly.yml"), "on:\n  schedule:\n    - cron: '0 6 * * *'\njobs:\n  review:\n    steps:\n      - run: claude -p 'review with the private-fixture-prompt'\n        env:\n          KEY: private-fixture-key\n");
-  writeFileSync(join(f.dir, ".github", "workflows", "lint.yaml"), "on:\n  schedule:\n    - cron: '0 7 * * *'\njobs:\n  lint:\n    steps:\n      - run: npm run private-fixture-lint\n");
+  const workflow = (name, cron, job) => writeFileSync(join(f.dir, ".github", "workflows", name), `on:\n  schedule:\n    - cron: '${cron}'\njobs:\n  job:\n${job}`);
+  workflow("nightly.yml", "0 6 * * *", "    steps:\n      - run: claude -p 'review with the private-fixture-prompt'\n        env:\n          KEY: private-fixture-key\n");
+  workflow("review.yaml", "0 8 * * 1", "    steps:\n      - uses: example/codex-action@v1\n        with:\n          prompt: the private-fixture-prompt\n");
+  // A workflow that only contains a runtime's name, as a test matrix of packages does, schedules no agent.
+  workflow("lint.yaml", "0 7 * * *", "    strategy:\n      matrix:\n        package: [private-fixture-harness-claude, private-fixture-harness-codex]\n    steps:\n      - run: npm run private-fixture-lint\n");
   const run = f.run(step, { HOME: f.dir });
-  assert.equal(run.status, 0, run.stderr);
-  // The machine's own system crontabs are read too; only this fixture's lines are compared.
-  const lines = run.stdout.split("\n").filter((line) => line && !(line.startsWith("cron: ") && !/^cron: (30 2 \* \* 1-5|@daily) /.test(line)));
-  assert.deepEqual(lines, [
+  assert.deepEqual([run.status, run.stderr], [0, ""], "it ends quietly");
+  assert.deepEqual(run.stdout.split("\n").filter(Boolean), [
     "cron: 30 2 * * 1-5 claude",
     "cron: @daily codex",
+    "cron: 0 5 * * * codex",
     "systemd --user: nightly-review.timer codex { OnCalendar=*-*-* 03:00:00 ; next_elapse=n/a } ",
     `launchd: ${join(f.dir, "Library", "LaunchAgents", "triage.plist")} claude`,
     "ci: .github/workflows/nightly.yml claude cron: '0 6 * * *' ",
-  ], "each agent job with its schedule and runtime, and no other job");
+    "ci: .github/workflows/review.yaml codex cron: '0 8 * * 1' ",
+  ], "each agent job with its schedule and runtime; no other job, and none that only contains a runtime's name");
   assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no prompt, key, environment value or unrelated job is returned");
 });
 for (const source of [false, true]) test(`the ${source ? "source-server" : "setup"} skill's start step reports failure promptly and preserves its error in a private log`, { timeout: 30_000 }, (t) => {
