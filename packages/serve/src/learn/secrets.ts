@@ -122,20 +122,65 @@ export function redactLearned(text: string, values: readonly string[], max = PRI
  *  text whole). */
 function redactWith(text: string, values: readonly string[], max: number, shapes: readonly (readonly [string, RegExp])[], shapesOf: (text: string) => string[]): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
-  const given = withPathSpellings(values.filter((v) => v.length > 0));
-  const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? [...needlesOf(v).plain, ...percentForms(v)] : [])]).filter((form) => form.length > 0));
+  const held = heldOf(values);
   const found = [
-    ...[...forms].flatMap((form) => places(text, form)),
-    ...given.filter(longEnough).flatMap((v) => spans(text, new RegExp(needlesOf(v).hex, "i"))),
+    ...held.forms.flatMap((form) => places(text, form)),
+    ...held.hex.flatMap((pattern) => spans(text, pattern)),
     ...shapes.flatMap(([, pattern]) => spans(text, pattern)),
   ];
   const unfolded = cutAt(text, found);
-  if (spelledMatcher(given, false)(unfolded) || shapesOf(unfolded).length > 0) return "[redacted]";
+  if (held.unfoldedMatch(unfolded) || shapesOf(unfolded).length > 0) return "[redacted]";
   // Then the folded finds cut in place, and the fold-aware check over what is left, always: a folded value split by
   // whitespace or percent-encoded has no span here, but the matcher's squeezed and decoded views still see it.
-  const folds = given.filter(longEnough).flatMap((v) => needlesOf(v).folded.flatMap((needle) => spans(text, foldedPattern(needle))));
+  const folds = held.folds.flatMap((pattern) => spans(text, pattern));
   const out = folds.length ? cutAt(text, [...found, ...folds]) : unfolded;
-  return spelledMatcher(given)(out) || shapesOf(out).length > 0 ? "[redacted]" : out;
+  return held.match(out) || shapesOf(out).length > 0 ? "[redacted]" : out;
+}
+
+/** What redactWith looks for of one set of held values: their path spellings, each form found as it stands, their hex and
+ *  folded patterns, and the matchers without and with the folded needles. Each is made of the values alone, so it is made
+ *  once per set and kept (keptFor): a run's view redacts every field and number it serves under one set, and making the
+ *  forms (base64 at three alignments, percent forms, path spellings) for every value again on each was most of its time. */
+interface Held {
+  readonly forms: readonly string[];
+  readonly hex: readonly RegExp[];
+  readonly folds: readonly RegExp[];
+  readonly unfoldedMatch: (text: string) => boolean;
+  readonly match: (text: string) => boolean;
+}
+const heldSets = new Map<string, Held>();
+const heldOf = (values: readonly string[]): Held =>
+  keptFor(heldSets, JSON.stringify(values), () => {
+    const given = withPathSpellings(values.filter((v) => v.length > 0));
+    const long = given.filter(longEnough);
+    return {
+      forms: [...new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? [...needlesOf(v).plain, ...percentForms(v)] : [])]).filter((form) => form.length > 0))],
+      hex: long.map((v) => new RegExp(needlesOf(v).hex, "i")),
+      folds: long.flatMap((v) => needlesOf(v).folded.map(foldedPattern)),
+      unfoldedMatch: spelledMatcher(given, false),
+      match: spelledMatcher(given),
+    };
+  });
+
+/** How many sets of values heldOf and valueMatcher keep, newest used first: a server reads under its own secrets and each
+ *  run's handed pointers beside them, a few sets at a time. */
+const KEPT_SETS = 32;
+/** `make()`, kept in `sets` under `key`: what an earlier call made under the same key, else made now and kept, the oldest
+ *  past KEPT_SETS let go. */
+function keptFor<T>(sets: Map<string, T>, key: string, make: () => T): T {
+  const held = sets.get(key);
+  if (held !== undefined) {
+    sets.delete(key);
+    sets.set(key, held);
+    return held;
+  }
+  const made = make();
+  sets.set(key, made);
+  for (const oldest of sets.keys()) {
+    if (sets.size <= KEPT_SETS) break;
+    sets.delete(oldest);
+  }
+  return made;
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
@@ -279,8 +324,9 @@ const longEnough = (value: string) => [...value].length >= MIN_SECRET;
  *  shorter than MIN_SECRET are left out. `fold: false`, the matcher without the folded needles (redactSecrets' first
  *  whole-text check). */
 export function valueMatcher(values: readonly string[], { fold = true }: { fold?: boolean } = {}): (text: string) => boolean {
-  return spelledMatcher(withPathSpellings(values), fold);
+  return keptFor(matchers, JSON.stringify([fold, values]), () => spelledMatcher(withPathSpellings(values), fold));
 }
+const matchers = new Map<string, (text: string) => boolean>();
 
 /** valueMatcher over values already given with their path spellings (redactSecrets'), each spelled once. */
 function spelledMatcher(spelled: readonly string[], fold = true): (text: string) => boolean {
