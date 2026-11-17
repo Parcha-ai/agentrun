@@ -9,7 +9,8 @@
 // before any deploy, saying where. A template made by hand in Railway's template editor is walked and published with
 // --template CODE.
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { isMain } from "../../scripts/is-main.mjs";
 import { differences, loadTemplate, onlyService, renderVariables } from "./template.mjs";
 
 export const API = "https://backboard.railway.com/graphql/v2";
@@ -423,8 +424,8 @@ async function main(argv) {
   const all = await run(liveClient({ token }), { workspaceId, mode, code: walkCode ?? templateCode, log });
   const text = report(all);
   console.log(text);
-  if (process.env.REPORT) (await import("node:fs")).writeFileSync(process.env.REPORT, `${text}\n`);
+  if (process.env.REPORT) writeFileSync(process.env.REPORT, `${text}\n`);
   return all.every((r) => r[1] === "PASS") ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) process.exitCode = await main(process.argv.slice(2));
+if (isMain(import.meta)) process.exitCode = await main(process.argv.slice(2));

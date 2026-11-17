@@ -15,6 +15,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { isMain } from "../../scripts/is-main.mjs";
 import { report } from "./publish-and-walk.mjs";
 import { loadTemplate, onlyService, renderVariables, startArgv } from "./template.mjs";
 
@@ -126,4 +127,4 @@ async function main() {
   return all.every((r) => r[1] === "PASS") ? 0 : 1;
 }
 
-if (process.argv[1] && import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href) process.exitCode = await main();
+if (isMain(import.meta)) process.exitCode = await main();
