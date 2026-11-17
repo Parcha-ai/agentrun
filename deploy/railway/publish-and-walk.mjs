@@ -274,11 +274,20 @@ async function walk(client, { workspaceId, template, step }) {
   }
 }
 
-/** Deletes walk projects an earlier run left (killed before its own delete), so none keeps running and billing. */
-async function sweep(client, { workspaceId, step }) {
-  const left = edges((await client.call("Projects", { workspaceId })).projects).filter((p) => p.name.startsWith(`${WALK_PROJECT}-`));
+/** A walk's longest run (its waits added up, with room to spare): a walk project younger than this may be another run's,
+ *  still walking, and is left alone. */
+export const WALK_MAX_MS = 2 * 60 * 60_000;
+
+/** Deletes walk projects an earlier run left (killed before its own delete), so none keeps running and billing. One
+ *  younger than WALK_MAX_MS may be a live walk of another run in the workspace: it is named, never deleted. */
+async function sweep(client, { workspaceId, step, now = Date.now() }) {
+  const walks = edges((await client.call("Projects", { workspaceId })).projects).filter((p) => p.name.startsWith(`${WALK_PROJECT}-`));
+  const live = (p) => !(now - Date.parse(p.createdAt) >= WALK_MAX_MS); // an unreadable createdAt counts as live
+  const left = walks.filter((p) => !live(p));
   for (const p of left) await client.call("ProjectDelete", { id: p.id });
   if (left.length) step.pass("earlier walks swept", left.map((p) => `${p.name} (${p.id})`).join(", "));
+  const running = walks.filter(live);
+  if (running.length) step.pass("recent walks left alone", `${running.map((p) => `${p.name} (${p.id})`).join(", ")}: younger than ${WALK_MAX_MS / 3_600_000} h, maybe another run's`);
 }
 
 /** The whole run. `mode`: "publish" (the default), "walk" (an existing template, walked only) or "template" (one made in

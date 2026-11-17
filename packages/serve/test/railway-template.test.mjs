@@ -10,7 +10,7 @@ import { sealKeyOf } from "../dist/tool-keys.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const { differences, loadTemplate, onlyService, renderValue, renderVariables, startArgv } = await import(new URL("deploy/railway/template.mjs", ROOT));
-const { BUTTON_MARK, BUTTON_PLACEHOLDER, buttonLine, planClient, run, sourcePatch } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
+const { BUTTON_MARK, BUTTON_PLACEHOLDER, WALK_MAX_MS, buttonLine, planClient, run, sourcePatch } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
 const { dockerRunArgs } = await import(new URL("deploy/railway/local-walk.mjs", ROOT));
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
 const { service } = onlyService(loadTemplate());
@@ -100,6 +100,19 @@ test("two configs differ only in what a deploy does, never in Railway's ids, and
   assert.doesNotMatch(lines.join("\n"), /f{64}/);
 });
 
+test("a variable only Railway's template has is shown by its length if its name is a secret's, and a TCP proxy is a difference", () => {
+  const config = loadTemplate();
+  const extra = structuredClone(config);
+  const s = Object.values(extra.services)[0];
+  s.variables.PRIVATE_API_KEY = { defaultValue: "sk-" + "a".repeat(40) };
+  s.networking.tcpProxies = { 7340: {} };
+  const lines = differences(config, extra).join("\n");
+  assert.match(lines, /AgentRun\.variables\.PRIVATE_API_KEY\.value: the repository's nothing, Railway's \(a value of 43 characters\)/);
+  assert.match(lines, /AgentRun\.tcpProxies: the repository's \[\], Railway's \["7340"\]/);
+  assert.doesNotMatch(lines, /a{40}/);
+  assert.match(differences(extra, config).join("\n"), /PRIVATE_API_KEY\.value: the repository's \(a value of 43 characters\), Railway's nothing/);
+});
+
 test("the source project's patch is the template's service, and removes a variable the template no longer has", () => {
   const patch = sourcePatch(service, "svc", { variables: { OLD: { value: "x" }, PORT: { value: "1" } } });
   const s = patch.services.svc;
@@ -139,6 +152,18 @@ test("a walk that fails deletes its project and publishes nothing", async () => 
   const ops = client.calls.map((c) => c.op);
   assert.equal(rows.find((r) => r[1] === "FAIL")[0], "stopped");
   assert.ok(ops.includes("ProjectDelete") && !ops.includes("TemplatePublish"), ops.join(" "));
+});
+
+test("the sweep deletes a walk project older than any walk runs, and leaves a younger one (maybe another run's) alone", async () => {
+  const client = planClient({ log: quiet, workspaceId: "ws" });
+  const call = client.call.bind(client);
+  const ago = (ms) => new Date(Date.now() - ms).toISOString();
+  const walks = [{ id: "old", name: "agentrun-template-walk-1", createdAt: ago(WALK_MAX_MS + 60_000) }, { id: "young", name: "agentrun-template-walk-2", createdAt: ago(60_000) }, { id: "odd", name: "agentrun-template-walk-3", createdAt: "?" }];
+  client.call = async (op, v) => (op === "Projects" ? (await call(op, v), { projects: { edges: walks.map((node) => ({ node })) } }) : call(op, v));
+  const rows = await run(client, { workspaceId: "ws", mode: "walk", code: "abc", log: quiet });
+  const deleted = client.calls.filter((c) => c.op === "ProjectDelete").map((c) => c.variables.id);
+  assert.deepEqual(deleted, ["old", "<walk project>"]);
+  assert.match(rows.find((r) => r[0] === "recent walks left alone")[2], /young.*odd/);
 });
 
 test("a template that would deploy something else is never walked or published", async () => {

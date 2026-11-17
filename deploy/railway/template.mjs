@@ -48,7 +48,8 @@ export function renderVariables(service, { domain }) {
 }
 
 /** What a deploy of a config does, without the ids Railway gives its services, volumes and domains: per service by name,
- *  its image, start and health settings, variables (value and whether optional), domain ports and mount paths. */
+ *  its image, start and health settings, variables (value and whether optional), domain ports, TCP proxy ports (keyed by
+ *  port, as Railway's environment config has them) and mount paths. */
 export function deployed(config) {
   const out = {};
   for (const service of Object.values(config?.services ?? {})) {
@@ -59,6 +60,7 @@ export function deployed(config) {
       deploy,
       variables,
       ports: Object.values(service.networking?.serviceDomains ?? {}).map((d) => d?.port ?? null).sort(),
+      tcpProxies: Object.keys(service.networking?.tcpProxies ?? {}).sort(),
       mounts: Object.values(service.volumeMounts ?? {}).map((m) => m.mountPath).sort(),
     };
   }
@@ -66,14 +68,16 @@ export function deployed(config) {
 }
 
 /** Where two configs differ in what a deploy does: one line per path, empty when they do the same. A secret-named
- *  variable's value is shown only when it is a template function (`${{...}}`), else by its length. */
+ *  variable's value is shown only when it is a template function (`${{...}}`), else by its length. A variable only one
+ *  side has is compared field by field against nothing, so its value goes through the same redaction. */
 export function differences(want, have) {
   const lines = [];
   const secretPath = /\.variables\.[^.]*(TOKEN|KEY|SECRET|PASSWORD)[^.]*\.value$/;
-  const show = (v, path) => (typeof v === "string" && secretPath.test(path) && !v.includes("${{") ? `(a value of ${v.length} characters)` : JSON.stringify(v));
+  const show = (v, path) => (v === undefined ? "nothing" : typeof v === "string" && secretPath.test(path) && !v.includes("${{") ? `(a value of ${v.length} characters)` : JSON.stringify(v));
+  const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
   const walk = (a, b, path) => {
-    if (a !== null && b !== null && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
-      for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) walk(a[k], b[k], path ? `${path}.${k}` : k);
+    if ((plain(a) || a === undefined) && (plain(b) || b === undefined) && (plain(a) || plain(b))) {
+      for (const k of new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])) walk(a?.[k], b?.[k], path ? `${path}.${k}` : k);
     } else if (JSON.stringify(a) !== JSON.stringify(b)) {
       lines.push(`${path}: the repository's ${show(a, path)}, Railway's ${show(b, path)}`);
     }
