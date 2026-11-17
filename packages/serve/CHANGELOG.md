@@ -78,6 +78,12 @@
   - The timeline says `Its computer was lost; started a new one (<name>).`
   - A claim starts at most 2 new sandboxes. The next loss fails the run at once, whichever call finds it (the owner's computer channel too), even if the model answers without another call, served with error code `computer_unavailable` and the provider's words.
   - A 5xx, a timeout, or a failed read of the machine is not a loss and starts nothing. Desktops, phones, paired computers and an agent's own computer are never started again this way. The run's end and the owner's computer channel never start one either.
+- Console polish:
+  - Every page's top bar is 48 px, so its bottom edge meets the one under the navigation's logo. Most bars were 1 px taller, and the agent editor's 17 px taller. Section titles look alike: Mission Control's was the only one not in capitals.
+  - A run's page has its breadcrumb in that bar, above its title.
+  - Templates has the sections' top bar. A template's page and the install page lead back to the list from it.
+  - Settings → Computers offers Test connection only for a provider whose keys are saved, and a key that changes clears the last result. Paste, Replace and Remove sit beside their key.
+  - An agent's run search has its magnifier inside the field, and Mission Control's three Try it buttons look alike.
 
 ## 0.1.0-beta.43 (2026-11-17)
 

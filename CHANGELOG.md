@@ -74,7 +74,7 @@ AgentRun is an open-source platform that supercharges your agents. It adds self-
 
 **Console:**
 
-- An agent's name, description and id stay put while its details scroll under them (#3080); the coding-agent menu opens from its control's left edge (#3079); **Use your agent** matches **Send request**, card icons are level and headers show their navigation icons (#3081); the Triggers page has the list pages' header bar (#3082); the API playground's operation picker keeps one width (#3078).
+- An agent's name, description and id stay put while its details scroll under them (#3080); the coding-agent menu opens from its control's left edge (#3079); **Use your agent** matches **Send request**, card icons are level and headers show their navigation icons (#3081); the Triggers page has the list pages' header bar (#3082); the API playground's operation picker keeps one width (#3078); every page's top bar meets the navigation's edge and section titles look alike, a run's breadcrumb sits in its bar, Templates has the sections' bar, and Settings → Computers offers Test connection only for a provider whose keys are saved (#3113).
 
 **Tests and release:**
 
