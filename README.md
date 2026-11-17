@@ -569,6 +569,10 @@ launcher's console on loopback when accounts are off). A key set where the serve
 API token can't write a secret or approve a tool call. A run gets only the keys its own model and tools need, and
 nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
+The server counts itself anonymously (a random id, its version, its platform): never prompts, files or keys.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off, and this release sends nothing yet.
+[Anonymous usage counts](docs/telemetry.md) lists every field.
+
 ## Docs
 
 - [AgentRun Server](packages/serve/README.md): the API, models, tools, MCP servers, triggers, spend caps, learning and

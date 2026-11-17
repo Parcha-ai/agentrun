@@ -76,12 +76,14 @@ export function same(a: unknown, b: unknown): boolean {
 }
 
 /** The picker's choice that makes a decision agent: a workflow revision from the starter decision workflow. It is a
- *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default. */
-export const DECISION = "decision";
+ *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default.
+ *  Its value has a colon, which no harness id has (`^[a-z][a-z0-9-]{0,39}$`), so a harness a server's module adds as
+ *  `decision` stays a harness. */
+export const DECISION = "starter:decision";
 
 /** The picker's choice that makes a general workflow agent: a workflow revision from the general starter
- *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is. */
-export const WORKFLOW = "workflow";
+ *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is, and never a harness id. */
+export const WORKFLOW = "starter:workflow";
 
 /** The workflow each starter choice creates the agent from: Decision's judge names the server's decision provider. */
 const STARTERS: Record<string, (decisionProvider?: string) => unknown> = { [DECISION]: decisionStarter, [WORKFLOW]: workflowStarter };
@@ -195,24 +197,28 @@ export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefin
 /** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
  *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+/** The tools that run only in a box (serve's tools.ts, `sandboxOnly`; capabilities' `sandbox_only`): bash and the
+ *  background tools. A revision with no place gets the box only when it names one. */
+const SANDBOX_ONLY: ReadonlySet<string> = new Set(["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
 
 /** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
  *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
- *  and for one that names a tool that runs only there (the browser); else this server's default_place. The editor's
- *  picker and its tool checks both read it, so they agree with the server and with each other. */
+ *  for one whose tools need no shell, and for one that names a tool that runs only there (the browser); else this
+ *  server's default_place. The editor's picker and its tool checks both read it, so they agree with the server and with
+ *  each other. */
 export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
-  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
+  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !tools.some((tool) => SANDBOX_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
  *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
- *  not read yet (and it names no runner-only tool), whose place is not known. The agent page's fact and the Learning
- *  tab's host-bash line both read it. */
+ *  not read yet (and it names a shell tool and no runner-only one), whose place is not known. The agent page's fact and
+ *  the Learning tab's host-bash line both read it. */
 export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
   const own = placeOf(agent.definition.place);
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
   const tools = agent.definition.tools ?? [];
-  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places) return undefined;
+  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && tools.some((tool) => SANDBOX_ONLY.has(tool)) && !places) return undefined;
   return { place: defaultPlaceOf(workflow, tools, places), byDefault: true };
 }
 
@@ -230,15 +236,20 @@ export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TO
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
-/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
- *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
- *  `decision` (a new agent), the starters follow them: Decision, available when the server runs decision workflows,
- *  and Workflow, available on every server. */
-export function harnessOptions(harnesses: { id: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
-  const options: { id: string; label: string; available: boolean; reason?: string }[] = ORDER.flatMap((id) => {
-    const h = harnesses.find((x) => x.id === id);
-    return h ? [{ id, label: LABEL[id], available: h.available, reason: h.reason }] : [];
-  });
+/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), then
+ *  any other harness it lists (one its harness modules add), by the label it gives, else its id; each one the server does
+ *  not run shown disabled with its reason. A harness the server does not list is not offered. With `decision` (a new
+ *  agent), the starters follow them: Decision, available when the server runs decision workflows, and Workflow,
+ *  available on every server. */
+export function harnessOptions(harnesses: { id: string; label?: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
+  const option = (h: { id: string; label?: string; available: boolean; reason?: string }, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason });
+  const options: { id: string; label: string; available: boolean; reason?: string }[] = [
+    ...ORDER.flatMap((id) => {
+      const h = harnesses.find((x) => x.id === id);
+      return h ? [option(h, LABEL[id])] : [];
+    }),
+    ...harnesses.filter((h) => !(ORDER as string[]).includes(h.id)).map((h) => option(h, h.label ?? h.id)),
+  ];
   if (decision) {
     options.push({ id: DECISION, label: "Decision", available: decision.available, reason: decision.available ? undefined : "This server runs no decision workflows: it has no decision provider's key." });
     options.push({ id: WORKFLOW, label: "Workflow", available: true, reason: undefined });

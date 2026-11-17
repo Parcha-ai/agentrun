@@ -167,6 +167,15 @@ package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps i
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
 once without checking again (a key some harness reads would, with `why=key`).
 
+## Anonymous usage counts
+
+The server can send three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
+a random id kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a
+range; never a prompt, a file, a key or a name. This release sends nothing: the receiver's key is not set.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI` and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
+event on stderr and sends none. The start that first could send prints one notice and sends nothing at that start.
+[docs/telemetry.md](../../docs/telemetry.md) lists every field.
+
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
@@ -347,26 +356,28 @@ while the agent's loop, its log and every key stay on the server, whatever its h
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
 place keeps it, `runner` included. An edit that names no place keeps the agent's.
 
-The box is a new agent's default machine. A new agentic agent whose definition names no place is saved in the Docker box
-(`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker. The place is written on the agent's first revision, so its answers
-show it. If that definition names no `tools` either, it gets `["bash", "bash_background", "bash_output", "bash_input",
-"bash_signal", "bash_list"]`, so the agent has a shell and can run a command in the background
-([background processes](#background-processes)). A definition that
-names its tools keeps exactly those, an empty list included. Where docker is unavailable, a new agent is saved with no
-place. So is one whose tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
+The box is a new agent's default machine for a shell. A new agentic agent whose definition names no place and no `tools`
+is saved in the Docker box (`{"mode": "sandbox", "box": "docker"}`) wherever this server has docker, with `["bash",
+"bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]`, so the agent has a shell and can run a
+command in the background ([background processes](#background-processes)). The place is written on the agent's first
+revision, so its answers show it. A definition that names its tools keeps exactly those, an empty list included, and
+gets the box only when one of them runs only there (`bash` or a background tool). One whose tools need no shell (`[]`,
+or `read`, `write`, `web_fetch` and the like) is saved with no place and runs on the runner, so its first run starts at
+once instead of waiting on a container. Where docker is unavailable, a new agent is saved with no place. So is one whose
+tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
 
-`capabilities.places.default_place` is the place a new agent gets here, and where a revision that names no place runs.
-It is worked out again at each run, the same way as at create: an agentic revision with no place runs in the Docker box
-wherever this server has docker now, and on the runner where it does not. A workflow, and a revision whose tools name
-one the box refuses, run on the runner. A save checks a revision with no place against where it would run, so `bash`
+`capabilities.places.default_place` is the place a new agent with a shell gets here, and where a revision that names no
+place and has a shell tool runs. It is worked out again at each run, the same way as at create: an agentic revision with
+no place and a shell tool runs in the Docker box wherever this server has docker now, and on the runner where it does
+not. A workflow, a revision whose tools need no shell, and one whose tools name one the box refuses run on the runner. A save checks a revision with no place against where it would run, so `bash`
 with no place saves where docker is there and is `422` where it is not. When that is the runner,
 `default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
 unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
 restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
 What a person picks or unticks there is what is sent.
 
-A run runs in its revision's place, else where `default_place` says at that run (a workflow, and a revision whose tools
-name one the box refuses, on the runner). A run request names no place: `POST /agents/{id}/runs`
+A run runs in its revision's place, else where `default_place` says at that run (a workflow, a revision whose tools need
+no shell, and one whose tools name one the box refuses, on the runner). A run request names no place: `POST /agents/{id}/runs`
 with `place` is `422 input_invalid`, as with any field the body does not keep. The run keeps the place it resolved to,
 and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, when they come, will be an option of
 `sandbox` (such as `native_tools: true`), never a third mode.
@@ -389,14 +400,13 @@ A definition naming a box this server does not have saves with a warning on `def
 
 With docker on (by default, when `AGENTRUN_BOXES` is not set; or listed in it) and a Docker daemon this server's user
 may use, a run whose place is
-`{"mode": "sandbox", "box": "docker"}` gets one container, made on its first `bash` call (a run with none gets no
-container). Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
+`{"mode": "sandbox", "box": "docker"}` gets one container, made when a runner takes the run, before its first model
+request, whatever tools it calls. Those four tools are pi's own, on every harness. `bash` runs in the container. `read`, `write` and `edit`
 run on this server, on the `work/` the container binds, because a `docker exec` costs half a second or more per call:
 they follow no link anywhere on the way (one pointing inside `work/` included), take only a regular file with one hard
 link, and write through a temporary file renamed over the old one, keeping its mode (a new file is `0644`). A refusal
 says so and names the box's path; `bash`, in the container, can still reach the file. Where this server reaches
-directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container, made on
-the first of them.
+directories by path (no `/proc/self/fd`, as on macOS), or a box binds nothing, all four run in the container.
 `web_fetch`, `web_search` and monid's endpoints stay on this server, and so do
 the run's loop, its log, its model calls and every key. What the server itself files in `work/` (monid's long answers,
 the browser's evidence) never goes through a link a box's command planted there: each directory is held open on the
@@ -1054,7 +1064,8 @@ A run is refused before it starts, `409 agent_not_runnable`, saying which, for a
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING` (one of those
-levels exactly), else at its harness's own default; it is never off, and a model node that names its own thinking level
+levels exactly), else at its harness's own default; it is never off (pi never asks a model the catalog does not list,
+such as a local one, to stop reasoning: it thinks at its lowest level, its reasoning kept out of the answer), and a model node that names its own thinking level
 keeps it. The level is fixed in the run's launch when it starts, and its metrics name the level its harness ran at: one
 above the harness's highest runs at that highest (Codex and OpenCode stop at `xhigh`). An agentic run whose level is
 `low`, `medium` or `high` also gets a short note on how to work, right after its instructions, on every harness
@@ -2259,9 +2270,16 @@ key, in order, and undoes what it made when a later step fails:
 
 A config field named like a credential is sealed at the create. That is a field whose value is a string (not empty) or
 a number, and where a word of the name, read as its singular (`tokens` as `token`), is secret, password, passwd,
-passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, authorization, bearer or cookie; where
-connection is followed by string (`connection_string`); or where the last word is key (`api_key`, `api_keys`). The rule
-errs toward sealing: `max_tokens` is sealed too. A field the event's schema marks with `format: "password"` or
+passphrase, passcode, pwd, pat, token, credential, apikey, hapikey, jwt, dsn, sig, authorization, bearer or cookie;
+where connection is followed by string (`connection_string`); or where the last word is key (`api_key`, `api_keys`). A
+credential word right next to a count word (max, min, num, number, count, limit, total, used, usage, budget, remaining,
+per, length, size or quota) names a count, not a credential: `max_tokens`, `token_count`, `token_limit`, `tokens_used`
+and `maxTokens` stay as they are, a number in one too, while `access_token`, `refresh_token` and `bot_token` are sealed.
+A string that is an address carrying a credential, in any scheme (`https`, `postgres`, `redis`, `amqp`,
+`mongodb+srv`...), is sealed whole, whatever its field's name and at any depth: one with a user part (`user:pass@`,
+`:pass@`, or a token alone as in `https://TOKEN@host`), or with a query or fragment parameter named by the rule above
+(`token`, `api_key`, `access_token`, `sig`) that has a value. An address with none stays as it is; one whose user part
+holds no secret (`ssh://git@host`) is sealed all the same. A field the event's schema marks with `format: "password"` or
 `writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
 such a value below the config's top level is refused `422`, naming it. For example, HubSpot's deal-stage event takes
 `{app_id, developer_api_key}`. Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
@@ -2273,7 +2291,13 @@ takes them as passwords. A PATCH that leaves a sealed field out or sends `"[seal
 change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
 The trigger's delete retires the value into a sealed row until the runs that saw it end. A trigger saved by an earlier server with such a value in plain text is answered
 masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
-and sealed at the next start (by its name alone: no schema is read then). On SQLite that rewrite runs with
+and sealed at the next start by the same rule. After that start, without holding it up, the server reads the schema of
+each event such a trigger uses, once, and seals the fields it marks the same way, logging `composio_config_sealed` per
+trigger. It writes a trigger only while the trigger is as it read it: one changed or deleted meanwhile is left (its
+values sealed for it removed again, the log saying `composio_config_not_sealed`) for the next start. Being already
+serving, it runs no `VACUUM`: the rewrite runs with `secure_delete` on, the marker below stays, the log says
+`store_scrub_not_done` with `reason=deferred`, and the next start's scrub finishes it before it serves. When Composio
+can't be reached, the log says `composio_config_schemas_unread` once with a code and the next start tries again. On SQLite that rewrite runs with
 `secure_delete` on, then a `VACUUM` and a WAL checkpoint,
 so the store's files keep no copy of the old row: neither the one rewritten nor one an earlier update of the row left in
 free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
@@ -2695,7 +2719,8 @@ codex mcp add agentrun --url "$AGENTRUN_BASE_URL/mcp" --bearer-token-env-var AGE
 ## Harnesses
 
 A definition names the harness that runs it: `pi` (the default, and what a definition that names none gets),
-`claude-agent`, `codex` or `opencode`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
+`claude-agent`, `codex`, `opencode`, or one of this server's harness modules adds (below). Any other is
+`422 input_invalid` on `definition.harness`. Every answer names it. An edit
 (`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
 back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
@@ -2768,6 +2793,39 @@ inlined in its system prompt.
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
+
+### Harness modules
+
+A harness is one entry in serve's harness table (`src/harness-table.ts`). Capabilities, a save's check, the runner and
+the console all read that table. An owner adds harnesses with a harness module: start the server with
+`--harness-module MODULE` (repeatable), or set `AGENTRUN_SERVE_HARNESS_MODULES=a,b`. A separate `agentrun-serve runner`
+takes the same flag and setting, and needs them to run the module's harnesses. MODULE is a path, or a package installed
+with `npm install --prefix <data>/harnesses <package>`.
+
+A module exports `entries(builtins)`, which returns new entries by id. Each entry gives `label`, `steer`, `runMib`,
+`oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`, `refusal` and its `runner`, and may give `promises`. A run of
+the harness runs on its runner's `adapter(launch, extra)`, and is admitted by the `runMib` its entry declares. A module
+adds harnesses and never replaces one. The start of the server, or of a separate runner, is refused, naming the module
+and the id, when a module:
+- gives an id that does not match `^[a-z][a-z0-9-]{0,39}$`;
+- names an id serve's own runs carry: `learning`, `sdk`, `workflow`, `claude-agent-sdk` or `codex-sdk`;
+- names a built-in harness;
+- names an id another module adds;
+- gives an entry that is missing a member;
+- does not resolve.
+
+A module's entry that gives no adapter `facts` runs on the general spec, with pi's tools: capabilities list its id on
+every tool pi runs (`tools[].harnesses`) and on MCP grants (`features.mcp_client.harnesses`), so an agent on it keeps
+its tool choices. One that gives `facts` runs the host tools, as the other built-in harnesses do.
+
+The harnesses a module adds are listed in `capabilities.harnesses` after the built-in ones. Each offer there carries a
+`label` and `promises`:
+- `resume`: `exact`, `load` or `restart`.
+- `tool_gate`: `every_call`, `permission` or `config`.
+- `billing`: `proxy` or `plan`.
+
+The built-in harnesses promise `exact`, `every_call` and `proxy`. These fields are marked
+`x-agentrun-serve: "harness-table/1"`.
 
 ## Decision workflows
 
