@@ -7,8 +7,6 @@
 // their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
 // server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
 // computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
-import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import { type ComputerProvider, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, testConnection } from "./computer-keys.js";
@@ -16,6 +14,7 @@ import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
+import { commandOnPath } from "./host-command.js";
 import { gpuRefused } from "./gpu-words.js";
 import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
@@ -97,19 +96,7 @@ export function hostCommandWhy(label: string, { command, from, builds }: HostCom
  *  words: what Settings → Computers, a run's start and the claim say for it. A command is there when a folder of `path`
  *  holds an executable file of its name. */
 export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "label" | "hostCommand">[], path: string | undefined, platform: string = process.platform, arch: string = process.arch): Readonly<Record<string, string>> {
-  // On Windows a program is its name with an executable extension (platform-tools installs adb.exe).
-  const named = (command: string): string[] => (platform === "win32" ? [command, ...[".exe", ".cmd", ".bat"].map((extension) => `${command}${extension}`)] : [command]);
-  const found = (command: string): boolean =>
-    (path ?? "").split(delimiter).some((folder) =>
-      folder !== "" && named(command).some((file) => {
-        try {
-          accessSync(join(folder, file), constants.X_OK);
-          return statSync(join(folder, file)).isFile();
-        } catch {
-          return false;
-        }
-      }));
-  return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !found(provider.hostCommand.command) ? [[provider.id, hostCommandWhy(provider.label, provider.hostCommand, platform, arch)]] : [])));
+  return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !commandOnPath(provider.hostCommand.command, path, platform) ? [[provider.id, hostCommandWhy(provider.label, provider.hostCommand, platform, arch)]] : [])));
 }
 
 /** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */

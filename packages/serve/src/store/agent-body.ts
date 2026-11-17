@@ -51,8 +51,8 @@ export type RevisionPlace = { mode: string; box?: string };
 /** A revision's computer (computer-setting.ts): its kind and the provider that serves it, ids its host knows, and a
  *  sandbox's GPUs, a type its provider names and how many; `place` is its v2 view. `image`: one the provider offers for
  *  the kind, absent for its default. A desktop's or a phone's surface and exec: how the agent drives it, and whether it
- *  may run programs on it. */
-export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number }; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean };
+ *  may run programs on it, and whether each run records a video of its screen. */
+export type RevisionComputer = { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number }; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean; record?: boolean };
 /** A revision's tool settings as its body keeps them: a map of a tool's key to its settings ({provider?, permission?,
  *  pin?}), checked and made canonical by the caller (agents-store.ts, through tool-plane's settingsIssues +
  *  canonicalToolSettings, the one copy). The store body holds it as it is given; this validator never reimplements it. */
@@ -84,24 +84,24 @@ function placeOf(place: unknown): RevisionPlace {
 const GPU_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** The keys a body's computer keeps. */
-const COMPUTER_KEYS: ReadonlySet<string> = new Set(["kind", "provider", "image", "gpu", "persistent", "surface", "exec"]);
+const COMPUTER_KEYS: ReadonlySet<string> = new Set(["kind", "provider", "image", "gpu", "persistent", "surface", "exec", "record"]);
 
-/** A computer as a body keeps it: `{kind, provider?, image?, gpu?, persistent?, surface?, exec?}`, nothing else: kind
- *  and provider ids, image a name with no spaces around it, gpu `{type, count}`, a GPU type name and a whole count from
- *  1, persistent and exec booleans, and surface code or tools. */
+/** A computer as a body keeps it: `{kind, provider?, image?, gpu?, persistent?, surface?, exec?, record?}`, nothing
+ *  else: kind and provider ids, image a name with no spaces around it, gpu `{type, count}`, a GPU type name and a whole
+ *  count from 1, persistent, exec and record booleans, and surface code or tools. */
 function computerOf(computer: unknown): RevisionComputer {
   const image = isObject(computer) ? computer.image : undefined;
   const named = (value: unknown) => typeof value === "string" && value !== "" && value === value.trim();
   const flag = (value: unknown) => value === undefined || typeof value === "boolean";
   const surface = isObject(computer) ? computer.surface : undefined;
-  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || !flag(computer.persistent) || !flag(computer.exec) || (surface !== undefined && surface !== "code" && surface !== "tools") || Object.keys(computer).some((key) => !COMPUTER_KEYS.has(key))) invalid("the computer is not {kind, provider?, image?, gpu?, persistent?, surface?, exec?}, kind and provider each an id (lowercase letters, digits and dashes), image a name, persistent a boolean, surface code or tools, exec a boolean");
-  const ok = computer as { kind: string; provider?: string; image?: string; gpu?: unknown; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean };
+  if (!isObject(computer) || !hostId(computer.kind) || (computer.provider !== undefined && !hostId(computer.provider)) || (image !== undefined && !named(image)) || !flag(computer.persistent) || !flag(computer.exec) || !flag(computer.record) || (surface !== undefined && surface !== "code" && surface !== "tools") || Object.keys(computer).some((key) => !COMPUTER_KEYS.has(key))) invalid("the computer is not {kind, provider?, image?, gpu?, persistent?, surface?, exec?, record?}, kind and provider each an id (lowercase letters, digits and dashes), image a name, persistent a boolean, surface code or tools, exec a boolean, record a boolean");
+  const ok = computer as { kind: string; provider?: string; image?: string; gpu?: unknown; persistent?: boolean; surface?: "code" | "tools"; exec?: boolean; record?: boolean };
   const gpu = ok.gpu;
   if (gpu !== undefined && (!isObject(gpu) || Object.keys(gpu).some((key) => key !== "type" && key !== "count") || typeof gpu.type !== "string" || !GPU_TYPE.test(gpu.type) || !Number.isSafeInteger(gpu.count) || (gpu.count as number) < 1)) {
     invalid("the computer's gpu is not {type, count}: a GPU type name (letters, digits, dots, underscores and dashes) and a whole count from 1");
   }
   const kept = gpu as { type: string; count: number } | undefined;
-  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}), ...(ok.persistent !== undefined ? { persistent: ok.persistent } : {}), ...(ok.surface !== undefined ? { surface: ok.surface } : {}), ...(ok.exec !== undefined ? { exec: ok.exec } : {}) };
+  return { kind: ok.kind, ...(ok.provider !== undefined ? { provider: ok.provider } : {}), ...(ok.image !== undefined ? { image: ok.image } : {}), ...(kept !== undefined ? { gpu: { type: kept.type, count: kept.count } } : {}), ...(ok.persistent !== undefined ? { persistent: ok.persistent } : {}), ...(ok.surface !== undefined ? { surface: ok.surface } : {}), ...(ok.exec !== undefined ? { exec: ok.exec } : {}), ...(ok.record !== undefined ? { record: ok.record } : {}) };
 }
 
 /** The body of a new revision and the text of each skill it names (path to text), everything checked here, before any

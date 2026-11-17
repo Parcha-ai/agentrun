@@ -51,6 +51,10 @@
       "types": "./dist/agent37.d.ts",
       "default": "./dist/agent37.js"
     },
+    "./morph": {
+      "types": "./dist/morph.d.ts",
+      "default": "./dist/morph.js"
+    },
     "./boxd": {
       "types": "./dist/boxd.d.ts",
       "default": "./dist/boxd.js"

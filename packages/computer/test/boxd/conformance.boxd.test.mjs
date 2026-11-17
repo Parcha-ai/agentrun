@@ -3,7 +3,8 @@
 // BOXD_API_KEY never counts, and the provider never reads it. It also needs the @boxd-sh/sdk package installed where
 // Node finds it (a root devDependency), `npm run build` and `npm run build:daemon` (the daemon is uploaded into each
 // machine), and Go on PATH: the drift case builds a daemon of another version, and the screen and input cases a
-// computerd-fixture for linux/amd64. COMPUTER_BOXD_KIND=desktop runs it on a desktop; the default is a linux sandbox.
+// computerd-fixture for linux/amd64. COMPUTER_BOXD_KIND=desktop runs it on a desktop, restored from the desktop snapshot
+// (built once in the key's org when it has none, and kept); the default is a linux sandbox.
 // The runner deletes every computer it made and sweeps the run's label; the after hook deletes any machine still made by
 // this run, pass or fail.
 import assert from "node:assert/strict";
@@ -52,7 +53,8 @@ describe(
 				return created;
 			};
 			// Release waits up to 120 s for boxd to read a deleted machine gone; cleanup gives it more.
-			report = await runConformance(provider, { image: conformanceImage(), cleanupTimeoutMs: 150_000, notes: conformanceNotes, drifted: createDriftedProvider, fixture });
+			// A desktop's image is the desktop snapshot, found or built in the key's org first.
+			report = await runConformance(provider, { image: await conformanceImage(), cleanupTimeoutMs: 150_000, notes: conformanceNotes, drifted: createDriftedProvider, fixture });
 			console.log(formatReport(report));
 		});
 
