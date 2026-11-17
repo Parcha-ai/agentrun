@@ -48,7 +48,7 @@ export interface ReflectDeps {
   readonly feedback: (runId: string) => Promise<readonly string[]>;
   /** Why the owner's words would be refused as a line of corrections.md on main now (learn/commit.ts correctionRefused);
    *  empty when they would be taken. */
-  readonly correctionRefused: (input: { agentId: string; text: string; refuse: readonly string[] }) => Promise<readonly Problem[]>;
+  readonly correctionRefused: (input: { runId: string; agentId: string; round: number; text: string; refuse: readonly string[] }) => Promise<readonly Problem[]>;
   /** The compile turn's facts (learn/compile.ts CompileAsk), `refuse` cut from what they quote: undefined when the run
    *  compiles nothing (its job not due, a workflow that answered). Absent, or a read that throws: no compile turn. */
   readonly compileFacts?: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => Promise<CompileAsk | undefined>;
@@ -112,20 +112,23 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       const total = (await deps.facts(input.runId)).costUsd;
       return { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9) };
     };
+    // An end that asks nothing more: its drop alone, or, when an earlier claim asked the compile turn (stopped during it),
+    // with that ask's figures and what the turn spent since, so the run's cost stays the job's own and the rest learning's.
+    const unasked = async (row: AlsoRow) => (begun ? { also: [keptRow({ ...(row.row as { proposal: object }).proposal, ...(await spent()) })] } : { also: [row] });
     // A person's stop, before or during the step, or a fault: nothing kept.
-    if (input.cut === "stopped" || facts.cancelled) return { also: [dropped("cancelled", said.stopped(STOPPED.cancelled))] };
-    if (input.cut === "stopped-looking") return { also: [dropped("cancelled", said.stopped(STOPPED.cancelledLooking))] };
-    if (input.cut === "faulted") return { also: [dropped("crashed", said.stopped(STOPPED.crashed))] };
+    if (input.cut === "stopped" || facts.cancelled) return unasked(dropped("cancelled", said.stopped(STOPPED.cancelled)));
+    if (input.cut === "stopped-looking") return unasked(dropped("cancelled", said.stopped(STOPPED.cancelledLooking)));
+    if (input.cut === "faulted") return unasked(dropped("crashed", said.stopped(STOPPED.crashed)));
     // What the run must never learn, read once, before anything: a run whose list can't be read learns nothing, never
     // over a shorter one.
     const read = deps.refuse ? await deps.refuse(input.runId).catch(() => "unreadable" as const) : [];
-    if (read === "unreadable") return { also: [dropped("reflect_failed", said.stopped(STOPPED.refuseUnread))] };
+    if (read === "unreadable") return unasked(dropped("reflect_failed", said.stopped(STOPPED.refuseUnread)));
     const refuse = read;
     const close = async (row: AlsoRow) => ({ also: [cutRow(row.table === "learning_proposals" ? keptRow({ ...(row.row.proposal as object), ...(await spent()) }) : row, refuse)] });
     // The owner's words: one line of corrections.md, checked against main now so a refused one never holds a draft back.
     const words = (await deps.feedback(input.runId).catch(() => [] as string[])).map((text) => text.trim()).filter(Boolean);
     const correction = words.length ? words.join(" ") : undefined;
-    const refusedCorrection = correction === undefined ? [] : await deps.correctionRefused({ agentId: input.agentId, text: correction, refuse }).catch((): Problem[] => [{ rule: "encoding", detail: "the owner's correction could not be checked" }]);
+    const refusedCorrection = correction === undefined ? [] : await deps.correctionRefused({ runId: input.runId, agentId: input.agentId, round, text: correction, refuse }).catch((): Problem[] => [{ rule: "encoding", detail: "the owner's correction could not be checked" }]);
     const taken = correction !== undefined && !refusedCorrection.length ? correction : undefined;
     // The compile turn, when one is due and the run's cap has room: a cap it reached, or a spend under it that is unknown,
     // asks no model turn (the cap keeps no reserve).

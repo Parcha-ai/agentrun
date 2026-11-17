@@ -121,7 +121,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const [entries, rows] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })]);
       return ownerWords(entries, rows);
     },
-    correctionRefused: ({ agentId, text, refuse }) => withFolder(deps, agentId, (folder) => correctionRefused(folder.workspace, text, refuse)),
+    // A round whose merge is on main already (a stop after its commit, before its end was saved) is not checked for room
+    // again: its merge gives back what it did.
+    correctionRefused: ({ runId, agentId, round: at, text, refuse }) => withFolder(deps, agentId, (folder) => correctionRefused(folder.workspace, text, refuse, { runId, round: at })),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
       compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),

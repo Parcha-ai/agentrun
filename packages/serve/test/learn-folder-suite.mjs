@@ -360,6 +360,22 @@ export function folderSuite(backend, make) {
     await matchesMain(ws);
   });
 
+  test(`${backend}: the script merges a run (its round) once, in the same ref transaction as main's compare and swap: a second merge of it on main as it is now writes nothing and names the first`, async () => {
+    const { ws } = await make();
+    await learningInit(ws);
+    const first = await commitChange(ws, await readSnapshot(ws), { by: { run: "run-once", reason: "First." }, writes: [{ path: CORRECTIONS, text: UNITS }] });
+    assert.equal(first.landed, true, JSON.stringify(first));
+    const before = await readSnapshot(ws);
+    const again = await execsOf(() => commitChange(ws, before, { by: { run: "run-once", reason: "Again." }, writes: [{ path: CORRECTIONS, text: `${UNITS}${UNITS}` }] }));
+    assert.deepEqual([again.result, again.ops], [{ merged: first.main }, ["commit"]], "the script refused it: exit 6, its first merge named");
+    assert.equal(snapshotOfRead(await gitMain(ws)).main, first.main, "main as git holds it, as it was");
+    assert.deepEqual(await readSnapshot(ws), before, "nothing written");
+    // Another round of the run is its own merge.
+    const round = await commitChange(ws, before, { by: { run: "run-once", reason: "Round two.", round: 2 }, writes: [{ path: CORRECTIONS, text: `${UNITS}${SOURCES}` }] });
+    assert.equal(round.landed, true, JSON.stringify(round));
+    await matchesMain(ws);
+  });
+
   test(`${backend}: learningCommit maps the script's preconditions: a draft's file changed on main since the run's seed is a conflict; a write past what one exec carries is refused before any exec`, async () => {
     const { ws } = await make();
     const seeded = await learningCommit(ws, { runId: "run-s1", reason: "A draft.", files: draft("weekly-report") });

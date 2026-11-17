@@ -647,13 +647,15 @@ export class FolderTooLarge extends Error {
 }
 
 /** What one commit did: landed (its main and the snapshot written), stale (main is `main`, not the one it read:
- *  nothing was written), refused (a precondition failed on main: nothing was written), or landed without its files
- *  brought in line (main moved, no snapshot written). */
+ *  nothing was written), refused (a precondition failed on main: nothing was written), landed without its files
+ *  brought in line (main moved, no snapshot written), or merged (the run, this round, merged already: its merge commit,
+ *  nothing written). */
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
   | { stale: true; main: string | undefined }
   | { refused: { absent: string[]; same: string[] } }
-  | { unaligned: true; main: string };
+  | { unaligned: true; main: string }
+  | { merged: string };
 
 /**
  * One write to main, one exec of the script: `change` on the snapshot it was computed from (`base`: none for the
@@ -692,6 +694,7 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
     return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)) } };
   }
   if (result.code === 5 && /^[0-9a-f]{40,64}$/.test(said)) return { unaligned: true, main: said };
+  if (result.code === 6 && run && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
   throw failed(args[0]!, result);
 }
 
@@ -786,12 +789,23 @@ export class FolderRefused extends Error {
   }
 }
 
+/** A run's merge (its round) that is on main already, made by another call (a reclaimed run racing its first claim, or
+ *  a retry after a stop past its commit): `merge`, its commit. Nothing was written. */
+export class FolderMerged extends Error {
+  readonly merge: string;
+  constructor(merge: string) {
+    super(`the run merged on the learning folder's main already, at ${merge}`);
+    this.name = "FolderMerged";
+    this.merge = merge;
+  }
+}
+
 /**
  * A write to the folder's main: `compute` reads the snapshot and the bodies it needs (as readLearning gives them) and
  * says what to write, or nothing (its result stands alone). Committed by commitChange; a main that moved under it, or
  * a body that changed as it was read, computes it again on the folder as it is then (WRITE_TRIES in all). A folder with
  * no main yet is made first (learningInit). A snapshot that is not main's is rebuilt (learningRepair). Throws
- * FolderRefused when a precondition fails on main.
+ * FolderRefused when a precondition fails on main, and FolderMerged when a run's merge (its round) is there already.
  */
 export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRead) => Promise<{ result: T; change?: FolderChange }>, maxTries = WRITE_TRIES): Promise<{ result: T; main?: string; snapshot?: Snapshot }> {
   for (let tries = 0; ; tries++) {
@@ -815,6 +829,7 @@ export async function writeLearning<T>(ws: Workspace, compute: (folder: FolderRe
     const done = await commitChange(ws, snapshot, out.change);
     if ("landed" in done) return { result: out.result, main: done.main, snapshot: done.snapshot };
     if ("refused" in done) throw new FolderRefused(done.refused);
+    if ("merged" in done) throw new FolderMerged(done.merged);
     if ("unaligned" in done) {
       const repaired = await learningRepair(ws);
       return { result: out.result, main: done.main, ...(repaired ? { snapshot: repaired } : {}) };

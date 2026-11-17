@@ -350,6 +350,8 @@ function CorrectionsCard({ text, v2, agentId, readOnly, onChanged, refreshHolds 
   const [editing, setEditing] = useRefreshState(refreshHolds);
   const [saved, setSaved] = useState(false);
   const lines = correctionLines(text);
+  // Any saved text is shown, whatever its lines count: a file of headings alone still reaches every later run.
+  const shown = text.trim() !== "";
   const html = useMemo(() => markdown(text.trim()), [text]);
   useEffect(() => { if (!saved) return; const t = setTimeout(() => setSaved(false), 2400); return () => clearTimeout(t); }, [saved]);
   return (
@@ -357,12 +359,12 @@ function CorrectionsCard({ text, v2, agentId, readOnly, onChanged, refreshHolds 
       <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
         <div className="min-w-0 flex-1">
           <h2 className="flex items-center gap-2 text-lg font-semibold">Corrections{saved && <span className="caps text-micro text-success-text" role="status">Saved</span>}</h2>
-          <p className="mt-0.5 text-body text-muted-foreground">{lines.length ? `${corrections(lines.length)}. Every later run is given ${lines.length === 1 ? "it" : "them"} whole before it starts.` : "None yet. A correction you give with a run's grade is kept here, one line each; every later run is given them whole."}</p>
+          <p className="mt-0.5 text-body text-muted-foreground">{lines.length ? `${corrections(lines.length)}. Every later run is given ${lines.length === 1 ? "it" : "them"} whole before it starts.` : shown ? "Every later run is given this text whole before it starts." : "None yet. A correction you give with a run's grade is kept here, one line each; every later run is given them whole."}</p>
         </div>
         {!readOnly && !editing && <Button size="sm" variant="ghost" onClick={() => setEditing(true)} aria-label="Edit corrections"><Pencil aria-hidden /> Edit</Button>}
       </div>
       {editing ? <CorrectionsEditor v2={v2} agentId={agentId} onDone={(ok) => { setEditing(false); if (ok) { setSaved(true); void onChanged(); } }} />
-        : lines.length > 0 && <div className="border bg-card/40"><div className={cn(PROSE, "max-h-96 overflow-auto break-words px-5 py-4")} dangerouslySetInnerHTML={{ __html: html }} /></div>}
+        : shown && <div className="border bg-card/40"><div className={cn(PROSE, "max-h-96 overflow-auto break-words px-5 py-4")} dangerouslySetInnerHTML={{ __html: html }} /></div>}
     </section>
   );
 }

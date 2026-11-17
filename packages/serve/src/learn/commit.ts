@@ -9,7 +9,7 @@
 import type { Workspace } from "../workspace/index.js";
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, type FolderChange, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, runDiffKey, type Snapshot, writeLearning } from "./folder.js";
+import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, type Snapshot, writeLearning } from "./folder.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -55,7 +55,7 @@ function blobOf(snapshot: Snapshot | undefined, path: string): string | undefine
   return undefined;
 }
 
-type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Problem[] };
+type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Problem[] } | { merged: RunDiff };
 
 /** A write's failure as a result: the script's precondition (a file changed since the seed: a conflict), a write past
  *  what one exec carries, or the folder unavailable (retry later). */
@@ -66,7 +66,7 @@ function failure(error: unknown): LearningCommitResult {
 }
 
 /** What a write landed, from writeLearning's answer: its new main and the paths it changed. */
-const landed = (done: { result: Computed; main?: string; snapshot?: Snapshot }): LearningCommitResult =>
+const landed = (done: { result: Exclude<Computed, { merged: RunDiff }>; main?: string; snapshot?: Snapshot }): LearningCommitResult =>
   "pending" in done.result
     ? { ok: true, main: done.main!, commit: done.main!, files: done.snapshot?.log[0]?.commit === done.main ? done.snapshot!.log[0]!.files : [], ...(done.result.refusedCorrection ? { refusedCorrection: done.result.refusedCorrection } : {}) }
     : done.result;
@@ -79,17 +79,14 @@ const landed = (done: { result: Computed; main?: string; snapshot?: Snapshot }):
  * the workspace or the exec failed. The draft and the correction are judged apart: a correction past the cap beside a
  * draft (the file filled by another write after the run's check, correctionRefused) is left out alone, and the draft
  * merges, `ok` with the cap's refusal as `refusedCorrection`. A merge whose run already merged here (this round) is `ok`
- * with the commit that holds it, and writes nothing.
+ * with the commit that holds it, and writes nothing: checked before the write, again on each main it is computed on, and
+ * by the script in the commit's own ref transaction, so two calls racing for one round (a reclaimed run) merge it once.
  */
 export async function learningCommit(ws: Workspace, change: LearningChange, opts: { retries?: number } = {}): Promise<LearningCommitResult> {
+  const key = runDiffKey(change.runId, change.round);
   try {
-    const known = await readRunDiff(ws, runDiffKey(change.runId, change.round));
-    if (known) {
-      // Its merge left the correction out only at the cap.
-      const left = change.correction !== undefined && !known.files.some((file) => file.path === CORRECTIONS_FILE);
-      const refusedCorrection: Problem[] = left ? [{ rule: "too_large", path: CORRECTIONS_FILE, detail: `${CORRECTIONS_FILE} was at its cap of ${CORRECTIONS_CAP} bytes when the run's merge was written` }] : [];
-      return { ok: true, main: (await readSnapshot(ws))?.main ?? known.merge, commit: known.merge, files: known.files.map((file) => file.path), already: true, ...(refusedCorrection.length ? { refusedCorrection } : {}) };
-    }
+    const known = await readRunDiff(ws, key);
+    if (known) return await already(ws, change, known.merge, known);
     const line = change.correction === undefined ? undefined : correctionLine(change.correction);
     // The line alone first: what it holds is refused whatever the file around it holds.
     const own = line === undefined ? [] : correctionProblems(line, change.refuseValues);
@@ -100,7 +97,11 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
       const commit = change.bases?.[path] ?? change.seed;
       return commit ? [{ commit, path }] : [];
     });
-    return landed(await writeLearning<Computed>(ws, async ({ snapshot, body }) => {
+    const done = await writeLearning<Computed>(ws, async ({ snapshot, body }) => {
+      // Read again on each main the write is computed on: a call that merged this round since the check above (a
+      // reclaimed run's two claims racing) wrote its diff before the snapshot this call read.
+      const merged = await readRunDiff(ws, key);
+      if (merged) return { result: { merged } };
       const writes = [...drafts];
       let refusedCorrection: Problem[] | undefined;
       if (line !== undefined) {
@@ -111,10 +112,23 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
         else writes.push({ path: CORRECTIONS_FILE, text });
       }
       return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}) } };
-    }, opts.retries ?? 3));
+    }, opts.retries ?? 3);
+    const { result } = done;
+    return "merged" in result ? await already(ws, change, result.merged.merge, result.merged) : landed({ ...done, result });
   } catch (error) {
+    // The round merged under this call past both reads (its diff not written yet): the script's ref transaction let
+    // one merge of it land, and this call reads that one.
+    if (error instanceof FolderMerged) return already(ws, change, error.merge, await readRunDiff(ws, key).catch(() => undefined)).catch(failure);
     return failure(error);
   }
+}
+
+/** A round that merged already, `merge` its commit: `ok` with it and the paths its diff names (none when its diff is
+ *  not written yet), nothing written again. Its merge left the correction out only at the cap. */
+async function already(ws: Workspace, change: LearningChange, merge: string, known: RunDiff | undefined): Promise<LearningCommitResult> {
+  const left = known !== undefined && change.correction !== undefined && !known.files.some((file) => file.path === CORRECTIONS_FILE);
+  const refusedCorrection: Problem[] = left ? [{ rule: "too_large", path: CORRECTIONS_FILE, detail: `${CORRECTIONS_FILE} was at its cap of ${CORRECTIONS_CAP} bytes when the run's merge was written` }] : [];
+  return { ok: true, main: (await readSnapshot(ws))?.main ?? merge, commit: merge, files: known ? known.files.map((file) => file.path) : [], already: true, ...(refusedCorrection.length ? { refusedCorrection } : {}) };
 }
 
 const run = (runId: string, reason: string, round?: number): FolderChange["by"] => ({ run: runId, reason, ...(round !== undefined && round > 1 ? { round } : {}) });
@@ -133,11 +147,14 @@ const capProblem = (text: string): Problem | undefined => {
 };
 
 /** Why run `runId`'s correction (`text`) would be refused on main as it is now: its line's own problems, else the cap's;
- *  empty when it would be taken. Read before the run's merge, so a refused correction never holds its draft back. */
-export async function correctionRefused(ws: Workspace, text: string, refuseValues?: readonly string[]): Promise<Problem[]> {
+ *  empty when it would be taken. Read before the run's merge, so a refused correction never holds its draft back. A
+ *  round (`merge`) whose merge is on main already (a stop after its commit, before the run's end was saved) is never
+ *  checked for room again, its own line counted twice: empty, and its merge (learningCommit) gives back what it did. */
+export async function correctionRefused(ws: Workspace, text: string, refuseValues?: readonly string[], merge?: { runId: string; round?: number }): Promise<Problem[]> {
   const line = correctionLine(text);
   const own = correctionProblems(line, refuseValues);
   if (own.length) return own;
+  if (merge && (await readRunDiff(ws, runDiffKey(merge.runId, merge.round)))) return [];
   const before = await readLearning(ws, ({ snapshot, body }) => correctionsOf(snapshot, body));
   const full = capProblem(appended(before, line));
   return full ? [full] : [];
