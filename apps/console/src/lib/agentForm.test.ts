@@ -181,6 +181,12 @@ describe("harnessOptions", () => {
       { id: "zed", label: "zed", available: true, reason: undefined },
     ]);
   });
+  it.each(["workflow", "decision"])("keeps a harness the server adds with the id %s a harness, never a starter: one choice of it, and its create names it", (id) => {
+    const options = harnessOptions([{ id: "pi", available: true }, { id, label: "Module", available: true }], { available: true });
+    expect(options.filter((h) => h.id === id)).toEqual([{ id, label: "Module", available: true, reason: undefined }]);
+    expect(new Set(options.map((h) => h.id)).size).toBe(options.length);
+    expect(createBody({ name: "M", description: "", instructions: "Answer.", harness: id, tools: [] })).toEqual({ definition: { version: 1, name: "M", instructions: "Answer.", harness: id, skills: [], tools: [] } });
+  });
   it("offers OpenCode last of the harnesses, when the server lists it", () => {
     const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
     expect(harnessOptions(listed)).toEqual([
