@@ -567,6 +567,16 @@ function setupRecipe(source = false) {
 const setupSkill = () => readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
 const skillSection = (skill, title) => skill.split(/^## /m).find((part) => part.startsWith(`${title}\n`)) ?? "";
 const shellBlocks = (text) => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
+// The website serves this file byte for byte, so the Node version it names is checked here, against the launcher's own
+// engines floor: the site cannot correct it.
+test("the setup skill names the launcher's engines floor wherever it names a Node version", () => {
+  const floor = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).engines.node.replace(/^>=/, "");
+  const named = (text) => [...text.matchAll(/\b(?:Node(?:\.js)?|nvm install|node --version`?[^.\n]*?)\s+v?(\d+(?:\.\d+){1,2})\b/gi)].map((m) => m[1]);
+  assert.deepEqual(named("needs Node.js 22.19 or newer; `nvm install 24.2`; `node --version` must be 22.19"), ["22.19", "24.2", "22.19"], "the pattern reads each way a version is written");
+  const versions = named(setupSkill());
+  assert.ok(versions.length >= 2, `the skill names the Node it needs: ${versions}`);
+  assert.deepEqual([...new Set(versions)], [floor], `every Node version the skill names is ${floor}`);
+});
 // A person pasted the setup prompt into a hosted cloud session: it installed there, the console sat on a loopback their
 // browser could not reach, and a signed-in provider was taken as a choice. The prompt now reads the session first, asks
 // where before any install or deploy, gives each place its cost, and leaves finding existing agents until after the
