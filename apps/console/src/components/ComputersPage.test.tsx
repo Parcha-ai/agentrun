@@ -339,6 +339,21 @@ describe("Settings → Computers", () => {
     expect(calls.some((c) => c.path.endsWith("/test"))).toBe(false);
   });
 
+  it("drops a test's answer that lands after a key was saved: it answered for the key before", async () => {
+    let answer!: (r: Response) => void;
+    const { v2 } = server([view(true)], (c) => (c.path.endsWith("/test") ? new Promise<Response>((r) => { answer = r; }) : json(200, e2b(true))));
+    const p = await open(v2);
+    await p.click(p.row("Sandbox", "E2B"), /^Test connection$/);
+    expect(p.button(p.row("Sandbox", "E2B"), /^Testing…$/)).toBeTruthy();
+    await p.click(p.key(p.row("Sandbox", "E2B"), "E2B_API_KEY"), /^Replace$/);
+    await p.type(p.row("Sandbox", "E2B"), "E2B_API_KEY", FAKE);
+    await p.submit(p.row("Sandbox", "E2B").querySelector("form")!);
+    await act(async () => answer(json(200, { ok: true, detail: "E2B answered for the old key" })));
+    await p.settle();
+    expect(p.row("Sandbox", "E2B").querySelector("[data-test]")).toBeNull();
+    expect(p.button(p.row("Sandbox", "E2B"), /^Test connection$/)).toBeTruthy();
+  });
+
   it("offers Test connection once a provider's key is saved, and drops a result its keys have since changed", async () => {
     const { v2, calls } = server([view(), view(true), view(true)], (c) => (c.path.endsWith("/test") ? json(200, { ok: true, detail: "E2B answered" }) : json(200, e2b(true))));
     const p = await open(v2);

@@ -70,6 +70,9 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
   const [tested, setTested] = useState<Record<string, Tested>>({});
   const [testing, setTesting] = useState<ReadonlySet<string>>(new Set());
   const reads = useRef(0);
+  // Each provider's key changes so far: a test answers for the keys it started with, so one that started before a save
+  // is dropped when it lands after it.
+  const keyChanges = useRef<Record<string, number>>({});
 
   const load = useCallback(() => {
     const n = ++reads.current;
@@ -96,11 +99,13 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
     }
     setOpen(null);
     // A key that changed makes the provider's last test stale: it said what the keys before it answered.
+    keyChanges.current[provider.id] = (keyChanges.current[provider.id] ?? 0) + 1;
     setTested((t) => { const rest = { ...t }; delete rest[provider.id]; return rest; });
     load();
     return null;
   };
   const test = async (provider: ComputerProvider) => {
+    const keys = keyChanges.current[provider.id] ?? 0;
     setTesting((s) => new Set(s).add(provider.id));
     let next: Tested;
     try {
@@ -109,7 +114,7 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
     } catch (e) {
       next = { ok: false, words: problemOf(e), at: new Date().toISOString() };
     }
-    setTested((t) => ({ ...t, [provider.id]: next }));
+    if ((keyChanges.current[provider.id] ?? 0) === keys) setTested((t) => ({ ...t, [provider.id]: next }));
     setTesting((s) => { const left = new Set(s); left.delete(provider.id); return left; });
   };
 
