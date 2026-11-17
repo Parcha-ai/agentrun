@@ -98,7 +98,7 @@ const FINAL = ["ended", "failed", "stopped"];
  *  by its check (S3a's record, at the landed commit), and a runner claiming every run from its stored launch. The
  *  workflow's node submits `submit(requestText)` ({answer: 42, sure: true} by default); the agent answers AGENT_SAYS; a
  *  compile ask is answered with BROKEN_DRAFT. */
-async function world(t, { learning, prior = 0, submit } = {}) {
+async function world(t, { learning, prior = 0, submit, paused = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-ledger-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -114,18 +114,24 @@ async function world(t, { learning, prior = 0, submit } = {}) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Audited" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning } });
+  // No tool that can write (learn/audit.ts auditWriterOf): an agent the audit may run a second time.
+  await server.agents.create({ id: "agent-1", name: "Audited" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning } });
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  /** The runner, started once (`paused`: only when the test resumes it, and one run at a time, so the runs made before are
+   *  claimed one by one, oldest first, and each shadow is made in the order of its served run). */
+  const resume = () => {
+    runner ??= startRunner({ store, name: "runner-a", ...TIMING, ...(paused ? { loops: 1 } : {}), createLoop: createAdapterLoop(specOf) });
+  };
+  if (!paused) resume();
   const ended = (id) => until(async () => {
     const row = await server.runs.get(id);
     return FINAL.includes(row?.state) && row.runner === null && row;
   }, `run ${id} ended`);
-  const launchOf = (question, learningStart) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learningStart ? { learning: learningStart } : {}) });
+  const launchOf = (question, learningStart, extra = {}) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learningStart ? { learning: learningStart } : {}), ...extra });
   for (let i = 0; i < prior; i++) {
     await server.runs.create({ id: `prior-${i}`, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(`Question ${i}`) });
     await ended(`prior-${i}`);
@@ -146,9 +152,11 @@ async function world(t, { learning, prior = 0, submit } = {}) {
   const asks = new Map();
   /** Runs `id` on `question` at the learning folder's main now, as the server launches it; then, when it started a
    *  shadow, waits for that one to end too, so the next claim reads both ended. */
-  const start = async (id, question) => {
+  /** Makes run `id` on `question` (its launch with `extra` too) at the learning folder's main now, as the server does. */
+  const create = async (id, question, extra) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(question, startAt((await seedOf(dir, "agent-1")).sha), extra) });
+  const start = async (id, question, extra) => {
     const before = gw.requests.length;
-    await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(question, startAt((await seedOf(dir, "agent-1")).sha)) });
+    await create(id, question, extra);
     const row = await ended(id);
     const shadow = await shadowOf(id);
     if (shadow) await ended(shadow.row.id);
@@ -168,7 +176,7 @@ async function world(t, { learning, prior = 0, submit } = {}) {
     for (const row of await server.runs.list({ agentId: "agent-1" })) if ((await server.runs.launch(row.id)).body?.replay) all.push(row);
     return all.length === count && all.every((row) => FINAL.includes(row.state) && row.runner === null) && all;
   }, `the ${count} replay runs ended`, 120_000);
-  return { dir, server, gw, logs, start, asks, shadows, shadowOf, audits, replaysEnded, ended };
+  return { dir, server, store, gw, logs, create, start, resume, asks, shadows, shadowOf, audits, replaysEnded, ended };
 }
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main, as the recompile's merge lands it. */
@@ -313,4 +321,111 @@ test("(g) the definition's numbers stand in: audit_every 5 draws at 1/5, and hol
   assert.equal(next.metrics?.path, "agent", "held on 2 of the last 5 rows");
   const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
   assert.deepEqual([held.decided, held.source, held.audit.window, held.audit.disagree, held.audit.rows], ["hold", "audit", 5, 2, 2], JSON.stringify(held));
+});
+
+test("(r2) three shadows that end between two claims are written oldest first: hold_window 2 holds on the 2 newest", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 2, hold_disagree: 2 }, paused: true, submit: answers({ wrong: ["Batch 2", "Batch 3"] }) });
+  // Made before the runner starts: a claim takes the oldest run first, so the three served runs are claimed before any of
+  // their shadows is, and none of their claims settles a row. The next claim settles all three at once.
+  for (const i of [1, 2, 3]) await w.create(`batch-${i}`, `Batch ${i}`);
+  w.resume();
+  for (const i of [1, 2, 3]) {
+    assert.equal((await w.ended(`batch-${i}`)).metrics?.path, "workflow", `batch-${i} served`);
+    await w.ended((await until(() => w.shadowOf(`batch-${i}`), `batch-${i}'s shadow`)).row.id);
+  }
+  assert.deepEqual(await w.audits(), [], "no claim settled a row yet");
+  const next = await w.start("batch-next", "Batch next");
+  assert.deepEqual((await w.audits()).map((row) => row.run), ["batch-1", "batch-2", "batch-3"], "the batch is appended oldest first");
+  assert.equal(next.metrics?.path, "agent", "held: the 2 newest rows disagree");
+  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  assert.deepEqual([held.decided, held.source, held.audit.rows], ["hold", "audit", 2], JSON.stringify(held));
+  assert.deepEqual(held.audit.disagreements.map((one) => one.served).sort(), ["batch-2", "batch-3"]);
+});
+
+test("(r2) the hold is the ledger's: rows committed with 3 disagreements whose hold write failed hold the workflow at the next claim, which adds no row", { timeout: 300_000 }, async (t) => {
+  const ids = Array.from({ length: 400 }, (_, i) => `c-${i}`);
+  const wrong = ids.filter((id) => drawn(id, 5)).slice(0, 3);
+  const quiet = ids.filter((id) => !drawn(id, 5)).slice(0, 2);
+  const w = await world(t, { learning: { audit_every: 5 }, submit: answers({ wrong: wrong.map((id) => `Question for ${id}`) }) });
+  // While `failing`, the hold's write to the promotion records fails: a crash between the ledger's commit and that write.
+  let failing = false;
+  for (const method of ["replaceIf", "putIfAbsent"]) {
+    const real = w.store.settings[method].bind(w.store.settings);
+    w.store.settings[method] = async (...args) => {
+      if (failing && JSON.stringify(args).includes('"source":"audit"')) throw new Error("the settings write failed");
+      return real(...args);
+    };
+  }
+  for (const id of wrong) assert.equal((await w.start(id, `Question for ${id}`)).metrics?.path, "workflow", `${id} served`);
+  failing = true;
+  // This claim commits the third disagreeing row; the hold it makes is never written.
+  const lost = await w.start(quiet[0], `Question for ${quiet[0]}`);
+  failing = false;
+  assert.equal(lost.metrics?.path, "workflow", "still served: its hold was lost");
+  const rows = await w.audits();
+  assert.deepEqual(rows.filter((row) => row.agreed === false).map((row) => row.run).sort(), [...wrong].sort(), "the ledger holds the 3 disagreements");
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote", "no hold was recorded");
+  // The next claim adds no row (quiet[0] was not drawn), and holds from the ledger alone.
+  const next = await w.start(quiet[1], `Question for ${quiet[1]}`);
+  assert.equal((await w.audits()).length, rows.length, "this claim added no row");
+  assert.equal(next.metrics?.path, "agent", `held from the ledger: ${JSON.stringify(next.metrics)}`);
+  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  assert.deepEqual([held.decided, held.source, held.audit.disagreements.length], ["hold", "audit", 3], JSON.stringify(held));
+});
+
+test("(r2) a run a trigger started (GitHub's) is never audited: drawn by its id, it starts no shadow, and is counted not auditable; a run over the API beside it is audited", { timeout: 240_000 }, async (t) => {
+  const { notAuditableOf } = await import("../dist/runner/audit.js");
+  const w = await world(t, { learning: { audit_every: 1 } });
+  const trigger = { id: "trigger-gh", firing_key: "delivery-1" };
+  const row = await w.start("gh-1", "What is six times seven", { trigger, inputOrigin: { kind: "trigger", trigger_id: trigger.id, source: "github", owner: false } });
+  assert.deepEqual([row.state, row.metrics?.path, row.metrics?.not_auditable], ["ended", "workflow", true], JSON.stringify(row.metrics));
+  assert.ok(drawn("gh-1", 1), "drawn at 1 in 1");
+  assert.equal(await w.shadowOf("gh-1"), undefined, "no shadow: a triggered run is not auditable");
+  const api = await w.start("api-1", "What is seven times six");
+  assert.equal(api.metrics?.not_auditable, undefined);
+  assert.ok(await w.shadowOf("api-1"), "a run over the API is audited");
+  assert.equal(await notAuditableOf(w.server, "agent-1", "answer", DIGEST, { stop_window: 100 }), 1, "the read counts the triggered run");
+});
+
+/** A store of `served` runs the learned workflow `answer` served at `digest` and a shadow of each (newest first, as the
+ *  store lists them), for runner/audit.ts startAudit alone: the agent's revision holds `learning`; `made` the runs created. */
+function servedStore(served, learning, digest) {
+  const rows = [];
+  for (let i = 0; i < served; i++) {
+    rows.push({ id: `s-${i}`, agentId: "agent-1", state: "ended", runner: null, archivedAt: null, importedFrom: null, outcome: "completed", startedAt: 2 * i, metrics: { path: "workflow", workflow: "answer", workflow_digest: digest } });
+    rows.push({ id: `audit.s-${i}`, agentId: "agent-1", state: "ended", runner: null, archivedAt: null, importedFrom: null, outcome: "completed", startedAt: 2 * i + 1, metrics: { path: "audit" } });
+  }
+  rows.reverse();
+  const made = [];
+  const store = {
+    agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
+    runs: {
+      list: async ({ state, archived, limit } = {}) => rows.filter((row) => (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived)).slice(0, limit ?? rows.length),
+      get: async (id) => rows.find((row) => row.id === id),
+      launch: async () => ({ body: {} }),
+      create: async (row) => void made.push(row.id),
+    },
+  };
+  return { store, made, rows };
+}
+
+test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 served runs and their 1,100 shadows counts 1,100, so the rate switches to audit_every_later past audit_later_after", async () => {
+  const { startAudit } = await import("../dist/runner/audit.js");
+  const { lastRunsOf } = await import("../dist/learn/compile.js");
+  const learning = { audit_every: 1, audit_every_later: 1000, audit_later_after: 1000 };
+  const runId = Array.from({ length: 1000 }, (_, i) => `next-${i}`).find((id) => !drawn(id, 1000));
+  const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
+  const serve = { name: "answer", digest: DIGEST };
+  const claimOf = async (served) => {
+    const { store, made } = servedStore(served, learning, DIGEST);
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => { throw new Error("no folder"); }, log: () => {}, runId, launch }, serve);
+    return { store, made };
+  };
+  // 900 served: under audit_later_after, every served run is drawn (1 in 1).
+  assert.deepEqual((await claimOf(900)).made, [`audit.${runId}`]);
+  // 1,100 served among 2,200 runs: all 1,100 are counted, so the rate is 1 in 1,000 and this id is not drawn.
+  const { store, made } = await claimOf(1_100);
+  assert.deepEqual(made, [], "past audit_later_after: 1 in 1,000, not drawn");
+  const servedAt = (row) => row.metrics?.path === "workflow" && row.metrics.workflow_digest === DIGEST;
+  assert.equal((await lastRunsOf(store, "agent-1", 2_000, servedAt)).length, 1_100, "the served count's read");
 });

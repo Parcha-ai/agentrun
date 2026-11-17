@@ -38,12 +38,13 @@ const FLOW = {
 const TEXT = JSON.stringify(FLOW);
 const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 
-/** Agent `source` learning with `learning`, the workflow landed on its learning folder's main and promoted by its check. */
-async function world(t, learning) {
+/** Agent `source` learning with `learning` (granted `tools`: none by default, so every tool it can call reads), the
+ *  workflow landed on its learning folder's main and promoted by its check. */
+async function world(t, learning, tools = []) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = await serve(t, { learning: "on", faux: PRICED });
   const { api, data, baseUrl, store } = server;
-  assert.equal((await api("POST", "/agents", agent("source", { learning }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("source", { learning, tools }))).status, 201);
   await seedOf(data, "source");
   const repo = join(agentFolderOf(data, "source"), "learning");
   const files = { "workflows/answer/workflow.json": TEXT, "workflows/answer/README.md": "---\nname: answer\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n" };
@@ -133,6 +134,20 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
   assert.deepEqual([serving.state, serving.digest, serving.check.n, serving.check.agreed, serving.check.alone], ["serving", DIGEST, 5, 5, 5], JSON.stringify(serving));
   const counted = audits.audits.filter((one) => one.digest === DIGEST && one.agreed !== null);
   assert.deepEqual(serving.audit, { window: 10, disagree: 3, rows: counted.length, disagreed: counted.filter((one) => one.agreed === false).length }, JSON.stringify(serving));
+  // Every tool it can call reads: audits are on, and no run of it was left unaudited.
+  assert.deepEqual([serving.audits_off, serving.not_auditable], [null, 0], JSON.stringify(serving));
+});
+
+test("(r2) an agent that can call a tool that writes is never audited: its served runs start no shadow, and the promotions read says why", { timeout: 240_000 }, async (t) => {
+  const { api, store, meets, run } = await world(t, { audit_every: 1 }, ["write"]);
+  const served = [await run({ content: "What is 1 plus 41?" }), await run({ content: "What is 2 plus 40?" })];
+  for (const id of served) assert.equal((await store.runs.get(id)).metrics.path, "workflow", "served first");
+  // Drawn at 1 in 1, yet no shadow: a second run of the agent could write again what the first wrote.
+  for (const row of await store.runs.list({ agentId: "source" })) assert.equal((await store.runs.launch(row.id))?.body?.audit, undefined, `${row.id} is no shadow`);
+  assert.deepEqual((await api("GET", "/agents/source/learning/audits")).body.audits, []);
+  const promotions = (await api("GET", "/agents/source/learning/promotions")).body;
+  meets("/agents/{agent_id}/learning/promotions", promotions);
+  assert.deepEqual([promotions.serving[0].state, promotions.serving[0].audits_off], ["serving", "audits off: write can write"], JSON.stringify(promotions.serving));
 });
 
 test("(f) an owner's grade (wrong) on a served run writes a disagreeing row of source grade: no round opens, no hold, no compile is asked by it alone", { timeout: 240_000 }, async (t) => {
