@@ -13,7 +13,7 @@ import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -435,6 +435,8 @@ export function storeOver(connection: StoreConnection, now: () => number, file?:
 /** The suffix, after the database file's name, of the marker secureRewrite writes before a rewrite and removes once no
  *  file of the store keeps the bytes it replaced: a start that finds it finishes the scrub. */
 const SCRUB_SUFFIX = ".scrub";
+/** How long the scrub's VACUUM waits, once its busy wait ran out on another connection's write, before its one retry. */
+const VACUUM_RETRY_MS = 400;
 
 /** The marker at `path`, written and synced (its directory too) before the rewrite it marks changes a byte. */
 function markScrub(path: string): void {
@@ -1772,13 +1774,18 @@ class SqliteStore implements Store {
     // rename, a firing) is in a free block or page still. VACUUM rebuilds the file with neither, through the log; the
     // checkpoint copies it into the file and truncates the log. Run outside any transaction.
     try {
-      await this.#db.all("VACUUM");
+      // Another connection's write (a runner's) may hold the lock past the busy wait: one retry after a short pause.
+      await this.#db.all("VACUUM").catch(async (error: unknown) => {
+        if (!(error instanceof StoreBusy)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, VACUUM_RETRY_MS));
+        await this.#db.all("VACUUM");
+      });
       const [checkpoint] = await this.#db.all<{ busy: number; log: number; checkpointed: number }>("PRAGMA wal_checkpoint(TRUNCATE)");
       // A reader in another connection (a runner, a backup) held the log back: the old frames are there until a
       // checkpoint is done, so the marker stays.
       if (checkpoint?.busy !== 0) return { rewritten, left: "busy" };
-    } catch {
-      return { rewritten, left: "failed" };
+    } catch (error) {
+      return { rewritten, left: error instanceof StoreBusy ? "busy" : "failed" };
     }
     rmSync(marker, { force: true });
     return { rewritten };

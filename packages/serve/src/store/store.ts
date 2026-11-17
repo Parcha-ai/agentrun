@@ -1293,8 +1293,9 @@ export interface LiveViewers {
 export type StoreRole = "server" | "runner";
 
 /** What Store.secureRewrite did: how many rows `work` rewrote and, when old bytes may still be in the store's files (the
- *  marker kept for the next start), why: "busy", a reader in another connection held the log back from the checkpoint;
- *  "failed", the VACUUM or the checkpoint failed. */
+ *  marker kept for the next start), why: "busy", a reader in another connection held the log back from the checkpoint, or
+ *  a write of another connection held the VACUUM off through its busy wait and its one retry; "failed", the VACUUM or
+ *  the checkpoint failed otherwise. */
 export interface SecureRewrite {
   readonly rewritten: number;
   readonly left?: "busy" | "failed";
