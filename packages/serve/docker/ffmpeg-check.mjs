@@ -2,8 +2,9 @@
 // this machine's PATH, takes a phone's PNG frames and then its JPEG frames (frame.png and frame.jpg beside this file,
 // 1920x1080) into two files, each fragmented MP4 that holds H.264 frames fitted to 1280x720. The image has no ffprobe, so
 // the files are read here, box by box. The Dockerfile runs it on the final image, so a build whose ffmpeg lacks a part the
-// recorder uses fails.
-//   node ffmpeg-check.mjs
+// recorder uses fails. It waits on the recorder, up to a deadline (60 s, or the ms given), and a deadline passed fails
+// by name: the frame format that was never written, the files, the frames written and dropped.
+//   node ffmpeg-check.mjs [deadline-ms]
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,9 @@ const fail = (why) => {
   console.error(`ffmpeg check: ${why}`);
   process.exit(1);
 };
+
+const DEADLINE_MS = process.argv[2] === undefined ? 60_000 : Number(process.argv[2]);
+if (!(DEADLINE_MS > 0)) fail(`the deadline ${process.argv[2]} is no number of ms`);
 
 /** The boxes of an MP4 between `from` and `to`: each one's type and its payload's start and end. */
 function boxes(bytes, from, to) {
@@ -46,27 +50,49 @@ function video(path) {
 
 const dir = mkdtempSync(join(tmpdir(), "agentrun-ffmpeg-check-"));
 let handlers;
+/** The frames written when the second file opened: the recorder says so after naming the file and before it writes
+ *  the frame that opened it, so every frame written past this count is a JPEG one. */
+let switchedAt;
 const recorder = startRecording({
   watch: async (given) => {
     handlers = given;
     return { ok: true, value: { input: async () => ({ ok: true, value: { done: 0 } }), close: async () => {} } };
   },
-  folder: join(dir, "recordings"), tag: "c1", kind: "phone", say: () => {}, log: () => {},
+  folder: join(dir, "recordings"), tag: "c1", kind: "phone", log: () => {},
+  say: () => {
+    const now = recorder.facts();
+    if (now.files.length === 2) switchedAt ??= now.written;
+  },
 });
 while (!handlers) await sleep(10);
+// Frames go in until the recorder has written what the check reads, not for a fixed time: an ffmpeg that starts slowly
+// (the image built for another architecture under emulation) keeps the recorder busy, and it keeps only the newest frame
+// meanwhile. PNG frames until one is written, then JPEG frames until a second file holds one written after the switch.
 let seq = 0;
-for (const [format, file] of [["png", "frame.png"], ["jpeg", "frame.jpg"]]) {
+let deadlineHit = false;
+setTimeout(() => (deadlineHit = true), DEADLINE_MS).unref();
+const facts = () => recorder.facts();
+const factWords = () => {
+  const now = facts();
+  return `files: ${now.files.join(", ") || "none"}, written ${now.written}, dropped ${now.dropped}`;
+};
+for (const [format, file, done] of [
+  ["png", "frame.png", () => facts().written >= 1],
+  ["jpeg", "frame.jpg", () => switchedAt !== undefined && facts().files.length === 2 && facts().written > switchedAt],
+]) {
   const bytes = new Uint8Array(readFileSync(fileURLToPath(new URL(file, import.meta.url))));
-  for (let i = 0; i < 4; i += 1) {
+  while (!done()) {
+    if (facts().ended) fail(`the recording ended by itself: ${facts().ended} (${factWords()})`);
+    if (deadlineHit) fail(`no ${format.toUpperCase()} frame written in ${DEADLINE_MS / 1000} s (${factWords()})`);
     handlers.frame({ seq: ++seq, format, bytes, width: 1920, height: 1080, frameWidth: 1920, frameHeight: 1080 }, () => {});
     await sleep(150);
   }
 }
 await recorder.stop("ended");
-const facts = recorder.facts();
-if (facts.ended) fail(`the recording ended by itself: ${facts.ended}`);
-if (facts.files.join(" ") !== "recordings/c1.mp4 recordings/c1-2.mp4") fail(`the files are ${facts.files.join(", ") || "none"}, not one per format`);
-const read = facts.files.map((name) => [name, video(join(dir, name))]);
+const stopped = facts();
+if (stopped.ended) fail(`the recording ended by itself: ${stopped.ended}`);
+if (stopped.files.join(" ") !== "recordings/c1.mp4 recordings/c1-2.mp4") fail(`the files are ${stopped.files.join(", ") || "none"}, not one per format`);
+const read = stopped.files.map((name) => [name, video(join(dir, name))]);
 for (const [name, { codec, width, height, frames }] of read) {
   if (codec !== "avc1" || width !== 1280 || height !== 720 || frames < 1) fail(`${name} holds ${frames} ${codec} frames ${width}x${height}, not H.264 at 1280x720`);
 }
