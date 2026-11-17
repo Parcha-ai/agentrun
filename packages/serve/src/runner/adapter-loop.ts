@@ -255,6 +255,10 @@ export interface AdapterRunSpec {
    *  the session through the loop's gate, a command row makes them fresh again, and the pass's end lets them go. Absent:
    *  the run grants no MCP tool. */
   readonly mcp?: ClaimMcp;
+  /** The run's model key holder (claim-secrets.ts claimModelKey), which its model routes read at each request: a command
+   *  row opens it from the run's launch again before the command reaches the session, so a message's key (a replacement,
+   *  or a run's first) is the one its next request carries. Absent: no gateway here, and the routes read the server's keys. */
+  readonly modelKey?: { fresh(): Promise<void> };
   /** The JSON Schema the run's final answer's last json block meets (its revision's definition.output_schema). An answer
    *  that misses it is asked again once, in the same session under the same cap (the output contract's retry); absent:
    *  the run's answer is never checked here. */
@@ -4040,7 +4044,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     async command(command) {
       // A command row resumes a loop that may have sat past a token's life: its MCP credentials are made fresh again
       // before its next model request.
-      if (command.kind === "steer" || command.kind === "approve" || command.kind === "deny" || command.kind === "raise") mcpStale = true;
+      if (command.kind === "steer" || command.kind === "approve" || command.kind === "deny" || command.kind === "raise") {
+        mcpStale = true;
+        // The run's own model key, read again from its launch before the command reaches the session: the message's key
+        // was written with its command row, so the next request's credential (which the model proxy reads before its
+        // beforeRequest hook) is the message's, a first key or a replacement. Fail-closed: a read that keeps failing
+        // throws here, before the command is taken, so the runner delivers it again at its next poll and the session
+        // never runs the message on the key held before it.
+        await specNow?.modelKey?.fresh();
+      }
       if (command.kind === "steer") return steer(command);
       if (command.kind === "approve" || command.kind === "deny") {
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old

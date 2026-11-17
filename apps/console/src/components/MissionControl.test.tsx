@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Analytics, cachedShare, compact, costLine, duration, missionFrom, type MissionView, outcomes, rangeFrom, type Stats, successRate, trendDays } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
+import { pageTitleClass } from "@/components/ui/toolbar";
 import type { Run } from "@/lib/v2";
 import { pick } from "@/test/picker";
 
@@ -40,6 +41,10 @@ describe("MissionControl", () => {
   it("shows the agents, the runs and how many are active, waiting on a person, or failed", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view }));
     for (const s of ["Mission Control", ">2<", ">7<", "Active", "Needs input", "Failed"]) expect(html).toContain(s);
+  });
+  it("names itself in its top bar as every section does: mono caps at body size", () => {
+    const html = renderToStaticMarkup(createElement(MissionControl, { view }));
+    expect(html).toContain(`<h1 class="${pageTitleClass}">`);
   });
   it("names the registered-work counts when externally observed sessions are shown separately", () => {
     const html = renderToStaticMarkup(createElement(MissionControl, { view, hasObservedSessions: true, observations: createElement("div", null, "Observed sessions") }));

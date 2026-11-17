@@ -11,6 +11,8 @@ import { type Agent, learningOn } from "@/lib/agentForm";
 import { type AgentLearning, correctionLines } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 type Row = { agent: Agent; view?: AgentLearning; stale?: boolean; error?: Problem; unavailable?: boolean };
 type Measure = { value: number; exact: boolean };
@@ -115,8 +117,8 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
   const changes = eligible.flatMap((row) => (row.view?.log.items ?? []).map((change) => ({ agent: row.agent, change })))
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
   return <section className="flex min-h-full flex-col">
-    <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5">
-      <DojoIcon className="shrink-0" /><h1 className="caps text-body font-semibold">Learning Dojo</h1>
+    <header className={cn(pageToolbarClass, "gap-2 px-5")}>
+      <h1 className={pageTitleClass}><DojoIcon size={16} className="shrink-0" />Learning Dojo</h1>
       <Button className="ml-auto" size="icon" aria-label="Refresh Learning Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
     <div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">

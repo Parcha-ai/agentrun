@@ -556,6 +556,7 @@ export type RunCreateInline = {
   effort?: Effort;
   max_cost_usd?: number;
   quote_id?: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -767,6 +768,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -787,6 +789,7 @@ export type RunCreate = {
   effort?: Effort;
   max_cost_usd?: number;
   quote_id?: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;

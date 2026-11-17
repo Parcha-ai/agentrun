@@ -199,7 +199,8 @@ process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token,
 
 test("a model key saved with no restart: a server with none says no model runs and refuses the run; saved, a revision that names no model runs on its default; the key is in no answer, log or file", { timeout: 60_000 }, async (t) => {
   const endpoint = await responsesEndpoint(t, "42", 10);
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url }, MODEL_VARS);
+  // The gateway's own key, so a run spends the server's (a server with none needs each run's: run-model-key.ts).
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}` }, MODEL_VARS);
   const lines = [];
   const { api, data } = await serve(t, { faux: undefined, log: (line) => lines.push(line) });
   const models = async () => (await api("GET", "/capabilities")).body.models;

@@ -233,9 +233,13 @@ export interface RunLaunchRow {
 }
 
 /** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
- *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither.
+ *  Given as a function, it is called inside that transaction with the sealed bytes the launch holds then (null when none:
+ *  a run whose end erased them), and its answer is written (null erases): a message that hands one secret keeps the
+ *  others the run holds, with no read outside the write that could bring back what an end erased. */
+export type LaunchSealed = Uint8Array | ((current: Uint8Array | null) => Uint8Array | null);
 export interface LaunchSealedWrite {
-  readonly launchSealed?: Uint8Array;
+  readonly launchSealed?: LaunchSealed;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -542,9 +546,11 @@ export interface NewTrigger {
 }
 /** A trigger's fields changed; the ones absent stay. */
 /** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
-/** A trigger update's options: `ifUpdatedAt`, a compare-and-set: written only while the row's updatedAt is still this one
- *  (the read the patch was made from), undefined otherwise, as when there is no such trigger. */
-export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number };
+/** A trigger update's options: a compare-and-set, written only while the row is still the read the patch was made from,
+ *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
+ *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
+ *  write that must never land over another source write (a seal, an edit) gives both. */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {

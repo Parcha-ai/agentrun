@@ -63,6 +63,8 @@ import { githubReturnOf } from "@/lib/github";
 import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 /** How often the console reads capabilities again while no model is ready for execution. */
 const MODEL_CHECK_MS = 10_000;
@@ -744,7 +746,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
-            <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5"><Code className="size-4" aria-hidden /><h1 className="caps text-body font-semibold">API playground</h1></header>
+            <header className={cn(pageToolbarClass, "gap-2 px-5")}><h1 className={pageTitleClass}><Code className="size-4" aria-hidden />API playground</h1></header>
             <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4">
               <label className="sr-only" htmlFor="api-operation">API operation</label>
               <Picker id="api-operation" label="API operation" steady value={where.operation ?? "run"} onChange={(operation) => {

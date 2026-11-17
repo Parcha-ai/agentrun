@@ -16,6 +16,7 @@ import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
 import { askRouteOf } from "./sdk-ask.js";
@@ -49,6 +50,13 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     if (launch.sdk) return createSdkLoop(launch, deps, async () => {
       const base = deps.env ?? process.env;
       const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+      // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
+      // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
+      const off = noServerKeyFor(env, "An SDK run's compile turn");
+      if (off) {
+        deps.log?.(off);
+        throw new Error(off);
+      }
       return askRouteOf(launch.learning!.model, env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
     });
     if (launch.native) return createNativeLoop(launch, deps);

@@ -1,7 +1,7 @@
 // The box image's recipe: the files it is made of (this folder's Dockerfile and what it copies: install.sh, the build,
 // and the helper) and their hash, the first 12 hex of their sha256. Every build names what it makes by that hash, so a
 // changed recipe is a new image and the same recipe is the one built before: the E2B template agentrun-archil-<hash>
-// (build-e2b.mjs), the Daytona snapshot of the same name (build-daytona.py hashes the same files), the published image
+// (build-e2b.mjs), the Daytona snapshot agentrun-box-<hash> (build-daytona.py hashes the same files), the published image
 // ghcr.io/parcha-ai/agentrun-box:<hash> (release.yml's box job reads recipeHash()), and what a provider's prepareImage
 // builds or registers in a vendor's account.
 //
