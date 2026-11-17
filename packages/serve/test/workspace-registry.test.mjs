@@ -27,7 +27,7 @@ function scratch() {
 }
 const call = (tools, name, args, attempt) => tools.find((tool) => tool.name === name).call(args, { callId: `c-${name}-${Math.random()}`, signal: new AbortController().signal, ...(attempt ? { attempt } : {}) });
 
-test("no computer in Mode 1: the file tools alone (no bash family), no processes on the hands, a bash or background call refused in words naming the setting; the end sweeps", async () => {
+test("no computer in Mode 1: the file tools alone (no bash family), no processes on the hands, a bash or background call refused in words naming the setting; the sweep, after the end, removes TMPDIR", async () => {
   const root = scratch();
   const run = await runTools(localWorkspace(root), undefined, { mode: 1, context: ctx });
   assert.deepEqual(run.registry.list().map((def) => def.name), ["read", "write", "edit"]);
@@ -41,7 +41,10 @@ test("no computer in Mode 1: the file tools alone (no bash family), no processes
   const refused = await run.registry.invoke("bash_background", { command: "sleep 9" }, { hands: run.hands });
   assert.equal(refused.error, NEEDS_A_COMPUTER, "the registry's own words for it");
   await run.end();
-  assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the end swept TMPDIR");
+  // The end stops the run's processes only: the sweep comes once the computer is let go (spec-holds.ts).
+  assert.ok(existsSync(join(root, ".agentrun", "tmp")), "the end leaves TMPDIR to the sweep");
+  await run.sweep();
+  assert.ok(!existsSync(join(root, ".agentrun", "tmp")), "the sweep removed TMPDIR");
 });
 
 test("no computer in Mode 2: bash on Archil's exec (never a process of this server's), the background tools still refused", async () => {
