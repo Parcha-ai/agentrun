@@ -402,7 +402,7 @@ export function uuidv7(now = Date.now()): string {
 
 /** The revision's body fields a start reads: its default cap, its place, and (agentic) its tools, for the place
  *  fallback. Read with the shapes the old start read them with. */
-type StartBody = { readonly maxCostUsd?: number; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: boolean | "notes"; readonly thinking?: unknown };
+type StartBody = { readonly maxCostUsd?: number; readonly place?: unknown; readonly tools?: readonly unknown[]; readonly learning?: import("./learning-setting.js").LearningSetting; readonly thinking?: unknown };
 
 /** The pieces a start needs that live in the server's request layer, not here: the leaf validators (the create body's field
  *  issues, the revision a run pins, a run's input against its schema, the hint told from the revision, a revision this host

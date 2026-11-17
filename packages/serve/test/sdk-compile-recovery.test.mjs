@@ -61,7 +61,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     const server = await serve(t, { runner: false });
     const agentId = "sdk-compile-results";
     assert.equal((await server.api("POST", "/agents", { definition: {
-      id: agentId, name: agentId, instructions, sdk: { runtime }, learning: true, tools: [], output_schema: tool.output_schema,
+      id: agentId, name: agentId, instructions, sdk: { runtime }, learning: { compile_after: 5 }, tools: [], output_schema: tool.output_schema,
     } })).status, 201);
     const { route, requests } = scriptedRoute(corrected);
     let sequence = 0;
@@ -90,7 +90,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     };
     for (let n = 0; n < 4; n++) {
       const { learning } = await completeRun();
-      assert.equal(learning.compiled, null, "the compiler waits for the real five-run threshold");
+      assert.equal(learning.compiled, null, "the compiler waits for its definition's five-run threshold (compile_after 5)");
       assert.deepEqual(learning.draft_errors, []);
     }
     const { id, learning } = await completeRun();

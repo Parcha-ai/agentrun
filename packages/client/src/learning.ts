@@ -28,14 +28,23 @@ export interface BackendWorkflowBridge {
   bind(session: BackendLearningSession): BackendWorkflowBinding;
 }
 
+/** The learning loop's numbers an agent definition may set (`learning: {...}`); each one left out is the server's default. */
+export interface BackendLearningLoop {
+  compile_after?: number;
+  agree_min?: number;
+  alone_min?: number;
+}
+
 export interface BackendLearningConfig extends ClientOptions {
   /** A stable agent id, shared by fresh runs of the same backend agent. */
   agentId: string;
   name?: string;
   /** The backend's standing policy. Wrappers add their explicit SDK system instructions to the source snapshot. */
   instructions?: string;
-  /** Opt in when this wrapper first registers a missing agent (default false). Never changes an existing agent. */
-  learning?: boolean;
+  /** Opt in when this wrapper first registers a missing agent (default false). Never changes an existing agent. An object
+   *  is on, with the learning loop's numbers set on the agent: `compile_after` (completed runs before its job compiles
+   *  into a workflow, default 20), `agree_min` and `alone_min` (the draft's one check, default 0.8 and 0.7). */
+  learning?: boolean | BackendLearningLoop;
   /** Explicit local MCP bridge over the backend's existing approved tool callbacks. */
   workflows?: BackendWorkflowBridge;
   /** Poll interval while waiting for checked learning (default 250 ms). */
@@ -219,9 +228,12 @@ export class BackendLearningClient {
     try { agent = (await read()).body; }
     catch (error) {
       if (!(error instanceof AgentRunRefused) || error.status !== 404) throw error;
+      // On (true, or the loop's numbers): workflows too with a bridge, else notes and skills alone.
+      const { learning } = this.#config;
+      const on = learning === true || (typeof learning === 'object' && learning !== null);
       const definition = {
         id: agentId, name: this.#config.name ?? agentId, instructions: source.instructions,
-        sdk: { runtime: source.runtime }, learning: this.#config.learning === true ? (this.#config.workflows ? true as const : 'notes' as const) : false as const,
+        sdk: { runtime: source.runtime }, learning: on ? (this.#config.workflows ? (learning === true ? true as const : { ...(learning as BackendLearningLoop) }) : 'notes' as const) : false as const,
       };
       try { await this.#owner.agents.create({ definition }, { 'Idempotency-Key': uuid() }); }
       catch (conflict) {
