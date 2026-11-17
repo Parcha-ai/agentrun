@@ -45,6 +45,7 @@ function fakeHost({ runs = { r1: "ended", r2: "working" }, cannot = [], busy = f
       calls.push(`removeTriggerThere:${id}`);
       if (upstreamFails) throw new Error("not removed upstream");
     },
+    removeTriggerSettings: async (id) => calls.push(`removeTriggerSettings:${id}`),
     removeTrigger: async (id) => calls.push(`removeTrigger:${id}`),
     forgetSignIns: async (agentId) => calls.push(`forgetSignIns:${agentId}`),
     removeOwnComputer: async (agentId) => calls.push(`removeOwnComputer:${agentId}`),
@@ -66,6 +67,7 @@ test("the delete runs in its order: refuse, cancel each run going and wait for i
     "learning:a:going=0",
     "triggers.list:a",
     "removeTriggerThere:t1",
+    "removeTriggerSettings:t1",
     "removeTrigger:t1",
     "forgetSignIns:a",
     "removeOwnComputer:a",

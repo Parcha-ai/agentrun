@@ -592,14 +592,26 @@ export class Triggers {
     throw new ApiError("unavailable", `What ${trigger.source.kind} keeps of the trigger ${id} is not removed there yet${notes.length ? ` (${notes.join(" ")})` : ""}.`, { retry_after_ms: 5_000 });
   }
 
-  /** The second half, once removeThere is done: the trigger deleted here, its row and its adapter settings. */
+  /** The second half's first part, once removeThere is done: the trigger's adapter settings removed, its row kept. */
+  async removeSettings(id: string): Promise<void> {
+    await this.dropSettings(await this.need(id));
+  }
+
+  /** The second half, once removeThere is done: the trigger deleted here, its adapter settings and then its row. */
   async removeHere(id: string): Promise<void> {
     await this.dropHere(await this.need(id));
   }
 
-  private async dropHere(trigger: Trigger): Promise<void> {
-    await this.store.triggers.remove(trigger.id);
+  /** A trigger's adapter settings (a webhook's secret, a poll's cursor) removed; nothing else of it. */
+  private async dropSettings(trigger: Trigger): Promise<void> {
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(trigger.id);
+  }
+
+  /** Its settings first, then its row: the settings have no link to the row, so a failure or a stop between the two
+   *  leaves the row, which the next remove finds, never settings with no trigger left to name them. */
+  private async dropHere(trigger: Trigger): Promise<void> {
+    await this.dropSettings(trigger);
+    await this.store.triggers.remove(trigger.id);
     await this.arm();
   }
 

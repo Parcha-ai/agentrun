@@ -2827,17 +2827,21 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
 3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
    its own computer, its Archil disk, each run with everything kept of it (its journal, launch record, messages, origin,
    live view, channel posts, kept learning, files and scratch folders, and the answers kept under its idempotency keys),
-   its revisions and the agent. Shared things are kept: MCP servers, keys, paired computers and uploads. What the agent
-   owns elsewhere is deleted there before the record here that names it (a trigger's registration before its row, a
-   sign-in's object at its vendor before its tombstone, the disk at Archil before it is forgotten), so a failure or a
-   crash never leaves one with nothing here to reach it.
+   its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) kept its folder
+   there, under the agent's own folder: that folder is deleted on the disk, and the disk and everything else on it are
+   kept. Shared things are kept: MCP servers, keys, paired computers and uploads. What the agent owns elsewhere is
+   deleted there before the record here that names it (a trigger's registration and its settings before its row, a
+   sign-in's object at its vendor before its tombstone, the disk at Archil before it is forgotten, a run's folder on a
+   disk its launch named before its launch record), so a failure or a crash never leaves one with nothing here to reach
+   it.
 
 `204` once it is gone; a second `DELETE`, or one of an unknown agent, is `404`. `409 runs_in_flight` (a run did not end
 within 30 s, or only its application ends it, as an SDK run), `409 learning_busy` and `503 unavailable` leave the agent
 refusing runs: send the `DELETE` again. `503` says which thing it owns elsewhere is not deleted there yet: a trigger's
 registration (Composio failed), a saved sign-in (its vendor failed), its own computer (its provider has not deleted it),
-or its Archil disk (Archil failed or was not reached, a run of another agent is on it, or Archil is off on this server
-with a disk still stored on the agent: turn Archil on again first). A delete stopped
+its Archil disk (Archil failed or was not reached, a run of another agent is on it, or Archil is off on this server
+with a disk still stored on the agent: turn Archil on again first), or a run's folder on a disk its launch named
+(Archil failed, a computer still holds the folder, or Archil is off). A delete stopped
 part way (a crash) is finished the same way: every step is safe to do again. A server started without the learning
 module's delete answers `501 unsupported_here` and touches nothing. The learning module's delete is not in this release,
 so every deploy (`agentrun-serve`, the image, `compose.yaml` and `render.yaml`) answers `501` for now; no setting turns

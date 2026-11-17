@@ -15,6 +15,7 @@ import { test } from "node:test";
 import { agentDiskKey, keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
+import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { calls as bbCalls, contexts, deleteFailures, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
@@ -138,7 +139,7 @@ async function refusesRuns(api, agentId, finished) {
   if (finished) assert.equal((await api("GET", `/runs/${finished}`)).body.status, "completed", "its finished run was not opened again");
 }
 
-for (const step of ["after_step_1", "after_step_2", "in_step_3_trigger", "in_step_3"]) {
+for (const step of ["after_step_1", "after_step_2", "in_step_3_trigger", "in_step_3_trigger_settings", "in_step_3"]) {
   test(`a DELETE stopped ${step.replaceAll("_", " ")} leaves the agent refusing runs${step === "after_step_1" ? ", across a restart" : ""}; the next DELETE finishes it`, { timeout: 240_000 }, async (t) => {
     const learning = fakeLearning();
     const crash = { done: false };
@@ -348,4 +349,82 @@ test("an agent's stored Archil disk with Archil off keeps the delete from finish
   assert.equal(done.status, 204, JSON.stringify(done.body));
   assert.equal(control.disks.has(disk), false, "its disk deleted at Archil");
   assert.equal(await store.settings.get(agentDiskKey(agentId)), undefined);
+});
+
+/** Run `runId`'s launch record naming disk `diskId` as the caller's, as POST /runs with `archil_disk` records it
+ *  (run-launch.ts: archil_disk { disk_id, kind: "launch" }), written into the store's file. */
+function launchOnDisk(data, runId, diskId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  try {
+    const changed = db.prepare("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?").run(JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
+    assert.equal(Number(changed.changes), 1, "the run's launch record names the disk");
+  } finally {
+    db.close();
+  }
+}
+
+test("a run's folder on the Archil disk its launch named (the caller's) is deleted there, the agent's own folder only and never the disk; while Archil refuses, 503 with the agent kept and refusing runs, and the next DELETE finishes", { timeout: 120_000 }, async (t) => {
+  const customer = "dsk-c0570e4e00000001";
+  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: customer, name: "a-customers-disk" }] });
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key-archil-a9-0002" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  // The caller's disk, as the server's file API reaches it (archil-disk.ts): every disk the server makes is this one.
+  const disk = new FakeArchilDisk();
+  disk.id = customer;
+  const made = [];
+  const learning = fakeLearning();
+  const { api, data, store } = await serve(t, { deleteLearning: learning.deleteLearning, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: (options) => (made.push(options.disk), disk) } });
+  const { agentId, runId } = await finishedAgent(api);
+  launchOnDisk(data, runId, customer);
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  // What the run wrote there (its work folder and its exec spill folder, runKey's and spillFolderOf's), beside what is the
+  // caller's own and another agent's run.
+  const own = `agents/${agentDir(agentId)}`;
+  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`];
+  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`];
+  for (const key of [...its, ...theirs]) await disk.putObject(key, Buffer.from("bytes"));
+
+  // A computer still holds the run's work folder (Archil's write delegation): its files can't be deleted there yet.
+  const release = disk.delegate(`${own}/runs/${runId}/work`);
+  await notYet(api, agentId, runId, new RegExp(`${customer}[^]*${runId}|${runId}[^]*${customer}`));
+  assert.ok(disk.files.has(its[0]), "the run's file is still on the disk");
+  assert.equal(rowsOf(data, agentId, [runId]).launches, 1, "and its launch record, which names the disk, is kept for the next DELETE");
+
+  release();
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  const left = [...disk.files.keys(), ...disk.dirs].filter((key) => key === own || key.startsWith(`${own}/`));
+  assert.deepEqual(left, [], "nothing of the agent is left on the caller's disk, its folders included");
+  for (const key of theirs) assert.ok(disk.files.has(key), `${key} is kept: it is not the agent's`);
+  assert.ok(control.disks.has(customer), "the caller's disk itself is kept");
+  assert.ok(made.length > 0 && made.every((id) => id === customer), `only the run's disk was reached: ${made.join(", ")}`);
+  assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
+});
+
+test("a trigger's adapter settings go before its row: a DELETE stopped between the two leaves the row, and the next DELETE removes what is left of both", { timeout: 120_000 }, async (t) => {
+  const learning = fakeLearning();
+  const crash = { done: false };
+  const { api, store } = await serve(t, {
+    deleteLearning: learning.deleteLearning,
+    agentDeleteAt: (at) => {
+      if (at !== "in_step_3_trigger_settings" || crash.done) return;
+      crash.done = true;
+      throw new Error(`stopped ${at}`);
+    },
+  });
+  const { agentId, runId } = await finishedAgent(api);
+  const made = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const settingsOf = async () => (await store.triggerSettings.get("webhook")).filter((row) => row.scope === made.body.id);
+  assert.ok((await settingsOf()).length > 0, "its signing secret is kept in its adapter's settings");
+
+  const stopped = await api("DELETE", `/agents/${agentId}`);
+  assert.deepEqual([stopped.status, stopped.body.error?.code], [500, "internal"], JSON.stringify(stopped.body));
+  assert.ok(crash.done, "it stopped between the trigger's settings and its row");
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 200, "the row is kept, for the next DELETE to find");
+  await refusesRuns(api, agentId, runId);
+
+  const done = await api("DELETE", `/agents/${agentId}`);
+  assert.equal(done.status, 204, JSON.stringify(done.body));
+  assert.deepEqual(await settingsOf(), [], "its settings are gone");
+  assert.equal((await api("GET", `/triggers/${made.body.id}`)).status, 404, "and its row");
 });

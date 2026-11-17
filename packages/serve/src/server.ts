@@ -87,7 +87,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -173,7 +173,7 @@ import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
+import { archilRoute, type ArchilRoutesOptions, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
@@ -281,9 +281,10 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
-  /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
-   *  (a launch's disk read, the settings' test, an agent's disk removed). */
-  archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** Another Archil control plane than the key's region's, and its fetch, and another maker of a disk's file API: a
+   *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
+   *  a deleted agent's run folder removed from a disk its launch named). */
+  archilControl?: ArchilRoutesOptions["control"];
   /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
   composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -2063,6 +2064,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
     },
     removeTriggerThere: (triggerId) => notYetWith(() => triggers.removeThere(triggerId)),
+    removeTriggerSettings: (triggerId) => triggers.removeSettings(triggerId),
     removeTrigger: (triggerId) => triggers.removeHere(triggerId),
     forgetSignIns: (agentId) => notYetWith(() => signIns.forgetAll(agentId)),
     removeOwnComputer: async (agentId) => {
@@ -2082,6 +2084,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await notYetWith(() => archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) }), ["upstream_failed", "precondition_failed", "unavailable"]);
     },
     forgetRun: async (agentId, runId) => {
+      // Its own folder on a disk its launch named (the caller's disk, which stays): read from its launch record, which goes
+      // with the run's rows after this, so a failure or a stop here leaves the record that names the disk for the next
+      // DELETE. A run on its agent's own disk has none: that disk went whole (removeDisk), its folder with it.
+      const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
+      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"]);
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
       // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row

@@ -119,6 +119,7 @@ function storeHost(store, crashAt) {
       return true;
     },
     removeTriggerThere: async () => {},
+    removeTriggerSettings: async () => {},
     removeTrigger: (id) => store.triggers.remove(id),
     forgetSignIns: async () => {},
     removeOwnComputer: async () => {},

@@ -10,14 +10,16 @@
 //      cancelled through the cancel path, and waited for until it is final.
 //   2. Its learning, by the learning module's deleteLearning (idempotent; it refuses while learning work is in flight,
 //      which answers 409 learning_busy with the agent left refusing runs).
-//   3. Its things: its triggers through the trigger engine (each one's registration upstream first, then its row and its
-//      adapter settings), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each run's
-//      folders, settings and kept answers, and its rows (store runs.remove); then the agent's folders, settings and kept
-//      answers, and its rows (store agents.remove, which commits last).
+//   3. Its things: its triggers through the trigger engine (each one's registration upstream first, then its adapter
+//      settings, then its row), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each
+//      run's folders (on a disk its launch named, the caller's, too: the run's own folder there, never the disk), settings
+//      and kept answers, and its rows (store runs.remove); then the agent's folders, settings and kept answers, and its
+//      rows (store agents.remove, which commits last).
 // A DELETE stopped at any step finds the agent still there, marked, and does every step again: each is idempotent, so the
 // next DELETE finishes it. Once the agent's row is gone the agent is unknown: 404. Nothing the agent owns elsewhere (a
-// trigger's registration upstream, a saved sign-in at its vendor, its own computer, its Archil disk) is left with the
-// agent's row gone: the record here that names it is removed only once it is deleted there, and while it is not, the
+// trigger's registration upstream, a saved sign-in at its vendor, its own computer, its Archil disk, a run's folder on a
+// disk its launch named) is left with the agent's row gone: the record here that names it (for a run's folder, its launch
+// record) is removed only once it is deleted there, and while it is not, the
 // delete stops with 503 unavailable, the agent kept and refusing runs, for the next DELETE to finish.
 import { ApiError } from "./errors.js";
 import { FINAL_STATES, type RunState, type Store } from "./store/index.js";
@@ -27,8 +29,9 @@ import { FINAL_STATES, type RunState, type Store } from "./store/index.js";
 export type DeleteLearning = (store: Store, agentId: string) => Promise<void>;
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at): after step 1, after step 2, in step 3 between a
- *  trigger's removal upstream and its row's, and in step 3 once its triggers and the agent's first run are gone. */
-export type AgentDeleteStep = "after_step_1" | "after_step_2" | "in_step_3_trigger" | "in_step_3";
+ *  trigger's removal upstream and its settings', between its settings' and its row's, and in step 3 once its triggers
+ *  and the agent's first run are gone. */
+export type AgentDeleteStep = "after_step_1" | "after_step_2" | "in_step_3_trigger" | "in_step_3_trigger_settings" | "in_step_3";
 
 /** What a delete does outside the store's own rows, as the server does it. */
 export interface AgentDeleteHost {
@@ -42,7 +45,9 @@ export interface AgentDeleteHost {
   /** One trigger's registration upstream removed, the trigger kept (the trigger engine's removeThere); an ApiError
    *  (503 unavailable) while it is not. */
   removeTriggerThere(triggerId: string): Promise<void>;
-  /** Then the trigger itself: its row and its adapter settings (the engine's removeHere). */
+  /** Then its adapter settings, the trigger kept (the engine's removeSettings): they have no link to its row. */
+  removeTriggerSettings(triggerId: string): Promise<void>;
+  /** Then the trigger itself, its row (the engine's removeHere, which removes any settings left first). */
   removeTrigger(triggerId: string): Promise<void>;
   /** Every saved sign-in of the agent forgotten, its object at the vendor deleted; an ApiError (503 unavailable) while a
    *  vendor has not deleted one, each kept as a tombstone for the next call. */
@@ -52,7 +57,9 @@ export interface AgentDeleteHost {
   /** The agent's Archil disk deleted, when one is stored on it, whatever the server's Archil settings are now
    *  (archil-routes.ts removeAgentDisk); an ApiError (503 unavailable) while it is not, Archil off included. */
   removeDisk(agentId: string): Promise<void>;
-  /** A final run's things outside its rows: its folders, its settings, the answers kept under its idempotency keys. */
+  /** A final run's things outside its rows: its folders (its own folder on an Archil disk its launch named, read from its
+   *  launch record, which goes with its rows after; an ApiError (503 unavailable) while that folder is not deleted
+   *  there), its settings, the answers kept under its idempotency keys. */
   forgetRun(agentId: string, runId: string): Promise<void>;
   /** The agent's things outside its rows: its folders, its settings, the answers kept under its idempotency keys. */
   forgetAgent(agentId: string): Promise<void>;
@@ -88,9 +95,11 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
 
   // 3. Its things, then its rows; the agent's row last.
   for (const trigger of await host.store.triggers.list(agentId)) {
-    // Upstream first: the row names what is left to remove there until it is gone.
+    // Upstream first, then its settings, then its row: the row names what is left to remove until each is gone.
     await host.removeTriggerThere(trigger.id);
     await host.at?.("in_step_3_trigger", agentId);
+    await host.removeTriggerSettings(trigger.id);
+    await host.at?.("in_step_3_trigger_settings", agentId);
     await host.removeTrigger(trigger.id);
   }
   await host.forgetSignIns(agentId);
