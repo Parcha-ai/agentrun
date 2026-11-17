@@ -28,8 +28,8 @@ if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then echo "in a container"; 
 Read it like this:
 
 - `CLAUDE_CODE_REMOTE` (Claude Code's cloud sessions: on the web, in the desktop and mobile apps, and
-  `claude --cloud`): a **hosted cloud session**. The person's browser can't open anything on its loopback, and
-  whatever is installed here is gone when the session ends.
+  `claude --cloud`): a **hosted cloud session**. The person's browser can't open anything on its loopback, nothing
+  forwards a port from it, and whatever is installed here is gone when the session ends.
 - Linux in a container, with no `DISPLAY` or `WAYLAND_DISPLAY` and none of the signals below (a Codex cloud task
   looks like this): most likely a hosted sandbox too. Ask the person to confirm.
 - `CODESPACES` or `GITPOD_WORKSPACE_ID` (GitHub Codespaces, Ona): a remote dev environment that forwards ports to
