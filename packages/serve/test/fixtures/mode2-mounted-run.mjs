@@ -148,6 +148,8 @@ export async function mode2Run(t, { harness, disk, learns = false }) {
   };
   return {
     mounts,
+    /** The computer's folder: the fake computer's /workspace, a local folder that stands in for the mounted run's folder. */
+    scratch,
     /** Claim the run (`leaseMs`: the claim's lease) and build its spec with `build`. */
     async claimNext(build, { leaseMs = 60_000 } = {}) {
       const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs });

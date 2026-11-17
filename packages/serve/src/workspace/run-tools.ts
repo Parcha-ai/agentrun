@@ -36,10 +36,11 @@
 //
 // runTools is the one call: runHands binds the run's hands and executors, the kernel's createRegistry makes the run's
 // registry over them, and bindTools gives its tools as the kernel's HostTool, through the run's gate. The run's end
-// (end) ends its background processes through the computer (the kernel's endBackground); its sweep (sweep) comes once the
-// computer is let go. The sweep removes through the run's own Workspace, and on Archil that is the disk's file API: while
-// a computer's mount of the folder holds Archil's write delegation, Archil refuses that API every write and delete under
-// the folder (409 OperationAborted), and the computer's release (its final sync, then checkin) is what lets it go.
+// (end) ends its background processes through the computer (the kernel's endBackground), then sweeps. The sweep removes
+// through the computer when it mounts the folder: on Archil the run's own Workspace is the disk's file API, which Archil
+// refuses every delete under the folder (409 OperationAborted) while the computer's mount holds its write delegation, and
+// the computer's own calls sync to the disk before they answer. It runs before the run's end commit, never after: a
+// follow-up the commit reopens may be claimed at once, and its scratch is the same folder's.
 import type { Context } from "@earendil-works/chord/context";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { type CapabilityKind, COMPUTER_OP_TOOL, COMPUTER_TOOLS, createRegistry, endBackground, HANDOFF_TOOL, type Registry } from "@parcha/agentrun-kernel/kernel";
@@ -153,8 +154,8 @@ export type RunHands = {
   readonly surface?: AgentComputer["surface"];
   /** A desktop's or a phone's computer as a codemode script gets it bound; none for any other computer. */
   readonly computer?: ScriptComputer;
-  /** Bash's full outputs and its TMPDIR swept, through the run's own Workspace: once the computer is let go (its
-   *  release lets a mount's write delegation go), so it holds whether or not the computer still answers. */
+  /** The run's end, after its background processes are ended and before the computer is let go: bash's full outputs
+   *  and its TMPDIR swept, through the computer when it mounts the folder. */
   sweep(): Promise<void>;
 };
 
@@ -209,9 +210,18 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
     ...((computer?.kind === "desktop" || computer?.kind === "phone") && computer.surface ? { surface: computer.surface } : {}),
     ...(script ? { computer: script } : {}),
     async sweep() {
-      // Through the run's own Workspace, not the computer's: the sweep holds whether or not the computer still answers. Its
-      // caller runs it after the computer's release (spec-holds.ts), never while a mount holds the folder.
-      for (const dir of [OUTPUT_DIR, TMP_DIR]) await workspace.remove(dir, { recursive: true, force: true });
+      // Through the Workspace the run wrote them through: the computer's when it mounts the folder, since on Archil the
+      // run's own Workspace is the disk's file API, which the mount's write delegation refuses until the computer's
+      // release. A computer that no longer answers leaves a Mode 1 folder to the run's own Workspace (a folder of this
+      // machine, which no delegation holds); a Mode 2 one keeps its scratch, said by the release's log.
+      for (const dir of [OUTPUT_DIR, TMP_DIR]) {
+        try {
+          await attached.remove(dir, { recursive: true, force: true });
+        } catch (error) {
+          if (mounted === undefined || options.mode === 2) throw error;
+          await workspace.remove(dir, { recursive: true, force: true });
+        }
+      }
     },
   };
 }
@@ -296,11 +306,8 @@ export type RunTools = {
    *  run's gate decided before its intent, each answer kept in `results` (bindTools). */
   hostTools(names: readonly string[], results?: ToolResults): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
-   *  no computer). */
+   *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
-  /** Bash's full outputs and TMPDIR swept from the run's folder, through its own Workspace: after the computer is let go,
-   *  never while its mount holds the folder (RunHands.sweep). */
-  sweep(): Promise<void>;
 };
 
 /**
@@ -327,8 +334,8 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     hostTools: (names, results) => bindTools(run, registry, names, results ? { results } : {}),
     async end() {
       await endBackground(run.hands);
+      await run.sweep();
     },
-    sweep: () => run.sweep(),
   };
 }
 

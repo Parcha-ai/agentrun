@@ -871,9 +871,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A run started with hold: true holds its computer for its owner (computer-held.ts): the loop waits for their start
     // and release, and runs their calls on it.
     ...(heldComputer ? { held: heldComputer } : {}),
-    // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended),
-    // its computer let go, its scratch swept (after the computer, whose mount holds the folder until then), then its
-    // Workspace's end (Mode 2 sweeps the exec spill).
+    // The pass's resources go once the loop writes nothing more through them: its tools' end (background processes ended,
+    // scratch swept), its computer let go, then its Workspace's end (Mode 2 sweeps the exec spill).
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
     // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
     // At a park, a desktop or a phone is kept for the resume instead (spec-holds.ts SpecHolds.release `parked`), its mount

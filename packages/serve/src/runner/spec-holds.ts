@@ -1,9 +1,6 @@
 // What a run's spec holds from its claim until its release: the run's tools, its pull request's checkout, its computer,
 // its Archil mount credential and its Workspace, each kept here as the spec builder makes it (adapter-run-spec.ts and
 // cli-run-spec.ts). The spec's release lets them go, in that order, each step's failure logged and the next still taken.
-// The tools' sweep of the run's scratch comes after the computer is let go: it removes through the run's own Workspace,
-// which on Archil is the disk's file API, and a computer's mount of the folder holds Archil's write delegation until its
-// release (its final sync, then checkin), refusing every delete there (409 OperationAborted) until then.
 // A builder that throws part-way never hands the loop a spec to release, so specBuilt lets go what was made by then, the
 // same way, and throws the builder's own error unchanged: a credential minted for the run is revoked and a computer made
 // for it let go, never left to the credential's 24 h ttl or the computer's lifetime. Each is let go at most once.
@@ -11,9 +8,7 @@ import type { ParkCause } from "../workspace/computer-kept.js";
 
 /** One part a spec holds, by how it is let go. */
 type Held = {
-  /** `end`: the run's background processes ended, before the computer goes; `sweep`: the run's scratch removed through its
-   *  own Workspace, after the computer goes. */
-  readonly tools?: { end(): Promise<void>; sweep?(): Promise<void> };
+  readonly tools?: { end(): Promise<void> };
   /** The run's checkout of its pull request (pr-checkout.ts), removed from its folder while the Workspace still answers. */
   readonly checkout?: { end(): Promise<void> } | undefined;
   /** `park`: its release at the run's park, for its cause, true when it kept the computer (computer-for-claim.ts
@@ -50,18 +45,17 @@ export class SpecHolds {
     this.#held = { ...this.#held, ...parts };
   }
 
-  /** Everything held let go, once: the tools' end (background processes ended), the pull request's checkout removed, the
-   *  computer, the tools' sweep of the run's scratch (after the computer, whose mount's write delegation its release lets
-   *  go), the Archil mount credential (idempotent: the computer's release revokes it too), the Workspace's end, the CLI's
-   *  scratch, then the claim's keys where they are held. A second call waits for the first and does nothing more. At a
-   *  park (`parked`, its cause), a computer that keeps (a desktop, a phone or a sandbox) is kept for the resume first: the
-   *  tools' end and sweep are left out (the processes they started and their output live on it) and so is the revoke (its
-   *  mount writes on); a keep that fails lets it go as above. */
+  /** Everything held let go, once: the tools' end (background processes ended, scratch swept), the pull request's
+   *  checkout removed, the computer, the Archil mount credential (idempotent: the computer's release revokes it too), the
+   *  Workspace's end, the CLI's scratch, then the claim's keys where they are held. A second call waits for the first and
+   *  does nothing more. At a park (`parked`, its cause), a computer that keeps (a desktop, a phone or a sandbox) is kept
+   *  for the resume first: the tools' end is left out (the processes they started and their output live on it) and so is
+   *  the revoke (its mount writes on); a keep that fails lets it go as above. */
   release(how?: { readonly parked?: ParkCause }): Promise<void> {
     return (this.#released ??= this.#releaseAll(how?.parked));
   }
 
-  /** The tools' end, once: the run's background commands stopped. The end and the release share it. */
+  /** The tools' end, once: the run's background commands stopped, scratch swept. The end and the release share it. */
   #endTools(): Promise<void> {
     return (this.#toolsEnded ??= (this.#held.tools?.end() ?? Promise.resolve()).catch((error: unknown) => this.#log(`the run's tools' end failed: ${words(error)}`)));
   }
@@ -94,8 +88,6 @@ export class SpecHolds {
     if (kept) await (this.#checkoutEnded ?? this.#held.checkout?.end())?.catch((error: unknown) => log(words(error)));
     else await this.endCheckout();
     await computer?.release().catch((error: unknown) => log(`the run's computer could not be let go: ${words(error)}`));
-    // The scratch swept once the computer has let the folder go (a kept computer's processes and their outputs live on).
-    if (!kept) await this.#held.tools?.sweep?.().catch((error: unknown) => log(`the run's scratch could not be swept: ${words(error)}`));
     if (!kept) await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${words(error)}`));
     await ws?.end().catch((error: unknown) => log(`the run's workspace end failed: ${words(error)}`));
     await scratch?.sweep().catch((error: unknown) => log(`the run's scratch folder could not be swept: ${words(error)}`));
