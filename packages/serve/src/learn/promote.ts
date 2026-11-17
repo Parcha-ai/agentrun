@@ -218,9 +218,15 @@ export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbse
   return { ...grade, ...mark };
 };
 
-/** The agent's promotion records, oldest first. */
+/** The states a promotion record is written in (PromotionRecord.decided). */
+const DECIDED: readonly string[] = ["promote", "hold", "replaying"] satisfies readonly PromotionRecord["decided"][];
+/** The records of `items` in a state this code writes: one saved in any other is dropped, as if absent (its revision is
+ *  checked again). */
+const writtenOf = (items: readonly PromotionRecord[]): PromotionRecord[] => items.filter((one) => DECIDED.includes(one?.decided));
+
+/** The agent's promotion records, oldest first: only those in a state this code writes (writtenOf). */
 export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> =>
-  itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)));
+  writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))));
 
 /** The newest record of `workflow` at `digest`, or undefined. */
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
@@ -288,7 +294,8 @@ export type Recorded = { readonly record: PromotionRecord | undefined; readonly 
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
   let out: Recorded = { record, won: true };
-  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => {
+  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
+    const items = writtenOf(saved);
     const now = promotionOf(items, record.workflow, record.digest);
     if (!still(now, items)) {
       out = { record: now, won: false };

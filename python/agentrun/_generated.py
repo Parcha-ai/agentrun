@@ -3344,6 +3344,9 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     workflow_pct: float
     agent_pct: float
     cleared: bool
+    agreed: int
+    alone: int
+    agree_min: float
 
 
 class ListLearningEvalsResponse(TypedDict):

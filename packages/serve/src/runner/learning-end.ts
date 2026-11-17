@@ -434,18 +434,13 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
 
 /** Whether a new workflow's compile is waiting on its grade: a run's kept learning carries a draft that passed its
  *  checks (a compiled digest) whose learning run, which grades and merges it, has not ended. It is the compile: none
- *  is asked until it lands (a learned workflow then) or is dropped. Read from the agent's kept learning, newest first; one
+ *  is asked until it lands (a learned workflow then) or is dropped. Read from the agent's kept learning whose grade has
+ *  not ended (Learning.grading: every one, however many runs kept learning since, never a window of the newest); one
  *  that can't be read waits. */
 async function draftAwaitingGrade(store: Store, agentId: string): Promise<boolean> {
-  const kept = await store.learning.proposals(agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
-  if (!kept) return true;
-  for (const one of kept) {
-    const digest = (one.proposal as { compiled?: { digest?: unknown } } | null | undefined)?.compiled?.digest;
-    if (typeof digest !== "string" || !one.learningRunId) continue;
-    const grade = await store.runs.get(one.learningRunId).catch(() => undefined);
-    if (grade && !["ended", "failed", "stopped"].includes(grade.state)) return true;
-  }
-  return false;
+  const grading = await store.learning.grading(agentId).catch(() => undefined);
+  if (!grading) return true;
+  return grading.some((one) => typeof (one.proposal as { compiled?: { digest?: unknown } } | null | undefined)?.compiled?.digest === "string");
 }
 /** The most tool calls of one run a trace keeps, and the most of a call's input or a message it holds, in characters. */
 const TRACE_CALLS = 20;

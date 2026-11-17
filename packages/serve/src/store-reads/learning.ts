@@ -296,13 +296,14 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
 /** The check the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
  *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's check numbers
  *  (the share of the inputs it ran on that said what the agent said, against the agent's own 100%). `cleared`: it passed
- *  (a champion is promoted). Null when no run was served, nothing serves now (held, or never promoted), or it was promoted
+ *  (a champion is promoted), with the agreement check it passed (`agreed` of `alone`, its bar `agree_min`). Null when no run was served, nothing serves now (held, or never promoted), or it was promoted
  *  on no input (a dry run). */
 export function servingReplayOf(records: readonly PromotionRecord[], runs: readonly CostRun[]): CostReplay | null {
   const name = runs.findLast((run) => (run.path === "workflow" || run.path === "handed_back") && run.workflow !== null)?.workflow;
   const check = name ? championOf(records, name)?.check : undefined;
   if (!check?.n) return null;
-  return { n: check.n, workflow_pct: Math.round(checkShares({ n: check.n, agreed: check.agreed ?? 0, alone: check.alone ?? 0 }).agreement * 1000) / 10, agent_pct: 100, cleared: true };
+  const agreed = check.agreed ?? 0, alone = check.alone ?? 0;
+  return { n: check.n, workflow_pct: Math.round(checkShares({ n: check.n, agreed, alone }).agreement * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: check.agree_min };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what

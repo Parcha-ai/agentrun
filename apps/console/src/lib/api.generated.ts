@@ -2558,6 +2558,9 @@ export interface operations {
           workflow_pct: number;
           agent_pct: number;
           cleared: boolean;
+          agreed: number;
+          alone: number;
+          agree_min: number;
         } | null;
       };
     };

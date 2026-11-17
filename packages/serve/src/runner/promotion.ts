@@ -764,12 +764,15 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   const rival = replayingOf(records, name, digest)[0];
   if (rival) throw new ReplayRefused("conflict", `${name} at ${rival.digest} is replaying: one revision of a workflow is checked at a time, and a running check finishes. Ask again once it ends.`);
   const last = inputs === "held" ? records.findLast((one) => one.workflow === name && one.digest === digest && one.inputs?.length) : undefined;
-  const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last?.inputs ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loopOf(undefined).compile_after });
+  // The agent's own numbers (its current revision's definition, the one its replay runs launch on): with no earlier
+  // check, its last compile_after completed runs, as the claim's check picks them (startCheck), never the default's.
+  const current = (await ask.store.agents.get(ask.agentId).catch(() => undefined))?.currentRevision;
+  const loop = current ? await loopOfRevision({ store: ask.store, revisionId: current }) : loopOf(undefined);
+  const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last?.inputs ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loop.compile_after });
   if (!picked.length) throw new ReplayRefused("conflict", `${name} at ${digest} has no input to replay on: none of ${typeof inputs === "number" ? `the agent's newest ${plural(inputs, "completed run")}` : last ? "the runs it was last checked on" : "the agent's last completed runs"} has an input it fits. Nothing was started.`);
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
   if (!launch.learning || launch.learning.notesOnly) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, notes only, or this server's is off).`);
   const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, ...(ask.now ? { now: ask.now } : {}) };
-  const loop = await loopOfRevision(deps);
   const bar: CheckBar = { compile_after: loop.compile_after, agree_min: loop.agree_min, alone_min: loop.alone_min, attempt: attemptOf(records, name, digest) };
   const said = `checking it on ${plural(picked.length, "input")} of the agent's own runs, as its owner asked`;
   // Kept only while the revision's newest record is still the one read here: each record write stamps a new `at`.
