@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.bid-file-rename",
-  "version": 2,
+  "version": 3,
   "title": "Rename the bid_ files in Download by date, oldest first",
   "split": "dev",
   "source": {
@@ -63,6 +63,8 @@
     }
   ],
   "oracle": [
+    { "method": "ui.act", "why": "Wait for the Files window: am start -W can return before it reaches the accessibility tree.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "Wait for the toolbar's Search: the window may still be the splash screen, and a find reads the screen once.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "text": "Search", "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "Open the search bar: Download holds more files than one screen shows, and a find sees only what is on screen.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search" } } } }], "expect": { "text": "Search…", "timeoutMs": 5000 } } },
     { "method": "ui.act", "why": "Search by part of the name, so the search bar doesn't hold the old name after the rename.", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "restaurant_proposal" }], "expect": { "text": "restaurant_proposal", "timeoutMs": 5000 } } },
     { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "bid_restaurant_proposal.txt", "timeoutMs": 8000 } } },

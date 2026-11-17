@@ -33,8 +33,9 @@ emails)
 	# emails NAME: the contact's email addresses and their types (data2: 1 home, 2 work, 3 other, 4 mobile).
 	content query --uri $u/data --projection data1:data2 --where "mimetype='vnd.android.cursor.item/email_v2' AND display_name='$2'" ;;
 phones)
-	# phones NAME: the contact's phone numbers and their types.
-	content query --uri $u/data --projection data1:data2 --where "mimetype='vnd.android.cursor.item/phone_v2' AND display_name='$2'" ;;
+	# phones NAME: the contact's phone numbers and their types (data2: 1 home, 2 mobile, 3 work), by type: the
+	# provider's own order is not the order they were added.
+	content query --uri $u/data --projection data1:data2 --where "mimetype='vnd.android.cursor.item/phone_v2' AND display_name='$2'" --sort "data2 ASC" ;;
 purge)
 	# purge NONCE: every contact whose name holds the run's nonce. Phone-only contacts go at once; one the agent saved
 	# to an account is marked deleted, and its sync adapter removes it from the account. An empty NONCE would match

@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.alarm-repeat-days",
-  "version": 1,
+  "version": 2,
   "title": "Change the days a repeating alarm rings on in Clock",
   "split": "heldout",
   "tags": ["clock", "alarm", "edit", "days"],
@@ -66,6 +66,11 @@
       "method": "ui.act",
       "why": "Wait for the Clock's window: on a fresh phone it shows a moment after am start -W returns.",
       "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Wait for the alarm's row: the window may still be the splash screen, and a find reads the screen once.",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "text": "{{o}} {{nonce}}", "timeoutMs": 10000 } }
     },
     {
       "method": "ui.act",

@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.clock.timer",
-  "version": 1,
+  "version": 2,
   "title": "Start a countdown timer in Clock",
   "split": "dev",
   "tags": ["clock", "timer", "keypad"],
@@ -47,6 +47,11 @@
       "method": "ui.act",
       "why": "Wait for the Clock's window: on a fresh phone it shows a moment after am start -W returns.",
       "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "window": { "title": "Clock" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Wait for the tabs: the window may still be the splash screen, and a find reads the screen once.",
+      "params": { "target": { "app": "com.android.deskclock" }, "steps": [], "expect": { "text": "Timer", "timeoutMs": 10000 } }
     },
     {
       "method": "ui.act",

@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "mobileworld.invoice-receipt-copy",
-  "version": 2,
+  "version": 3,
   "title": "Copy November's invoice and receipt PDFs into Finance/invoice",
   "split": "heldout",
   "source": {
@@ -62,6 +62,8 @@
     }
   ],
   "oracle": [
+    { "method": "ui.act", "why": "Wait for the Files window: am start -W can return before it reaches the accessibility tree.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "Wait for the toolbar's Search: the window may still be the splash screen, and a find reads the screen once.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "text": "Search", "timeoutMs": 10000 } } },
     { "method": "ui.act", "why": "Open the search bar: Download holds more files than one screen shows, and a find sees only what is on screen.", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Search" } } } }], "expect": { "text": "Search…", "timeoutMs": 5000 } } },
     { "method": "ui.act", "why": "invoice_2025_001.pdf is the November one (setup's dates).", "params": { "steps": [{ "set": { "find": { "role": "searchbox" } }, "value": "invoice_2025_001" }], "expect": { "text": "invoice_2025_001", "timeoutMs": 5000 } } },
     { "method": "ui.act", "params": { "foreground": true, "steps": [{ "key": "enter" }], "expect": { "text": "invoice_2025_001.pdf", "timeoutMs": 8000 } } },

@@ -70,8 +70,11 @@ DocumentsUI, 360x640 points at 2x), and the PR that changes one carries its run 
 - AOSP Clock writes a hair space (U+200A) before AM and PM; the oracles match it with `\s` in a regex name, and
   write it as ` ` in an `expect`. A press on the time picker's hour or minute already shown changes nothing and
   can't be confirmed, so the oracles press another one first.
-- A find sees the screen as it is when the act starts, so an oracle whose first find is a list row waits for the row
-  with an `expect` first.
+- `am start -W` can return before the app's window reaches the accessibility tree, and then an act aimed at the app is
+  `not_found` at once, and one with no target reads the app in front. So an oracle that setup opened its app for
+  begins with a window wait aimed at the app (`apps.launch` waits for the window itself). That window, or the one
+  `apps.launch` answered on, may still be the splash screen, and a find sees the screen as it is when the act starts,
+  so a text wait for what the first find needs comes before it. The bench's test holds every exec-deny oracle to this.
 - Contacts on Android 13 and later opens behind a notifications prompt unless `POST_NOTIFICATIONS` is granted, so
   `contacts.sh open` grants it with the contacts permissions.
 
@@ -114,13 +117,13 @@ What it can't undo:
 
 ## Round 2 tasks
 
-Eighteen more tasks, nine dev and nine heldout, written to be harder than round 1 (where both arms passed 88-92%). Every
+Seventeen more tasks, eight dev and nine heldout, written to be harder than round 1 (where both arms passed 88-92%). Every
 one sets `exec: "deny"`, so the agent has only `ui`, `input`, `screen` and `apps`, and its oracle is built from the same
 methods: each oracle is a UI path a person could take, proven on a cloud phone. Each task starts from the opposite of its
 goal, its params give the three seeds three different targets, and everything it makes carries `{{nonce}}`. Three are
 answer tasks; their `unchanged` exec check fails the run if the agent edits what it was asked to read. An answer check
 can't reject every wrong answer (extra names, several numbers with none said to be the one), so the three are
-`sufficient: false` and the grader reads their rubric. Four are long (15+
+`sufficient: false` and the grader reads their rubric. Three are long (15+
 steps). `needs.apps` follows the rule above: each entry is required, a nested list is alternatives (Google, AOSP or
 Samsung build), and Settings is `com.android.settings` alone. The Settings oracles go through Settings' search
 (`com.android.settings.intelligence` on AOSP); an agent can take the menus instead.
@@ -131,7 +134,6 @@ Samsung build), and Settings is `com.android.settings` alone. The Settings oracl
 | android.settings.color-motion | Settings | dev | 12 | color inversion, `animator_duration_scale` and `cmd uimode night`, one read |
 | android.settings.three-changes | Settings | dev | 18 (long) | notification history, `time_12_24` and `animator_duration_scale`, one read |
 | android.clock.timer | Clock | dev | 8 | `dumpsys alarm`: the TIMER_EXPIRED alarm's original length |
-| android.clock.new-alarm | Clock | dev | 16 (long) | `dumpsys alarm` next alarm clock, as weekday and time |
 | android.contacts.favorite | Contacts | dev | 3 | `content query` of the nonce's contacts: target starred, decoy not |
 | android.contacts.work-phone | Contacts | dev | 3 | answer: the work number, not the mobile, home or the decoy's work number; phone rows unchanged |
 | android.files.delete-pdfs | Files | dev | 8 | `ls -1` of the run's folder: the PDFs gone, the text file and the folder kept |
@@ -151,6 +153,10 @@ alarm ringing sooner (the phone's own 8:30 and 9:00 alarms are off on a fresh ph
 them). Settings tasks save and put back the phone's values as round 1's do; Contacts and Files tasks clean up by nonce;
 Clock tasks dismiss their alarms by label.
 
+android.clock.new-alarm was dropped: after Repeat checks all seven days, it unchecked and set single days, and Clock
+writes each day's box and redraws the row a moment after the click, sometimes after the act's readback. No `expect`
+can tell which day changed (each box reads "checked" or "not checked"), so the oracle couldn't wait for it.
+
 ## How wide the confidence interval is
 
 `compare` reports the difference between two arms' success rates with `pairedDifference` (src/stats.ts): runs are
@@ -168,7 +174,7 @@ tasks with replacement from round 1's, and for each task 3 seeds with replacemen
 | 20 | 120 | 0.212 | 0.137 | 0% |
 | 24 | 144 | 0.191 | 0.125 | 0% |
 | 30 | 180 | 0.169 | 0.112 | 0% |
-| 38 (this suite) | 228 | 0.148 | 0.099 | 0% |
+| 38 | 228 | 0.148 | 0.099 | 0% |
 | 50 | 300 | 0.127 | 0.086 | 0% |
 | 80 | 480 | 0.098 | 0.068 | 0% |
 | 120 | 720 | 0.079 | 0.055 | 0% |
@@ -176,7 +182,7 @@ tasks with replacement from round 1's, and for each task 3 seeds with replacemen
 | 300 | 1800 | 0.049 | 0.035 | 59% |
 | 400 | 2400 | 0.043 | 0.030 | 100% |
 
-With 38 tasks the interval is about ±15 points, so a 5-point difference between two models is not visible: the interval
+With this suite's 37 tasks the interval is about ±15 points, so a 5-point difference between two models is not visible: the interval
 around it would run from about -10 to +20. Even the paired-t part alone is ±10 points. The Newcombe part sets the width,
 and it counts tasks, not runs, so more seeds don't narrow it; only more tasks do. A 5-point difference becomes visible at
 about 300 tasks at round 1's agreement. Below that, this suite tells apart differences of 15 points or more.

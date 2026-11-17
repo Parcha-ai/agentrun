@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.text-size-bold",
-  "version": 1,
+  "version": 2,
   "title": "Set the font size and turn on bold text in Settings",
   "split": "heldout",
   "tags": ["settings", "slider", "toggle", "search"],
@@ -10,7 +10,7 @@
     "x": {
       "pick": [
         { "say": "115%", "start": "1.0", "button": "Make larger", "re": "^1\\.150*" },
-        { "say": "100%", "start": "1.15", "button": "Make smaller", "re": "^1(?:\\.0*)?" },
+        { "say": "100%", "start": "1.15", "button": "Make smaller", "re": "^1(\\.0*)?" },
         { "say": "130%", "start": "1.15", "button": "Make larger", "re": "^1\\.30*" },
         { "say": "115%", "start": "1.3", "button": "Make smaller", "re": "^1\\.150*" }
       ]
@@ -25,7 +25,7 @@
     },
     {
       "method": "exec.run",
-      "why": "Start two font-size steps away from the asked size, with bold text off.",
+      "why": "Start one font-size step away from the asked size, with bold text off.",
       "params": { "argv": ["sh", "-c", "settings put system font_scale {{x.start}} && settings put secure font_weight_adjustment 0"], "timeoutMs": 20000 }
     },
     {
@@ -40,8 +40,9 @@
     {
       "id": "size-and-bold",
       "kind": "exec",
-      "why": "Prints system/font_scale, then secure/font_weight_adjustment. Font size {{x.say}} is a font_scale of {{x.say}} / 100; bold text on is a weight adjustment of 300. Setup left {{x.start}} and 0, so an agent that does nothing fails.",
-      "argv": ["sh", "-c", "echo \"$(settings get system font_scale) $(settings get secure font_weight_adjustment)\""],
+      "why": "Prints system/font_scale, then secure/font_weight_adjustment. Font size {{x.say}} is a font_scale of {{x.say}} / 100; bold text on is a weight adjustment of 300. Settings writes the size 300 ms after a press of Make larger or Make smaller (1.1 s when it wrote one in the 800 ms before), so the pair is read again a tenth of a second apart until it matches, at most 30 reads. Setup left {{x.start}} and 0, so an agent that does nothing fails.",
+      "argv": ["sh", "-c", "i=0; while :; do v=\"$(settings get system font_scale) $(settings get secure font_weight_adjustment)\"; echo \"$v\" | grep -Eq \"$1\" && break; i=$((i + 1)); [ $i -ge 30 ] && break; sleep 0.1; done; echo \"$v\"", "sh", "{{x.re}} 300$"],
+      "timeoutMs": 30000,
       "stdout": { "matches": "{{x.re}} 300\\s*$" }
     }
   ],
@@ -57,6 +58,11 @@
       "method": "ui.act",
       "why": "Wait for Settings' window: on a fresh phone it shows a moment after am start -W returns.",
       "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "role": "window" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Wait for the home page: the window may still be the splash screen, and a find reads the screen once.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "text": "Search settings", "timeoutMs": 10000 } }
     },
     {
       "method": "ui.act",

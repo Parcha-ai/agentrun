@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.settings.time-format",
-  "version": 1,
+  "version": 2,
   "title": "Switch the clock between 12-hour and 24-hour time in Settings",
   "split": "dev",
   "tags": ["settings", "toggle", "search"],
@@ -57,6 +57,11 @@
       "method": "ui.act",
       "why": "Wait for Settings' window: on a fresh phone it shows a moment after am start -W returns.",
       "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "window": { "role": "window" } } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Wait for the home page: the window may still be the splash screen, and a find reads the screen once.",
+      "params": { "target": { "app": "com.android.settings" }, "steps": [], "expect": { "text": "Search settings", "timeoutMs": 10000 } }
     },
     {
       "method": "ui.act",

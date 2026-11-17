@@ -37,7 +37,7 @@ const problemsOf = (spec, files) => {
 	return "";
 };
 
-test("every suite in the package loads; mac-dev, android-dev and linux-desktop are half dev and half held out", () => {
+test("every suite in the package loads; mac-dev and linux-desktop are half dev and half held out, android-dev within one", () => {
 	const counts = {};
 	for (const suite of ["fake", "ui-fixture", "mac-dev", "android-dev", "linux-desktop", "macosworld", "mobileworld"]) {
 		const tasks = loadSuite(join(SUITES, suite));
@@ -48,9 +48,9 @@ test("every suite in the package loads; mac-dev, android-dev and linux-desktop a
 		}
 	}
 	assert.deepEqual(counts["mac-dev"], { all: 20, dev: 10 });
-	assert.deepEqual(counts["android-dev"], { all: 38, dev: 19 });
+	assert.deepEqual(counts["android-dev"], { all: 37, dev: 18 });
 	assert.deepEqual(counts["linux-desktop"], { all: 10, dev: 5 });
-	assert.equal(counts.macosworld.all + counts.mobileworld.all, 18);
+	assert.equal(counts.macosworld.all + counts.mobileworld.all, 16);
 });
 
 test("the ported tasks name their source, its revision and licence", () => {
@@ -121,7 +121,41 @@ test("a phone task that denies exec has an oracle, and the oracle drives only th
 			for (const call of task.spec.oracle) assert.match(call.method, ui, `${task.spec.id}'s oracle calls ${call.method}`);
 		}
 	}
-	assert.equal(denied, 22);
+	assert.equal(denied, 37);
+});
+
+test("a phone oracle waits for its app's window, then for the text its first find needs", () => {
+	// am start -W can return before the app's window reaches the accessibility tree: an act aimed at the app is then
+	// not_found at once, and one with no target reads the app in front, the launcher. A window wait aimed at the app
+	// waits for it (apps.launch waits for it too), but its first window may be the splash screen, and a find reads the
+	// screen once, when its act starts: so a text wait comes first.
+	const finds = (value) => value !== null && typeof value === "object" && (Object.hasOwn(value, "find") ||Object.values(value).some(finds));
+	const early = [];
+	for (const suite of ["android-dev", "mobileworld"]) {
+		for (const task of loadSuite(join(SUITES, suite))) {
+			if (task.spec.exec !== "deny") continue;
+			const [first] = task.spec.oracle;
+			if (first.method !== "apps.launch" && !(first.method === "ui.act" && first.params.target?.app && first.params.steps.length === 0 && first.params.expect?.window)) early.push(`${task.spec.id} 1: no window wait first`);
+			let ready = false;
+			const windowed = new Set();
+			for (const [i, call] of task.spec.oracle.entries()) {
+				if (call.method === "apps.launch") {
+					ready = false;
+					windowed.add(call.params.id);
+				}
+				if (call.method !== "ui.act") continue;
+				const { target, steps, expect } = call.params;
+				if (steps.length === 0 && expect?.window) {
+					if (target?.app) windowed.add(target.app);
+					continue;
+				}
+				if (finds(steps) && !ready) early.push(`${task.spec.id} ${i + 1}: a find before a text wait`);
+				if (steps.length === 0 && target?.app && !windowed.has(target.app)) early.push(`${task.spec.id} ${i + 1}: ${target.app}'s text before its window`);
+				ready = true;
+			}
+		}
+	}
+	assert.deepEqual(early, []);
 });
 
 test("a good task loads; its bench groups come from its setup and checks", () => {
@@ -247,7 +281,7 @@ test("needs.apps in the suites: each entry required, a list of alternatives wher
 	assert.deepEqual(apps("mobileworld.check-invoice-1"), [[...FILES, "com.google.android.apps.docs"]]);
 	assert.deepEqual(apps("android.share.link-to-contact"), ["com.android.chrome", CONTACTS]);
 	assert.deepEqual(apps("mobileworld.take-selfie"), [["com.google.android.GoogleCamera", "com.android.camera2", "com.android.camera", "com.sec.android.app.camera"]]);
-	for (const task of suites.filter((one) => /^(android\.settings|mobileworld\.(adjust-brightness|open-flight|close-flight))/.test(one.spec.id))) assert.deepEqual(task.spec.needs.apps, ["com.android.settings"], task.spec.id);
+	for (const task of suites.filter((one) => /^(android\.settings|mobileworld\.(open-flight|close-flight))/.test(one.spec.id))) assert.deepEqual(task.spec.needs.apps, ["com.android.settings"], task.spec.id);
 	// apps.list lists the apps a person can open: never a system service such as systemui.
 	for (const task of suites) assert.ok(!JSON.stringify(task.spec.needs.apps ?? []).includes("com.android.systemui"), task.spec.id);
 });

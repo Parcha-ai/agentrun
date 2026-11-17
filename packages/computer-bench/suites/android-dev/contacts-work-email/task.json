@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.contacts.work-email",
-  "version": 1,
+  "version": 2,
   "title": "Add an email address with a given label to a contact in Contacts",
   "split": "heldout",
   "tags": ["contacts", "edit", "form", "decoy"],
@@ -69,7 +69,12 @@
   "oracle": [
     {
       "method": "ui.act",
-      "why": "Wait for the contact list: on a fresh phone it shows a moment after am start -W returns.",
+      "why": "Wait for Contacts' window: am start -W can return before it reaches the accessibility tree, and a text wait aimed at an app with no window is not_found at once.",
+      "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } }
+    },
+    {
+      "method": "ui.act",
+      "why": "Wait for the contact list: the window may still be the splash screen.",
       "params": { "target": { "app": "com.android.contacts" }, "steps": [], "expect": { "text": "{{p.target}} {{nonce}}", "timeoutMs": 10000 } }
     },
     {
