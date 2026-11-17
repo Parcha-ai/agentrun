@@ -68,18 +68,21 @@ export const secretConfigName = (name: string): boolean => {
   return words.some((word, i) => SECRET_WORDS.has(word) && !counted(i)) || (words.at(-1) === "key" && !counted(words.length - 1)) || SECRET_PAIRS.some(([first, then]) => words.some((word, i) => word === first && words[i + 1] === then));
 };
 
-/** Whether `value` is an http(s) address that carries a credential: a password in its userinfo (user:pass@), or a query
- *  parameter with a value whose name is a credential's (secretConfigName: ?token=, ?api_key=, ?access_token=, ?sig=). Such
- *  a value is sealed whole, whatever its field's name. A user name alone, or no such parameter, carries none. */
+/** An address in any scheme with an authority (scheme://...): its authority, path, query and fragment, split by hand so a
+ *  form a URL parser refuses (mongodb://h1:1,h2:2/db) is read too. */
+const ADDRESS = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)[^?#]*(\?[^#]*)?(#.*)?$/is;
+/** Whether query or fragment `part` (with its leading ? or #) has a parameter with a value named like a credential. */
+const credentialParam = (part: string | undefined): boolean => part !== undefined && [...new URLSearchParams(part.slice(1))].some(([name, given]) => given !== "" && secretConfigName(name));
+
+/** Whether `value` is an address, in any scheme (https, postgres, redis, amqp, mongodb+srv...), that carries a
+ *  credential: a user part (user:pass@, :pass@, or a token alone as in https://TOKEN@host: any userinfo), or a query or
+ *  fragment parameter with a value whose name is a credential's (secretConfigName: ?token=, ?api_key=, #access_token=).
+ *  Such a value is sealed whole, whatever its field's name. Conservative: a user name with no secret (ssh://git@host)
+ *  is sealed too. */
 export const credentialUrl = (value: string): boolean => {
-  if (!/^https?:\/\//i.test(value)) return false;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
-  return url.password !== "" || [...url.searchParams].some(([name, given]) => given !== "" && secretConfigName(name));
+  const parts = ADDRESS.exec(value);
+  if (!parts) return false;
+  return parts[1]!.includes("@") || credentialParam(parts[2]) || credentialParam(parts[3]);
 };
 
 /** Whether `value` is one a credential's field seals: a string, not empty, or a number (its decimal text is what is

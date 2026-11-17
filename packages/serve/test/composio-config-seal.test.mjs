@@ -768,7 +768,8 @@ test("a config value that is an address with a credential in it (a password in i
   const composio = await import("../dist/trigger-composio.js");
   const config = { plain: "https://hooks.example.com/feed?page=2", userinfo: secretUrl("userinfo", fakeKey()), token: secretUrl("token", fakeKey()), api_key_q: secretUrl("api_key", fakeKey()), access: secretUrl("access_token", fakeKey()), signed: secretUrl("sig", fakeKey()), name_only: "https://deals@hooks.example.com/feed" };
   const fields = Object.fromEntries(Object.entries(config).map(([name, value]) => [name === "token" ? "feed_a" : name === "api_key_q" ? "feed_b" : name, value]));
-  assert.deepEqual(composio.sealedConfigFields(fields).sort(), ["access", "feed_a", "feed_b", "signed", "userinfo"], "each address carrying a credential is sealed whole; the plain one and a user name alone are not");
+  // A user part alone is sealed too: it may be a token (https://TOKEN@host), and the rule can't tell a name from one.
+  assert.deepEqual(composio.sealedConfigFields(fields).sort(), ["access", "feed_a", "feed_b", "name_only", "signed", "userinfo"], "each address carrying a credential, or a user part alone, is sealed whole; the plain one is not");
   const s = await setup(t);
   const key = fakeKey();
   const secret = fakeKey();

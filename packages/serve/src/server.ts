@@ -147,6 +147,7 @@ import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -1828,6 +1829,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
   // Then, not waited on: a trigger kept with a value in the clear in a field only its event's schema marks, sealed once
   // the schemas are read from Composio (composio-triggers.ts sealMarked). Drained by stop before the store closes.
+  /** Trigger `id`'s create answer kept under an Idempotency-Key, its fields `source` now seals (sealed_config) masked: the
+   *  after-start seal by the events' schemas finds fields the name rule (shownTrigger, at the start's rewrite of the
+   *  records) does not, and a replay must not hand one back. The file is written again when one changed. */
+  const cachedMasked = async (id: string, source: Record<string, unknown>) => {
+    const fields = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as unknown[]).filter((name): name is string => typeof name === "string") : [];
+    let changed = 0;
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const config: Record<string, unknown> = { ...body.source.config };
+      const hit = fields.filter((name) => Object.hasOwn(config, name) && config[name] !== SEALED_MASK);
+      if (!hit.length) continue;
+      for (const name of hit) config[name] = SEALED_MASK;
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: fields } } } });
+      changed++;
+    }
+    if (changed) await keep();
+  };
   const scrubSaid = ({ left }: { left?: string }) => {
     if (!left) return;
     const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
@@ -1835,7 +1854,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     else process.stderr.write(`agentrun-serve: ${line}\n`);
   };
   schemaSealed = composioTriggers
-    .sealMarked(async (id, source) => void (await sealing.triggers.update(id, { source })), async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work)) : void (await work())))
+    // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
+    // start's scrub runs it before it serves).
+    .sealMarked(async (id, source, updatedAt) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
+      if (written) await cachedMasked(id, source);
+      return written;
+    }, async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work, { vacuum: false })) : void (await work())))
     .catch((error: Error) => void (stopping.signal.aborted || process.stderr.write(`agentrun-serve: sealing the composio triggers' config by their events' schemas: ${error.message}\n`)));
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
