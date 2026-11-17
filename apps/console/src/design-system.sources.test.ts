@@ -38,6 +38,8 @@ const RULES: Rule[] = [
   { id: "button-by-hand", says: "An action is a Button.", fix: '<Button size="xs|sm|md"> from @/components/ui', find: /^<button\b.*["`\s]caps\s[^"`]*\bborder\b(?!-[blrtxy]\b)|^<button\b.*["`\s]border\s[^"`]*\bcaps\b/, skip: outsideUi, tag: true },
   { id: "field-by-hand", says: "A field is Input, Textarea or Picker.", fix: "the primitive from @/components/ui, inside a Field",
     find: /^<(?:select|textarea)\b|^<input\b(?!.*\btype="(?:hidden|file|checkbox|radio)")/, skip: outsideUi, tag: true },
+  { id: "toolbar-by-hand", says: "A page's top bar is pageToolbarClass: 48px, its edge level with the one under the navigation's logo.", fix: "cn(pageToolbarClass, \"flex-wrap gap-2 px-5\") from @/components/ui, with control-sm controls in it",
+    find: /^<header\b.*\bmin-h-12\b/, skip: outsideUi, tag: true },
   { id: "choice-by-hand", says: "A checkbox or a radio shows in the brand's colour.", fix: "Checkbox or Radio from @/components/ui, or accent-primary on the input; a segment's own radio is sr-only",
     find: /^<input\b.*\btype="(?:checkbox|radio)"/, unless: /sr-only|accent-primary/, skip: outsideUi, tag: true },
 ];
@@ -71,13 +73,13 @@ function withoutComments(text: string): string {
   return out;
 }
 
-/** Each opening tag of a native control in a source, joined onto one line, with the line it starts on. A `>` inside
+/** Each opening tag of a native control (or a header, for toolbar-by-hand) in a source, joined onto one line, with the line it starts on. A `>` inside
  *  braces (an arrow function, a comparison) or inside quotes (a title) is not the tag's end. A tag in a comment, or
  *  one that is the text of a string, is no control and is not read. */
 function controlTags(text: string): { line: number; text: string }[] {
   const tags: { line: number; text: string }[] = [];
   text = withoutComments(text);
-  for (const m of text.matchAll(/<(?:button|input|select|textarea)\b/g)) {
+  for (const m of text.matchAll(/<(?:button|input|select|textarea|header)\b/g)) {
     if (/["'`]/.test(text[m.index - 1] ?? "")) continue;
     let end = m.index + m[0].length;
     for (let depth = 0, quote = ""; end < text.length; end++) {
@@ -149,6 +151,9 @@ describe("the console's sources follow the design system", () => {
     expect(breaks(rule("choice-by-hand"), one(slashes)[0]!)).toBe(false);
     expect(breaks(rule("choice-by-hand"), one('<input type="checkbox" title="a /* b" className="accent-primary" />')[0]!)).toBe(false);
     expect(one("<p>Couldn't read it</p> // <input name=\"q\" />\n<input name=\"real\" />")).toEqual(['<input name="real" />']);
+    // A page's top bar written by hand is found however its opening tag is wrapped; one on pageToolbarClass is not.
+    expect(breaks(rule("toolbar-by-hand"), one('<header aria-label="Bar"\n  className="flex min-h-12 border-b px-5">')[0]!)).toBe(true);
+    expect(breaks(rule("toolbar-by-hand"), one('<header\n  className={cn(pageToolbarClass, "gap-2 px-5")}>')[0]!)).toBe(false);
   });
   it("reads a wrapped class list's focus replacement, a token's variable in any spelling, and layer 0", () => {
     const rule = (id: string) => RULES.find((r) => r.id === id)!;
