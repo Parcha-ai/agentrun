@@ -70,8 +70,10 @@ case $port in
     exit 2
     ;;
 esac
+own=127.0.0.1 # key-gate: loopback-rule the loopback of the container the server runs in
+# Listening on every address (none named, or a wildcard), the server answers on its own loopback.
 case $listen in
-  '' | 0.0.0.0 | :: | '[::]') host=127.0.0.1 ;; # key-gate: loopback-rule the server's own loopback, inside its container
+  '' | 0.0.0.0 | :: | '[::]') host=$own ;;
   *:*) host="[$listen]" ;;
   *) host=$listen ;;
 esac
