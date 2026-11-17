@@ -159,7 +159,8 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
           <p className="sr-only" aria-live="polite">{at ? readout(at).join(", ") : ""}</p>
         </div>
         <p className="mt-1 text-small text-muted-foreground">
-          Each point adds a run that did a job, all in: its own cost, its look-back and grade, its audit&apos;s shadow run and its share of its workflow revision&apos;s check, with each replay run on the run before it.{both ? " The dashed line is the mean of the agent's own runs before the first promotion, times the runs." : ""}
+          Each point adds a run that did a job, all in: its own cost, its look-back and grade, its audit&apos;s shadow run and its share of its workflow revision&apos;s check, with each replay run on the run before it.
+          {both ? " The dashed line is the mean of the agent's own runs before the first promotion, times the runs." : ""}
           {unattributed > 0 ? ` ${usd(unattributed)} of check spend is not on a run yet: its revision's next served runs carry it, or it stopped.` : ""}
         </p>
       </figure>
