@@ -167,6 +167,15 @@ package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps i
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
 once without checking again (a key some harness reads would, with `why=key`).
 
+## Anonymous usage counts
+
+The server can send three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
+a random id kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a
+range; never a prompt, a file, a key or a name. This release sends nothing: the receiver's key is not set.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI` and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
+event on stderr and sends none. The start that first could send prints one notice and sends nothing at that start.
+[docs/telemetry.md](../../docs/telemetry.md) lists every field.
+
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
