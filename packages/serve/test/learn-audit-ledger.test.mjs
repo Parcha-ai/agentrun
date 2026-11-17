@@ -98,7 +98,7 @@ const FINAL = ["ended", "failed", "stopped"];
  *  by its check (S3a's record, at the landed commit), and a runner claiming every run from its stored launch. The
  *  workflow's node submits `submit(requestText)` ({answer: 42, sure: true} by default); the agent answers AGENT_SAYS; a
  *  compile ask is answered with BROKEN_DRAFT. */
-async function world(t, { learning, prior = 0, submit, paused = false } = {}) {
+async function world(t, { learning, prior = 0, submit, paused = false, env = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-ledger-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -119,7 +119,7 @@ async function world(t, { learning, prior = 0, submit, paused = false } = {}) {
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
-  const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   /** The runner, started once (`paused`: only when the test resumes it, and one run at a time, so the runs made before are
    *  claimed one by one, oldest first, and each shadow is made in the order of its served run). */
@@ -385,6 +385,86 @@ test("(r2) a run a trigger started (GitHub's) is never audited: drawn by its id,
   assert.equal(api.metrics?.not_auditable, undefined);
   assert.ok(await w.shadowOf("api-1"), "a run over the API is audited");
   assert.equal(await notAuditableOf(w.server, "agent-1", "answer", DIGEST, { stop_window: 100 }), 1, "the read counts the triggered run");
+});
+
+// Review on #3061 r3 (PRRT_kwDOUmdVMs64P8Kc): a hold's disagreement texts are redacted whole, then cut (learn/secrets.ts
+// excerptShown, the one rule a check's use too): cut first, a secret straddling CHECK_TEXT_MAX left its prefix, which no
+// later redactor (the promotions read, the recompile prompt) matches.
+test("(r3) a secret straddling char 1,200 of an audited input leaves no 8 characters of it in the ledger, the hold, the promotions read or the recompile prompt", { timeout: 300_000 }, async (t) => {
+  const { CHECK_TEXT_MAX, promotionsShown } = await import("../dist/learn/promote.js");
+  const { secretsShown } = await import("../dist/learning.js");
+  const { readLearning } = await import("../dist/learn/folder.js");
+  const secret = ["Zq81Trb", "N4wX7cV", "2mKp09L", "dHy5aEg", "3UfJxQ"].join("");
+  // The input as the hold reads it is the launch's input in JSON: {"content":"<question>?","question":...}; the secret
+  // starts 10 characters before the cut.
+  const head = '{"content":"';
+  const question = `Leaky ${"filler ".repeat(200)}`.slice(0, CHECK_TEXT_MAX - 10 - head.length) + secret + " and more words after it";
+  const w = await world(t, { learning: { compile_after: 5, audit_every: 1, hold_window: 1, hold_disagree: 1 }, prior: 5, env: { AUDIT_TEST_TOKEN: secret }, submit: (text) => (text.includes("Leaky") ? WRONG : { answer: 42, sure: true }) });
+  const served = await w.start("leak-1", question);
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  const at = JSON.stringify(readLaunchBody((await w.server.runs.launch("leak-1")).body).input).indexOf(secret);
+  assert.ok(at < CHECK_TEXT_MAX && at + secret.length > CHECK_TEXT_MAX, `the secret straddles the cut: at ${at}`);
+  const next = await w.start("leak-next", "Question 99");
+  assert.equal(next.metrics?.path, "agent", `held on the one disagreement: ${JSON.stringify(next.metrics)}`);
+  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  assert.deepEqual([held.decided, held.source, held.audit.disagreements.length], ["hold", "audit", 1], JSON.stringify(held));
+  assert.ok(held.audit.disagreements[0].input.includes("Leaky"), "the hold quotes the input");
+  const [ask] = w.asks.get("leak-next");
+  assert.ok(fenceOf(ask ?? "").includes("Leaky"), `the recompile ask quotes it: ${(ask ?? "").slice(0, 300)}`);
+  const folder = learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" });
+  let ledger;
+  try {
+    ledger = await readLearning(folder.workspace, async (read) => (read.snapshot?.audits ? read.body(AUDITS_FILE, read.snapshot.audits.oid) : ""));
+  } finally {
+    await folder.end();
+  }
+  assert.ok(ledger.includes("leak-1"), ledger);
+  const leaks = (text) => Array.from({ length: secret.length - 7 }, (_, i) => secret.slice(i, i + 8)).filter((part) => text.includes(part));
+  assert.deepEqual(leaks(ledger), [], "the ledger");
+  assert.deepEqual(leaks(JSON.stringify(held)), [], "the hold record");
+  assert.deepEqual(leaks(JSON.stringify(promotionsShown(await promotionsOf(w.server.settings, "agent-1"), secretsShown([secret])))), [], "the promotions read");
+  assert.deepEqual(leaks(ask), [], "the recompile prompt");
+});
+
+// Review on #3061 r3 (PRRT_kwDOUmdVMs64P8Kg): the hold rule counts only the rows of the runs the digest's current
+// promotion served (each row keeps the promotion it was drawn under), so an owner's replay that promotes a held digest
+// again is never held, or stopped, by the rows it was held on.
+test("(r3) an audit hold, then the owner's replay promotes it again: the next claim, with no new served runs, neither holds nor stops it", { timeout: 300_000 }, async (t) => {
+  const { recordPromotion } = await import("../dist/learn/promote.js");
+  const picked = Array.from({ length: 200 }, (_, i) => `o-${i}`).filter((id) => drawn(id, 5)).slice(0, 2);
+  const quiet = Array.from({ length: 200 }, (_, i) => `o-${i}`).filter((id) => !drawn(id, 5)).slice(0, 2);
+  const w = await world(t, { learning: { audit_every: 5, hold_window: 5, hold_disagree: 2 }, submit: answers({ wrong: picked.map((id) => `Question for ${id}`) }) });
+  for (const id of picked) assert.equal((await w.start(id, `Question for ${id}`)).metrics?.path, "workflow");
+  assert.equal((await w.start(quiet[0], `Question for ${quiet[0]}`)).metrics?.path, "agent", "held on its 2 disagreements");
+  const records = await promotionsOf(w.server.settings, "agent-1");
+  const held = records.at(-1);
+  assert.deepEqual([held.decided, held.source, held.audit.stopped], ["hold", "audit", undefined], JSON.stringify(held));
+  // The owner's replay of the held digest passes: the record runner/promotion.ts settle writes (source replay, its since).
+  const promoted = { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", source: "replay", reason: "replayed on 5 graded runs: within 5 pts", replay: { n: 5, wf_acc: 1, agent_acc: 1, alone: 5, of: [], cost_usd: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 } }, since: 0, commit: records[0].commit };
+  assert.equal((await recordPromotion(w.server.settings, "agent-1", promoted, (was) => was?.at === held.at)).won, true);
+  const next = await w.start(quiet[1], `Question for ${quiet[1]}`);
+  assert.deepEqual([next.metrics?.path, next.metrics?.workflow_digest], ["workflow", DIGEST], `served again: ${JSON.stringify(next.metrics)}\n${w.logs.filter((line) => line.includes("workflow-first")).join("\n")}`);
+  const after = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  assert.deepEqual([after.decided, after.source, after.audit], ["promote", "replay", undefined], `no hold, no stop: ${JSON.stringify(after)}`);
+});
+
+// Review on #3061 r3 (PRRT_kwDOUmdVMs64P8Kj): an audit is found by the `started` row startAudit writes, never by a window
+// of the agent's newest runs: a shadow that ends after 1,300 newer runs started still settles.
+test("(r3) a shadow that ends after 1,300 newer runs of the agent started still settles into the ledger and holds", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, submit: (text) => (text.includes("Late question") ? WRONG : { answer: 42, sure: true }) });
+  assert.equal((await w.start("late-1", "Late question")).metrics?.path, "workflow");
+  assert.equal((await w.shadowOf("late-1")).row.state, "ended");
+  // 1,300 runs of the agent started after it (imported: ended, never claimed), each newer than the shadow.
+  const from = Date.now() + 1_000;
+  for (let i = 0; i < 1_300; i++) {
+    await w.server.importRun({ id: `newer-${i}`, agentId: "agent-1", revisionId: "rev-1", importedFrom: { source: "pi", session: `s-${i}` }, launch: { body: { input: { content: "hi" }, title: "t", place: { mode: "runner" } } }, startedAt: from + i, transcript: [] });
+  }
+  const next = await w.start("late-next", "Question next");
+  const rows = await w.audits();
+  assert.deepEqual(rows.map((row) => [row.run, row.agreed]), [["late-1", false]], JSON.stringify(rows));
+  assert.equal(next.metrics?.path, "agent", `held on it: ${JSON.stringify(next.metrics)}`);
+  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  assert.deepEqual([held.decided, held.source, held.audit.disagreements.map((one) => one.served)], ["hold", "audit", ["late-1"]], JSON.stringify(held));
 });
 
 /** A store of `served` runs the learned workflow `answer` served at `digest` and a shadow of each (newest first, as the
