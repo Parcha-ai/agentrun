@@ -34,35 +34,52 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange }: {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  // A read's answer is shown only if no other read or write began or ended since it was asked (`asked`), and none starts
+  // while a write is out (`writing`): a status read that raced a turn on or off never puts back what it replaced.
   const asked = useRef(0);
+  const writing = useRef(false);
+  const reading = useRef(false);
   useEffect(() => {
     let live = true;
     v2.claudeLogin().then((body) => { if (live) setView(claudeLoginView(body)); }, () => { if (live) setView(null); });
     return () => { live = false; };
   }, [v2]);
+  const refresh = () => {
+    if (reading.current || writing.current) return;
+    reading.current = true;
+    const n = ++asked.current;
+    v2.claudeLogin().then((body) => {
+      const next = claudeLoginView(body);
+      if (n === asked.current && next) setView(next);
+    }, () => {}).finally(() => { reading.current = false; });
+  };
 
   // After the CLI's sign-in started here, the status is read until it says signed in, so the row says so by itself.
   const waiting = startedAt !== null && view?.state !== "signed_in";
   useEffect(() => {
     if (!waiting) return;
-    let reading = false;
-    const read = () => {
-      if (reading || document.visibilityState !== "visible") return;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       if (Date.now() - startedAt! > POLL_FOR_MS) { setStartedAt(null); return; }
-      reading = true;
-      const n = ++asked.current;
-      v2.claudeLogin().then((body) => {
-        const next = claudeLoginView(body);
-        if (n === asked.current && next) setView(next);
-      }, () => {}).finally(() => { reading = false; });
-    };
-    const timer = setInterval(read, POLL_MS);
+      refresh();
+    }, POLL_MS);
     return () => clearInterval(timer);
   }, [v2, waiting]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A sign-in run in a terminal shows when the person comes back to this page.
+  const awaitingLogin = view?.state === "signed_out" || view?.state === "no_cli" || view?.state === "unknown";
+  useEffect(() => {
+    if (!awaitingLogin) return;
+    const back = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", back);
+    document.addEventListener("visibilitychange", back);
+    return () => { window.removeEventListener("focus", back); document.removeEventListener("visibilitychange", back); };
+  }, [v2, awaitingLogin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!view) return null;
   const act = async (write: () => Promise<ClaudeLoginView>, changes: boolean) => {
     setProblem(null); setBusy(true);
+    writing.current = true;
     asked.current++;
     try {
       setView(await write());
@@ -71,7 +88,11 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange }: {
     } catch (e) {
       setProblem(words(e));
       return false;
-    } finally { setBusy(false); }
+    } finally {
+      asked.current++;
+      writing.current = false;
+      setBusy(false);
+    }
   };
   const state = STATE[view.state];
   const on = view.state !== "off";
@@ -90,11 +111,14 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange }: {
           <div className="space-y-2">
             <p className="text-body">{view.state === "signed_out" ? SIGNED_OUT : view.state === "no_cli" ? NO_CLI : UNKNOWN}</p>
             {command}
-            {writable && view.can_start && view.state !== "no_cli" && (
-              <Button type="button" size="sm" variant="solid" disabled={busy || waiting} onClick={() => void act(() => v2.startClaudeLogin(), false).then((ok) => ok && setStartedAt(Date.now()))}>
-                {waiting ? "Waiting for the browser…" : "Open the CLI's sign-in here"}
-              </Button>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {writable && view.can_start && view.state !== "no_cli" && (
+                <Button type="button" size="sm" variant="solid" disabled={busy || waiting} onClick={() => void act(() => v2.startClaudeLogin(), false).then((ok) => ok && setStartedAt(Date.now()))}>
+                  {waiting ? "Waiting for the browser…" : "Open the CLI's sign-in here"}
+                </Button>
+              )}
+              <Button type="button" size="sm" disabled={busy} onClick={refresh}>Check again</Button>
+            </div>
           </div>
         )}
         {!on && view.refused && <p className="text-body" role="status">{view.refused}</p>}

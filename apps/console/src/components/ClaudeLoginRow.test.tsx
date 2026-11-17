@@ -21,13 +21,14 @@ const OFF: ClaudeLoginView = { state: "off", place: "agentrun", command: COMMAND
 
 type Call = { method: string; path: string; body?: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-function server(read: () => ClaudeLoginView | Response, write: (call: Call) => ClaudeLoginView | Response) {
+type Answer = ClaudeLoginView | Response;
+function server(read: () => Answer | Promise<Answer>, write: (call: Call) => Answer | Promise<Answer>) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call: Call = { method: init?.method ?? "GET", path: String(url), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) };
     calls.push(call);
     if (call.path === "/v2/settings/tool-keys") return json(200, KEYS);
-    const answer = call.method === "GET" ? read() : write(call);
+    const answer = await (call.method === "GET" ? read() : write(call));
     return answer instanceof Response ? answer : json(200, answer);
   }) as typeof globalThis.fetch;
   return { v2: createClient({ fetch }), calls };
@@ -86,6 +87,61 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     const page = await open(v2);
     expect(page.row()!.textContent).toContain(COMMAND);
     expect(page.button(/sign-in/i)).toBeUndefined();
+  });
+
+  it("a sign-in run in a terminal shows when the person comes back to the page, or on Check again", async () => {
+    let view: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: false };
+    const { v2 } = server(() => view, () => view);
+    const page = await open(v2);
+    expect(page.row()!.textContent).toContain(COMMAND);
+    view = { ...OFF, state: "signed_in", can_start: false, account: { method: "claude.ai", email: "person@example.com", plan: "pro" } };
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await page.settle();
+    expect(page.row()!.textContent).toContain("Signed in as person@example.com (Pro)");
+
+    view = { ...OFF, state: "signed_out", can_start: false };
+    const again = server(() => view, () => view);
+    act(() => root?.unmount());
+    const second = await open(again.v2);
+    view = { ...OFF, state: "signed_in", can_start: false, account: { method: "claude.ai", email: "person@example.com" } };
+    await second.click(/^Check again$/);
+    expect(second.row()!.textContent).toContain("Signed in as person@example.com");
+  });
+
+  it("a status read never puts back the state a Turn off replaced, whether asked before it or while it was out", async () => {
+    const signedOut: ClaudeLoginView = { ...OFF, state: "signed_out", place: "machine" };
+    const late: ((view: ClaudeLoginView) => void)[] = [];
+    let reads = 0;
+    let deleted: ((view: ClaudeLoginView) => void) | undefined;
+    const { v2 } = server(
+      () => (++reads === 1 ? signedOut : new Promise<Answer>((resolve) => { late.push(resolve); })),
+      () => new Promise<Answer>((resolve) => { deleted = resolve; }),
+    );
+    const page = await open(v2);
+    // The page comes back into view while Turn off is out.
+    await page.click(/^Turn off$/);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { deleted!(OFF); });
+    await page.settle();
+    expect(page.row()!.querySelector("form")).not.toBeNull();
+    // Any read still out answers now, with what was true when it was asked.
+    await act(async () => { for (const resolve of late.splice(0)) resolve(signedOut); });
+    await page.settle();
+    expect(page.row()!.querySelector("form")).not.toBeNull();
+    expect(page.row()!.textContent).not.toContain(COMMAND);
+
+    // A read asked before Turn off, answering after it.
+    act(() => root?.unmount());
+    reads = 0;
+    const before = await open(v2);
+    await before.click(/^Check again$/);
+    expect(late.length).toBe(1);
+    await before.click(/^Turn off$/);
+    await act(async () => { deleted!(OFF); });
+    await act(async () => { for (const resolve of late.splice(0)) resolve(signedOut); });
+    await before.settle();
+    expect(before.row()!.querySelector("form")).not.toBeNull();
+    expect(before.row()!.textContent).not.toContain(COMMAND);
   });
 
   it("a server that refuses the mode says why in its one line, and offers no turn-on", async () => {
