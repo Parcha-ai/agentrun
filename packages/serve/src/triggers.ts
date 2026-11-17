@@ -572,7 +572,7 @@ export class Triggers {
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}),
       ...(settings.max_active_runs !== undefined ? { maxActiveRuns: settings.max_active_runs } : {}), ...again, enabled, nextAt: next,
     };
-    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : [], source ? { ifUpdatedAt: trigger.updatedAt } : undefined).catch(async (error: unknown) => {
+    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : [], source ? { ifUpdatedAt: trigger.updatedAt, ifSource: trigger.source } : undefined).catch(async (error: unknown) => {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
     if (!row && source && (await this.store.triggers.get(id))) {

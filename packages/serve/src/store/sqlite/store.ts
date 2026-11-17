@@ -693,8 +693,10 @@ class SqliteStore implements Store {
       update: async (id, patch, scopes, options) => {
         const { set, params } = triggerSet(patch, now());
         // A compare-and-set (options.ifUpdatedAt): no row is changed once the trigger was updated or deleted since that read.
-        const unchanged = options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?";
-        const since = options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt];
+        // Its source too (options.ifSource, compared as the JSON text the store wrote): one millisecond's writes share an
+        // updated_at, never a source.
+        const unchanged = `${options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?"}${options?.ifSource === undefined ? "" : " AND source = ?"}`;
+        const since = [...(options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt]), ...(options?.ifSource === undefined ? [] : [json(options.ifSource)])];
         const row = await db.transaction(async (tx) => {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);

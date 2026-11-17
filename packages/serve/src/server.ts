@@ -1901,8 +1901,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   schemaSealed = composioTriggers
     // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
     // start's scrub runs it before it serves).
-    .sealMarked(async (id, source, updatedAt) => {
-      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
+    .sealMarked(async (id, source, updatedAt, read) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? { ifSource: read } : { ifUpdatedAt: updatedAt, ifSource: read })) !== undefined;
       // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
       // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
       if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
