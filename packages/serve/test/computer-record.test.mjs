@@ -3,7 +3,8 @@
 // replacing the one waiting (thinned within the frame rate's bound, dropped while ffmpeg is busy), never a wait. A frame of
 // another format ends the file and goes on in the next; the caps, ffmpeg's own end and a screen gone each end it with a
 // line on the run's timeline. Every ffmpeg here is a loopback stand-in (a node script) but the playback test's, which
-// pipes real frames through this machine's ffmpeg and reads the file back with ffprobe.
+// pipes real frames (the image's ffmpeg check's, docker/frame.png and frame.jpg) through the ffmpeg on this machine's
+// PATH, the image's slim one included, and reads the file back with ffprobe.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -306,15 +307,13 @@ test("a watch that ends is opened again; one whose computer is gone ends the rec
 
 test("playback: real frames through this machine's ffmpeg make an H.264 file ffprobe reads, frames and a duration, one per image format", async (t) => {
   if (!commandOnPath("ffprobe", process.env.PATH) || !commandOnPath("ffmpeg", process.env.PATH)) return t.skip("ffmpeg or ffprobe isn't on this machine's PATH: the playback check is skipped");
-  const dir = scratch();
   // A phone's frames: PNG first, then JPEG, 1920x1080 (fitted to 1280x720).
-  execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=10", "-frames:v", "8", join(dir, "p%02d.png")]);
-  execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=10", "-frames:v", "8", "-q:v", "5", join(dir, "j%02d.jpg")]);
   const { tv, recorder, folder } = recording({ kind: "phone" });
   await until(() => tv.watches.length === 1, "the recorder's watch");
-  for (const [format, name] of [["png", "p"], ["jpeg", "j"]]) {
+  for (const [format, file] of [["png", "frame.png"], ["jpeg", "frame.jpg"]]) {
+    const bytes = readFileSync(new URL(`../docker/${file}`, import.meta.url));
     for (let i = 1; i <= 8; i += 1) {
-      tv.show(frame(format, readFileSync(join(dir, `${name}${String(i).padStart(2, "0")}.${format === "png" ? "png" : "jpg"}`)), 1920, 1080));
+      tv.show(frame(format, bytes, 1920, 1080));
       await sleep(120);
     }
   }

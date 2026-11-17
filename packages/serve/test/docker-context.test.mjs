@@ -16,7 +16,7 @@ const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).s
 test("the image's build context holds the workspace and the console's sources, and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
+  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "packages/serve/scripts/dial-conformance.mjs", "scripts/build-workspaces.mjs", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/index.html", "apps/console/src/main.tsx"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",
@@ -40,8 +40,8 @@ test("the image's build context holds the workspace and the console's sources, a
 
 test("every stage builds on one digest-pinned debian trixie base, its Node the verified 24.22.3 alone, and the runtime has git 2.40 or newer", async () => {
   const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
-  const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map(([, image, name]) => ({ image, name }));
-  assert.deepEqual(stages.map((stage) => stage.name), ["node", "android", "build", "adb", undefined], "a node stage, the Android SDK's stage, a build stage, the adb stage and a runtime stage");
+  const stages = [...dockerfile.matchAll(/^FROM (?:--platform=\S+ )?(\S+)(?: AS (\S+))?$/gm)].map(([, image, name]) => ({ image, name }));
+  assert.deepEqual(stages.map((stage) => stage.name), ["node", "android", "build", "adb", "ffmpeg", undefined], "a node stage, the Android SDK's stage, a build stage, the adb stage, the ffmpeg stage and a runtime stage");
   assert.match(stages[0].image, /^debian:trixie-slim@sha256:[0-9a-f]{64}$/, "plain Debian, pinned by digest: no other Node in any layer");
   for (const stage of stages) assert.equal(stage.image, stages[0].image, "one base for every stage");
   // The node stage installs the release through install-node.sh, which verifies it against the pinned signer.
@@ -77,6 +77,21 @@ test("the amd64 image carries adb from Android platform-tools r35.0.2, its zip p
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
   assert.match(runtime, /^COPY --from=adb \/opt\/adb\/ \/usr\/local\/bin\/$/m, "the runtime has it on PATH");
   assert.match(runtime, /^RUN \[ "\$\(dpkg --print-architecture\)" != amd64 \] \|\| \[ "\$\(command -v adb\)" = \/usr\/local\/bin\/adb \]$/m, "an amd64 image without it fails the build");
+});
+
+test("the image's ffmpeg is the recorder's alone: built from FFmpeg, x264 and zlib pinned by sha256 on the build machine, no Debian ffmpeg, and checked by running the recorder on it", async () => {
+  const dockerfile = await readFile(join(ROOT, "packages/serve/docker/Dockerfile"), "utf8");
+  const stage = /^FROM --platform=\$BUILDPLATFORM \S+ AS ffmpeg\n([\s\S]*?)\n\nFROM /m.exec(dockerfile)?.[1] ?? "";
+  for (const source of [/https:\/\/ffmpeg\.org\/releases\/ffmpeg-[\d.]+\.tar\.xz \/tmp\/ffmpeg\.tar\.xz/, /https:\/\/snapshot\.debian\.org\/archive\/debian\/\d{8}T\d{6}Z\/pool\/main\/x\/x264\/\S+\.orig\.tar\.xz \/tmp\/x264\.tar\.xz/, /https:\/\/github\.com\/madler\/zlib\/releases\/download\/\S+\.tar\.xz \/tmp\/zlib\.tar\.xz/])
+    assert.match(stage, new RegExp(`^ADD --checksum=sha256:[0-9a-f]{64} ${source.source}$`, "m"), `${source.source}, by sha256`);
+  assert.match(stage, /--disable-everything /, "nothing but what the recorder names");
+  for (const part of ["--enable-protocol=pipe,file", "--enable-demuxer=image2pipe", "--enable-parser=png,mjpeg", "--enable-decoder=png,mjpeg", "--enable-filter=scale,pad,format", "--enable-encoder=libx264", "--enable-muxer=mp4"])
+    assert.ok(stage.includes(` ${part} `), `the recorder's ${part}`);
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+  assert.doesNotMatch(/apt-get install [^\n]*/.exec(runtime)?.[0] ?? "", /\sffmpeg(\s|$)/, "no Debian ffmpeg in the runtime");
+  const copy = runtime.indexOf("COPY --from=ffmpeg /opt/ffmpeg/ /usr/local/\n");
+  const check = runtime.indexOf("node /opt/agentrun/packages/serve/docker/ffmpeg-check.mjs");
+  assert.ok(copy >= 0 && check > copy && check > runtime.indexOf("COPY --from=build"), "the runtime runs the recorder on the ffmpeg it copied, once the server's files are in");
 });
 
 test("the build stage builds phoned after the daemon, with a digest-pinned JDK 17 and the Android SDK's files from zips pinned by sha256", async () => {
