@@ -501,7 +501,7 @@ export async function run(client, { workspaceId, mode = "publish", code, expectW
       step.pass("template found", `${template.code} (${template.id}), ${template.status}`);
     }
     const off = differences(config, template.serializedConfig);
-    if (off.length) throw new Error(`template ${template.code} would deploy something other than deploy/railway/template.json:\n  ${off.join("\n  ")}\nRailway's API can't change a template's services: make them match in the template editor (railway.com/workspace/templates), then run again with --template ${template.code}`);
+    if (off.length) throw new Error(`template ${template.code} would deploy something other than deploy/railway/template.json:\n  ${off.join("\n  ")}\n${mode === "publish" ? "Railway can copy the source project before a change to it lands, so run again first: that run deletes this draft and copies the project again. If it still differs, make" : "Make"} them match in the template editor (railway.com/workspace/templates), since Railway's API can't change a template's services, then run again with --template ${template.code}`);
     step.pass("template is template.json", `${template.code}: image, start command, health check, variables, domain port and volume as the repository has them`);
     times.template = { id: template.id, code: template.code };
     await walk(client, { workspaceId, template, step, firstRun, times });
