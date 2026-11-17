@@ -32,7 +32,9 @@ curl -sS "$AGENTRUN_BASE_URL/sdk-runs/$id/complete" -H "Authorization: Bearer $t
   -d '{"status": "completed", "answer": "Digest ready.", "usage": {"input_tokens": 1200, "output_tokens": 300}}'
 ```
 
-From TypeScript, `AgentRunBackendLearning` in `@parcha/agentrun-client` makes the same calls (`begin`, then the session's events and completion) and accepts `openclaw` and `capy` as runtimes.
+Learning on such an agent is notes and skills. A learned workflow needs a backend workflow bridge (the SDK wrappers' local MCP `learned_workflow` server), which the platforms don't have, so a start that carries `workflow_tools` is refused (422), and an agent set to full learning learns notes and skills.
+
+From TypeScript, `BackendLearningClient` in `@parcha/agentrun-client` makes the same calls (`begin`, then the session's events and completion) and accepts `openclaw` and `capy` as runtimes.
 
 ## What to send
 

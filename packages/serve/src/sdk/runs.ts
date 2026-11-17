@@ -22,7 +22,7 @@ import { promotionOf, promotionsOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { fits, workflowDigest } from "../runner/workflow-first.js";
 
-import { isSdkRuntime, type SdkRuntime } from "./runtimes.js";
+import { SDK_WORKFLOW_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export type SdkUsage = {
   input_tokens: number | null;
@@ -220,6 +220,10 @@ export class SdkRuns {
       throw new ApiError("agent_not_runnable", "This agent is not registered as a backend SDK agent.");
     if (entry.agent.archivedAt !== null) throw new ApiError("agent_archived", "This SDK agent is archived.");
     if (body.runtime !== binding.runtime) refuse("The SDK runtime must match the registered agent.");
+    // A learned workflow runs through a wrapper's local MCP bridge. A platform runtime has none, so accepting its
+    // catalog would pin workflows nothing on that platform can execute: it learns notes and skills instead.
+    if (workflow && !SDK_WORKFLOW_RUNTIMES.includes(binding.runtime))
+      refuse(`${binding.runtime} runs learn notes and skills; workflow_tools needs a backend workflow bridge (claude-agent-sdk or codex-sdk).`);
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);
