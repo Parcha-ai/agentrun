@@ -96,6 +96,14 @@ test("the relay's errors are codes in its words, never the token; a create that 
 	assert.equal(tries, 1);
 });
 
+test("a create answered 500, 502 or 503 is sent again with the same name, which the relay answers with the first's row", async () => {
+	const answers = [{ status: 500 }, { status: 502 }, { status: 503, json: { error: "the relay failed: overloaded" } }, { status: 201, json: row("starting") }];
+	const relay = fakeRelay(() => answers.shift());
+	assert.deepEqual(await provider(relay).host.create(REQUEST, CTX), { id: NAME });
+	assert.equal(relay.calls.length, 4);
+	assert.equal(new Set(relay.calls.map(({ body }) => JSON.stringify(body))).size, 1);
+});
+
 test("testConnection and prepareImage read /v1/health: a relay of another version is refused with how to redeploy", async () => {
 	const good = provider(fakeRelay(health()));
 	assert.deepEqual(await good.prepareImage(), { ok: true, value: BOX });
