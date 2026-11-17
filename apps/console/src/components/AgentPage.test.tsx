@@ -108,6 +108,24 @@ describe("AgentPage overview and run workspace", () => {
     expect(page.host.querySelector('[aria-label="Agent workspace"]')!.className).toContain("lg:overflow-y-auto");
   });
 
+  // A description of any length is accepted. Side by side the page does not scroll, so a name block as tall as its
+  // description would push every detail out of reach: the block is held to half the column and the description scrolls
+  // inside it, between the name and the id. (The measured version of this is the real-browser check in the pull request.)
+  it("holds the name block to half the column and scrolls a long description inside it, the name and id outside that box", async () => {
+    const agent = agentFixture("invoice-checker");
+    const page = await open({ ...agent, definition: { ...agent.definition, description: "Checks invoices. ".repeat(400) } });
+    const overview = page.host.querySelector<HTMLElement>('aside[aria-label="Agent overview"]')!;
+    const heading = overview.querySelector<HTMLElement>("[data-agent-heading]")!;
+    const description = heading.querySelector<HTMLElement>("[data-agent-description]")!;
+    for (const c of ["lg:max-h-[50%]", "lg:flex", "lg:flex-col", "lg:shrink-0"]) expect(heading.className.split(" "), c).toContain(c);
+    for (const c of ["scroll-quiet", "lg:min-h-0", "lg:overflow-y-auto"]) expect(description.className.split(" "), c).toContain(c);
+    expect(description.querySelector("#agent-description")?.textContent).toContain("Checks invoices.");
+    expect(heading.contains(overview.querySelector("h1"))).toBe(true);
+    expect(description.contains(overview.querySelector("h1"))).toBe(false);
+    expect(description.textContent).not.toContain("invoice-checker");
+    expect(heading.contains(overview.querySelector("[data-agent-details]"))).toBe(false);
+  });
+
   it("keeps the agent overview beside a scoped runs table, with no embedded execution composer or transcript", async () => {
     const page = await open(agentFixture("invoice-checker"));
     expect(page.host.querySelector('aside[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");

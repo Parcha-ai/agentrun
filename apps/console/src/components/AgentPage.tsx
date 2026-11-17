@@ -126,6 +126,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   // Each scrolling box shows its scrollbar only while it is being scrolled.
   const detailsScroll = useScrollQuiet<HTMLDivElement>();
   const workspaceScroll = useScrollQuiet<HTMLElement>();
+  const descriptionScroll = useScrollQuiet<HTMLDivElement>();
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
   const sdk = backendSdkOf(d);
@@ -180,11 +181,17 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           the workspace scrolls beside them. In one column the whole page scrolls, as before. */}
       <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] lg:items-stretch lg:overflow-hidden md:p-8">
         <aside className="min-w-0 space-y-6 lg:flex lg:min-h-0 lg:flex-col" aria-label="Agent overview">
-          <div className="lg:shrink-0">
-            <h1 className="text-2xl font-semibold">{d.name}</h1>
-            {d.approvals === "never" && <Chip tone="warning" className="mt-2" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
-            {d.description && <p id="agent-description" className={cn("mt-2 text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
-            <p className="mt-3 break-all font-mono text-label text-muted-foreground">{agent.agent_id}</p>
+          {/* The name block takes at most half the column, so the details under it always have room. A description too long
+              for that scrolls in a box of its own between the name and the id, which both stay. The block reaches into
+              the space beside it so that box's scrollbar has its gutter; a name that fills the half by itself scrolls
+              the block, which shows no scrollbar of its own. */}
+          <div data-agent-heading className="lg:-mr-4 lg:flex lg:max-h-[50%] lg:shrink-0 lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden lg:pr-4 lg:[scrollbar-width:none]">
+            <h1 className="text-2xl font-semibold lg:shrink-0">{d.name}</h1>
+            {d.approvals === "never" && <Chip tone="warning" className="mt-2 lg:shrink-0 lg:self-start" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
+            <div ref={descriptionScroll} data-agent-description className="scroll-quiet min-w-0 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-2.5">
+              {d.description && <p id="agent-description" className={cn("mt-2 text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
+            </div>
+            <p className="mt-3 break-all font-mono text-label text-muted-foreground lg:shrink-0">{agent.agent_id}</p>
           </div>
           <div ref={detailsScroll} data-agent-details className="scroll-quiet min-w-0 space-y-6 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5">
           <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((value) => !value)} className="flex w-full min-w-0 items-center gap-2 text-left font-mono text-small text-muted-foreground sm:hidden">

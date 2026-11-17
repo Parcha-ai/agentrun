@@ -4,6 +4,9 @@
 //    read in full, not clipped to the nothing the window leaves under the tabs.
 //  - the Playground at 1500 px with a run working: the Response panel's four actions (Raise the cap, Stop, Cancel run, Archive)
 //    show and the run's title keeps a width a person can read; the actions wrap onto their own row instead of squeezing it.
+//  - an agent's page side by side (1280 px wide, 720 and 420 high) whose description runs to pages: the name and the id stay
+//    in view, the description scrolls in a box of its own, and the details under them keep a share of the column and can
+//    be scrolled to their end; scrolling them does not move the name.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,4 +90,41 @@ export const playgroundHalfPage = {
   },
 };
 
-export default [phoneLandscape, playgroundHalfPage];
+export const agentLongDescription = {
+  name: "agent-long-description",
+  signedIn: true,
+  async run({ page, base, api }) {
+    const description = "Reads each invoice against its purchase order and says where they differ. ".repeat(120);
+    const made = await api("POST", "/agents", { definition: { id: "wordy", name: "Wordy", description, instructions: "Answer in one line.", tools: [] } });
+    check(made.status === 201, `creating the agent answered ${made.status}`);
+    for (const [width, height] of [[1280, 720], [1280, 420]]) {
+      const at = `${width}x${height}`;
+      await page.setViewportSize({ width, height });
+      await page.goto(`${base}/#/agents/wordy`);
+      await page.reload();
+      const overview = page.locator('aside[aria-label="Agent overview"]');
+      const name = overview.getByRole("heading", { level: 1 });
+      await name.waitFor({ timeout: 45_000 });
+      const details = overview.locator("[data-agent-details]");
+      await details.locator('[aria-label="Live jobs"]').waitFor();
+      check(await name.evaluate(inView), `${at}: the agent's name is not in view`);
+      check(await overview.getByText("wordy", { exact: true }).evaluate(inView), `${at}: the agent's id is not in view`);
+      const text = overview.locator("[data-agent-description]");
+      check(await text.evaluate((box) => box.clientHeight >= 20 && box.scrollHeight > box.clientHeight), `${at}: the description does not scroll in a box of its own`);
+      const sizes = await details.evaluate((box) => ({ box: box.getBoundingClientRect().height, column: box.parentElement.getBoundingClientRect().height }));
+      check(sizes.box >= sizes.column * 0.3, `${at}: the details have ${Math.round(sizes.box)} px of a ${Math.round(sizes.column)} px column`);
+      const before = await name.evaluate((h) => h.getBoundingClientRect().top);
+      const reached = await details.evaluate((box) => {
+        box.scrollTop = box.scrollHeight;
+        const last = box.querySelector('[aria-label="Live jobs"]').getBoundingClientRect();
+        const frame = box.getBoundingClientRect();
+        return { scrolled: box.scrollTop, ends: last.bottom <= frame.bottom + 0.5 && last.bottom > frame.top, inWindow: frame.bottom <= innerHeight + 0.5 };
+      });
+      check(reached.scrolled > 0, `${at}: the details do not scroll`);
+      check(reached.ends && reached.inWindow, `${at}: the last of the details cannot be brought into view`);
+      check(await name.evaluate((h) => h.getBoundingClientRect().top) === before, `${at}: scrolling the details moved the agent's name`);
+    }
+  },
+};
+
+export default [phoneLandscape, playgroundHalfPage, agentLongDescription];

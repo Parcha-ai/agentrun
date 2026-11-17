@@ -160,7 +160,7 @@ svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-fam
 /* A box that scrolls inside a page, beside other things (an agent's details under its name). Its scrollbar is slim, has a
    gutter of its own that is there whether or not the box overflows (so nothing in the box shifts, and the bar never lies
    over a card's edge), and is quiet: no track, and a thumb that shows only while the box is being scrolled (`data-scrolling`, lib/useScrollQuiet) or
-   the pointer is on the bar itself, then fades away. Where
+   the pointer is on the bar's lane (`data-scroll-lane`, the same hook: Firefox has no selector for a pointer on the bar), then fades away. Where
    the content goes on past an edge, that edge fades out; an edge the content ends at stays sharp. The fade follows the
    scroll position itself (a scroll timeline), so it is not motion on a clock and needs no reduced-motion case; a browser
    without scroll timelines shows no fade. */
@@ -169,7 +169,7 @@ svg.wf { display: block; max-width: 100%; height: auto; margin: 0 auto; font-fam
 /* The thumb's colour, as a property so it can fade: a scrollbar's own colour takes no transition. */
 @property --scroll-thumb { syntax: "<color>"; inherits: true; initial-value: transparent; }
 .scroll-quiet { scrollbar-gutter: stable; --scroll-thumb: transparent; transition: --scroll-thumb var(--duration-slow); }
-.scroll-quiet[data-scrolling] { --scroll-thumb: hsl(var(--muted-foreground) / 0.45); transition-duration: var(--duration-fast); }
+.scroll-quiet[data-scrolling], .scroll-quiet[data-scroll-lane] { --scroll-thumb: hsl(var(--muted-foreground) / 0.45); transition-duration: var(--duration-fast); }
 .scroll-quiet::-webkit-scrollbar { width: 6px; height: 6px; }
 .scroll-quiet::-webkit-scrollbar-track, .scroll-quiet::-webkit-scrollbar-corner { background: transparent; }
 .scroll-quiet::-webkit-scrollbar-thumb { background: var(--scroll-thumb); }
