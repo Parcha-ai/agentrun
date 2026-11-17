@@ -362,6 +362,7 @@ __all__ = [
     "GetLearningCostResponseBill",
     "GetLearningCostResponseBillBaseline",
     "GetLearningCostResponseBillBreakEven",
+    "GetLearningCostResponseBillHoldsItem",
     "GetLearningCostResponseBillPointsItem",
     "GetLearningCostResponseBillPromoted",
     "GetLearningCostResponseBillRevisionsItem",
@@ -599,6 +600,13 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemChampion",
+    "ListLearningPromotionsResponseServingItemChampionCheck",
+    "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
+    "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
@@ -2330,6 +2338,7 @@ class ListLearningPromotionsResponseServingItem(TypedDict):
     audit: ListLearningPromotionsResponseServingItemAudit | None
     audits_off: str | None
     not_auditable: int
+    champion: ListLearningPromotionsResponseServingItemChampion | None
 
 
 class ListLearningPromotionsResponseServingItemCheck(TypedDict):
@@ -2344,6 +2353,71 @@ class ListLearningPromotionsResponseServingItemAudit(TypedDict):
     disagree: int
     rows: int
     disagreed: int
+
+
+class ListLearningPromotionsResponseServingItemChampion(TypedDict):
+    digest: str
+    commit: str | None
+    nodes: list[ListLearningPromotionsResponseServingItemChampionNodesItem] | None
+    check: ListLearningPromotionsResponseServingItemChampionCheck | None
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItem(TypedDict):
+    path: str
+    kind: str
+    label: str
+    tier: Literal["fast", "agent"] | None
+    checks: list[ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem]
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem(TypedDict):
+    on: Literal["when", "until"]
+    predicate: dict[str, Any]
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    cost_usd: float | None
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    stopped: Literal[True]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -3455,6 +3529,7 @@ class GetLearningCostResponseBill(TypedDict):
     booked_usd: float
     revisions: list[GetLearningCostResponseBillRevisionsItem]
     unattributed_usd: float | None
+    holds: list[GetLearningCostResponseBillHoldsItem]
 
 
 class GetLearningCostResponseBillBaseline(TypedDict):
@@ -3483,12 +3558,22 @@ class GetLearningCostResponseBillBreakEven(TypedDict):
 class GetLearningCostResponseBillRevisionsItem(TypedDict):
     workflow: str
     digest: str
+    compile_usd: float | None
+    check_usd: float | None
     spend_usd: float | None
     k: int
     served: int
     attributed_usd: float | None
     unattributed_usd: float | None
     state: Literal["checking", "serving", "stopped"]
+
+
+class GetLearningCostResponseBillHoldsItem(TypedDict):
+    n: int | None
+    at: str
+    workflow: str
+    by: Literal["audit", "check"]
+    reason: str
 
 
 class ListLearningEvalsResponse(TypedDict):

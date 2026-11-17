@@ -2606,6 +2606,8 @@ export interface operations {
         revisions: {
           workflow: string;
           digest: string;
+          compile_usd: number | null;
+          check_usd: number | null;
           spend_usd: number | null;
           k: number;
           served: number;
@@ -2614,6 +2616,13 @@ export interface operations {
           state: "checking" | "serving" | "stopped";
         }[];
         unattributed_usd: number | null;
+        holds: {
+          n: number | null;
+          at: string;
+          workflow: string;
+          by: "audit" | "check";
+          reason: string;
+        }[];
       };
     };
   };
@@ -4068,6 +4077,52 @@ export interface operations {
         } | null;
         audits_off: string | null;
         not_auditable: number;
+        champion: {
+          digest: string;
+          commit: string | null;
+          nodes: {
+            path: string;
+            kind: string;
+            label: string;
+            tier: "fast" | "agent" | null;
+            checks: {
+              on: "when" | "until";
+              predicate: Record<string, unknown>;
+            }[];
+          }[] | null;
+          check: {
+            compile_after: number;
+            agree_min: number;
+            alone_min: number;
+            attempt: 1 | 2;
+            n?: number;
+            agreed?: number;
+            alone?: number;
+            of?: string[];
+            cost_usd?: number | null;
+            outcomes?: {
+              answered: number;
+              handed_back: number;
+              failed: number;
+              skipped_write: number;
+            };
+            unstarted?: number;
+            skipped_tools?: {
+              tool: string;
+              inputs: number;
+              no_read_only_hint: boolean;
+            }[];
+            disagreements?: {
+              run: string;
+              input: string;
+              agent: string | null;
+              draft?: string;
+              escalated?: string;
+              failed?: true;
+            }[];
+            stopped?: true;
+          } | null;
+        } | null;
       }[];
     };
   };

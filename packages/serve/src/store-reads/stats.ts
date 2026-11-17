@@ -5,7 +5,7 @@
 // out what is archived; a run's archive is its own or its agent's.
 import type { Store } from "../store/store.js";
 import { runReadState, type RunReadState } from "./runs.js";
-import { isShadowRun } from "../learn/audit.js";
+import { isShadowRun, shadowRunId } from "../learn/audit.js";
 
 /** The run states the stats count by, as the old store named them. */
 export type RunState = RunReadState;
@@ -40,29 +40,28 @@ export async function stats(store: Store): Promise<StoreStats> {
   const runs = await store.runs.list({});
 
   // Per agent, the runs whose own archive is null (shown) and the count whose own archive is set (hidden).
-  const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number }>();
+  const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number; shadowUsd: number }>();
   const hidden = new Map<string, number>();
   const running: string[] = [];
   // Each revision's kind, read once: an agentic run a person stopped reads running (runReadState).
   const kinds = new Map<string, "agentic" | "workflow">();
+  // An audit's shadow run is learning spend on the run it audits, never a run of its own (A8): its cost, once known, is
+  // in the dollars with that run, shown or hidden with it; it is in no count, and never running work.
+  const shadows = new Map(runs.filter((run) => isShadowRun(run.id)).map((run) => [run.id, run]));
   for (const run of runs) {
+    if (isShadowRun(run.id)) continue;
     if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind === "workflow" ? "workflow" : "agentic");
     const state = runReadState(run, kinds.get(run.revisionId)!);
     const runArchived = run.archivedAt !== null;
-    // An audit's shadow run is learning spend on the run it audits, never a run of its own: its cost, once known, is in
-    // the dollars; it is in no count, and never running work.
-    const shadow = isShadowRun(run.id);
-    if (state === "running" && !runArchived && !archivedAgent.has(run.agentId) && !shadow) running.push(run.id);
+    if (state === "running" && !runArchived && !archivedAgent.has(run.agentId)) running.push(run.id);
     if (runArchived) {
-      if (!shadow) hidden.set(run.agentId, (hidden.get(run.agentId) ?? 0) + 1);
+      hidden.set(run.agentId, (hidden.get(run.agentId) ?? 0) + 1);
       continue;
     }
     let g = shown.get(run.agentId);
-    if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, known: 0 }));
-    if (shadow) {
-      if (state !== "running" && run.costUsd !== null) g.costUsd += run.costUsd;
-      continue;
-    }
+    if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, known: 0, shadowUsd: 0 }));
+    const shadow = shadows.get(shadowRunId(run.id));
+    if (shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null) g.shadowUsd += shadow.costUsd;
     g.counts.total += 1;
     g.counts[state] += 1;
     if (state !== "running" && run.costUsd !== null) {
@@ -85,7 +84,8 @@ export async function stats(store: Store): Promise<StoreStats> {
     stats.byAgent.push({ id: agent.id, name: agent.name, runs: counts.total });
     for (const key of ["total", ...RUN_STATES] as const) stats.runs[key] += counts[key];
     const known = g?.known ?? 0;
-    if (known > 0) stats.cost.usd = (stats.cost.usd ?? 0) + (g?.costUsd ?? 0);
+    // A shadow's known $ is spent whether or not the run it audits has a known cost: never a null for its dollars.
+    if (known > 0 || (g?.shadowUsd ?? 0) > 0) stats.cost.usd = (stats.cost.usd ?? 0) + (g?.costUsd ?? 0) + (g?.shadowUsd ?? 0);
     stats.cost.known += known;
     stats.cost.unknown += counts.total - known;
   }

@@ -29,7 +29,7 @@ describe("the bill in words", () => {
 
 describe("the audit line", () => {
   const rows: AuditRow[] = Array.from({ length: 16 }, (_, i) => ({ run: `run-${i}`, shadow_run: `audit.run-${i}`, workflow: "answer", digest: "d".repeat(16), promoted_at: hour(4), source: "shadow", agreed: i === 3 || i === 9 ? false : i === 15 ? null : true, served_cost: 0.1, shadow_cost: 0.4, at: hour(5) }));
-  const serving: Serving[] = [{ workflow: "answer", digest: "d".repeat(16), replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 12, disagreed: 1 }, audits_off: null, not_auditable: 0 }];
+  const serving: Serving[] = [{ workflow: "answer", digest: "d".repeat(16), replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 12, disagreed: 1 }, audits_off: null, not_auditable: 0, champion: null }];
   it("reads the hold window from the serving read and all time from the ledger, rows with no verdict left out", () => {
     expect(auditLinesOf(serving, rows)).toEqual([{ workflow: "answer", recent: { rows: 12, agreed: 11, window: 20, disagree: 3 }, all: { rows: 15, agreed: 13 }, off: null }]);
   });

@@ -1944,7 +1944,7 @@ describe("the bill", () => {
     const promotions: Promotions = {
       agent: "refunds",
       promotions: [{ workflow: "answer", digest, at: hour(4), decided: "promote", reason: "checked", check: { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 10, agreed: 9, alone: 9 } }],
-      serving: [{ workflow: "answer", digest, replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 4, disagreed: 1 }, audits_off: null, not_auditable: 0 }],
+      serving: [{ workflow: "answer", digest, replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 4, disagreed: 1 }, audits_off: null, not_auditable: 0, champion: null }],
     };
     const audits = [true, true, false, true, true].map((agreed, i) => ({ run: `run-${i + 5}`, shadow_run: `audit.run-${i + 5}`, workflow: "answer", digest, promoted_at: hour(4), source: "shadow" as const, agreed, served_cost: 0.1, shadow_cost: 0.4, at: hour(i + 5) }));
     const t = await open(agent(true), { cost: async () => cost, promotions: async () => promotions, audits });

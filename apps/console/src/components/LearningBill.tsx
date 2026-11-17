@@ -2,50 +2,41 @@ import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useMe
 import type { Client } from "@/lib/client";
 import { niceTop, runTicks, usd, yTicksOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
-import { auditLinesOf, billWords, checkWords, holdsOf, nodeRowsOf } from "@/lib/learningBill";
-import { recordOf } from "@/lib/learningLoop";
+import { type Audits, auditLinesOf, billWords, type Champion, checkLineWords, checkWords, tierWords } from "@/lib/learningBill";
 import { cn } from "@/lib/utils";
-import type { AuditRow, Bill, BillPoint, CostRun, LearningCost, Promotion, Serving } from "@/lib/v2";
+import type { Bill, BillPoint, LearningCost, Serving } from "@/lib/v2";
 
 // The owner's bill on the Learning tab (GET /v2/agents/{id}/learning/cost `bill`, booked dollars only): run after run,
 // what the agent has cost with learning, cumulative (every run that does a job, with its look-back, grade, audit shadow
-// and its revision's check spend), against the agent for all of it (the mean of its own runs before the first
-// promotion, times the runs), on one dollar axis, and where the bill falls to that line and stays (break-even), or
-// "not yet" with the gap. Under it, the audit line (agreement over the hold window and all time, each hold at its run)
-// and the workflow that serves: its nodes with their tiers and code checks, and the check it was promoted on.
+// and its revision's compile and check spend), against the agent for all of it (the mean of its own runs before its
+// first served run, times the runs), on one dollar axis, and where the bill falls to that line and stays (break-even),
+// or "not yet" with the gap. Under it, the audit line (agreement over the hold window and all time, each hold at the run
+// the server placed it on) and the workflow that serves, as the promotions read gives its champion: its nodes with
+// their tiers and code checks, and the check it was promoted on.
 
 /** The bill, the audit line and the serving workflow for an agent: nothing until the bill has a run. `cost`: the tab's
- *  cost read (CostPerRun's); the audits and the serving revision's text are read here. A read that fails leaves its part
- *  out, never the tab. */
-export function LearningBill({ v2, agentId, cost, promotions, serving, width }: { v2: Client; agentId: string; cost: LearningCost | null; promotions: readonly Promotion[]; serving: readonly Serving[]; width?: number }) {
+ *  cost read (CostPerRun's); `serving`: the promotions read's. The audits are read here: while they are read the line
+ *  says nothing of all time, and a read that fails says so. */
+export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client; agentId: string; cost: LearningCost | null; serving: readonly Serving[]; width?: number }) {
   const bill = cost?.bill;
   const shown = !!bill?.points.length;
-  const [audits, setAudits] = useState<AuditRow[]>([]);
-  const serves = serving.find((one) => one.state === "serving" && one.digest !== null) ?? null;
-  const [text, setText] = useState<string | null>(null);
+  const [audits, setAudits] = useState<Audits>("loading");
+  // The revision that serves first: the one with a digest, kept while a replacement is checked (state `checking`).
+  const serves = serving.find((one) => one.digest !== null && one.champion) ?? null;
   useEffect(() => {
     if (!shown) return;
     let live = true;
     // A client without the read (a fake in a test) is a failed read, never a thrown render.
-    Promise.resolve().then(() => v2.learningAudits(agentId)).then((r) => { if (live) setAudits(r.audits); }, () => {});
+    Promise.resolve().then(() => v2.learningAudits(agentId)).then((r) => { if (live) setAudits(r.audits); }, () => { if (live) setAudits("failed"); });
     return () => { live = false; };
   }, [v2, agentId, shown, cost]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!shown || !serves) { setText(null); return; }
-    let live = true;
-    Promise.resolve().then(() => v2.learnedWorkflowRevisions(agentId, serves.workflow)).then(
-      (r) => { if (live) setText(r.revisions.findLast((rev) => rev.digest === serves.digest)?.text ?? null); },
-      () => { if (live) setText(null); },
-    );
-    return () => { live = false; };
-  }, [v2, agentId, shown, serves?.workflow, serves?.digest]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!bill || !shown) return null;
   return (
     <>
       <BillChart bill={bill} width={width} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <AuditLine serving={serving} audits={audits} promotions={promotions} bill={bill} runs={cost.runs} />
-        {serves && text !== null && <ServingWorkflow workflow={serves.workflow} text={text} record={recordOf(promotions, serves.workflow, serves.digest)} />}
+        <AuditLine serving={serving} audits={audits} bill={bill} />
+        {serves?.champion && <ServingWorkflow workflow={serves.workflow} champion={serves.champion} />}
       </div>
     </>
   );
@@ -159,9 +150,9 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
           <p className="sr-only" aria-live="polite">{at ? readout(at).join(", ") : ""}</p>
         </div>
         <p className="mt-1 text-small text-muted-foreground">
-          Each point adds a run that did a job, all in: its own cost, its look-back and grade, its audit&apos;s shadow run and its share of its workflow revision&apos;s check, with each replay run on the run before it.
-          {both ? " The dashed line is the mean of the agent's own runs before the first promotion, times the runs." : ""}
-          {unattributed > 0 ? ` ${usd(unattributed)} of check spend is not on a run yet: its revision's next served runs carry it, or it stopped.` : ""}
+          Each point adds a run that did a job, all in: its own cost, its look-back and grade, and its audit&apos;s shadow run, with each replay run on the run before it.
+          {both ? " The dashed line is the mean of the agent's own runs before its first served run, times the runs." : ""}
+          {unattributed > 0 ? ` ${usd(unattributed)} of learning spend is on no run yet: a revision's compile and check its next served runs carry, or one that stopped or never drafted.` : ""}
         </p>
       </figure>
       <details className="border-t px-4 py-2">
@@ -185,10 +176,11 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
 /** A cumulative figure in the table: cents from a dollar up, as the bill is read. */
 const money = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
 
-/** Each serving learned workflow's audit line, and each hold at the run it bore on. Nothing when there is neither. */
-export function AuditLine({ serving, audits, promotions, bill, runs }: { serving: readonly Serving[]; audits: readonly AuditRow[]; promotions: readonly Promotion[]; bill: Bill; runs: readonly CostRun[] }) {
+/** Each serving learned workflow's audit line, and each hold at the run the server placed it on (`bill.holds`). Nothing
+ *  when there is neither. While the audits are read nothing of all time is said; a failed read says so. */
+export function AuditLine({ serving, audits, bill }: { serving: readonly Serving[]; audits: Audits; bill: Bill }) {
   const lines = auditLinesOf(serving, audits);
-  const holds = holdsOf(promotions, bill, runs);
+  const holds = bill.holds;
   if (!lines.length && !holds.length) return null;
   const last = bill.points.at(-1)?.n;
   return (
@@ -198,13 +190,14 @@ export function AuditLine({ serving, audits, promotions, bill, runs }: { serving
           <li key={line.workflow} className="space-y-0.5">
             <span className="block font-mono font-semibold">{line.workflow}</span>
             {line.recent && <span className="block">Last {line.recent.rows} {line.recent.rows === 1 ? "audit" : "audits"}: {line.recent.agreed} agreed <span className="text-muted-foreground">· hold at {line.recent.disagree} disagreeing of the newest {line.recent.window}</span></span>}
-            <span className="block">All time: {line.all.agreed} of {line.all.rows} agreed</span>
+            {line.all && <span className="block">All time: {line.all.agreed} of {line.all.rows} agreed</span>}
             {line.off && <span className="block text-muted-foreground">{line.off}</span>}
           </li>
         ))}
       </ul>
+      {audits === "failed" && <p className="border-t px-4 py-2 text-small text-warning-text" role="status">The audits couldn&apos;t be read, so there is no all-time figure. Reload to try again.</p>}
       {holds.length > 0 && (
-        <ul className="space-y-0.5 border-t px-4 py-3 font-mono text-small">
+        <ul className="space-y-0.5 border-t px-4 py-3 font-mono text-small" data-testid="audit-holds">
           {holds.map((hold) => (
             <li key={`${hold.workflow}:${hold.at}`}>
               {hold.n !== null ? `Held at run ${hold.n}` : `Held after run ${last ?? 0}`} <span className="text-muted-foreground">· {hold.workflow} · by its {hold.by === "audit" ? "audits" : "check"} · {when(hold.at)}</span>
@@ -216,26 +209,26 @@ export function AuditLine({ serving, audits, promotions, bill, runs }: { serving
   );
 }
 
-/** The learned workflow that serves: each node with its tier and the checks it runs in code, and the check it was
- *  promoted on (`record`: its newest promotion record). */
-export function ServingWorkflow({ workflow, text, record }: { workflow: string; text: string; record: Promotion | undefined }) {
-  const rows = useMemo(() => { try { return nodeRowsOf(JSON.parse(text)); } catch { return []; } }, [text]);
+/** The learned workflow that serves, as the promotions read gives its champion: each node with its tier and the checks
+ *  it runs in code, and the check it was promoted on. */
+export function ServingWorkflow({ workflow, champion }: { workflow: string; champion: Champion }) {
+  const rows = champion.nodes;
   return (
     <Card title="Serving workflow" headline={workflow} testid="serving-workflow">
-      {rows.length > 0 ? (
+      {rows?.length ? (
         <div className="overflow-auto px-4 py-2"><table className="w-full border-collapse font-mono text-small">
           <thead><tr className="caps text-label text-muted-foreground">{["Node", "Kind", "Tier", "Code checks"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
           <tbody>{rows.map((row) => (
             <tr key={row.path}>
               <td className="py-0.5 pr-4">{row.label}</td>
               <td className="pr-4 text-muted-foreground">{row.kind}</td>
-              <td className="whitespace-nowrap pr-4">{row.tier ?? "-"}</td>
-              <td className="pr-4">{row.checks.join("; ") || "-"}</td>
+              <td className="whitespace-nowrap pr-4">{tierWords(row.tier)}</td>
+              <td className="pr-4">{row.checks.map(checkLineWords).join("; ") || "-"}</td>
             </tr>
           ))}</tbody>
         </table></div>
-      ) : <p className="px-4 py-3 text-body text-muted-foreground">Its workflow.json does not read as a workflow.</p>}
-      {record && <p className="border-t px-4 py-2 text-small text-muted-foreground">{checkWords(record)}</p>}
+      ) : <p className="px-4 py-3 text-body text-muted-foreground">{rows === null ? "Its workflow.json couldn't be read." : "Its workflow.json has no nodes."}</p>}
+      <p className="border-t px-4 py-2 text-small text-muted-foreground">{checkWords(champion.check)}</p>
     </Card>
   );
 }

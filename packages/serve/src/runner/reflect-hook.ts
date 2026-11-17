@@ -140,11 +140,19 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // its look-back's), unknown when any is.
     const earlier = deps.before;
     const followUp = () => (round === 1 ? {} : { follow_up_usd: job === null || typeof earlier?.job_cost_usd !== "number" || typeof earlier.look_back_usd !== "number" ? null : Math.max(0, Math.round((job - earlier.job_cost_usd - earlier.look_back_usd) * 1e9) / 1e9) });
+    /** Where the compile turn began, once one is asked: the run's spend as its first attempt was asked (an earlier claim's,
+     *  kept with that ask, after a restart), unknown when unread; `alone` when the compile is the round's only ask (the
+     *  whole look-back). Its turn's spend joins the revision it drafts (learning-cost.ts amortize), never the run's own. */
+    let compileFrom: { readonly usd: number | null } | "alone" | undefined;
+    const cents = (usd: number) => Math.max(0, Math.round(usd * 1e9) / 1e9);
     // closeLearning: what looking back cost, the run's spend once the turn closed (its re-ask included) less the job's,
-    // unknown when either is. Kept with every end the turn reaches from here, beside when the job answered and its cost.
+    // unknown when either is. Kept with every end the turn reaches from here, beside when the job answered and its cost;
+    // with a compile asked, what of it the compile turn spent (`compile_usd`), from its first ask to the close.
     const looked = async (rows: { readonly also: readonly AlsoRow[] }) => {
       const total = (await deps.facts(input.runId)).costUsd;
-      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: total === null || job === null ? null : Math.max(0, Math.round((total - job) * 1e9) / 1e9), ...followUp() };
+      const lookBack = total === null || job === null ? null : cents(total - job);
+      const compileUsd = compileFrom === undefined ? {} : { compile_usd: compileFrom === "alone" ? lookBack : total === null || compileFrom.usd === null ? null : cents(total - compileFrom.usd) };
+      const answered = { answered_at: answeredAt, job_cost_usd: job, look_back_usd: lookBack, ...compileUsd, ...followUp() };
       return { also: rows.also.map((row): AlsoRow => (row.table === "learning_proposals" ? { ...row, row: { ...row.row, proposal: { ...(row.row as { proposal: object }).proposal, ...answered } } } : row)) };
     };
     // A run cut or skipped here asks nothing: its drop alone, or with looked's figures when its look-back had started.
@@ -262,12 +270,18 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
       let revised = compile.mode === "revise" && compile.base ? { workflow: compile.workflow, base: compile.base } : undefined;
       /** An attempt the cap refused, or whose spend took the run past it: the learning is dropped as the look-back's is. */
       let capped = false;
+      // Where the compile turn begins (the run's spend now), kept with each attempt as the job's figures are: a later claim
+      // answers with the earlier one's, so what it spent compiling stays the compile's.
+      compileFrom = alone ? "alone" : { usd: (await deps.facts(input.runId)).costUsd };
       const result = await compileTurn<Checked>({
         ask: async (prompt, attempt, left) => {
-          const keep: Record<string, string | number | null> = { ...(alone ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...(revised ? { compile_base: revised.base } : {}) };
+          const from: Record<string, number | null> = compileFrom !== "alone" && compileFrom !== undefined ? { compile_from_usd: compileFrom.usd } : {};
+          const keep: Record<string, string | number | null> = { ...(alone ? { answered_at: answeredAt, job_cost_usd: job } : {}), ...from, ...(revised ? { compile_base: revised.base } : {}) };
           const said_ = await input.ask(prompt, { ...ask, deadlineMs: left, step: `compile-${attempt}`, ...(Object.keys(keep).length ? { keep } : {}) });
           if ("failed" in said_ && CAP_REFUSAL.test(said_.failed.message)) capped = true;
           if (alone) firstAsk(said_.kept);
+          const keptFrom = said_.kept?.compile_from_usd;
+          if (!alone && (typeof keptFrom === "number" || keptFrom === null)) compileFrom = { usd: keptFrom };
           const base = said_.kept?.compile_base;
           if (revised && typeof base === "string") revised = { ...revised, base };
           return "ended" in said_ ? { answer: said_.answer } : undefined;

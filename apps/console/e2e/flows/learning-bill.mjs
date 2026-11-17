@@ -1,7 +1,7 @@
 // The owner's bill on an agent's Learning tab, in the browser at two widths and both themes: an agent with learning on,
 // its GET /v2/agents/{id}/learning/cost answered with the console's invented sample (src/components/CostPerRun.sample.json:
-// 80 runs of an invoice-sorter agent whose learned workflow serves from run 21) and a bill over it; its promotions, its
-// audit ledger and its workflow's revisions answered to match. The bill's card draws both lines on one dollar axis
+// 80 runs of an invoice-sorter agent whose learned workflow serves from run 21) and a bill over it; its promotions (the
+// serving champion's nodes with them) and its audit ledger answered to match. The bill's card draws both lines on one dollar axis
 // inside its width (no label past the plot), with a legend, the break-even marker and a table; the audit line says the
 // hold window and all time; the serving workflow lists its nodes with their tiers. No equal-cache figure anywhere.
 // E2E_SHOTS=<dir> also saves the bill, the audit line and the serving workflow at each width and theme.
@@ -35,15 +35,19 @@ function billOf(runs) {
     baseline: { runs: before.length, mean_usd: mean }, promoted: { n: promoted.n, run_id: promoted.run_id, at: promoted.started_at },
     points, break_even: even && { n: even.n, run_id: even.run_id }, gap_usd: even ? null : Math.round((points.at(-1).actual_usd - points.at(-1).agent_usd) * 1e6) / 1e6,
     withheld: 0, booked_usd: points.at(-1).actual_usd,
-    revisions: [{ workflow: WORKFLOW, digest: DIGEST, spend_usd: CHECK.spend, k: CHECK.k, state: "serving", served: CHECK.k, attributed_usd: CHECK.spend, unattributed_usd: 0 }], unattributed_usd: 0,
+    revisions: [{ workflow: WORKFLOW, digest: DIGEST, compile_usd: 0, check_usd: CHECK.spend, spend_usd: CHECK.spend, k: CHECK.k, state: "serving", served: CHECK.k, attributed_usd: CHECK.spend, unattributed_usd: 0 }], unattributed_usd: 0,
+    // A hold the server placed on run 15 (an earlier revision held by its check): the tab says the run it names.
+    holds: [{ n: 15, at: runs[14].started_at, workflow: WORKFLOW, by: "check", reason: "15 of 20 agreed" }],
   };
 }
 
-const TEXT = JSON.stringify({ v: 2, name: WORKFLOW, input: { schemaId: "Invoice" }, output: { schemaId: "Account", path: "account" }, root: { node: "chain", steps: [
-  { node: "extract", label: "fields", tier: "fast", instructions: "Copy the vendor, the total and the line items.", state: { content: "{content}" }, out: "Fields", as: "fields" },
-  { node: "decide", label: "account", instructions: "Pick the ledger account for these fields.", state: { fields: "{fields}" }, out: "Account", as: "account" },
-  { node: "escalate", label: "unsure", when: { predicate: "field_equals", path: "account.code", value: "unknown" }, kind: "needs_review", stage: "account", summary: "No account fits." },
-] } });
+/** The champion's nodes as the server's workflowNodesOf reads its workflow.json: a chain's steps by index, each with
+ *  its tier (`fast`, `agent` for the agent's own model, null for a node that calls none) and its checks in code. */
+const NODES = [
+  { path: "0", kind: "extract", label: "fields", tier: "fast", checks: [] },
+  { path: "1", kind: "decide", label: "account", tier: "agent", checks: [] },
+  { path: "2", kind: "escalate", label: "unsure", tier: null, checks: [{ on: "when", predicate: { predicate: "field_equals", path: "account.code", value: "unknown" } }] },
+];
 
 export default {
   name: "learning-bill",
@@ -59,17 +63,17 @@ export default {
     check(bill.break_even !== null, `the sample's bill breaks even: ${JSON.stringify(bill.points.slice(-3))}`);
     const promotedAt = bill.promoted.at;
     const audits = Array.from({ length: 30 }, (_, i) => ({ run: SAMPLE.runs[21 + i * 2]?.run_id ?? `run_${i}`, shadow_run: `audit.run_${i}`, workflow: WORKFLOW, digest: DIGEST, promoted_at: promotedAt, source: "shadow", agreed: i !== 7 && i !== 19, served_cost: 0.08, shadow_cost: 0.8, at: promotedAt }));
+    const check_ = { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 20, agreed: 19, alone: 19, of: [], cost_usd: CHECK.spend };
+    const commit = "c".repeat(40);
     const promotions = {
       agent: id,
-      promotions: [{ workflow: WORKFLOW, digest: DIGEST, at: promotedAt, decided: "promote", reason: "checked on 20 inputs", check: { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 20, agreed: 19, alone: 19, of: [], cost_usd: CHECK.spend }, runs: [], commit: "c".repeat(40) }],
-      serving: [{ workflow: WORKFLOW, digest: DIGEST, replaying: null, state: "serving", check: { n: 20, agreed: 19, alone: 19, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 20, disagreed: 1 }, audits_off: null, not_auditable: 0 }],
+      promotions: [{ workflow: WORKFLOW, digest: DIGEST, at: promotedAt, decided: "promote", reason: "checked on 20 inputs", check: check_, runs: [], commit }],
+      serving: [{ workflow: WORKFLOW, digest: DIGEST, replaying: null, state: "serving", check: { n: 20, agreed: 19, alone: 19, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 20, disagreed: 1 }, audits_off: null, not_auditable: 0, champion: { digest: DIGEST, commit, nodes: NODES, check: check_ } }],
     };
-    const revisions = { name: WORKFLOW, revisions: [{ commit: "c".repeat(40), at: promotedAt, by: { run: SAMPLE.runs[19].run_id }, reason: "compiled from 20 runs", text: TEXT, digest: DIGEST }], total: 1, truncated: false };
     const agentPath = `/v2/agents/${encodeURIComponent(id)}/learning`;
     await page.route(new RegExp(`${agentPath}/cost(\\?.*)?$`), (route) => route.fulfill({ json: { ...SAMPLE, agent: id, unknown_path_runs: 0, bill } }));
     await page.route(new RegExp(`${agentPath}/promotions$`), (route) => route.fulfill({ json: promotions }));
     await page.route(new RegExp(`${agentPath}/audits$`), (route) => route.fulfill({ json: { agent: id, audits } }));
-    await page.route(new RegExp(`${agentPath}/workflows/[^/]+/revisions(\\?.*)?$`), (route) => route.fulfill({ json: revisions }));
     const shots = process.env.E2E_SHOTS;
     if (shots) mkdirSync(shots, { recursive: true });
     const wrong = [];
@@ -115,7 +119,7 @@ export default {
         await card.locator("details > summary").click();
         // The audit line and the serving workflow.
         const audit = await page.getByTestId("learning-audits").textContent();
-        check(/Last 20 audits: 19 agreed/.test(audit ?? "") && /All time: 28 of 30 agreed/.test(audit ?? ""), `${theme} ${width}px: the audit line says ${audit}`);
+        check(/Last 20 audits: 19 agreed/.test(audit ?? "") && /All time: 28 of 30 agreed/.test(audit ?? "") && /Held at run 15 · sort-invoice · by its check/.test(audit ?? ""), `${theme} ${width}px: the audit line says ${audit}`);
         const serving = page.getByTestId("serving-workflow");
         const nodes = await serving.locator("tbody tr").allTextContents();
         check(nodes.length === 3 && /fast/.test(nodes[0]) && /agent model/.test(nodes[1]) && /when account\.code = "unknown"/.test(nodes[2]), `${theme} ${width}px: the serving workflow's nodes: ${JSON.stringify(nodes)}`);

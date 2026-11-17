@@ -63,13 +63,14 @@ test("the promotions read has the champion's own revision, by its recorded diges
     return git(repo, ["rev-parse", "main"]);
   };
   const champion = JSON.stringify(flow("answer"));
-  const commit = land(champion, "learned");
+  // Each commit as a run's merge (its Run-Id trailer), as the learning log reads one.
+  const commit = land(champion, "learning: run-0: merged\n\nRun-Id: run-0");
   const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7 };
   const items = [{ workflow: "answer", digest: digestOf(champion), at: new Date(Date.UTC(2026, 10, 17, 6)).toISOString(), decided: "promote", reason: "checked: promoted", check: { ...bar, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit }];
   // 25 newer revisions on main, each held: its draft failed its checks.
   for (let i = 1; i <= 25; i++) {
     const text = JSON.stringify(flow(`answer-${i}`));
-    land(text, `revision ${i}`);
+    land(text, `learning: run-${i}: merged\n\nRun-Id: run-${i}`);
     items.push({ workflow: "answer", digest: digestOf(text), at: new Date(Date.UTC(2026, 10, 17, 7, i)).toISOString(), decided: "hold", reason: "its draft failed its checks", check: { ...bar, attempt: 2, n: 5, agreed: 0, alone: 0, of: [] } });
   }
   await resnap(data, "source");

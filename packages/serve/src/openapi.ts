@@ -1317,29 +1317,38 @@ const LEARNING_COST = closed({
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
   bill: closed({
-    baseline: COST_MEAN("The agent for one run: the mean own cost (`cost_usd`, learning left out) of the `agent` runs started before the agent's first promotion (every one with none yet), each known exactly; null when there is none."),
-    promoted: { oneOf: [closed({ n: { type: "integer", minimum: 1, description: "Its place on the bill's index." }, run_id: { type: "string" }, at: DATE_TIME }), { type: "null" }], description: "The first run started at or after the agent's first promotion (a learned workflow's check that promoted it, `at`); null before one." },
+    baseline: COST_MEAN("The agent for one run: the mean own cost (`cost_usd`, learning left out) of the `agent` runs started before the agent's first run on a served path (`workflow`, `handed_back`, or an audit's shadow run), read from the run records (every one with none yet), each known exactly; null when there is none."),
+    promoted: { oneOf: [closed({ n: { type: "integer", minimum: 1, description: "Its place on the bill's index." }, run_id: { type: "string" }, at: DATE_TIME }), { type: "null" }], description: "The first run that does a job started at or after the agent's first run on a served path (`at`: when that run started); null before one." },
     points: { type: "array", items: closed({
       n: { type: "integer", minimum: 1, description: "The run's place among the agent's runs that do a job (`agent`, `workflow` and `handed_back`), oldest first: a `replay` checks a revision and a shadow audits a run, so neither is on the index." },
       run_id: { type: "string" },
       actual_usd: { type: "number", minimum: 0, description: "Booked to this run, every run before it included: each run all in (`total_usd`: its own cost, its look-back with any compile turn, its grade and its audit shadow), and each replay run's cost at the run that does a job it followed. Rounded to 1e-6." },
       agent_usd: { type: ["number", "null"], minimum: 0, description: "The agent for all of it: `baseline` times the runs shown to here. Null with no baseline." },
     }), description: "One a run that does a job whose all-in cost is known exactly, every one: a run whose cost is unknown or only a bound is on neither line and counted in `withheld` (its number skipped)." },
-    break_even: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run from `promoted` on after which `actual_usd` is never again over `agent_usd`: learning has paid for itself there. Null while it has not (`gap_usd` says by how much), and before a promotion." },
-    gap_usd: { type: ["number", "null"], description: "While `break_even` is null: `actual_usd` less `agent_usd` at the last run (over 0: the bill is that much over the agent for all of it). Null with a break-even, with no baseline or no run." },
+    break_even: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run from `promoted` on after which `actual_usd` is never again over `agent_usd`, `booked_usd` against the line at the last point included: learning has paid for itself there. Null while it has not (`gap_usd` says by how much), and before a run on a served path." },
+    gap_usd: { type: ["number", "null"], description: "While `break_even` is null: `booked_usd` less `agent_usd` at the last point (over 0: the bill is that much over the agent for all of it), spend booked after that point included. Null with a break-even, with no baseline or no run." },
     withheld: { ...COUNT, description: "Runs (replays included) whose cost is unknown or only a bound: on neither line." },
-    booked_usd: { type: "number", minimum: 0, description: "The booked total: the last point's `actual_usd` (0 with none). With every run's GET /runs/{id} `cost.all_in_usd`, the sum of those and `unattributed_usd` is this." },
+    booked_usd: { type: "number", minimum: 0, description: "The booked total: every priced run's cost (0 with none). Spend with no point to join (a replay after a run of unknown cost) is carried to the next point's `actual_usd`, and is in this when no point follows. With every run's GET /runs/{id} `cost.all_in_usd`, the sum of those and `unattributed_usd` is this." },
     revisions: { type: "array", items: closed({
       workflow: { type: "string", description: "The learned workflow, by name." },
       digest: { type: "string", description: "The revision: the first 16 hex characters of its workflow.json's sha256." },
-      spend_usd: COST_USD("What its check cost: its replay runs (the first draft's check or the one recompile's, each revision its own). Its compile turn ran in the session of the run that looked back, whose own cost holds it."),
+      compile_usd: COST_USD("What the compile turns that drafted it cost: each ran in the session of a run that looked back, and is that run's learning spend no more, but this revision's. A recompile's turn is its recompiled revision's. 0 when none on record drafted it."),
+      check_usd: COST_USD("What its check cost: its replay runs (the first draft's check or the one recompile's, each revision its own)."),
+      spend_usd: COST_USD("Its learning spend: `compile_usd` and `check_usd` together."),
       k: { type: "integer", minimum: 1, description: "The served runs its spend is spread over: its check's `compile_after`." },
       served: { ...COUNT, description: "How many of those it has served (`workflow` or `handed_back` at this digest), at most `k`." },
       attributed_usd: COST_USD("What they carry: spend over k each (a micro-dollar more on the first ones, so the split is exact), on their GET /runs/{id} `cost.learning_usd`."),
       unattributed_usd: COST_USD("The rest: on no run until it serves `k` runs; for a `stopped` revision, on none ever."),
       state: { enum: ["checking", "serving", "stopped"], description: "`checking`: its check is at work; `serving`: it is its workflow's champion; `stopped`: held or replaced, so nothing more will carry it." },
     }), description: "Each revision of the agent's learned workflows its promotion records name, in the order first recorded, and how its learning spend is passed on to the runs it serves." },
-    unattributed_usd: COST_USD("What of every revision's spend no run carries: the sum of their `unattributed_usd`."),
+    unattributed_usd: COST_USD("What no run carries: `booked_usd` less every run's GET /runs/{id} `cost.all_in_usd`. A revision's spend its served runs have not carried yet (each revision's `unattributed_usd`), a compile whose drafts all failed its checks (it drafted no revision to serve), and the spend of a revision whose promotion records aged out of the kept history land here, never nowhere. Null while any run's cost or learning is unknown, or a run is `withheld`."),
+    holds: { type: "array", items: closed({
+      n: { type: ["integer", "null"], minimum: 1, description: "The first run that does a job started at or after the hold, by its place on the bill's index (as `points` number them), placed by the server over every run, `limit` aside. Null when none has started since." },
+      at: DATE_TIME,
+      workflow: { type: "string", description: "The learned workflow held, by name." },
+      by: { enum: ["audit", "check"], description: "What held it: `audit`, its audits disagreed past the hold bar; `check`, a new revision's check held it (its draft failed its checks, or its replays fell short)." },
+      reason: { type: "string", description: "The hold record's reason, in the server's words." },
+    }), description: "Each hold the agent's promotion records keep, oldest first, at the run it bore on." },
   }, "The owner's bill, booked dollars only (each request at the price it was billed, cached tokens at their cached price), over every run, `limit` aside: the cumulative cost run after run against the agent doing all of it, and where learning pays for itself."),
 });
 
@@ -1381,6 +1390,24 @@ const REPLAY_OUTCOMES = closed({
   failed: { ...COUNT, description: "Replay runs a step failed in, or still at work past the replay's deadline: no evidence either way, never scored." },
   skipped_write: { ...COUNT, description: "Replay runs stopped at a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments: a replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." },
 }, "How many of its replay runs ended each way: what each run did.");
+/** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
+const PROMOTION_CHECK = closedWith({
+  compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
+  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on agreement: of the inputs it answered alone, the least share that must say what the agent's recorded answer said." },
+  alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
+  attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
+}, {
+  n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
+  agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer." },
+  alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
+  of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
+  cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
+  outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
+  unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
+  skipped_tools: SKIPPED_TOOLS,
+  disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
+  stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
+});
 const PROMOTION = closedWith({
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
@@ -1388,23 +1415,7 @@ const PROMOTION = closedWith({
   decided: { enum: ["promote", "hold", "replaying"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. A hold with `audit` is its audits' (a serving revision: at least the definition's `learning.hold_disagree` of its newest `learning.hold_window` audit rows, GET .../learning/audits, disagreed); one without it, its check's (`check`). `replaying`: its check's replay runs are at work; the champion serves meanwhile, else the agent. One revision of a workflow is checked at a time, and a running check finishes." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
-  check: closedWith({
-    compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
-    agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on agreement: of the inputs it answered alone, the least share that must say what the agent's recorded answer said." },
-    alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
-    attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
-  }, {
-    n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
-    agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer." },
-    alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
-    of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
-    cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
-    outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
-    unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
-    skipped_tools: SKIPPED_TOOLS,
-    disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
-    stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
-  }),
+  check: PROMOTION_CHECK,
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
   inputs: { type: "array", items: { type: "string" }, description: "On a replaying record: the graded run each of `runs` replays, in the same order. Its runs are reserved before they are created; one not created a few minutes on is created by the next claim." },
   replay_id: { type: "string", description: "The replay's id, on its replaying record and the one that decided it: GET .../revisions/{digest}/replays/{replay_id} reads it, whether a run's claim or its owner started it." },
@@ -1437,6 +1448,18 @@ const SERVING = closed({
   audit: { anyOf: [AUDIT_LINE, { type: "null" }], description: "Its audit line: the serving (else the newest) revision's newest audit rows against the hold bar; null when no revision has a record." },
   audits_off: { ...NULL_STRING, description: "Why none of the agent's runs is audited, e.g. `audits off: send_email can write`: its definition can call a tool that is not read-only (an MCP tool its server lists without `readOnlyHint`, or a built-in other than web_fetch, web_search, pdf_pages and llm, its computer's tools among them), which a shadow run would call a second time. Null when every tool it can call only reads: its served runs are audited." },
   not_auditable: { ...COUNT, description: "Of the serving revision's newest `learning.stop_window` served runs, those a trigger started: never audited (a shadow run gets none of a trigger's context, and could answer where it answers). 0 when none serves." },
+  champion: { anyOf: [closed({
+    digest: { type: "string", description: "The champion's revision: `digest` above." },
+    commit: { ...NULL_STRING, description: "The learning commit its text was read at: the newest its promotion records name that holds it, else the folder's main. Read by its recorded digest, never by paging the workflow's history. Null when no commit read holds it." },
+    nodes: { anyOf: [{ type: "array", items: closed({
+      path: { type: "string", description: "Where the node is in its parent: a chain's step by its index (`0`, `1`), any other child by its field (`2.body`); `root` for a root that is no chain." },
+      kind: { type: "string", description: "Its node kind (`extract`, `decide`, `call`, `loop`, `escalate`, ...)." },
+      label: { type: "string", description: "Its label; its kind when it has none." },
+      tier: { type: ["string", "null"], enum: ["fast", "agent", null], description: "The tier its model step runs on: `fast`, or `agent` for the agent's own model. Null for a node that calls no model tier (a call, a loop, an escalate, a decision node's own provider)." },
+      checks: { type: "array", items: closed({ on: { enum: ["when", "until"], description: "`when`: the node runs only when the predicate holds. `until`: a loop stops once it holds." }, predicate: { type: "object", description: "The predicate as the workflow holds it (the DSL's predicate: `field_equals`, `exists`, `not`, `and`, `or`, ...)." } }), description: "The checks it runs in code." },
+    }) }, { type: "null" }], description: "Each node of its workflow.json, depth first, a chain's steps in order and the chain itself left out. Null when its text could not be read." },
+    check: { anyOf: [PROMOTION_CHECK, { type: "null" }], description: "The check it was promoted on: its promote record's `check`. Null when it was promoted with none." },
+  }), { type: "null" }], description: "The revision that serves first, as a person reads it: its nodes with their tiers and code checks, and the check it was promoted on. Kept while a newer revision is checked (`replaying`). Null when none serves (`digest` null)." },
 });
 const AUDIT_ROW = closedWith({
   run: { type: "string", description: "The served run." },
@@ -3010,7 +3033,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Cost: {
     ...SO_FAR,
-    learning_usd: { type: ["number", "null"], minimum: 0, description: "On the run read (GET /v2/runs/{run_id}) alone: what learning spent outside the run's own session and gave it, on the agent's own model route: its grades, its audit shadow's cost (the agent on its input with learning off), and its share of its workflow revision's check (that revision's replay runs, spread over the first `compile_after` runs the revision serves: GET /agents/{agent_id}/learning/cost `bill.revisions`). Its look-back and any compile turn ran in its own session and are in `usd`. 0 for a replay or shadow run, whose spend is on the runs it serves. Rounded to 1e-6; null while the run or its shadow is at work, or a part is unknown: never $0 for unknown.", "x-agentrun-serve": "allin/1" },
+    learning_usd: { type: ["number", "null"], minimum: 0, description: "On the run read (GET /v2/runs/{run_id}) alone, where `usd` is the run's own spend, the job's: what learning spent for it, on the agent's own model route. Its look-back turn (a compile turn asked in it left out), its grades, its audit shadow's cost (the agent on its input with learning off), and its share of its workflow revision's learning spend: the compile turn that drafted that revision and its check's replay runs, spread over the first `compile_after` runs the revision serves (GET /agents/{agent_id}/learning/cost `bill.revisions`). A compile turn is never in the `usd` or `learning_usd` of the run whose session asked it: it is its revision's (a recompile's, its recompiled revision's), or, when every draft failed its checks, on no run (`bill.unattributed_usd`). A look-back that compiles nothing is this run's alone. 0 for a replay or shadow run, whose spend is on the runs it serves. Rounded to 1e-6; null while the run or its shadow is at work, or a part is unknown: never $0 for unknown.", "x-agentrun-serve": "allin/1" },
     all_in_usd: { type: ["number", "null"], minimum: 0, description: "On the run read alone: `usd` and `learning_usd` together, what the run cost its owner all in. 0 for a replay or shadow run. Over every run of an agent, these and the cost route's `bill.unattributed_usd` add up to its `bill.booked_usd`. Null when either is, or `usd` is only a bound (`upper_bound`).", "x-agentrun-serve": "allin/1" },
     plan: {
       type: "object", additionalProperties: false, required: ["requests", "tokens"],

@@ -1581,6 +1581,52 @@ export type ListLearningPromotionsResponse = {
     } | null;
     audits_off: string | null;
     not_auditable: number;
+    champion: {
+      digest: string;
+      commit: string | null;
+      nodes: Array<{
+        path: string;
+        kind: string;
+        label: string;
+        tier: "fast" | "agent" | null;
+        checks: Array<{
+          on: "when" | "until";
+          predicate: Record<string, unknown>;
+        }>;
+      }> | null;
+      check: {
+        compile_after: number;
+        agree_min: number;
+        alone_min: number;
+        attempt: 1 | 2;
+        n?: number;
+        agreed?: number;
+        alone?: number;
+        of?: Array<string>;
+        cost_usd?: number | null;
+        outcomes?: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        unstarted?: number;
+        skipped_tools?: Array<{
+          tool: string;
+          inputs: number;
+          no_read_only_hint: boolean;
+        }>;
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+        }>;
+        stopped?: true;
+      } | null;
+    } | null;
   }>;
 };
 
@@ -2237,6 +2283,8 @@ export type GetLearningCostResponse = {
     revisions: Array<{
       workflow: string;
       digest: string;
+      compile_usd: number | null;
+      check_usd: number | null;
       spend_usd: number | null;
       k: number;
       served: number;
@@ -2245,6 +2293,13 @@ export type GetLearningCostResponse = {
       state: "checking" | "serving" | "stopped";
     }>;
     unattributed_usd: number | null;
+    holds: Array<{
+      n: number | null;
+      at: string;
+      workflow: string;
+      by: "audit" | "check";
+      reason: string;
+    }>;
   };
 };
 
