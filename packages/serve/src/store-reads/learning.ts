@@ -12,7 +12,7 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact, noteRuns, notesRead } from "../learning-run.js";
-import { amortize, type Bill, type BillHold, billOf, type CostReplay, costSummary, type CostRun, type CostSummary, JOB_PATHS, type RevisionSpend, RUN_PATHS, type RunPath, runCostOf, SERVED_PATHS } from "../learning-cost.js";
+import { amortize, type Bill, type BillHold, billOf, type CostReplay, costSummary, type CostRun, type CostSummary, JOB_PATHS, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, runCostOf, SERVED_PATHS } from "../learning-cost.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
@@ -310,9 +310,9 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   let carried: number | null = 0;
   for (const run of runs) {
     const all = run.path === "replay" ? 0 : run.cost_upper_bound ? null : allInV2Of(run, ledger.compiles.get(run.run_id) ?? [], ledger.shares);
-    carried = carried === null || all === null ? null : carried + Math.round(all * 1e6);
+    carried = carried === null || all === null ? null : noiseOff(carried + all);
   }
-  const unattributed = booked.withheld > 0 || carried === null ? null : Math.round(booked.booked_usd * 1e6 - carried) / 1e6;
+  const unattributed = booked.withheld > 0 || carried === null ? null : noiseOff(booked.booked_usd - carried);
   const bill: Bill = { ...booked, revisions: ledger.revisions, unattributed_usd: unattributed, holds: holdsOf(promotions, runs) };
   return { runs: runs.slice(Math.max(0, runs.length - limit)), summary: costSummary(runs, replay), total_runs: runs.length, unknown_cost_runs: runs.filter((run) => run.total_usd === null).length, unknown_path_runs: unknownPath, workflows, bill };
 }
@@ -338,7 +338,6 @@ const revisionOfRow = (row: LedgerRow): { workflow: string; digest: string } | u
   const { workflow, workflow_digest: digest } = metricOf(row);
   return typeof workflow === "string" && typeof digest === "string" ? { workflow, digest } : undefined;
 };
-const micro = (usd: number) => Math.round(usd * 1e6) / 1e6;
 
 /** A compile turn a run's look-back asked (runner/reflect-hook.ts), as its kept round says it: the revision it drafted
  *  (`digest`, null when every draft failed its checks or the cap stopped the turn, so it drafted none; `workflow` null for
@@ -366,13 +365,13 @@ function learningV2Of(run: Pick<CostRun, "run_id" | "learning_usd">, compiles: r
   const compiled = compiles.reduce<number | null>((sum, one) => (sum === null || one.usd === null ? null : sum + one.usd), 0);
   const share = shares.has(run.run_id) ? shares.get(run.run_id)! : 0;
   if (run.learning_usd === null || compiled === null || share === null) return null;
-  return micro(Math.max(0, run.learning_usd - compiled) + share);
+  return noiseOff(Math.max(0, run.learning_usd - compiled) + share);
 }
 
 /** A run's v2 all-in: its own $ (the job's) and its v2 learning (learningV2Of); null when either is. */
 function allInV2Of(run: Pick<CostRun, "run_id" | "cost_usd" | "learning_usd">, compiles: readonly CompileSpend[], shares: ReadonlyMap<string, number | null>): number | null {
   const learning = learningV2Of(run, compiles, shares);
-  return learning === null || run.cost_usd === null ? null : micro(run.cost_usd + learning);
+  return learning === null || run.cost_usd === null ? null : noiseOff(run.cost_usd + learning);
 }
 
 /** The agent's revision ledger (revisionLedgerOf) over `listed` (its runs, as runs.list read them): its ended runs that do
@@ -400,7 +399,7 @@ export function revisionLedgerOf(records: readonly PromotionRecord[], rows: read
   const ordered = [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const newest = new Map<string, PromotionRecord>();
   for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, record);
-  const sum = (parts: readonly (number | null)[]) => (parts.some((one) => one === null) ? null : micro(parts.reduce<number>((total, one) => total + one!, 0)));
+  const sum = (parts: readonly (number | null)[]) => (parts.some((one) => one === null) ? null : noiseOff(parts.reduce<number>((total, one) => total + one!, 0)));
   const ran = (row: LedgerRow, record: PromotionRecord) => { const at = revisionOfRow(row); return at?.workflow === record.workflow && at.digest === record.digest; };
   const revisions = [...newest.values()].map((record): RevisionSpend => {
     const replays = ordered.filter((row) => metricOf(row).path === "replay" && ran(row, record));

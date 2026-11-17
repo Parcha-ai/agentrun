@@ -23,7 +23,13 @@ export type RunPath = (typeof RUN_PATHS)[number];
  *  answeredOf): when the job answered, what it had cost by then and what looking back cost after it. */
 export type CostLooked = { answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null };
 
+/** A mean, rounded to the millionth: a quotient, never a booked figure. */
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
+
+/** A booked figure with its float noise rounded off, nothing more (runner/metrics.ts floatNoiseOff, the precision a run's
+ *  own cost is kept at): a decision costs millionths of a dollar, so a figure rounded to the millionth would lose it, and
+ *  the run's cost here would read other than its usage row (A8). `+ 0` makes a noise-sized negative a plain 0, never -0. */
+export const noiseOff = (value: number) => Math.round(value * 1e12) / 1e12 + 0;
 
 /** A run's own cost and what learning added for it, from its row's cost (`rowUsd`: the job, its look-back and any turn a
  *  person asked of it after), what it kept as it answered (`looked`, none for a run that did not look back) and what its
@@ -42,7 +48,7 @@ export function runCostOf(rowUsd: number | null, looked: CostLooked | null, grad
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !answered || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
   const spent = back === null || gradeUsd === null ? null : back + gradeUsd;
-  return { cost_usd: job === null ? null : usd(job), learning_usd: spent === null ? null : usd(spent), total_usd: job === null || spent === null ? null : usd(job + spent) };
+  return { cost_usd: job === null ? null : noiseOff(job), learning_usd: spent === null ? null : noiseOff(spent), total_usd: job === null || spent === null ? null : noiseOff(job + spent) };
 }
 
 /** One run of the series, in the order the agent's runs started: `n` its number among them (1 the first). */
@@ -180,14 +186,13 @@ export type Bill = {
   holds: BillHold[];
 };
 
-const micro = (value: number) => Math.round(value * 1e6);
-
 /** The bill over `runs` (the cost series, oldest first, replays among them) and `promotedAt` (when the agent's first
  *  run on a served path started, null for none): each run that does a job, all in (its own $, its look-back, grade and
  *  audit shadow), with each replay's $ joining the run that does a job it followed (the first one when none did),
  *  cumulative; against the baseline times the runs shown so far. Spend booked with no point to join (a replay after a
  *  job of unknown cost) is carried to the next point, and with none after it is still booked: in the gap, and no
- *  break-even while it puts the bill over the line. Sums are in micro-dollars, so a tie reads as a tie. */
+ *  break-even while it puts the bill over the line. Every sum and difference has its float noise rounded off (noiseOff),
+ *  so a tie reads as a tie and a decision's sub-micro-dollar cost is booked as the usage row books it. */
 export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omit<Bill, "revisions" | "unattributed_usd" | "holds"> {
   const jobs = runs.filter((run) => JOB_PATHS.includes(run.path));
   const priced = (run: CostRun) => run.total_usd !== null && !run.cost_upper_bound;
@@ -201,7 +206,7 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
   for (const run of runs) {
     if (JOB_PATHS.includes(run.path)) {
       last = run.run_id;
-      if (early.length) extra.set(last, (extra.get(last) ?? 0) + early.splice(0).reduce((a, b) => a + b, 0));
+      if (early.length) extra.set(last, noiseOff((extra.get(last) ?? 0) + early.splice(0).reduce((a, b) => noiseOff(a + b), 0)));
       continue;
     }
     if (run.path !== "replay") continue;
@@ -209,32 +214,32 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
       withheld += 1;
       continue;
     }
-    if (last === undefined) early.push(micro(run.total_usd!));
-    else extra.set(last, (extra.get(last) ?? 0) + micro(run.total_usd!));
+    if (last === undefined) early.push(run.total_usd!);
+    else extra.set(last, noiseOff((extra.get(last) ?? 0) + run.total_usd!));
   }
   const points: BillPoint[] = [];
   let actual = 0;
   let shown = 0;
-  const line = baseline ? micro(baseline.mean_usd) : null;
+  const line = baseline ? baseline.mean_usd : null;
   const diffs: number[] = [];
   jobs.forEach((run, at) => {
     if (!priced(run)) {
       withheld += 1;
-      actual += extra.get(run.run_id) ?? 0;
+      actual = noiseOff(actual + (extra.get(run.run_id) ?? 0));
       return;
     }
     shown += 1;
-    actual += micro(run.total_usd!) + (extra.get(run.run_id) ?? 0);
-    const agent = line === null ? null : line * shown;
-    points.push({ n: at + 1, run_id: run.run_id, actual_usd: actual / 1e6, agent_usd: agent === null ? null : agent / 1e6 });
-    diffs.push(agent === null ? Number.NaN : actual - agent);
+    actual = noiseOff(actual + run.total_usd! + (extra.get(run.run_id) ?? 0));
+    const agent = line === null ? null : noiseOff(line * shown);
+    points.push({ n: at + 1, run_id: run.run_id, actual_usd: actual, agent_usd: agent });
+    diffs.push(agent === null ? Number.NaN : noiseOff(actual - agent));
   });
   // Replays with no job at all to join (every job run archived, say) are booked all the same.
-  actual += early.reduce((a, b) => a + b, 0);
+  actual = noiseOff(early.reduce((sum, one) => sum + one, actual));
   const first = promotedAt === null ? -1 : jobs.findIndex((run) => run.started_at >= promotedAt);
   const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: promotedAt! };
   // The booked total against the line at the last point: spend after it (carried to no point) is in.
-  const tail = line === null ? Number.NaN : actual - line * shown;
+  const tail = line === null ? Number.NaN : noiseOff(actual - noiseOff(line * shown));
   let breakEven: Bill["break_even"] = null;
   if (promoted && line !== null && !(tail > 0)) {
     const from = points.findIndex((point) => point.n >= promoted.n);
@@ -244,16 +249,16 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
       if (at < points.length) breakEven = { n: points[at]!.n, run_id: points[at]!.run_id };
     }
   }
-  const gap = !breakEven && line !== null && points.length ? tail / 1e6 : null;
-  return { baseline, promoted, points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual / 1e6 };
+  const gap = !breakEven && line !== null && points.length ? tail : null;
+  return { baseline, promoted, points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual };
 }
 
 /** Each revision's spend split over its first `k` served runs (`served`: the runs a learned workflow served, oldest
  *  first, with the workflow and digest that served each: a revision is both, as two workflows of the same text share a
- *  digest), in micro-dollars: each carries spend/k, the first ones a micro-dollar more until the split is exact; a run
- *  past the k-th carries none of it. `shares`: what each served run carries, by run id (null when its revision's spend
- *  is unknown); what a revision's runs have not carried is its `unattributed_usd`, and `unattributed_usd` their sum (null
- *  once one is unknown). */
+ *  digest), in whole micro-dollars: each carries spend/k, the first ones a micro-dollar more, and the k-th the
+ *  sub-micro-dollar rest too, so the split is exact to what was booked; a run past the k-th carries none of it.
+ *  `shares`: what each served run carries, by run id (null when its revision's spend is unknown); what a revision's
+ *  runs have not carried is its `unattributed_usd`, and `unattributed_usd` their sum (null once one is unknown). */
 export function amortize(revisions: readonly RevisionSpend[], served: readonly { run_id: string; workflow: string; digest: string }[]): { shares: Map<string, number | null>; revisions: RevisionShare[]; unattributed_usd: number | null } {
   const shares = new Map<string, number | null>();
   let rest: number | null = 0;
@@ -264,19 +269,23 @@ export function amortize(revisions: readonly RevisionSpend[], served: readonly {
       rest = null;
       return { ...revision, served: runs.length, attributed_usd: null, unattributed_usd: null };
     }
-    const total = micro(revision.spend_usd);
+    // Its whole micro-dollars (read off its pico-dollars, so float noise never drops one), split in integers; the rest
+    // under a micro-dollar is the k-th run's.
+    const total = Math.floor(Math.round(revision.spend_usd * 1e12) / 1e6);
+    const fraction = noiseOff(revision.spend_usd - total / 1e6);
     const each = Math.floor(total / revision.k);
     const over = total - each * revision.k;
     let carried = 0;
     runs.forEach((run, at) => {
-      const share = each + (at < over ? 1 : 0);
-      carried += share;
-      shares.set(run.run_id, share / 1e6);
+      const share = noiseOff((each + (at < over ? 1 : 0)) / 1e6 + (at === revision.k - 1 ? fraction : 0));
+      carried = noiseOff(carried + share);
+      shares.set(run.run_id, share);
     });
-    if (rest !== null) rest += total - carried;
-    return { ...revision, served: runs.length, attributed_usd: carried / 1e6, unattributed_usd: (total - carried) / 1e6 };
+    const left = noiseOff(revision.spend_usd - carried);
+    if (rest !== null) rest = noiseOff(rest + left);
+    return { ...revision, served: runs.length, attributed_usd: carried, unattributed_usd: left };
   });
-  return { shares, revisions: out, unattributed_usd: rest === null ? null : rest / 1e6 };
+  return { shares, revisions: out, unattributed_usd: rest };
 }
 
 /** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that
