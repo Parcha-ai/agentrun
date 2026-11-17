@@ -68,9 +68,14 @@ async function main() {
     row("volume is root's", "PASS", `${mountPath} on a fresh volume: ${before}, as Railway mounts one`);
 
     docker(...dockerRunArgs(service, { name, volume: name, envFile, image }));
-    const hostPort = docker("port", name, `${env.PORT}/tcp`).split("\n")[0].split(":").pop();
-    const local = `http://${LOOPBACK}:${hostPort}`;
+    // Docker picks the host port again on each start, so it is read after each one.
+    let hostPort, local;
+    const published = () => {
+      hostPort = docker("port", name, `${env.PORT}/tcp`).split("\n")[0].split(":").pop();
+      local = `http://${LOOPBACK}:${hostPort}`;
+    };
     const healthy = async (what) => {
+      published();
       for (let i = 0; i < 240; i++) {
         const r = await fetch(`${local}/v2/health`).catch(() => undefined);
         if (r?.status === 200) return r.json();
