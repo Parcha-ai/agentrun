@@ -1,16 +1,18 @@
 // The boxd host: boxd machines (KVM microVMs, Ubuntu 24.04) as a MachineHost, through the host's own @boxd-sh/sdk, of
 // which this file names only the slice it calls (every fact from 0.3.1's dist/*.d.ts) and imports nothing at load.
 // boxd's agent runs every command in a machine, so computerd is a child. The daemon, the bridge, the probe, idempotent
-// create, extend and delete-then-wait-gone are the shared adapter's (./hosted/provider.ts).
+// create, extend and delete-then-wait-gone are the shared adapter's (./hosted/provider.ts). A desktop starts from a
+// snapshot of boxd's own image with a stock app added, which prepareImage() builds once in the key's org.
+import { createHash, randomBytes } from "node:crypto";
 import { BOXD, BOXD_DEFAULT_IMAGE } from "./descriptors/boxd.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
-import { codeOfError } from "./hosted/process.js";
+import { CALL_SLACK_MS, codeOfError, orThrow, race, runChecked, until } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, mayHaveMade } from "./hosted/provider.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf } from "./hosted/values.js";
-import type { ComputerSpec, Refusal } from "./provider.js";
-import type { ComputerErrorCode } from "./result.js";
+import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
+import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
 
 /** A machine as the SDK reports it (Machine, models.d.ts), as far as this host reads it. */
 export interface BoxdMachine {
@@ -34,7 +36,7 @@ export interface BoxdExecStream extends AsyncIterable<Uint8Array> {
 /** The SDK's machines namespace, as far as this host calls it (Machines, machines.d.ts). */
 export interface BoxdMachines {
 	/** deleteAfter: seconds from now until boxd deletes the machine, whatever it is doing. */
-	create(params: { name: string; org?: string; labels: Record<string, string>; isolated: true; config: { autoSuspendTimeout: 0; vcpu?: number; memory?: string }; fromSnapshot?: string; deleteAfter?: number }): Promise<BoxdMachine>;
+	create(params: { name: string; org?: string; labels?: Record<string, string>; isolated: true; config: { autoSuspendTimeout: 0; vcpu?: number; memory?: string }; fromSnapshot?: string; deleteAfter?: number }): Promise<BoxdMachine>;
 	get(id: string): Promise<BoxdMachine>;
 	list(params: { org?: string; labels: Record<string, string> }): Promise<Iterable<BoxdMachine>>;
 	delete(id: string): Promise<void>;
@@ -46,8 +48,25 @@ export interface BoxdMachines {
 	updateLabels(id: string, params: { set: Record<string, string> }): Promise<Record<string, string>>;
 }
 
+/** A snapshot as the SDK reads one (Snapshot, models.d.ts), as far as this host reads it. */
+export interface BoxdSnapshot {
+	name: string;
+	/** "pending" until the capture lands, then "ready" or "failed" (ArtifactStatus). */
+	status: string;
+	/** True unless its bytes are on a worker's disk: boxd makes no machine from it until boxd's operator unarchives it. */
+	archived: boolean;
+	storage: string;
+}
+
+/** The SDK's snapshots namespace, as far as this host calls it (Snapshots, snapshots.d.ts). */
+export interface BoxdSnapshots {
+	/** Captures a running machine (memory and disk) under the name; answers before the capture lands. */
+	create(machine: string, name: string): Promise<unknown>;
+	get(name: string, params: { org?: string }): Promise<BoxdSnapshot>;
+}
+
 /** The SDK's Boxd class: given the key, the address and the region ("" is home) so it reads none from the environment. */
-export type BoxdClientClass = new (options: { apiKey: string; baseURL: string; region: string; timeout: number; maxRetries?: number }) => { readonly machines: BoxdMachines };
+export type BoxdClientClass = new (options: { apiKey: string; baseURL: string; region: string; timeout: number; maxRetries?: number }) => { readonly machines: BoxdMachines; readonly snapshots: BoxdSnapshots };
 
 export interface BoxdProviderOptions extends HostedOptions {
 	/** The boxd API key: the caller passes it; the provider never reads it from the environment or puts it in a computer. */
@@ -100,6 +119,43 @@ const STATES: Readonly<Record<string, Machine["state"]>> = {
 	...{ hibernated: "stopped", stopped: "stopped", failed: "gone", destroyed: "gone" },
 };
 
+/**
+ * What a desktop needs that boxd's own image lacks: a stock app, Xfce's text editor (mousepad, from Ubuntu's universe),
+ * its desktop file checked, run as root on a build machine of boxd's own image. Xvfb is the image's already. The
+ * snapshot's name carries this line's hash, so a new line is a new snapshot.
+ */
+const DESKTOP_RECIPE = [
+	"set -e",
+	"export DEBIAN_FRONTEND=noninteractive",
+	"apt-get update -qq",
+	"apt-get install -y -qq --no-install-recommends mousepad >/dev/null",
+	'test -f /usr/share/applications/org.xfce.mousepad.desktop || { echo "mousepad brought no org.xfce.mousepad.desktop" >&2; exit 1; }',
+	"rm -rf /var/lib/apt/lists/*",
+].join("\n");
+
+/** The desktop snapshot this package's recipe names: agentrun-desktop-<12 hex of the recipe's sha256>. */
+export const boxdDesktopSnapshot = (): string => `agentrun-desktop-${createHash("sha256").update(DESKTOP_RECIPE).digest("hex").slice(0, 12)}`;
+
+/** A build, all of it (boot, the recipe, the capture); its machine's delete timer, so a build left by a crash ends. */
+const BUILD_MS = 30 * 60_000;
+const BUILD_TTL_S = 2 * 60 * 60;
+/** The pause between two reads of something boxd is making or deleting. */
+const BUILD_POLL_MS = 2_000;
+/** The most a build machine's cleanup waits for it to read gone. */
+const GONE_MS = 120_000;
+
+/** The error with words added to its message (one that cannot be written stays as it was): the error is what the caller gets. */
+function withWords(error: unknown, words: string): unknown {
+	if (error instanceof Error) {
+		try {
+			error.message = `${error.message}${words}`;
+		} catch {
+			// A read-only message: the error goes on as it is.
+		}
+	}
+	return error;
+}
+
 /** A machine as the adapter reads one: its labels, its state, and when boxd made it. */
 function machineOf(machine: BoxdMachine): Machine {
 	const state = STATES[machine.status];
@@ -130,7 +186,8 @@ class BoxdHost implements MachineHost {
 		readonly machines: BoxdMachines,
 		/** For create alone: bounded by createMs, and never sent twice. */
 		readonly creator: BoxdMachines,
-		readonly options: { org?: string; size?: { vcpu: number; memory: string } },
+		readonly snapshots: BoxdSnapshots,
+		readonly options: { org?: string; size?: { vcpu: number; memory: string }; kind: "desktop" | "linux" },
 	) {}
 
 	errorCode(error: unknown): ComputerErrorCode {
@@ -180,14 +237,7 @@ class BoxdHost implements MachineHost {
 		} catch (failed) {
 			outcome = `the machine ${id} it made could not be deleted (${failed instanceof Error ? failed.message : String(failed)})`;
 		}
-		if (error instanceof Error) {
-			try {
-				error.message = `${error.message}; ${outcome}`;
-			} catch {
-				// A message that cannot be written stays as it was: the error itself is what the caller gets.
-			}
-		}
-		return error;
+		return withWords(error, `; ${outcome}`);
 	}
 
 	/** machines.get takes an id alone, so a machine of another org is none of this provider's. Not found is none (adapter). */
@@ -236,8 +286,120 @@ class BoxdHost implements MachineHost {
 	}
 
 	/**
-	 * An image is "default" or a snapshot's name; the size is the provider's (vcpu, memory), never the spec's; a label
-	 * name is one boxd takes.
+	 * The desktop snapshot of this name in the org: found ready, or one being made waited for; else built once
+	 * (`building` told first). A build makes an isolated machine of boxd's own image with no labels (a restore carries a
+	 * snapshot's labels over to every machine made from it) and boxd's delete timer at BUILD_TTL_S, runs DESKTOP_RECIPE
+	 * as root through the image user's passwordless sudo, captures the machine under the name, and waits until the
+	 * capture is ready. A cancelled caller makes no machine, and stops waiting for one to start. The machine is deleted
+	 * after, pass, fail or cancel, and waited gone, so a sweep after the build finds none of it; one that can't be is said
+	 * (after the build's own error, when it failed). The snapshot stays: it is the org's image for every desktop. One that
+	 * failed, or that boxd archived, is refused in words: delete it, then call again. Two first builds that race (two
+	 * servers, one org) each pay for a build machine, and both captures land under the one name (boxd keeps the latest).
+	 */
+	async desktopSnapshot(name: string, building: () => void, signal: AbortSignal | undefined): Promise<string> {
+		const end = Date.now() + BUILD_MS;
+		const found = await this.#snapshot(name, end, signal);
+		if (found !== null) return found;
+		if (signal?.aborted) throw new HostError("aborted", `the build of the boxd snapshot ${name} was aborted before its machine was made`);
+		building();
+		// Named before the create, so a create whose reply is lost leaves a machine the cleanup still finds.
+		const machine = `agentrun-desktop-build-${randomBytes(4).toString("hex")}`;
+		const made = new Set<string>();
+		let built: { name: string } | { error: unknown };
+		try {
+			built = { name: await this.#build(machine, made, name, end, signal) };
+		} catch (error) {
+			built = { error };
+		}
+		const left = await this.#gone(machine, made);
+		if ("error" in built) throw left === undefined ? built.error : withWords(built.error, `; ${left}`);
+		if (left !== undefined) throw new HostError("vendor", `the boxd snapshot ${name} is ready, but ${left}: call again to start from the snapshot`);
+		return built.name;
+	}
+
+	/**
+	 * The build itself, on a machine of this name (its id put in `ids` as create answers it): made, started (a cancel stops
+	 * the wait), the recipe, the capture read ready.
+	 */
+	async #build(machine: string, ids: Set<string>, name: string, end: number, signal: AbortSignal | undefined): Promise<string> {
+		const { org } = this.options;
+		const made = await this.creator.create({
+			name: machine,
+			...(org === undefined ? {} : { org }),
+			isolated: true,
+			config: { autoSuspendTimeout: 0 },
+			deleteAfter: BUILD_TTL_S,
+		});
+		ids.add(made.id);
+		const ms = Math.max(1, end - Date.now());
+		orThrow(await race(this, this.machines.waitUntilReady(made.id, { timeout: ms }), `the build machine ${made.id}'s start`, ms + CALL_SLACK_MS, signal));
+		const what = `the desktop recipe (mousepad) on the build machine ${made.id}`;
+		await runChecked(this, made.id, ["sudo", "-n", "sh", "-c", DESKTOP_RECIPE], { ms: Math.max(1, end - Date.now()), signal, what });
+		await this.snapshots.create(made.id, name);
+		const ready = await this.#snapshot(name, end, signal);
+		if (ready === null) throw new HostError("vendor", `boxd took the snapshot ${name} of ${made.id}, then read none by that name`);
+		return ready;
+	}
+
+	/** The snapshot's name once boxd reads it ready (a pending one waited for), null when boxd has none by it; failed or archived throws in words. */
+	#snapshot(name: string, end: number, signal: AbortSignal | undefined): Promise<string | null> {
+		const { org } = this.options;
+		return until(`the boxd snapshot ${name}`, { end, pollMs: BUILD_POLL_MS, signal }, async () => {
+			let read: BoxdSnapshot;
+			try {
+				read = await this.snapshots.get(name, org === undefined ? {} : { org });
+			} catch (error) {
+				if (codeOf(error) === "not_found") return null;
+				throw error;
+			}
+			if (read.archived) throw new HostError("refused", `the boxd snapshot ${name} is archived (storage ${show(read.storage)}), and boxd makes no machine from it until its operator unarchives it: delete it, then call again to build it anew`);
+			if (read.status === "ready") return name;
+			if (read.status === "pending") return undefined;
+			throw new HostError("vendor", `the boxd snapshot ${name} is ${show(read.status)}, not ready: delete it, then call again to build it anew`);
+		});
+	}
+
+	/**
+	 * The build's machines, each deleted once and read gone through get, GONE_MS at most: the ids create answered (`made`),
+	 * which a lagging list can't hide, and every machine of the build's name in the org's list (it has no label to list it
+	 * by), which finds one whose create reply was lost. Not the caller's to cancel: a cancelled build is cleaned up too.
+	 * Undefined once none is left, else what is left in words (boxd's delete timer, set at create, ends it).
+	 */
+	async #gone(machine: string, made: ReadonlySet<string>): Promise<string | undefined> {
+		const { org } = this.options;
+		const asked = new Set<string>();
+		try {
+			await until(`the build machine ${machine}'s delete`, { end: Date.now() + GONE_MS, pollMs: BUILD_POLL_MS }, async () => {
+				const listed = await this.machines.list({ ...(org === undefined ? {} : { org }), labels: {} });
+				let left = 0;
+				for (const id of new Set([...made, ...[...listed].filter((one) => one.name === machine).map((one) => one.id)])) {
+					if (!asked.has(id)) {
+						asked.add(id);
+						await this.delete(id);
+					}
+					if (!(await this.#readGone(id))) left += 1;
+				}
+				return left === 0 ? true : undefined;
+			});
+			return undefined;
+		} catch (error) {
+			return `its build machine ${machine} could not be deleted (${error instanceof Error ? error.message : String(error)}), and boxd's delete timer ends it within ${BUILD_TTL_S / 3600} h`;
+		}
+	}
+
+	/** Whether get reads the machine gone: not found, or in a state that is gone. */
+	async #readGone(id: string): Promise<boolean> {
+		try {
+			return STATES[(await this.machines.get(id)).status] === "gone";
+		} catch (error) {
+			if (codeOf(error) === "not_found") return true;
+			throw error;
+		}
+	}
+
+	/**
+	 * An image is "default" or a snapshot's name, and a desktop's is a snapshot; the size is the provider's (vcpu,
+	 * memory), never the spec's; a label name is one boxd takes.
 	 */
 	check(spec: Partial<ComputerSpec>): Refusal[] {
 		const refusals: Refusal[] = (["cpus", "memoryMb"] as const)
@@ -246,7 +408,9 @@ class BoxdHost implements MachineHost {
 		const { image, labels } = spec;
 		if (typeof image === "string" && image !== "") {
 			if (!IMAGE.test(image)) refusals.push({ field: "image", message: `an image is "${BOXD_DEFAULT_IMAGE}" (boxd's own Ubuntu 24.04), or the name of a boxd snapshot` });
-			else if (image !== BOXD_DEFAULT_IMAGE && this.options.size) refusals.push({ field: "image", message: `a machine restored from a snapshot has the snapshot's size, and this provider names one: it takes only "${BOXD_DEFAULT_IMAGE}"` });
+			else if (image === BOXD_DEFAULT_IMAGE && this.options.kind === "desktop") {
+				refusals.push({ field: "image", message: `a boxd desktop starts from a snapshot with a desktop app, and boxd's own image lists none of the stock ones (Xfce's text editor and terminal, xterm): name ${boxdDesktopSnapshot()}, which prepareImage() builds, or a snapshot of your own` });
+			} else if (image !== BOXD_DEFAULT_IMAGE && this.options.size) refusals.push({ field: "image", message: `a machine restored from a snapshot has the snapshot's size, and this provider names one: it takes only "${BOXD_DEFAULT_IMAGE}"` });
 		}
 		const keys = labels !== null && typeof labels === "object" ? Object.keys(labels).filter((key) => !LABEL_KEY.test(key)) : [];
 		if (keys.length > 0) refusals.push({ field: "labels", message: `boxd takes label names of 1 to 63 of a-z, 0-9 and ._/-, not starting boxd/: ${keys.map((key) => show(key)).join(", ")}` });
@@ -270,18 +434,39 @@ function codeOf(error: unknown): ComputerErrorCode {
 	return "vendor";
 }
 
-/** Computers that are boxd machines, on the shared adapter. A spec's image is "default" or a boxd snapshot's name. */
+/**
+ * Computers that are boxd machines, on the shared adapter. A spec's image is "default" or a boxd snapshot's name. A
+ * server starts a sandbox from boxd's own image, and a desktop from the snapshot prepareImage() answers.
+ */
 export class BoxdProvider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it). A sandbox: boxd's own image, with no call. A
+	 * desktop: the desktop snapshot (boxdDesktopSnapshot) in the key's org, found or built once (BoxdHost.desktopSnapshot),
+	 * so a new recipe is a new snapshot; onWait is told "build" once, before a build, never when the org has it.
+	 */
+	async prepareImage(context: CallContext & { onWait?: (making: "build" | "pull", tag: string) => void } = {}): Promise<Result<string>> {
+		if (this.capabilities().kind !== "desktop") return ok(BOXD_DEFAULT_IMAGE);
+		const name = boxdDesktopSnapshot();
+		const host = this.host as BoxdHost;
+		try {
+			return ok(await host.desktopSnapshot(name, () => context.onWait?.("build", name), context.signal));
+		} catch (error) {
+			return failFor(this.id)(codeOfError(host, error), `boxd's desktop snapshot ${name}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
 	constructor(options: BoxdProviderOptions) {
 		const { apiKey, Boxd, org, region = "", baseUrl = DEFAULT_BASE_URL, vcpu, memory, maxLifetimeMs = DAY_MS, ...rest } = options;
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("a boxd API key is required");
 		if (typeof Boxd !== "function") throw new Error("options.Boxd must be the @boxd-sh/sdk package's Boxd class");
 		if ((vcpu !== undefined || memory !== undefined) && SIZES[vcpu as number] !== memory) throw new Error(`vcpu ${String(vcpu)} with memory ${String(memory)} is not one of boxd's sizes: 1 and 4G, 2 and 8G, 4 and 16G or 8 and 32G`);
 		if (Number(rest.daemonUser?.split(":")[0]) === IMAGE_UID) throw new Error(`the daemon user ${rest.daemonUser} is the uid of the machine's own user, whose processes init refuses to run beside; choose another, such as 2510:2510`);
+		const kind = rest.kind === "desktop" ? "desktop" : "linux";
+		if (kind === "desktop" && vcpu !== undefined) throw new Error("a boxd desktop starts from a snapshot, which keeps the size it was captured at: name no vcpu or memory for kind desktop");
 		const client = { apiKey, baseURL: baseUrl, region };
-		const machines = new Boxd({ ...client, timeout: rest.timeouts?.requestMs ?? REQUEST_MS }).machines;
+		const { machines, snapshots } = new Boxd({ ...client, timeout: rest.timeouts?.requestMs ?? REQUEST_MS });
 		const creator = new Boxd({ ...client, timeout: rest.timeouts?.createMs ?? CREATE_MS, maxRetries: 0 }).machines;
 		const size = vcpu === undefined ? undefined : { vcpu, memory: memory as string };
-		super(new BoxdHost(machines, creator, { org, size }), { ...rest, maxLifetimeMs });
+		super(new BoxdHost(machines, creator, snapshots, { org, size, kind }), { ...rest, maxLifetimeMs });
 	}
 }
