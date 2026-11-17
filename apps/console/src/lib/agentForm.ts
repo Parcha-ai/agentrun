@@ -197,24 +197,28 @@ export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefin
 /** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
  *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
+/** The tools that run only in a box (serve's tools.ts, `sandboxOnly`; capabilities' `sandbox_only`): bash and the
+ *  background tools. A revision with no place gets the box only when it names one. */
+const SANDBOX_ONLY: ReadonlySet<string> = new Set(["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
 
 /** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
  *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
- *  and for one that names a tool that runs only there (the browser); else this server's default_place. The editor's
- *  picker and its tool checks both read it, so they agree with the server and with each other. */
+ *  for one whose tools need no shell, and for one that names a tool that runs only there (the browser); else this
+ *  server's default_place. The editor's picker and its tool checks both read it, so they agree with the server and with
+ *  each other. */
 export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
-  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
+  workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !tools.some((tool) => SANDBOX_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
  *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
- *  not read yet (and it names no runner-only tool), whose place is not known. The agent page's fact and the Learning
- *  tab's host-bash line both read it. */
+ *  not read yet (and it names a shell tool and no runner-only one), whose place is not known. The agent page's fact and
+ *  the Learning tab's host-bash line both read it. */
 export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
   const own = placeOf(agent.definition.place);
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
   const tools = agent.definition.tools ?? [];
-  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && !places) return undefined;
+  if (!workflow && !tools.some((tool) => RUNNER_ONLY.has(tool)) && tools.some((tool) => SANDBOX_ONLY.has(tool)) && !places) return undefined;
   return { place: defaultPlaceOf(workflow, tools, places), byDefault: true };
 }
 

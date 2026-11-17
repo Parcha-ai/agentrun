@@ -15,8 +15,10 @@ it in your browser (`--no-open`, a CI run or a machine with no display skips tha
 each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
 Node gets one line naming that floor.
 
-A start that fails says why on stderr: the step that failed, how the server ended (its exit code or signal, or still
-running after 60 seconds without printing its address, and stopped), its last lines on stderr and stdout, and
+The server binds its port first and says so; this command then names the address on stderr at once, and prints its line
+on stdout once the server is ready, which on a cold, slow disk can take minutes. A start that fails says why on stderr:
+the step that failed, how the server ended (its exit code or signal, or still running after 60 seconds without printing
+any address, and stopped; `AGENTRUN_START_TIMEOUT_MS` sets that wait, in milliseconds), its last lines on stderr and stdout, and
 `~/.agentrun/start.log` (in the folder `--data` names), which holds everything the server wrote in that start. Each start
 overwrites that log; it is private to you, as the server's first lines name its API token. A log the disk could not hold
 all of is named with the error that cut it short.

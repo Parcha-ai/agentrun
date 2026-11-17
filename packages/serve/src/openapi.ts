@@ -98,12 +98,12 @@ const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
   Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 412: "PreconditionFailed", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported", 503: "Unavailable" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
-/** GET /health's answer (host.ts Health). */
+/** GET /health's answer (host.ts Health; listen-first.ts while the server is warming). */
 const HEALTH = {
   type: "object", additionalProperties: false, required: ["status", "checks"],
   properties: {
-    status: { enum: ["ok", "failing"] },
-    checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
+    status: { enum: ["ok", "failing", "warming"] },
+    checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open", "opening"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
   },
 };
 
@@ -1828,10 +1828,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/health": {
     get: {
       operationId: "getHealth", tags: ["capabilities"], summary: "Whether this server can serve", security: [{}],
-      description: "Readable without a credential: the store opens and the data directory's disk is above its floor. 503 with the same shape when either fails.",
+      description: "Readable without a credential: the store opens and the data directory's disk is above its floor. 503 with the same shape when either fails. While the server is still starting (it listens before it has loaded and opened its store), 503 with `status` `warming` and `checks.store` `opening`, and a Retry-After; every other request then answers 503 `unavailable`, retryable.",
       responses: {
         "200": json(HEALTH, "Healthy."),
-        "503": json(HEALTH, "Not healthy: which check failed."),
+        "503": json(HEALTH, "Not healthy: which check failed; or warming, still starting."),
         ...errors(429, 500),
       },
     },
@@ -3228,7 +3228,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
         { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
       ],
-      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent on a create of an agentic revision, the place this server gives a new agent (capabilities.places.default_place): the Docker box where this server has docker, written on the revision so an answer shows it, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools (a list it names, an empty one included, is kept as named); where docker is unavailable, or the definition names a tool a box refuses (browser), none, as before. A revision saved with no place runs where this server's capabilities.places.default_place says at each run (the Docker box where docker is available now, else the runner); a workflow, and one that names a tool a box refuses, on the runner. A revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash` or a background tool (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`); a workflow revision's place is runner or none (a sandbox place is 422).",
+      description: "Where the revision's runs execute: `runner` (no box and no shell) or `sandbox` (the agent's file and shell tools run in the box; its loop, its log and every key stay on the server). Absent on a create of an agentic revision, the place this server gives a new agent (capabilities.places.default_place): the Docker box where this server has docker, written on the revision so an answer shows it, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools (a list it names, an empty one included, is kept as named, and gets the box only when one of its tools runs only there: `bash` or a background tool); where docker is unavailable, where the definition's tools need no shell, or where it names a tool a box refuses (browser), none, so its runs start on the runner with no container. A revision saved with no place runs where this server's capabilities.places.default_place says at each run (the Docker box where docker is available now, else the runner) when one of its tools needs a shell; a workflow, one whose tools need no shell, and one that names a tool a box refuses, on the runner. A revision keeps the place it names, runner included. An edit that names none keeps the agent's. A box this server does not have saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.places.boxes). Only an agentic revision in a sandbox place may name `bash` or a background tool (`bash_background`, `bash_output`, `bash_input`, `bash_signal`, `bash_list`); a workflow revision's place is runner or none (a sandbox place is 422).",
       "x-agentrun-serve": "place/1",
     },
     computer: {
@@ -3415,7 +3415,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         { type: "object", additionalProperties: false, required: ["mode"], properties: { mode: { const: "runner" } } },
         { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
       ],
-      description: "The place a NEW agentic agent that names none is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; else the runner, with `default_reason`. It is also where an agentic revision saved with no place runs, resolved at each run: a workflow, and a revision that names a tool a box refuses, run on the runner. (It replaces `places.default`, which said `runner`.)",
+      description: "The place a NEW agentic agent that names none and has a shell is saved with, written on its revision at its create: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; else the runner, with `default_reason`. One whose named tools need no shell is saved with no place and runs on the runner. It is also where an agentic revision saved with no place and a shell tool runs, resolved at each run: a workflow, a revision whose tools need no shell, and a revision that names a tool a box refuses, run on the runner. (It replaces `places.default`, which said `runner`.)",
       "x-agentrun-serve": "place/4",
     },
     default_reason: { type: "string", description: "Why a new agent is not given a box here, when `default_place` is the runner, in docker's own words: `new agents run on the runner, because the docker box is unavailable here: <docker's reason>`, such as `Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun`, or, with AGENTRUN_BOXES set to a list without docker, empty or `none`, the setting that turns it on.", "x-agentrun-serve": "place/3" },

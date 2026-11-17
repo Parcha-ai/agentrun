@@ -14,7 +14,7 @@ import { connectNative, launchNative, updateNative, verifyConnection } from "./n
 // token.
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
@@ -44,7 +44,8 @@ import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type Mo
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
-import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
+import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
+import { DEFAULT_HOST, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
@@ -147,6 +148,7 @@ import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -271,6 +273,9 @@ export type ServeOptions = {
   /** When the port is taken at the listen, the next one that is not, of the 100 from it: the port is found by listening,
    *  so one another process takes at the same moment is passed over. Without it a taken port fails the start. */
   nextFreePort?: boolean;
+  /** A server already listening (listen-first.ts, the CLI's early bind), answering that it is warming: the start takes it
+   *  over where it would have listened, and `port`, `nextFreePort` and `host` are then only what it was bound with. */
+  listener?: Server;
   /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
    *  AGENTRUN_SERVE_DOCUMENTS. */
   documents?: string;
@@ -978,8 +983,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const learningBudget = learningBudgetOf(process.env, options.learningBudget);
   // A limit on a run's requests on free models that is no whole number above 0 stops the start, naming its variable.
   freeModelRequestsOf(process.env);
-  const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
-  if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
+  const minFreeMib = minFreeMibOf(process.env);
+  if (minFreeMib === undefined) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
@@ -1126,6 +1131,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
   const stopping = new AbortController();
+  /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
+  let schemaSealed: Promise<unknown> = Promise.resolve();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -1707,7 +1714,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
         await rename(`${keptFile}.partial`, keptFile);
       }));
-  const host = options.host ?? "127.0.0.1";
+  const host = options.host ?? DEFAULT_HOST;
   // Open setup (no code) only where no one else reaches the port: a loopback listener. Bound to any other address
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
@@ -1843,20 +1850,79 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       else process.stderr.write(`agentrun-serve: ${line}\n`);
     })
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Then, not waited on: a trigger kept with a value in the clear in a field only its event's schema marks, sealed once
+  // the schemas are read from Composio (composio-triggers.ts sealMarked). Drained by stop before the store closes.
+  /** Trigger `id`'s create answer kept under an Idempotency-Key, its fields `source` now seals (sealed_config) masked: the
+   *  after-start seal by the events' schemas finds fields the name rule (shownTrigger, at the start's rewrite of the
+   *  records) does not, and a replay must not hand one back. The file is written again when one changed. */
+  const cachedMasked = async (id: string, source: Record<string, unknown>) => {
+    if (maskCached(id, source).length) await keep();
+  };
+  /** The records kept under an Idempotency-Key (their slots) that answered trigger `id`'s create with a field `source`
+   *  keeps sealed still in the clear, each masked in the map now (not saved: the caller saves). */
+  function maskCached(id: string, source: Record<string, unknown>): string[] {
+    const fields = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as unknown[]).filter((name): name is string => typeof name === "string") : [];
+    const changed: string[] = [];
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const config: Record<string, unknown> = { ...body.source.config };
+      const hit = fields.filter((name) => Object.hasOwn(config, name) && config[name] !== SEALED_MASK);
+      if (!hit.length) continue;
+      for (const name of hit) config[name] = SEALED_MASK;
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: fields } } } });
+      changed.push(slot);
+    }
+    return changed;
+  }
+  const idempotencySaid = (fields: Record<string, string>) => {
+    const line = logLine("idempotency", fields);
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  const scrubSaid = ({ left }: { left?: string }) => {
+    if (!left) return;
+    const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  schemaSealed = composioTriggers
+    // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
+    // start's scrub runs it before it serves).
+    .sealMarked(async (id, source, updatedAt) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? undefined : { ifUpdatedAt: updatedAt })) !== undefined;
+      // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
+      // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
+      if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
+      return written;
+    }, async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work, { vacuum: false })) : void (await work())))
+    .catch((error: Error) => void (stopping.signal.aborted || process.stderr.write(`agentrun-serve: sealing the composio triggers' config by their events' schemas: ${error.message}\n`)));
   // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
   // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
   {
-    let scrubbed = 0;
+    // Each record rewritten, counted once whichever of the two passes below rewrote it.
+    const scrubbed = new Set<string>();
+    // Each cached create answer checked against its trigger as stored, whatever its field's name: a field sealed since
+    // (by its event's schema, whose save of this file failed before a restart) is masked before the first request.
+    const answered = new Set<string>();
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (slot.startsWith("/triggers\n") && isObject(body) && typeof body.id === "string") answered.add(body.id);
+    }
+    for (const id of answered) {
+      const row = await sealing.triggers.get(id).catch(() => undefined);
+      if (row && isObject(row.source)) for (const slot of maskCached(id, row.source as Record<string, unknown>)) scrubbed.add(slot);
+    }
     for (const [slot, v] of idempotency) {
       const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
       const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
       if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
       idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
-      scrubbed++;
+      scrubbed.add(slot);
     }
-    if (scrubbed || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
-    if (scrubbed) {
-      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed });
+    if (scrubbed.size || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    if (scrubbed.size) {
+      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed.size });
       if (log) log(line);
       else process.stderr.write(`agentrun-serve: ${line}\n`);
     }
@@ -2243,7 +2309,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
-  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, (tool) => toolOf(tool)?.runnerOnly === true);
+  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, toolOf);
 
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
@@ -2369,18 +2435,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
-   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
-   *  tool the box refuses (browser) keeps the runner. */
+   *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
+   *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
+   *  (browser), keeps the runner. */
   async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const entry = await agents.create(definition, async (revision) => {
       const saved = await saveable(revision);
       warnings = saved.warnings;
       return saved.stamp;
-    }, "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, template);
+    }, place.mode === "sandbox" ? { place, tools: NEW_AGENT_TOOLS } : undefined, template);
     return { entry, warnings };
   }
 
@@ -4475,7 +4542,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   })();
 
   let names: Set<string> | undefined;
-  const server = createServer((req, res) => {
+  // The listener: the CLI's, bound early and answering warming until the takeover below (listen-first.ts), or a new one.
+  const server = options.listener ?? createServer();
+  const onRequest = (req: IncomingMessage, res: ServerResponse) => {
     const requestId = `req_${randomBytes(8).toString("hex")}`;
     res.setHeader("x-request-id", requestId);
     if (log && !quiet) {
@@ -4529,13 +4598,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const viewing = LIVE_PATH.exec(raw);
     if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2] as LiveFamily, viewing[3]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
-  });
+  };
   // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
   // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
   // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
   server.headersTimeout = 10_000;
   // The one upgrade this server takes: a run's live computer viewer's WebSocket (browser-live.ts). Every other is refused.
-  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const raw = (req.url ?? "/").split("?")[0]!;
     const viewing = LIVE_PATH.exec(raw);
@@ -4582,25 +4651,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       viewers.watch(socket, admitted);
       proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
-  });
-  const first = options.port ?? DEFAULT_PORT;
-  const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
-  for (let port = first; ; port++) {
-    try {
-      // Each attempt takes off both its handlers when it ends, so a taken port leaves no listener behind.
-      await new Promise<void>((done, reject) => {
-        const onError = (error: Error) => (server.off("listening", onListening), reject(error));
-        const onListening = () => (server.off("error", onError), done());
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(port, host);
-      });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-      if (port < last) continue;
-      throw last > first ? Object.assign(new Error(`every port from ${first} to ${last} on ${host} is taken`), { code: "EADDRINUSE" }) : error;
-    }
+  };
+  // The CLI's early listener answers with this server's routes from here on, where a new one would start to listen.
+  if (options.listener) takeOver(server, onRequest, onUpgrade);
+  else {
+    server.on("request", onRequest);
+    server.on("upgrade", onUpgrade);
+    await listenOn(server, host, options.port ?? DEFAULT_PORT, options.nextFreePort === true);
   }
   // The tool keys the server is started with, each checked once against its provider, in the background, once it
   // listens: a start that fails sends no check, and the start never waits on one. Capabilities are made again as each
@@ -4610,11 +4667,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listen hands back no close to stop them.
   if (offersImport && existsSync(importAsked)) void importAtSetup();
   else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
-  const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
-  const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-  const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
+  const url = urlOf(server, host);
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
@@ -4878,6 +4933,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
+    await schemaSealed;
     await installStopped;
     await observationStopped;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
@@ -4902,7 +4958,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   return {
     url,
     baseUrl: `${url}/v2`,
-    port: address.port,
+    port: (server.address() as AddressInfo).port,
     token,
     tokenIds: tokens.map((entry) => entry.id),
     tokenFile,

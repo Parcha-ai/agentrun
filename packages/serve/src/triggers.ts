@@ -420,8 +420,8 @@ export class Triggers {
 
   /** Every trigger of source `kind`, on or off, with its name and source: what a source's sender keeps of them is shared
    *  between some (composio-triggers.ts: one Composio instance per server, event and config). */
-  async ofKind(kind: string): Promise<{ id: string; name: string; enabled: boolean; source: Source }[]> {
-    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.source.kind === kind).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, source: t.source }));
+  async ofKind(kind: string): Promise<{ id: string; name: string; enabled: boolean; source: Source; updatedAt: number }[]> {
+    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.source.kind === kind).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, source: t.source, updatedAt: t.updatedAt }));
   }
 
   /** Every trigger of source `kind` that is on, turned off because the connection it needs is gone (`disabled: {reason:

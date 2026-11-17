@@ -37,12 +37,16 @@ describe("AgentEditor, where the agent runs", () => {
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: agent(), caps: { ...caps, places: null }, step: "computer" }))).not.toContain("Where it runs");
   });
 
-  it("an agent that names no place, on a server whose default_place is docker, has bash open, as its runs are in the box; with the browser it is on the runner", () => {
+  it("an agent that names no place, on a server whose default_place is docker, is in the box with bash and on the runner without it, with bash open to tick; with the browser it is on the runner", () => {
     const boxed = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "docker", available: true }] } });
-    const shell = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "computer" });
+    const shell = mount({ agent: agent(undefined, ["read", "bash"]), caps: { ...caps, places: boxed }, step: "computer" });
     expect(shell.input('input[name="place"][value="sandbox"]')!.checked).toBe(true);
-    shell.step(/Tools/);
-    expect(shell.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    // Its tools need no shell, so its runs are on the runner; ticking bash is what would put it in the box.
+    const plain = mount({ agent: agent(), caps: { ...caps, places: boxed }, step: "computer" });
+    expect(plain.input('input[name="place"][value="runner"]')!.checked).toBe(true);
+    plain.step(/Tools/);
+    expect(plain.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(false);
     act(() => root?.unmount()); document.body.innerHTML = "";
     const browsing = mount({ agent: agent(undefined, ["read", "browser"]), caps: { ...caps, places: boxed, tools: toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "browser", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]) }, step: "computer" });
     expect(browsing.input('input[name="place"][value="runner"]')!.checked).toBe(true);
