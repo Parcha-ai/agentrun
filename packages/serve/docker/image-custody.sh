@@ -77,7 +77,7 @@ if [ -n "$two" ]; then
   dk network create "$name-net" >/dev/null
   dk run -d --name "$name-pg" --network "$name-net" -e POSTGRES_USER=agentrun -e POSTGRES_DB=agentrun -e "POSTGRES_PASSWORD=$canary-store" "$postgres" >/dev/null
   i=0
-  until dk exec "$name-pg" pg_isready -q -h 127.0.0.1 -U agentrun -d agentrun; do # key-gate: loopback-rule Postgres's own readiness, inside its container
+  until dk exec "$name-pg" pg_isready -q -h 127.0.0.1 -U agentrun -d agentrun; do # key-gate: loopback-rule the readiness of Postgres itself, inside its container
     i=$((i + 1))
     [ "$i" -lt 120 ] || { say "Postgres never became ready"; exit 1; }
     sleep 1
@@ -111,7 +111,8 @@ tar -C "$here" --owner=0 --group=0 --mode=a+r -cf - image-custody-faux.mjs | dk 
 dk start "$name" >/dev/null
 if [ "$shape" = runner-beside ]; then
   i=0
-  until dk exec "$name" node -e 'fetch("http://127.0.0.1:7340/v2/health").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' 2>/dev/null; do # key-gate: loopback-rule the server's own port, inside its container
+  health=http://127.0.0.1:7340/v2/health # key-gate: loopback-rule the port of the server itself, inside its container
+  until dk exec -e "HEALTH=$health" "$name" node -e 'fetch(process.env.HEALTH).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' 2>/dev/null; do
     i=$((i + 1))
     [ "$i" -lt 120 ] || { say "the server never answered /v2/health"; dk logs --tail 40 "$name" >&2 || true; exit 1; }
     sleep 1
