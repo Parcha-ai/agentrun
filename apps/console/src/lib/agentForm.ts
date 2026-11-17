@@ -76,12 +76,14 @@ export function same(a: unknown, b: unknown): boolean {
 }
 
 /** The picker's choice that makes a decision agent: a workflow revision from the starter decision workflow. It is a
- *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default. */
-export const DECISION = "decision";
+ *  choice in the form only, never a harness id: the revision names no harness, so its model nodes run on the default.
+ *  Its value has a colon, which no harness id has (`^[a-z][a-z0-9-]{0,39}$`), so a harness a server's module adds as
+ *  `decision` stays a harness. */
+export const DECISION = "starter:decision";
 
 /** The picker's choice that makes a general workflow agent: a workflow revision from the general starter
- *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is. */
-export const WORKFLOW = "workflow";
+ *  (workflowStarter.ts), which every server runs. A choice in the form only, as Decision is, and never a harness id. */
+export const WORKFLOW = "starter:workflow";
 
 /** The workflow each starter choice creates the agent from: Decision's judge names the server's decision provider. */
 const STARTERS: Record<string, (decisionProvider?: string) => unknown> = { [DECISION]: decisionStarter, [WORKFLOW]: workflowStarter };
@@ -230,15 +232,20 @@ export const reachesWeb = (tools: readonly string[]) => tools.some((t) => WEB_TO
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex", opencode: "OpenCode" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
-/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), each one the
- *  server does not run shown disabled with its reason. A harness the server does not list is not offered. With
- *  `decision` (a new agent), the starters follow them: Decision, available when the server runs decision workflows,
- *  and Workflow, available on every server. */
-export function harnessOptions(harnesses: { id: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
-  const options: { id: string; label: string; available: boolean; reason?: string }[] = ORDER.flatMap((id) => {
-    const h = harnesses.find((x) => x.id === id);
-    return h ? [{ id, label: LABEL[id], available: h.available, reason: h.reason }] : [];
-  });
+/** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), then
+ *  any other harness it lists (one its harness modules add), by the label it gives, else its id; each one the server does
+ *  not run shown disabled with its reason. A harness the server does not list is not offered. With `decision` (a new
+ *  agent), the starters follow them: Decision, available when the server runs decision workflows, and Workflow,
+ *  available on every server. */
+export function harnessOptions(harnesses: { id: string; label?: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
+  const option = (h: { id: string; label?: string; available: boolean; reason?: string }, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason });
+  const options: { id: string; label: string; available: boolean; reason?: string }[] = [
+    ...ORDER.flatMap((id) => {
+      const h = harnesses.find((x) => x.id === id);
+      return h ? [option(h, LABEL[id])] : [];
+    }),
+    ...harnesses.filter((h) => !(ORDER as string[]).includes(h.id)).map((h) => option(h, h.label ?? h.id)),
+  ];
   if (decision) {
     options.push({ id: DECISION, label: "Decision", available: decision.available, reason: decision.available ? undefined : "This server runs no decision workflows: it has no decision provider's key." });
     options.push({ id: WORKFLOW, label: "Workflow", available: true, reason: undefined });

@@ -410,7 +410,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
-      memory: runnerMemory(store),
+      memory: runnerMemory(store, undefined, env),
       onBeat: () => void beats++,
       // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
       ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
