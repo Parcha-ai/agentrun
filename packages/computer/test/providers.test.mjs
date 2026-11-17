@@ -197,9 +197,9 @@ test("every provider's descriptor declares network beside mounts: the network fo
 		if (network.includes("allow")) lists.push(id);
 	}
 	// Which provider takes this server's allowlist, read from the descriptors alone: Docker and Local Chrome, each through
-	// its egress proxy, and the hosted computers whose init starts one (Daytona, Modal, E2B, Agent37, Cloudflare); Orgo's
-	// adapter starts none, so Orgo declares none alone.
-	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "cloudflare", "local-chrome"]);
+	// its egress proxy, and the hosted computers whose init starts one (Daytona, Modal, E2B, Agent37, Morph, Cloudflare);
+	// Orgo's adapter starts none, so Orgo declares none alone.
+	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "local-chrome"]);
 	assert.deepEqual(index.descriptorOf("orgo").network, ["none"]);
 });
 

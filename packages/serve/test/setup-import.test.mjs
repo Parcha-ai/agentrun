@@ -488,9 +488,9 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   // A value of its own for every name the launcher protects (its SECRETS line), each handed over its pipe: no environment
   // of the server's has one. The seal key is one a server takes: 32 bytes in base64. All but the store's URL, which the
   // server opens its store from (a value that is no store is refused at start): its password's custody is
-  // secret-custody.test.mjs's. The token list's is one id:secret entry, the only form the server takes. Each value is
-  // short and its own (random, not the name again; 33 characters, the 32 a token takes): every secret set at once goes
-  // over the launcher's pipe, which holds 4096 bytes for sure, and the list grows with each provider's key.
+  // secret-custody.test.mjs's. The token list's is one id:secret entry, the only form the server takes. Each value is told
+  // apart by its random part, not its name: with every name set, the launcher's 4096-byte pipe holds no more. 33
+  // characters, as the server's tokens need 32 or more.
   const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter((name) => name && name !== "AGENTRUN_STORE_URL");
   const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_TOKENS" ? `import:not-a-secret-${randomBytes(10).toString("hex")}` : `not-a-secret-${randomBytes(10).toString("hex")}`]));
   const KEY = Object.values(keys).join(" ");
