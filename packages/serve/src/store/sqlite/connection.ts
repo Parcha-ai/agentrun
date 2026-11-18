@@ -16,6 +16,8 @@ export type { Params, Statement, StatementResult } from "./worker.js";
 
 /** How long a transaction may stay open (it holds every other call of the process) before it is rolled back. */
 export const DEFAULT_TRANSACTION_DEADLINE_MS = 10_000;
+/** How long a connection waits for another process's lock on the store file by default (its open's busyTimeoutMs). */
+export const DEFAULT_BUSY_TIMEOUT_MS = 10_000;
 /** The interactive transactions open in this process, on any of its connections: each with where it was opened and when
  *  it began. A transaction's StoreDeadline, and a begin's StoreBusy, name them in their stack (never their message, which
  *  an answer may carry), so a log says who held the store: the deadline's own transaction, or another of this process's
@@ -233,7 +235,7 @@ export class Connection implements SqliteDatabase, StoreConnection {
   }
 
   /** Starts the worker and opens `file` in it; `owner` takes the store's owner lock too (StoreOwned when another holds it). */
-  static async open(file: string, { busyTimeoutMs = 10_000, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
+  static async open(file: string, { busyTimeoutMs = DEFAULT_BUSY_TIMEOUT_MS, owner = false }: { busyTimeoutMs?: number; owner?: boolean } = {}): Promise<Connection> {
     const execArgv = workerExecArgv(process.execArgv);
     const worker = new Worker(new URL("./worker.js", import.meta.url), execArgv ? { execArgv } : {});
     const connection = new Connection(worker);

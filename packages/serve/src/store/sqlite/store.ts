@@ -31,7 +31,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 };
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
-import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
+import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { readLaunch, readLearningStarts, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
@@ -240,8 +240,9 @@ const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json
 /** The files an earlier version kept in a data directory, relative to it: its store (a STORE_FILE with tables and no
  *  store_meta row), agent homes (<agent>/agent.sqlite, agents/<agent>/agent.sqlite), run databases (runs/<run>/run.sqlite,
  *  disk/agents/<agent>/runs/<run>/run.sqlite), its settings files (EARLIER_ROOT_FILES) and its homes' sign-ins
- *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. */
-function earlierVersionIn(dataDir: string): string[] {
+ *  (homes/<home>/sign-ins/sign-ins.json). Read only: nothing is opened for writing or made. The store is read before
+ *  this server holds its owner lock, so it waits `busyTimeoutMs` for another process's lock on it (isThisVersionsStore). */
+function earlierVersionIn(dataDir: string, busyTimeoutMs: number): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
   // A path the server may not look into is not an earlier version's: that version wrote its files as the server's own
@@ -268,7 +269,7 @@ function earlierVersionIn(dataDir: string): string[] {
     }
   };
   const store = join(dataDir, STORE_FILE);
-  if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
+  if (isFile(store) && !isThisVersionsStore(store, busyTimeoutMs)) found.push(STORE_FILE);
   for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);
   for (const home of dirsIn(join(dataDir, "homes"))) {
     const signIns = join("homes", home, "sign-ins", "sign-ins.json");
@@ -286,9 +287,12 @@ function earlierVersionIn(dataDir: string): string[] {
   return found.sort();
 }
 
-/** Whether `file` is this version's store, or one with nothing in it yet: an earlier one has tables and no store_meta. */
-function isThisVersionsStore(file: string): boolean {
-  const db = new DatabaseSync(file, { readOnly: true });
+/** Whether `file` is this version's store, or one with nothing in it yet: an earlier one has tables and no store_meta.
+ *  Read before the owner lock is taken, so the server this one replaces may still have the file open: its close (the last
+ *  connection's checkpoint) holds the file locked for a moment, and a read with no busy wait is refused "database is
+ *  locked", which no replaced-server wait retries. It waits `busyTimeoutMs` for that lock, as the store's connection does. */
+function isThisVersionsStore(file: string, busyTimeoutMs: number): boolean {
+  const db = new DatabaseSync(file, { readOnly: true, timeout: busyTimeoutMs });
   try {
     const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as { name: string }[];
     if (tables.length === 0) return true;
@@ -316,7 +320,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // The server makes its data directory; a runner opens only one that is there. No migration: a directory an earlier
     // version wrote is refused before anything in it is opened or made.
     if (role === "server") {
-      const earlier = earlierVersionIn(options.dataDir);
+      const earlier = earlierVersionIn(options.dataDir, options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS);
       if (earlier.length > 0) throw new StoreFromEarlierVersion(options.dataDir, earlier);
       mkdirSync(options.dataDir, { recursive: true });
     }
