@@ -57,8 +57,18 @@ function stateOf(run: RunRow, kind: RevisionKind): RunReadState {
   }
 }
 
+/** An ended run's cost as every reader shows it (its read, the list, its usage row, the stats, analytics and usage report):
+ *  its stored cost, else the catalog's estimate an import kept beside it (import.ts `metrics.costUsdEst`, basis catalog)
+ *  for a session its source did not price. The stored column stays unknown, since no one recorded that amount; the
+ *  estimate reads as the server's own figures do, an estimate. A recorded cost always wins; with neither, null. */
+export function costOfRun(run: Pick<RunRow, "costUsd" | "metrics">): number | null {
+  if (run.costUsd !== null) return run.costUsd;
+  const est = (run.metrics as { costUsdEst?: unknown } | null)?.costUsdEst;
+  return typeof est === "number" && Number.isFinite(est) && est >= 0 ? est : null;
+}
+
 /** A run row as the server serves it, with its agent's archive time (for the coalesce), its revision's kind, and its cost
- *  (the booked-so-far spend for a run not ended, else its stored cost). */
+ *  (the booked-so-far spend for a run not ended, else costOfRun). */
 function viewOf(run: RunRow, agentArchivedAt: number | null, kind: RevisionKind, cost: number | null): RunRowView {
   const archivedAt = run.archivedAt ?? agentArchivedAt;
   const state = stateOf(run, kind);
@@ -90,8 +100,8 @@ function joins(store: Store, context: Context) {
       if (!agentArchived.has(run.agentId)) agentArchived.set(run.agentId, (await store.agents.get(run.agentId))?.archivedAt ?? null);
       if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, ((await store.agents.revision(run.revisionId))?.kind as RevisionKind) ?? "agentic");
       // A run that has not ended shows what it has spent so far over the journal (spentOverStore: never the hold of a step
-      // still running), since cost_usd is written only at the end; an ended run shows its stored cost.
-      const cost = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spentOverStore(store, run.id, context) : run.costUsd;
+      // still running), since cost_usd is written only at the end; an ended run shows its stored cost (costOfRun).
+      const cost = runReadState(run, kinds.get(run.revisionId)!) === "running" ? await spentOverStore(store, run.id, context) : costOfRun(run);
       return viewOf(run, agentArchived.get(run.agentId)!, kinds.get(run.revisionId)!, cost);
     },
   };

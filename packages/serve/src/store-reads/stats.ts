@@ -4,7 +4,7 @@
 // tokens are what its end carried back, never recomputed here. Every number but archivedAgents and archivedRuns leaves
 // out what is archived; a run's archive is its own or its agent's.
 import type { Store } from "../store/store.js";
-import { runReadState, type RunReadState } from "./runs.js";
+import { costOfRun, runReadState, type RunReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
 
 /** The run states the stats count by, as the old store named them. */
@@ -64,8 +64,10 @@ export async function stats(store: Store): Promise<StoreStats> {
     if (shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null) g.shadowUsd += shadow.costUsd;
     g.counts.total += 1;
     g.counts[state] += 1;
-    if (state !== "running" && run.costUsd !== null) {
-      g.costUsd += run.costUsd;
+    // Its cost as its read says it (costOfRun): an imported session's catalog estimate when its source priced none.
+    const cost = costOfRun(run);
+    if (state !== "running" && cost !== null) {
+      g.costUsd += cost;
       g.known += 1;
     }
   }
