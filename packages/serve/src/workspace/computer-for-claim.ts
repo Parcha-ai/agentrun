@@ -527,8 +527,10 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     const found = await renewal.provider.attach({ id: held.ref.id }).catch(() => undefined);
     return found !== undefined && !found.ok && (found.error.code === "not_found" || found.error.code === "gone");
   };
-  /** The answer of a call in flight on `held` when it was lost, `why` its own: gone, in lostInCallWords. */
-  const cutBy = (held: ProviderComputer, why: ComputerError): ComputerError => ({ code: "gone", message: lostInCallWords(held.ref.name, why.message) });
+  /** The answer of a call in flight on `held` when it was lost, `why` its own: inside one of the run's tool calls, gone in
+   *  lostInCallWords; outside one (the run's end, the owner's computer channel), `why` itself, as every later call
+   *  outside one answers the loss. */
+  const cutBy = (held: ProviderComputer, why: ComputerError): ComputerError => (renewal.may() ? { code: "gone", message: lostInCallWords(held.ref.name, why.message) } : why);
   /** `why`, the current one's (`held`'s) loss, as the call that found it answers: past the bound, the run's end, at once. */
   const lose = async (held: ProviderComputer, why: ComputerError): Promise<ComputerError> => {
     if (made < renewal.max) {

@@ -182,8 +182,8 @@ test("two calls in flight when a hosted provider's vendor deletes the sandbox (i
 test("a call outside the run's tool calls (the run's end, the owner's channel) gets the loss's answer and starts nothing", async () => {
   const { record, client, answer } = await claim();
   record.lose = (id) => id === "c1";
-  await client.call(...STAT);
-  assert.deepEqual(await client.call(...STAT), GONE("c1"));
+  assert.deepEqual(await client.call(...STAT), GONE("c1"), "the call that found the loss answers in the provider's own words");
+  assert.deepEqual(await client.call(...STAT), GONE("c1"), "and so does the next one");
   assert.equal(record.created.length, 1);
   await answer.release();
 });
