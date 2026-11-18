@@ -1162,6 +1162,11 @@ export type Features = {
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
   };
+  slack?: {
+    routes: boolean;
+    events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
+    at_rest: "sealed";
+  };
   triggers?: {
     routes: boolean;
     sources: Array<"schedule" | "webhook" | "github" | "composio" | "email" | "feed">;
@@ -3695,6 +3700,98 @@ export type CallMcpResponse = {
 /** This document (GET /openapi.json). */
 export type GetOpenapiResponse = Record<string, unknown>;
 
+/** Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack). */
+
+/** Slack's last 50 attempts, newest first (GET /settings/slack/deliveries). */
+export type ListSlackDeliveriesResponse = {
+  attempts: Array<{
+    webhook_id: string;
+    type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+    at: string;
+    status_code: number | null;
+    latency_ms: number;
+    error: string | null;
+    retry_at: string | null;
+    redelivery: boolean;
+  }>;
+};
+
+/** Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack). */
+export type GetSlackResponse = {
+  configured: false;
+  secret: SecretMeta;
+  events: {
+    "run.needs_input": boolean;
+    "run.ended": boolean;
+    "trigger.failed": boolean;
+  };
+} | {
+  configured: true;
+  url: string;
+  url_state: "sealed" | "unreadable";
+  secret: SecretMeta;
+  events: {
+    "run.needs_input": boolean;
+    "run.ended": boolean;
+    "trigger.failed": boolean;
+  };
+  disabled: {
+    at: string;
+    reason: string;
+  } | null;
+  updated_at: string;
+};
+
+/** Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver). */
+export type RedeliverSlackResponse = {
+  webhook_id: string;
+  type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+  at: string;
+  status_code: number | null;
+  latency_ms: number;
+  error: string | null;
+  retry_at: string | null;
+  redelivery: boolean;
+};
+
+/** Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type SaveSlackBody = {
+  url?: string;
+  events?: {
+    "run.needs_input"?: boolean;
+    "run.ended"?: boolean;
+    "trigger.failed"?: boolean;
+  };
+};
+export type SaveSlackResponse = {
+  configured: true;
+  url: string;
+  url_state: "sealed" | "unreadable";
+  secret: SecretMeta;
+  events: {
+    "run.needs_input": boolean;
+    "run.ended": boolean;
+    "trigger.failed": boolean;
+  };
+  disabled: {
+    at: string;
+    reason: string;
+  } | null;
+  updated_at: string;
+};
+
+/** Post a test message to Slack now, once, and say how it went (POST /settings/slack/test). */
+export type TestSlackResponse = {
+  webhook_id: string;
+  type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+  at: string;
+  status_code: number | null;
+  latency_ms: number;
+  error: string | null;
+  retry_at: string | null;
+  redelivery: boolean;
+};
+
 /** Counts and cost over every agent and run (GET /stats). */
 export interface GetStatsParams {
   from?: string;
@@ -5476,6 +5573,12 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getHealth: {"method":"GET","path":"/health","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callMcp: {"method":"POST","path":"/mcp","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getOpenapi: {"method":"GET","path":"/openapi.json","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteSlack: {"method":"DELETE","path":"/settings/slack","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  listSlackDeliveries: {"method":"GET","path":"/settings/slack/deliveries","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getSlack: {"method":"GET","path":"/settings/slack","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  redeliverSlack: {"method":"POST","path":"/settings/slack/deliveries/{webhook_id}/redeliver","pathParams":["webhook_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveSlack: {"method":"PUT","path":"/settings/slack","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
+  testSlack: {"method":"POST","path":"/settings/slack/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getStats: {"method":"GET","path":"/stats","pathParams":[],"multiSegment":[],"query":["from","to","agent"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   applyTemplate: {"method":"POST","path":"/templates/{template}/apply","pathParams":["template"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteTemplate: {"method":"DELETE","path":"/templates/{template}","pathParams":["template"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -5781,6 +5884,20 @@ export function resources(call: Call) {
       mcp: (body: CallMcpBody, options?: RequestOptions): Promise<CallMcpResponse> => call("callMcp", [], body, undefined, options),
       /** This document (GET /openapi.json). */
       openapi: (options?: RequestOptions): Promise<GetOpenapiResponse> => call("getOpenapi", [], undefined, undefined, options),
+    },
+    slack: {
+      /** Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack). */
+      delete: (options?: RequestOptions): Promise<void> => call("deleteSlack", [], undefined, undefined, options),
+      /** Slack's last 50 attempts, newest first (GET /settings/slack/deliveries). */
+      deliveries: (options?: RequestOptions): Promise<ListSlackDeliveriesResponse> => call("listSlackDeliveries", [], undefined, undefined, options),
+      /** Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack). */
+      get: (options?: RequestOptions): Promise<GetSlackResponse> => call("getSlack", [], undefined, undefined, options),
+      /** Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver). */
+      redeliver: (webhookId: string, options?: RequestOptions): Promise<RedeliverSlackResponse> => call("redeliverSlack", [webhookId], undefined, undefined, options),
+      /** Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). */
+      save: (body: SaveSlackBody, options?: RequestOptions): Promise<SaveSlackResponse> => call("saveSlack", [], body, undefined, options),
+      /** Post a test message to Slack now, once, and say how it went (POST /settings/slack/test). */
+      test: (options?: RequestOptions): Promise<TestSlackResponse> => call("testSlack", [], undefined, undefined, options),
     },
     /** Counts and cost over every agent and run (GET /stats). */
     stats: (params?: GetStatsParams, options?: RequestOptions): Promise<GetStatsResponse> => call("getStats", [], undefined, params, options),

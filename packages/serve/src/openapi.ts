@@ -43,6 +43,7 @@ import "./email/routes.js";
 import "./calendar/routes.js";
 import { MCP_SETTINGS_PAGE } from "./mcp-oauth.js";
 import { ATTEMPTS_KEPT, MESSAGE_TYPES, WEBHOOK_EVENTS } from "./webhooks.js";
+import { SLACK_EVENTS, SLACK_HOST, SLACK_MESSAGE_TYPES } from "./slack.js";
 import { DEFAULT_SCHEME, SCHEME_NAMES, SIGNATURE_SCHEMES } from "./trigger-signatures.js";
 import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, HISTORY_KEPT, MAX_EVERY_S, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
@@ -644,6 +645,28 @@ const WEBHOOK_ATTEMPT = closed({
   status_code: { type: ["integer", "null"], description: "The receiver's answer; null when it was not reached." },
   latency_ms: { type: "integer", minimum: 0 },
   error: { type: ["string", "null"], description: "Why the try failed: an answer not 2xx (a redirect is not followed), no answer in 15 s, not reached, or the webhook removed or off." },
+  retry_at: { type: ["string", "null"], format: "date-time", description: "When the message is tried again after this one, if it is." },
+  redelivery: { type: "boolean", description: "Sent again by POST .../redeliver." },
+});
+/** Slack (slack.ts): its URL's metadata, its events, and its view; never the URL. */
+const SLACK_SECRET_META = { ...ref("schemas/SecretMeta"), description: "Its incoming-webhook URL's metadata, named `slack:outbound`: set, pasted in the console (source console), and when. Never the URL." };
+const SLACK_EVENT_SWITCHES = closed(Object.fromEntries(SLACK_EVENTS.map((name) => [name, { type: "boolean" }])), "Which events are posted: each on unless turned off.");
+const SLACK_SET = closed({
+  configured: { const: true },
+  url: { type: "string", description: `The URL as the server shows it: https://${SLACK_HOST}/… and its last four characters. Never the whole URL, which is the credential.` },
+  url_state: { enum: ["sealed", "unreadable"], description: "Whether the URL opens here: `sealed`; `unreadable` (sealed under another key, or damaged), when nothing is sent until the URL is saved again." },
+  secret: SLACK_SECRET_META,
+  events: SLACK_EVENT_SWITCHES,
+  disabled: { oneOf: [closed({ at: { type: "string", format: "date-time" }, reason: { type: "string" } }), { type: "null" }], description: "Set when Slack answered 404 or 410 (no_service, channel_not_found, channel_is_archived): nothing is sent until a PUT saves a URL again." },
+  updated_at: { type: "string", format: "date-time" },
+});
+const SLACK_VIEW = { oneOf: [closed({ configured: { const: false }, secret: SLACK_SECRET_META, events: SLACK_EVENT_SWITCHES }), SLACK_SET] };
+const SLACK_ATTEMPT = closed({
+  webhook_id: { type: "string", description: "The message's id: the same on each of its tries, and on a redelivery." },
+  type: { enum: [...SLACK_MESSAGE_TYPES] }, at: { type: "string", format: "date-time" },
+  status_code: { type: ["integer", "null"], description: "Slack's answer; null when it was not reached." },
+  latency_ms: { type: "integer", minimum: 0 },
+  error: { type: ["string", "null"], description: "Why the try failed: Slack's status and its word (`answered 404 no_service`), no answer in 15 s, not reached, or Slack removed or off. Never the URL." },
   retry_at: { type: ["string", "null"], format: "date-time", description: "When the message is tried again after this one, if it is." },
   redelivery: { type: "boolean", description: "Sent again by POST .../redeliver." },
 });
@@ -2693,6 +2716,59 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "webhook/1",
     },
   },
+  "/settings/slack": {
+    get: {
+      operationId: "getSlack", tags: ["local"], summary: "Where this server posts run notices in Slack, if it is set; never the URL",
+      responses: { "200": json(SLACK_VIEW, "Slack, or `configured: false`."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+    put: {
+      operationId: "saveSlack", tags: ["local"], summary: "Set Slack's incoming-webhook URL, or which events it is sent",
+      description: `Posts a readable message (Block Kit, with \`text\` for notifications) to a Slack incoming webhook for each event that is on: \`run.ended\` when a run ends (completed, failed or cancelled), \`run.needs_input\` when a run comes to need its person (what it waits on, by its \`pending.kind\`), and \`trigger.failed\` when a trigger's firing could not start its run (the trigger's name and error). A run's message names its agent (its name, else its id), its status in a word, its title and a link to the run in the console; never a tool's arguments, an output or an input. Delivery is the webhook's: a try not answered 2xx in 15 s is tried again on the same schedule, and pending messages go on after a restart. Slack answers 200 \`ok\`; a 404 or 410 (\`no_service\`, \`channel_not_found\`, \`channel_is_archived\`) turns Slack off until a URL is saved again. \`url\` is the credential: a body with it is a secret write, the owner's signed-in session alone (the API token is 403 forbidden in words); it is sealed, and never answered, logged or shown again but for its last four characters. The first save names \`url\` and answers 201; a later one answers 200, and with \`url\` turns Slack on again. \`events\` turns each event on or off (all on by default); a body with \`events\` alone is no secret write. 422 for a URL that is not https://${SLACK_HOST}/services/... (no port, query or user), and for an unknown event.`,
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: {
+        url: { type: "string", format: "uri", maxLength: 2048, pattern: `^https://${SLACK_HOST.replace(/\./g, "\\.")}/services/`, "x-agentrun-secret": true, description: "The Slack incoming-webhook URL, as Slack shows it. Sealed, never answered or shown again." },
+        events: { type: "object", additionalProperties: false, properties: Object.fromEntries(SLACK_EVENTS.map((name) => [name, { type: "boolean" }])), description: "Events to turn on (true) or off (false); those left out stay as they are." },
+      } } } } },
+      responses: {
+        "201": json(SLACK_SET, "Set."),
+        "200": json(SLACK_SET, "Changed."),
+        ...errors(400, 401, 403, 404, 415, 422, 429, 500),
+      },
+      "x-agentrun-serve": "slack/1",
+    },
+    delete: {
+      operationId: "deleteSlack", tags: ["local"], summary: "Remove Slack; its pending messages are dropped, the log of attempts is kept",
+      description: "A secret write: its URL goes with it. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and Slack kept.",
+      security: [{ ownerSession: [] }],
+      responses: { "204": { description: "Removed." }, ...errors(401, 403, 429, 500) },
+      "x-agentrun-secret": true,
+      "x-agentrun-serve": "slack/1",
+    },
+  },
+  "/settings/slack/test": {
+    post: {
+      operationId: "testSlack", tags: ["local"], summary: "Post a test message to Slack now, once, and say how it went",
+      description: "Posts \"AgentRun can post here\" with a link to this server. It is tried once, never again, and kept in the log as `slack.test`. 404 when Slack is not set; 409 slack_off when Slack turned it off: nothing is sent until a URL is saved again.",
+      responses: { "200": json(SLACK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+  },
+  "/settings/slack/deliveries": {
+    get: {
+      operationId: "listSlackDeliveries", tags: ["local"], summary: `Slack's last ${ATTEMPTS_KEPT} attempts, newest first`,
+      responses: { "200": json(closed({ attempts: { type: "array", items: SLACK_ATTEMPT } }), "Each attempt."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+  },
+  "/settings/slack/deliveries/{webhook_id}/redeliver": {
+    post: {
+      operationId: "redeliverSlack", tags: ["local"], summary: "Post a message of Slack's log again, once now, under the same id and body",
+      description: "A message still pending that this try delivers is settled; one this try fails keeps its own schedule. 409 slack_off when Slack turned it off.",
+      parameters: [{ ...WEBHOOK_ID, description: "The message, as its attempt's `webhook_id` names it." }],
+      responses: { "200": json(SLACK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "slack/1",
+    },
+  },
   "/triggers": {
     get: {
       operationId: "listTriggers", tags: ["local"], summary: "The triggers: schedules and signed webhooks that start an agent's capped runs or message a run",
@@ -3562,6 +3638,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...WEBHOOK_EVENTS] } }, signing: { const: "standard-webhooks/v1" }, at_rest: { const: "sealed" } },
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
+    },
+    slack: {
+      type: "object", additionalProperties: false, required: ["routes", "events", "at_rest"],
+      properties: { routes: { type: "boolean" }, events: { type: "array", items: { enum: [...SLACK_EVENTS] } }, at_rest: { const: "sealed" } },
+      description: "/settings/slack: one Slack incoming-webhook URL each of `events` is posted to as a readable message; the URL kept `sealed` under the seal key, never shown.",
+      "x-agentrun-serve": "slack/1",
     },
     triggers: {
       ...closedWith({ routes: { type: "boolean" }, sources: { type: "array", items: { enum: [...SOURCE_KINDS] } }, targets: { type: "array", items: { enum: [...TARGET_KINDS] } }, min_every_s: { type: "integer" }, history_kept: { type: "integer" }, catchup_window_s: { type: "integer" }, failures_to_pause: { type: "integer" }, webhook: closed({ signing: { const: "standard-webhooks/v1" }, signatures: { type: "array", items: { enum: [...SCHEME_NAMES] }, description: "The signature schemes a webhook trigger's `signature` may name." }, tolerance_s: { type: "integer" }, max_body_bytes: { type: "integer" }, payload_kept_bytes: { type: "integer" }, at_rest: { const: "sealed" } }) }, { public_url: { type: "boolean", description: "Whether this server has a public address (AGENTRUN_PUBLIC_URL) a sender such as Composio can reach: without one, a Composio trigger is refused 409 composio_no_public_url. The address itself is never answered here. On GET /capabilities." } }),

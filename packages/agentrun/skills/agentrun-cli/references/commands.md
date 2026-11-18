@@ -1000,6 +1000,32 @@ Route: none, it runs on this machine.
 - `--codex` (boolean, this CLI's own): into ~/.agents/skills/agentrun-cli, the shared skills folder Codex reads (Cursor too)
 - `--dir DIR` (string, this CLI's own): into DIR/agentrun-cli (a project's .claude/skills or .agents/skills, say)
 
+## slack
+
+### `agentrun slack deliveries`
+
+Slack's last 50 attempts, newest first.
+
+Route: `GET /settings/slack/deliveries`.
+
+### `agentrun slack get`
+
+Where this server posts run notices in Slack, if it is set; never the URL.
+
+Route: `GET /settings/slack`.
+
+### `agentrun slack redeliver WEBHOOK_ID`
+
+Post a message of Slack's log again, once now, under the same id and body.
+
+Route: `POST /settings/slack/deliveries/{webhook_id}/redeliver`.
+
+### `agentrun slack test`
+
+Post a test message to Slack now, once, and say how it went.
+
+Route: `POST /settings/slack/test`.
+
 ## stats
 
 ### `agentrun stats`

@@ -2327,6 +2327,44 @@ lists the last 50 attempts (`webhook_id`, type, status code, latency, error, whe
 410 turned off sends nothing, a test or a redelivery included (`409 webhook_off`), until a `PUT` sets it again.
 `DELETE /v2/settings/webhook` removes the webhook and drops its pending messages.
 
+### Post to Slack
+
+Slack shows a message, not the webhook's signed JSON, so the server can post to a Slack channel itself. In Slack, add an
+incoming webhook to the channel (an app with Incoming Webhooks turned on), then paste its URL in the console under
+Settings → Slack, or `PUT /v2/settings/slack` with `{"url": "https://hooks.slack.com/services/..."}` from the owner's
+signed-in session. The URL must be `https://hooks.slack.com/services/...`, with no port, query or user.
+
+The URL is the credential: anyone who has it can post to the channel. So saving it is a secret write (the API token is
+refused `403`), it is sealed under the server's seal key like a [tool key](#tool-keys), and no answer, log line or
+delivery shows more than its last four characters. A replaced or removed URL stays sealed in the store, so a run that
+echoes it, or its token, is still cut.
+
+Each event posts one message (Block Kit, with `text` for notifications):
+
+| Event | The message |
+| --- | --- |
+| `run.ended` | The agent (its name, else its id), the status in a word (completed, failed, was cancelled), the run's title linked to the run in the console. |
+| `run.needs_input` | The same, with "needs you" and what the run waits on: a question, an approval, a paused cap, a hand-over or a stopped turn. |
+| `trigger.failed` | The trigger's name, linked to it, and the error's code and message; and whether it turned itself off. |
+
+```json
+{ "text": "Lead triage: run completed: Qualify ACME",
+  "blocks": [
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Lead triage* · run completed\n<https://agents.example.com/#/runs/…|Qualify ACME>" } },
+    { "type": "context", "elements": [{ "type": "mrkdwn", "text": "AgentRun · run.ended · run `…`" }] } ] }
+```
+
+A message never carries a run's input, its output or a tool's arguments, as the webhook's never does: open the run
+from the link to read them. Every event is on by default. `PUT /v2/settings/slack` with
+`{"events": {"run.needs_input": false}}` turns one off; a body with `events` alone is no secret write.
+
+Delivery is the webhook's: the same outbox in the store, retries on the same schedule, one message per run's end or
+wait, deliveries at `GET /v2/settings/slack/deliveries`, a message posted again with
+`POST /v2/settings/slack/deliveries/{webhook_id}/redeliver`, and a test message with `POST /v2/settings/slack/test`.
+Slack answers `200 ok`. A `404` or `410` (`no_service`, `channel_not_found`, `channel_is_archived`) turns Slack off
+(`disabled` in `GET`, with Slack's word) until a URL is saved again; a test or a redelivery is then `409 slack_off`.
+`DELETE /v2/settings/slack` removes the URL and drops pending messages.
+
 ## Schedules
 
 A schedule starts an agent's runs with no one there. `POST /v2/triggers` with a `source` and a `target`:

@@ -104,7 +104,10 @@ export const webhookLookup = async (host) => {
   return (await systemLookup(host, { all: true })).map((one) => one.address);
 };
 
-export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, ...options }));
+/** Where a test server posts Slack's messages unless its test runs a fake Slack (ServeOptions.slackTarget): a closed
+ *  port on this machine, so no test ever reaches Slack. */
+export const NO_SLACK = "http://127.0.0.1:9";
+export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, slackTarget: NO_SLACK, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 

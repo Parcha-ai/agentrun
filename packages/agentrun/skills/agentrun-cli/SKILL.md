@@ -150,6 +150,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
 - `agentrun skill`: install
+- `agentrun slack`: deliveries, get, redeliver, test
 - `agentrun stats`: Counts and cost over every agent and run
 - `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
 - `agentrun template`: apply, delete, eval, import, install, list, validate
