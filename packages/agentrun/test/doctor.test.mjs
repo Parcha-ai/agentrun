@@ -240,7 +240,7 @@ test("Service: not installed warns, stopped fails, lingering off warns with its 
   assert.deepEqual(otherData.check("service").fix, [`agentrun service install --data ${elsewhereData}`]);
   const noCommand = homeOf({ service: false, program: false });
   const otherNoCommand = await doctor({ home: noCommand.home, data: elsewhereData });
-  assert.deepEqual(otherNoCommand.check("service").fix, [`${INSTALL_COMMAND} -s -- --no-start  (installs the command alone)`, `Then: agentrun service install --data ${elsewhereData}`]);
+  assert.deepEqual(otherNoCommand.check("service").fix, [`${INSTALL_COMMAND} -s -- --no-start  (installs the command alone)`, `Then: ${join(noCommand.home, ".agentrun", "bin", "agentrun")} service install --data ${elsewhereData}  (a new terminal has agentrun on PATH; this one does not yet)`]);
 
   const { home, data } = homeOf();
   const linger = await doctor({ home, data, exec: execOf((command) => (command === "loginctl" ? { stdout: "no\n" } : undefined)) });
