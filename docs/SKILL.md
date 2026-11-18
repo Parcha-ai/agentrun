@@ -96,8 +96,17 @@ On **Check**, run the step 4 scan now, while AgentRun installs; it looks at this
 
 ### This computer
 
-Reuse a server that already runs here (`~/.agentrun/bin/agentrun server health` answers, or `AGENTRUN_BASE_URL` is
-set) rather than starting another. Never overwrite, migrate or delete a data folder. Otherwise run the installer:
+First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records
+answers, however it was started:
+
+```sh
+base=$(sed -n 's/.*"base_url": *"\([^"]*\)".*/\1/p' ~/.agentrun/.server.json 2>/dev/null | head -n 1)
+[ -n "$base" ] && curl -fsS --max-time 3 "$base/health"
+```
+
+Reuse it rather than starting another. When `~/.agentrun/bin/agentrun` is missing, install the command alone, which
+leaves that server running: `curl -fsSL https://agentrun.ai/install | sh -s -- --no-start`. Never overwrite, migrate
+or delete a data folder. Otherwise run the installer:
 
 ```sh
 curl -fsSL https://agentrun.ai/install | sh

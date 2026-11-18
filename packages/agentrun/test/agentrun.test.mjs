@@ -585,10 +585,21 @@ const skillSection = (skill, title) => skill.split(/^## /m).find((part) => part.
 const shellBlocks = (text) => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
 // The website serves this file with the release's install.sh, so the prompt starts AgentRun with that installer, which
 // brings its own Node, and every later command is the one it installs: no Node check, no nvm, no npx.
-test("the setup skill installs with the installer and runs the command it installs", () => {
+test("the setup skill installs with the installer and runs the command it installs", (t) => {
   const skill = setupSkill();
   const here = skillSection(skill, "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("This computer\n"));
-  assert.deepEqual(shellBlocks(here), ["curl -fsSL https://agentrun.ai/install | sh\n"], "this computer's one command is the installer");
+  const [look, install, ...more] = shellBlocks(here);
+  assert.equal(install, "curl -fsSL https://agentrun.ai/install | sh\n", "this computer's one command is the installer");
+  assert.deepEqual(more, []);
+  // A server started before the installer existed (npx) has no ~/.agentrun/bin/agentrun: its record finds it.
+  assert.match(look, /~\/\.agentrun\/\.server\.json/);
+  assert.doesNotMatch(look, /agentrun\/bin|\| sh/, "the reuse check needs no installed command and installs nothing");
+  const f = setupFixture(t, { curl: 'echo "curl $*"' });
+  assert.equal(f.run(look, { HOME: f.dir }).status, 1, "no record: nothing to reuse");
+  mkdirSync(join(f.dir, ".agentrun"));
+  writeFileSync(join(f.dir, ".agentrun", ".server.json"), `${JSON.stringify({ base_url: "http://127.0.0.1:7341/v2", pid: 42 }, null, 2)}\n`); // key-gate: loopback-rule a fixture record
+  assert.equal(f.run(look, { HOME: f.dir }).stdout, "curl -fsS --max-time 3 http://127.0.0.1:7341/v2/health\n"); // key-gate: loopback-rule the fixture's address
+  assert.match(here, /When `~\/\.agentrun\/bin\/agentrun` is missing, install the command alone, which\s+leaves that server running: `curl -fsSL https:\/\/agentrun\.ai\/install \| sh -s -- --no-start`/);
   assert.match(here, /`~\/\.agentrun\/bin\/agentrun service restart`/);
   assert.match(here, /`~\/\.agentrun\/bin\/agentrun stop` stops it and the installer line starts it again/);
   assert.match(here, /in this session always write the full path/, "the PATH line the installer adds reaches only a new terminal");
