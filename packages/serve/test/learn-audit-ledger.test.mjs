@@ -578,9 +578,10 @@ test("(r4) a shadow that stops on its cap is `parked`: no verdict, never counted
 // learning.agree_on: the audit compares the served answer and its shadow's on the dotted paths that say the decision, as
 // the check does. The agent (so each shadow) answers as a real model does, prose then a fenced json block with a
 // rationale the workflow's answer never repeats: no disagreement on agree_on, a declared field that differs still holds.
-const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ verdict: { answer: 42, note: "six times seven" }, sure: true, why: "six times seven is forty-two" })}\n\`\`\``;
-const NESTED = { verdict: { answer: 42, note: "computed" }, sure: true };
-const NESTED_WRONG = { verdict: { answer: 41, note: "computed" }, sure: true };
+// The workflow's Answer schema (answerFlow) takes {answer, sure}; `verdict` rides beside them, the nested field compared.
+const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ answer: 42, sure: true, verdict: { answer: 42, note: "six times seven" }, why: "six times seven is forty-two" })}\n\`\`\``;
+const NESTED = { answer: 42, sure: true, verdict: { answer: 42, note: "computed" } };
+const NESTED_WRONG = { answer: 42, sure: true, verdict: { answer: 41, note: "computed" } };
 test("(agree_on) a served answer that differs from its shadow's only in its rationale is no disagreement on verdict.answer and sure; a declared field that differs holds", { timeout: 300_000 }, async (t) => {
   const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["verdict.answer", "sure"] }, says: () => SHADOW_SAYS, submit: (text) => (text.includes("Wrong question") ? NESTED_WRONG : NESTED) });
   const served = await w.start("same-1", "What is six times seven");
