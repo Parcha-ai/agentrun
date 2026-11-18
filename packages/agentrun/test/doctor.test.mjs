@@ -2,6 +2,7 @@
 // the server's token. The server is a fake fetch (or, through the CLI, a small HTTP server on loopback) and every command
 // it runs a fake exec: nothing is installed, started or asked of this machine.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -83,10 +84,12 @@ function execOf(answer = () => undefined) {
 }
 
 const readToken = () => CANARY;
+// The records name pid 4242: it runs, unless a test says it has exited.
+const alive = () => true;
 const LOCAL_ENV = { DISPLAY: ":0" };
 
 async function doctor({ home, data, env = LOCAL_ENV, server = serverOf(), exec = execOf(), ...rest } = {}) {
-  const report = await doctorOf({ data, home, env, platform: "linux", uid: 1000, user: "someone", exec: exec.exec, get: server.get, nodeVersion: "24.22.3", engines: ">=24.22.3", readToken, ...rest });
+  const report = await doctorOf({ data, home, env, platform: "linux", uid: 1000, user: "someone", exec: exec.exec, get: server.get, nodeVersion: "24.22.3", engines: ">=24.22.3", readToken, alive, ...rest });
   return { report, text: textOf(report, home), server, exec, check: (id) => report.checks.find((c) => c.id === id) };
 }
 
@@ -185,11 +188,34 @@ test("Server: a record that is refused (unreadable as private, or an address wit
     assert.ok(!run.text.includes("someone"), "the record's user is not echoed");
   }
 
+  const pidless = homeOf();
+  writeFileSync(join(pidless.data, ".server.json"), JSON.stringify({ base_url: BASE, token_file: join(pidless.data, ".token") }), { mode: 0o600 });
+  const noPid = serverOf();
+  const withoutPid = await doctor({ ...pidless, server: noPid });
+  assert.equal(withoutPid.report.exit, 1);
+  assert.match(withoutPid.check("server").summary, /pid a positive whole number\); refusing it/);
+  assert.deepEqual(noPid.requests, []);
+
   const broken = homeOf();
   writeFileSync(join(broken.data, ".server.json"), "{not json", { mode: 0o600 });
   const garbled = await doctor({ ...broken, server: serverOf() });
   assert.equal(garbled.report.exit, 1);
   assert.match(garbled.check("server").summary, /is not valid JSON/);
+});
+
+test("Server: a record whose process has exited is stale: its address, which another process may hold now, is sent nothing", async () => {
+  const { home, data } = homeOf();
+  const server = serverOf();
+  const asked = [];
+  const run = await doctor({ home, data, server, alive: (pid) => (asked.push(pid), false) });
+  assert.deepEqual(asked, [4242]);
+  assert.deepEqual(server.requests, [], "no request, so no token, went to the recorded address");
+  assert.equal(run.report.exit, 3);
+  assert.equal(run.report.server, null);
+  assert.equal(run.check("server").status, "fail");
+  assert.match(run.check("server").summary, /\(http:\/\/127\.0\.0\.1:7340\/\) is not running \(its process, pid 4242, has exited\)/);
+  assert.equal(run.check("server").fix[0], "agentrun service start");
+  for (const id of ["address", "owner", "models", "harnesses", "switches"]) assert.equal(run.check(id).status, "skip", id);
 });
 
 test("Server: a failing /v2/health is exit 1, with the disk to free", async () => {
@@ -256,6 +282,21 @@ test("Address: loopback from a remote session warns with a tunnel and the tailne
   const byUnit = await doctor({ ...named, env: {}, readToken: () => undefined });
   assert.equal(byUnit.check("address").status, "ok");
 
+  // A stopped service's settings say nothing of the server that answers: a public URL in its unit counts only while it runs.
+  const stoppedExec = execOf((command, args) => (command === "systemctl" && args.includes("show") && !args.includes("show-environment") ? { stdout: "ActiveState=inactive\nSubState=dead\nMainPID=0\n" } : undefined));
+  const stoppedNamed = await doctor({ ...named, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, exec: stoppedExec, readToken: () => undefined });
+  assert.equal(stoppedNamed.check("address").status, "warn");
+
+  // The tailnet entry counts when it forwards to this server's port, not to another one the service used.
+  const tailnetHome = homeOf();
+  writeFileSync(join(tailnetHome.data, "tailscale.json"), JSON.stringify({ url: "https://box.tailnet.example.test/", proxy: "http://127.0.0.1:7340" }), { mode: 0o600 });
+  const served = await doctor({ ...tailnetHome, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, readToken: () => undefined });
+  assert.equal(served.check("address").status, "ok");
+  assert.match(served.check("address").summary, /box\.tailnet\.example\.test.*on your tailnet/);
+  writeFileSync(join(tailnetHome.data, "tailscale.json"), JSON.stringify({ url: "https://box.tailnet.example.test/", proxy: "http://127.0.0.1:7399" }), { mode: 0o600 });
+  const otherPort = await doctor({ ...tailnetHome, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, readToken: () => undefined });
+  assert.equal(otherPort.check("address").status, "warn");
+
   // --allow-host only names the Host names it accepts: nothing forwards to it, so a remote session still gets the tunnel.
   const allowed = homeOf({ args: ["--allow-host", "agentrun.example.test"] });
   const byAllowHost = await doctor({ ...allowed, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, readToken: () => undefined });
@@ -286,8 +327,12 @@ test("Owner: no password warns with agentrun open as the fix, never the code; se
   const withData = await doctor({ home: elsewhere.home, data: other, server: serverOf({ session: { status: 200, body: { accounts: true, password_set: false, setup_code: true } } }) });
   assert.ok(withData.check("owner").fix[0].startsWith(`agentrun open --data ${other}  (`), withData.check("owner").fix[0]);
 
-  const noAccounts = await doctor({ home, data, server: serverOf({ session: { status: 404, body: { error: { code: "not_found" } } } }) });
+  // AGENTRUN_ACCOUNTS=0: the session answers 200 with accounts false (server.ts getAuthSession); an older server, 404.
+  const noAccounts = await doctor({ home, data, server: serverOf({ session: { status: 200, body: { accounts: false } } }) });
   assert.equal(noAccounts.check("owner").status, "info");
+  assert.match(noAccounts.check("owner").summary, /no accounts \(AGENTRUN_ACCOUNTS=0\): its token opens the console/);
+  const older = await doctor({ home, data, server: serverOf({ session: { status: 404, body: { error: { code: "not_found" } } } }) });
+  assert.equal(older.check("owner").status, "info");
 });
 
 test("Models: none ready fails with the console's Model keys and the gateway's variables; harnesses not ready are named", async () => {
@@ -422,6 +467,17 @@ test("through the CLI: --json's shape and exit codes, the token sent only to cap
   assert.equal(refused.code, 1, refused.err);
   assert.match(refused.out, /^fail  Server .*is not a private file of yours.*nothing is sent to the address it names/m);
   assert.equal(seen.length, asked, "a refused record's address was sent a request");
+
+  // A record whose process has exited: its address is sent nothing, though a server answers there.
+  const dead = fresh();
+  const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+  writeFileSync(join(dead, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: exited, token_file: join(dead, ".token") })}\n`, { mode: 0o600 });
+  writeFileSync(join(dead, ".token"), `${CANARY}\n`, { mode: 0o600 });
+  const before = seen.length;
+  const staleRun = await cli(["doctor", "--data", dead], env);
+  assert.equal(staleRun.code, 3, staleRun.err);
+  assert.match(staleRun.out, new RegExp(`is not running \\(its process, pid ${exited}, has exited\\)`));
+  assert.equal(seen.length, before, "a stale record's address was sent a request");
 
   const none = await cli(["doctor", "--data", fresh()], env);
   assert.equal(none.code, 3);

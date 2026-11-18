@@ -1,8 +1,9 @@
 // `agentrun doctor`: how this AgentRun is set up, checked in one go, each problem with what to change. It reads and never
 // writes: no file is changed, nothing is started or stopped, and every request is a GET. The server is the one the data
 // directory's record names (DIR/.server.json), read as every CLI command reads it (cli.mjs targetOf): a private file of
-// this user's, its base_url an http or https URL with no query, fragment, user or password; a record that fails that is
-// refused and nothing is asked of the address it names. Its routes that take no credential (/v2/health,
+// this user's, its base_url an http or https URL with no query, fragment, user or password, its pid a positive whole
+// number; a record that fails that is refused, and one whose process has exited is stale: nothing is asked of the address
+// either names, where another process may listen now. Its routes that take no credential (/v2/health,
 // /v2/auth/session) come first, and capabilities are read with the server's own token (DIR/.token) only where that file
 // is there. No token, key, setup code or other secret is ever printed: the token goes in a header to this machine's own
 // server and nowhere else, and the setup link is left to `agentrun open`.
@@ -42,12 +43,22 @@ export function meetsFloor(version, engines) {
 }
 
 /** A record's base_url as the CLI takes one (cli.mjs baseOf): http or https, with no query, fragment, user or password,
- *  any of which would carry a request elsewhere. The base without its trailing slashes, or undefined. */
+ *  any of which would carry a request elsewhere, and a pid that is a positive whole number. The base without its trailing
+ *  slashes, or undefined. */
 const baseOfRecord = (record) => {
   const given = record?.base_url;
-  if (typeof given !== "string" || !URL.canParse(given)) return undefined;
+  if (typeof given !== "string" || !URL.canParse(given) || !Number.isInteger(record.pid) || record.pid <= 0) return undefined;
   const url = new URL(given);
   return /^https?:$/.test(url.protocol) && !/[?#]/.test(given) && !url.username && !url.password ? given.replace(/\/+$/, "") : undefined;
+};
+
+/** Whether process `pid` runs (cli.mjs alive): one of another user's still counts. */
+const isAlive = (pid) => {
+  try {
+    return process.kill(pid, 0);
+  } catch (error) {
+    return error.code === "EPERM";
+  }
 };
 
 /** A file's text, or undefined when there is none: what doctorOf reads the record with when its caller gives no
@@ -63,7 +74,7 @@ const plainText = (file) => {
 };
 
 /** Every check, from what this machine and its server say. Each dependency can be replaced (tests): `exec` has
- *  spawnSync's shape, `get` fetch's, `readRecord` returns a file's text or undefined when there is none (and throws to
+ *  spawnSync's shape, `get` fetch's, `alive` says whether a pid runs, `readRecord` returns a file's text or undefined when there is none (and throws to
  *  refuse it: no request is sent then), `readToken` returns the server's token or undefined (and may throw, which skips
  *  the capabilities read). */
 export async function doctorOf({
@@ -78,6 +89,7 @@ export async function doctorOf({
   nodeVersion = process.versions.node,
   engines = OWN.engines.node,
   readRecord = plainText,
+  alive = isAlive,
   readToken = () => undefined,
 }) {
   data = resolve(data ?? join(home, ".agentrun"));
@@ -115,16 +127,20 @@ export async function doctorOf({
     refused = error instanceof SyntaxError ? `${recordFile} is not valid JSON` : error.message.replace(/\.$/, "");
   }
   const base = refused === undefined && record !== undefined ? baseOfRecord(record) : undefined;
-  if (refused === undefined && record !== undefined && base === undefined) refused = `${recordFile} is not a server record (base_url an http or https URL with no query, fragment, user or password); refusing it`;
+  if (refused === undefined && record !== undefined && base === undefined) refused = `${recordFile} is not a server record (base_url an http or https URL with no query, fragment, user or password, pid a positive whole number); refusing it`;
   if (refused !== undefined) record = undefined;
+  // A record a crash left behind names a port another process may have taken since: it is asked nothing, as the CLI
+  // sends nothing to it (cli.mjs targetOf).
+  const stale = base !== undefined && !alive(record.pid);
   const health = {};
-  if (base) {
+  if (stale) Object.assign(health, { url: `${new URL(base).origin}/`, health: `not running (its process, pid ${record.pid}, has exited)` });
+  else if (base) {
     health.url = `${new URL(base).origin}/`;
     const answer = await getJson(`${base}/health`);
     health.health = answer.status === 0 ? `not answering (${answer.error})` : answer.status === 200 && answer.body?.status === "ok" ? "ok" : `${answer.status} ${answer.body?.status ?? ""}`.trim();
     health.checks = answer.body?.checks;
   }
-  const answering = health.health !== undefined && !health.health.startsWith("not answering");
+  const answering = !stale && health.health !== undefined && !health.health.startsWith("not answering");
   const program = join(root, "bin", "agentrun");
   const manager = managerOf({ platform, home, uid, user, env, exec, fail: (_code, message) => new Error(message) });
   // The service counts only when it serves this data directory: one installed for another is said, and left out.
@@ -132,6 +148,7 @@ export async function doctorOf({
   const unitArgs = unitText === undefined ? [] : manager.args(unitText);
   const serviceData = unitText === undefined ? undefined : resolve(unitArgs.includes("--data") ? unitArgs[unitArgs.indexOf("--data") + 1] : root);
   const installed = serviceData === data;
+  const serviceState = installed ? manager.state() : undefined;
   const dataFlag = data === root ? "" : ` --data ${data}`;
   const startFix = installed ? ["agentrun service start", "agentrun service logs  (if it does not come up: the log says why)"]
     : existsSync(program) ? [`${program}${dataFlag}  (in a terminal), or agentrun service install${dataFlag}  (keeps it running)`]
@@ -179,7 +196,7 @@ export async function doctorOf({
   if (manager === undefined) add("service", "Service", "info", `AgentRun runs as a service on macOS (launchd) and Linux (systemd); this is ${platform}.`);
   else if (serviceData !== undefined && !installed) add("service", "Service", "info", `AgentRun's service (${manager.name}) serves another data directory, ${serviceData}, not this one.`);
   else if (installed) {
-    const state = manager.state();
+    const state = serviceState;
     const notes = manager.notes();
     if (!state.active) {
       add("service", "Service", answering ? "warn" : "fail", `${manager.name} is installed but ${state.words}${answering ? "; the server that answers was started another way" : ""}.`, { fix: ["agentrun service start", "agentrun service logs  (why it stopped)"], docs: DOCS.launcher });
@@ -197,15 +214,19 @@ export async function doctorOf({
   else {
     const at = new URL(base);
     const port = at.port || (at.protocol === "https:" ? "443" : "80");
-    // Something that forwards to it: a public address (capabilities, else the service's own settings) or the tailnet
-    // record. --allow-host is not one: it only names the Host names the server accepts, and forwards nothing.
-    const named = installed && /AGENTRUN_PUBLIC_URL=/.test(unitText);
+    // Something that forwards to it: a public address (capabilities, else the settings of the service while it is what
+    // runs) or the tailnet entry, when it forwards to this server's port. --allow-host is not one: it only names the Host
+    // names the server accepts, and forwards nothing. A stopped service's settings say nothing of a server started
+    // another way.
+    const named = serviceState?.active === true && /AGENTRUN_PUBLIC_URL=/.test(unitText);
     let tailnet;
     try {
-      // The tailnet entry the launcher added serves the service's port: this server's only when it is the service's.
+      // The tailnet entry the launcher added ({url, proxy}) is the service's; it counts when its proxy is this port.
       if (installed) tailnet = JSON.parse(readFileSync(join(root, "tailscale.json"), "utf8"));
     } catch {}
-    const reachable = caps?.features?.triggers?.public_url === true || named || typeof tailnet?.url === "string";
+    const proxied = typeof tailnet?.proxy === "string" && URL.canParse(tailnet.proxy) ? new URL(tailnet.proxy) : undefined;
+    if (!(typeof tailnet?.url === "string" && proxied && LOOPBACK.test(proxied.hostname) && proxied.port === port)) tailnet = undefined;
+    const reachable = caps?.features?.triggers?.public_url === true || named || tailnet !== undefined;
     const remote = Boolean(env.SSH_CONNECTION || env.SSH_TTY) || (platform === "linux" && !env.DISPLAY && !env.WAYLAND_DISPLAY);
     if (!LOOPBACK.test(at.hostname)) add("address", "Address", "ok", `It listens at ${at.host}, which other machines that reach this one can open; the token and the password are its only lock, so put TLS in front of it.`);
     else if (reachable) add("address", "Address", "ok", `It listens on loopback (${at.host}) and is served at a name of its own${typeof tailnet?.url === "string" ? ` (${tailnet.url}, on your tailnet)` : " (AGENTRUN_PUBLIC_URL)"}.`);
@@ -240,7 +261,7 @@ export async function doctorOf({
       const fix = [`agentrun open${dataFlag}  (opens the setup page${coded ? " with its code filled in" : ""}; where no browser opens, it prints the link)`];
       if (!coded) fix.push(`Or open ${health.url}setup in a browser that reaches this server: its setup takes no code`);
       add("owner", "Owner", "warn", "No password yet: whoever opens the console first sets it. Set it now.", { fix, docs: DOCS.password });
-    } else if (session.status === 404) add("owner", "Owner", "info", "This server has no accounts (AGENTRUN_ACCOUNTS=0): its token opens the console.");
+    } else if ((session.status === 200 && session.body?.accounts === false) || session.status === 404) add("owner", "Owner", "info", "This server has no accounts (AGENTRUN_ACCOUNTS=0): its token opens the console.");
     else add("owner", "Owner", "skip", `GET /v2/auth/session answered ${session.status || session.error}.`);
   }
 

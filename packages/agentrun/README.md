@@ -63,7 +63,7 @@ on your tailnet, `AGENTRUN_PUBLIC_URL` or `--allow-host`), whether the console's
 is `agentrun open`), whether a model and which harnesses are ready, the server's start-time switches, and Docker for the
 boxes. It only reads: it changes no file, starts and stops nothing, and makes only GET requests. It reads the server
 record `DIR/.server.json` as every command does: one that is not a private file of yours, or whose address is not a plain
-http or https URL, is refused and nothing is sent to it. It reads capabilities with the server's own token in
+http or https URL, is refused, and one whose process has exited is stale; nothing is sent to the address either names. It reads capabilities with the server's own token in
 `DIR/.token`, and prints no token, key or setup code. `--json` prints the checks for an agent (`{exit, server, checks:
 [{id, status, summary, fix, docs}]}`, each `status` `ok`, `warn`, `fail`, `info` or `skip`). Exit 0 when nothing
 failed (warnings allowed), 1 when a check failed, 3 when no server answers.
