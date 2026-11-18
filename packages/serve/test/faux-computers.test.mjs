@@ -1,7 +1,8 @@
 // --faux's computers (faux-computers.ts): the built-in fake kind registry serve swaps in under --faux, so the console's
-// real-browser flows drive Settings → Computers and a run's desktop with no Docker and no provider. Three providers:
-// faux-sandbox (ready once its one key is saved; its test passes), faux-broken (its test fails with plain words), and
-// faux-desktop (a desktop whose run computer answers a screenshot and input, and whose watch feeds the run's live view).
+// real-browser flows drive Settings → Computers and a run's desktop with no Docker and no provider. Four providers:
+// faux-sandbox (ready once its one key is saved; its test passes), faux-broken (its test fails with plain words),
+// faux-desktop (a desktop whose run computer answers a screenshot and input, and whose watch feeds the run's live view),
+// and faux-dial (a desktop whose machine dials the server, as a dial provider's does: dial-relay.test.mjs drives it).
 // Driven here through createComputerRoutes over a real store on a temp file; nothing listens and nothing is sent.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -22,9 +23,9 @@ const providersOf = (view) => view.kinds.flatMap((kind) => kind.providers.map((o
 const providerOf = (view, kind, id) => view.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === id);
 const entryOf = (id) => FAUX.kinds.PROVIDERS.find((one) => one.id === id);
 
-test("under --faux, Settings → Computers lists the three faux providers and nothing else", async (t) => {
+test("under --faux, Settings → Computers lists the four faux providers and nothing else", async (t) => {
   const view = await (await routes(t)).view();
-  assert.deepEqual(providersOf(view), [["sandbox", "faux-sandbox"], ["sandbox", "faux-broken"], ["desktop", "faux-desktop"]]);
+  assert.deepEqual(providersOf(view), [["sandbox", "faux-sandbox"], ["sandbox", "faux-broken"], ["desktop", "faux-desktop"], ["desktop", "faux-dial"]]);
   assert.deepEqual(providerOf(view, "sandbox", "faux-sandbox"), { id: "faux-sandbox", name: "Faux sandbox", metered: false, secrets: [{ name: "computer:faux-sandbox:FAUX_SANDBOX_KEY", set: false, source: null, changed_at: null }], required: ["computer:faux-sandbox:FAUX_SANDBOX_KEY"], ready: false, why: "Faux sandbox needs FAUX_SANDBOX_KEY saved: save it in Settings → Computers", runs_refused: null, shell: "computer", host_tools: hostToolsOf("computer") });
   assert.deepEqual(view.kinds.map((kind) => [kind.kind, kind.offered]), [["none", true], ["sandbox", true], ["desktop", true], ["phone", false], ["browser", false]]);
 });
@@ -73,8 +74,16 @@ test("faux-sandbox and faux-broken start no computer, in words", async () => {
   for (const id of ["faux-sandbox", "faux-broken"]) await assert.rejects(FAUX.launch(entryOf(id), { kind: "sandbox", keys: {} }), /starts no computer/);
 });
 
+test("faux-dial's machines dial the server: its descriptor says so, its test answers, and with no dial (a runner apart with no relay) or no public address its launch refuses in the computer package's words", async (t) => {
+  assert.equal(entryOf("faux-dial").connect, "dial");
+  assert.deepEqual(await (await routes(t)).test("faux-dial"), { ok: true, detail: "Faux dial: the faux account answered (no computer was made)" });
+  await assert.rejects(FAUX.launch(entryOf("faux-dial"), { kind: "desktop", keys: {} }), { message: "Faux dial machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)" });
+  const nowhere = { tokens: { mint: async () => assert.fail("no token is minted"), revoke: async () => undefined }, hub: { online: () => false, connection: () => undefined, revoke: () => undefined } };
+  await assert.rejects(FAUX.launch(entryOf("faux-dial"), { kind: "desktop", keys: {} }, { dial: nowhere }), /which has no public address: set AGENTRUN_PUBLIC_URL/);
+});
+
 test("the faux providers are not in the real key table: only --faux's own table names them", () => {
   assert.deepEqual(Object.keys(KEY_TABLE.keys).filter((id) => id.startsWith("faux-")), []);
-  assert.deepEqual(Object.keys(FAUX.keyTable.keys).sort(), ["faux-broken", "faux-desktop", "faux-sandbox"]);
-  assert.deepEqual(["faux-desktop", "faux-sandbox", "e2b", "docker"].map((id) => FAUX.owns(id)), [true, true, false, false]);
+  assert.deepEqual(Object.keys(FAUX.keyTable.keys).sort(), ["faux-broken", "faux-desktop", "faux-dial", "faux-sandbox"]);
+  assert.deepEqual(["faux-desktop", "faux-sandbox", "faux-dial", "e2b", "docker"].map((id) => FAUX.owns(id)), [true, true, true, false, false]);
 });

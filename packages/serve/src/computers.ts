@@ -145,6 +145,10 @@ export interface ComputerRoutesOptions {
    *  server's attach hub takes, a paired computer's or a dial provider's machine's. Each such provider's row says so
    *  (runs_refused), and a dial provider's test fails in those words. */
   readonly runnerApart?: boolean;
+  /** Whether a runner in a process of its own relays its dials now (dial-relay.ts): its machines dial this server, which
+   *  relays each socket to it, so a dial provider's runs can use it and its row says nothing. Read once per view and per
+   *  test. Absent: none does. A paired computer's socket is never relayed. */
+  readonly relayed?: () => Promise<boolean>;
 }
 
 /** A provider as Settings shows it: `metered` straight from the kind registry (its computers are billed by the vendor);
@@ -278,9 +282,11 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
   /** Why no run here can use `provider`'s computers, on a server whose runner runs in a process of its own: its machines
    *  dial this server (connectOf, with the connect its settings give), or it is a paired computer (`paired`), so the
-   *  server's attach hub takes its socket, which the runner never reaches. Null where its runs can use it. */
-  const runsRefused = (provider: Pick<ProviderEntry, "id" | "label" | "connect">, paired = false): string | null =>
-    options.runnerApart !== true ? null : paired ? RUNNER_APART_WORDS : connectOf(provider, settingOptions(provider.id, settings, keyTable)) === "dial" ? dialApartWords(provider.label) : null;
+   *  server's attach hub takes its socket, which the runner never reaches. A dial provider's machine reaches a runner
+   *  that relays its dials (`relayed`, read by relaysNow), so it is null there. Null where its runs can use it. */
+  const runsRefused = (provider: Pick<ProviderEntry, "id" | "label" | "connect">, relays: boolean, paired = false): string | null =>
+    options.runnerApart !== true ? null : paired ? RUNNER_APART_WORDS : !relays && connectOf(provider, settingOptions(provider.id, settings, keyTable)) === "dial" ? dialApartWords(provider.label) : null;
+  const relaysNow = async (): Promise<boolean> => options.runnerApart === true && options.relayed !== undefined && (await options.relayed());
   /** Why a computer of `kind` on `provider` can't be had for its daemon (a provider that binds a folder of this machine,
    *  `said` its answer, in folder `mode`): none answering is the one wording (docker-daemon.ts noDockerWords); else its
    *  reason. */
@@ -297,6 +303,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const paired = rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? []));
     const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver on that computer, which dials this server`] as const])));
     const pairedIds = new Set(rows.map((row) => row.id));
+    const relays = await relaysNow();
     // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
     // of its key's name.
     const slots = listed.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
@@ -331,7 +338,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           const keptImages = images.filter((image) => keeping.some((one) => (one.image ?? provider.defaultImage?.[kind]) === image));
           const persistent = keeping.length === 0 ? undefined : images.length > 0 ? { images: keptImages } : {};
           const picked = provider.keys.filter((key) => key.picked).map((key) => secretName("computer", provider.id, key.name));
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ...(picked.length > 0 ? { picked } : {}), ready: why === undefined, ...(why ? { why } : {}), runs_refused: runsRefused(provider, pairedIds.has(provider.id)), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ...(picked.length > 0 ? { picked } : {}), ready: why === undefined, ...(why ? { why } : {}), runs_refused: runsRefused(provider, relays, pairedIds.has(provider.id)), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
         const offered = kind === "none" || serving.some((provider) => unusable(kind, provider) === undefined);
         const why = offered ? undefined
@@ -383,7 +390,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     if (!provider) return undefined;
     // A dial provider on a server whose runner runs apart: its account would pass here, in the server's process, while
     // every run's create refuses at the runner. No key fixes that, so it is said first, with no vendor call.
-    const apart = runsRefused(provider);
+    const apart = runsRefused(provider, await relaysNow());
     if (apart) return { ok: false, why: apart };
     const keys = await keysOf(provider);
     const missing = missingKeys(provider, new Set(Object.keys(keys)));

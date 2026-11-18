@@ -25,7 +25,8 @@
 # into its own memory, closes the launcher's pipe, and hands each process the same bytes over a pipe of its own, as the
 # launcher does: a FIFO opened and its name removed before a byte is written, written by a fork of this shell (its
 # builtin printf into base64), so no secret is ever in an environment or a command line. It keeps them for the runner's
-# start, as the server keeps them for its life.
+# start, as the server keeps them for its life. The runner is handed them less the server's own (AGENTRUN_TOKEN,
+# AGENTRUN_TOKENS, AGENTRUN_API_KEY), which no runner reads: the seal key, the store's URL and the provider keys.
 set -u
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -97,6 +98,13 @@ if [ -n "${AGENTRUN_SECRETS_FD-}" ]; then
     exit 1
   fi
 fi
+# The runner's: every NAME=VALUE but the server's own, each still ending in its NUL (grep -z reads to each NUL, so a
+# value with a newline in it stays whole). On a pipe, never a command line.
+runner_held=${held-} runner_len=$len
+if [ -n "$len" ]; then
+  runner_held=$(printf '%s' "$held" | base64 -d | { grep -zv -E '^(AGENTRUN_TOKEN|AGENTRUN_TOKENS|AGENTRUN_API_KEY)=' || :; } | base64)
+  runner_len=$(printf '%s' "$runner_held" | base64 -d | wc -c)
+fi
 unset AGENTRUN_SECRETS_FD AGENTRUN_SECRETS_LEN
 
 # What each process tells this script, one line each on a pipe of its own: `started NAME PID`, `ended NAME CODE`, and
@@ -161,7 +169,7 @@ start_runner() {
   [ -z "$loops" ] || set -- --loops "$loops" "$@"
   [ -z "$drain" ] || set -- --drain-timeout "$drain" "$@"
   set -- runner --data "$data" "$@"
-  (watch runner node "$cli" "$@") &
+  (held=$runner_held len=$runner_len; watch runner node "$cli" "$@") &
   runner=starting
 }
 
