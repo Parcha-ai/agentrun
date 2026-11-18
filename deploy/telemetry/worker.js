@@ -44,6 +44,34 @@ export function eventOf(body, key) {
   };
 }
 
+/**
+ * The request's body as text, read a chunk at a time and given up on (the rest never read) once it passes MAX_BYTES:
+ * undefined then. A body with no Content-Length, or one that lies, costs the Worker MAX_BYTES at most.
+ */
+async function bodyOf(request) {
+  if (request.body === null) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BYTES) {
+      await reader.cancel().catch(() => {});
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 /** One request: refused in words, or sent on as the rebuilt event. `send` is fetch, a test's fake in tests. */
 export async function handle(request, env, send = fetch) {
   const url = new URL(request.url);
@@ -51,8 +79,8 @@ export async function handle(request, env, send = fetch) {
   if (request.method !== "POST") return plain(405, "POST only");
   const length = Number(request.headers.get("content-length") ?? "0");
   if (length > MAX_BYTES) return plain(413, "too large");
-  const text = await request.text();
-  if (text.length > MAX_BYTES) return plain(413, "too large");
+  const text = await bodyOf(request);
+  if (text === undefined) return plain(413, "too large");
   let body;
   try {
     body = JSON.parse(text);

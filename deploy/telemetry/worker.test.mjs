@@ -7,10 +7,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { handle, MAX_BYTES, PATH, UPSTREAM } from "../../../deploy/telemetry/worker.js";
-import { startTelemetry, TELEMETRY_KEY, TELEMETRY_URL } from "../dist/telemetry.js";
+import { handle, MAX_BYTES, PATH, UPSTREAM } from "./worker.js";
+import { startTelemetry, TELEMETRY_KEY, TELEMETRY_URL } from "../../packages/serve/dist/telemetry.js";
 
-const config = JSON.parse(readFileSync(new URL("../../../deploy/telemetry/wrangler.json", import.meta.url), "utf8"));
+const config = JSON.parse(readFileSync(new URL("./wrangler.json", import.meta.url), "utf8"));
 const env = { TELEMETRY_KEY };
 const scratch = () => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-telemetry-proxy-"));
 
@@ -82,7 +82,7 @@ test("anything not one of ours is refused, and nothing is sent on", async () => 
     [arriving(event, { headers: { "content-length": String(MAX_BYTES + 1) } }), 413],
     [arriving("{not json"), 400],
     [arriving([event]), 400],
-    [arriving({ ...event, api_key: "phc_someoneelse" }), 400],
+    [arriving({ ...event, api_key: "fake-test-key" }), 400],
     [arriving({ ...event, api_key: undefined }), 400],
     [arriving({ ...event, event: "$pageview" }), 400],
     [arriving({ ...event, distinct_id: "laptop.local" }), 400],
@@ -97,6 +97,38 @@ test("anything not one of ours is refused, and nothing is sent on", async () => 
   // A Worker with no key set takes nothing.
   assert.equal((await handle(arriving(event), {}, p.send)).status, 400);
   assert.deepEqual(p.got, []);
+});
+
+test("a body with no Content-Length is read only to MAX_BYTES: an endless one is refused and the rest never read", async () => {
+  const event = await serverEvent();
+  const p = upstream();
+  let pulled = 0;
+  let cancelled = false;
+  const endless = new ReadableStream({
+    pull(controller) {
+      pulled++;
+      controller.enqueue(new TextEncoder().encode("x".repeat(512)));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const request = new Request(TELEMETRY_URL, { method: "POST", headers: { "content-type": "application/json" }, body: endless, duplex: "half" });
+  assert.equal(request.headers.get("content-length"), null);
+  assert.equal((await handle(request, env, p.send)).status, 413);
+  assert.ok(cancelled, "the body is cancelled once past the limit");
+  assert.ok(pulled <= MAX_BYTES / 512 + 2, `read ${pulled} chunks of 512 bytes`);
+  // The same event streamed in small chunks, with no Content-Length, still goes on.
+  const bytes = new TextEncoder().encode(JSON.stringify(event));
+  const chunked = new ReadableStream({
+    start(controller) {
+      for (let at = 0; at < bytes.length; at += 7) controller.enqueue(bytes.slice(at, at + 7));
+      controller.close();
+    },
+  });
+  assert.equal((await handle(new Request(TELEMETRY_URL, { method: "POST", body: chunked, duplex: "half" }), env, p.send)).status, 200);
+  assert.equal(p.got.length, 1);
+  assert.deepEqual(p.got[0].body.properties.version, event.properties.version);
 });
 
 test("PostHog refusing or out of reach is a 502", async () => {

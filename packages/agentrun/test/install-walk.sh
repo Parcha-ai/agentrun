@@ -11,6 +11,9 @@
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
+# This walk's servers send no usage counts (docs/telemetry.md). Under CI they are off already, and the service's own
+# AGENTRUN_TELEMETRY=0 is the CI default checked below, so the walk sets it only outside CI.
+[ -n "${CI:-}" ] || export AGENTRUN_TELEMETRY=0
 mode=$1
 shift
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -266,8 +269,9 @@ else
   [ "$(systemctl --user is-enabled "$target")" = enabled ] || die "the unit is not enabled, so it would not start at login or boot"
   systemctl --user status "$target" --no-pager | head -n 5
 fi
-# Under CI the service this checkout's launcher installs sends no usage counts (docs/telemetry.md): the service never
-# sees CI, so the install writes AGENTRUN_TELEMETRY=0 into it. A published launcher before that change writes none.
+# The service this checkout's launcher installs sends no usage counts (docs/telemetry.md): under CI the install writes
+# AGENTRUN_TELEMETRY=0 into it (the service never sees CI), and outside CI it carries this walk's own opt-out (set at the
+# top). A published launcher before that change writes neither.
 case " $* " in
   *" --package "*)
     if [ "$(uname -s)" = Darwin ]; then

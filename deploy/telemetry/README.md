@@ -5,10 +5,12 @@ PostHog's US cloud. It takes one event at a time on `POST /i/v0/e/` and checks i
 under the project's key. It rebuilds the event from the documented fields and sends that to `us.i.posthog.com` with
 `content-type` as its only header. None of the request's headers go on (no `X-Forwarded-For`, `CF-Connecting-IP`,
 `X-Real-IP`, cookie or user agent), so PostHog never gets the server's address. It keeps nothing and logs nothing
-(`observability` off). Anything else is refused with a 4xx and goes nowhere.
+(`observability` off). Anything else is refused with a 4xx and goes nowhere. It reads a body only up to 2 KB, with or
+without a `Content-Length`, and drops the rest unread.
 
-`packages/serve/test/telemetry-proxy.test.mjs` sends the server's own event through `handle` and checks what leaves.
-It also checks that `wrangler.json`'s key and route match the server's `TELEMETRY_KEY` and `TELEMETRY_URL`.
+`worker.test.mjs` (`npm run test:deploy`, after `npm run build`) sends the server's own event through `handle` and
+checks what leaves. It also checks that `wrangler.json`'s key and route match the server's `TELEMETRY_KEY` and
+`TELEMETRY_URL`.
 
 ## Deploy
 
