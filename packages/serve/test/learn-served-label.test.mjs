@@ -68,3 +68,54 @@ test("a served run carries served on its read and on every list row; a handed-ba
     assert.equal("handed_back" in expected[id], path === "handed_back", `${id}: handed_back where it says handed_back`);
   }
 });
+
+test("a served run's listing saved under an older listing format is built again on its next list read, then reads current: the list says served as the run's read does", async (t) => {
+  // No lister passes and no runner: only a list builds a listing here, so each build counted is a list's.
+  const { api, store } = await serve(t, { learning: "on", runner: false, listerIdleMs: Infinity });
+  assert.equal((await api("POST", "/agents", agent("source", { learning: {} }))).status, 201);
+  const revisionId = (await store.agents.get("source")).currentRevision;
+  await store.runs.create({ id: "served-old", agentId: "source", revisionId }, { body: LEARNS });
+  const claim = await store.claim("served-old", "runner-a", { leaseMs: 60_000 });
+  await store.runs.update(claim, { state: "ended", costUsd: 0.04, metrics: { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST } });
+  const served = { workflow: "mcc-guess", digest: DIGEST };
+  assert.deepEqual((await api("GET", "/runs/served-old")).body.served, served);
+
+  // Each write of a run's listing (Runs.putListing), the server's and this test's alike.
+  const { Connection } = await import("../dist/store/sqlite/connection.js");
+  const write = Connection.prototype.write;
+  let builds = 0;
+  Connection.prototype.write = function (statements, ...rest) {
+    builds += statements.filter(({ sql }) => /^UPDATE runs SET listing = /.test(sql)).length;
+    return write.call(this, statements, ...rest);
+  };
+  t.after(() => (Connection.prototype.write = write));
+  const listed = async () => (await store.runs.listed({ agentId: "source", archived: false, limit: 50 })).rows.find(({ row }) => row.id === "served-old");
+  const read = async (path) => {
+    const { status, body } = await api("GET", path);
+    assert.equal(status, 200, JSON.stringify(body));
+    const item = body.runs.find(({ run_id }) => run_id === "served-old");
+    assert.ok(item, `${path} lists the run`);
+    return item;
+  };
+
+  for (const path of ["/runs?agent=source", "/agents/source/runs"]) {
+    // The run's listing as a server of an older listing format saved it: current by its mark and its cut, its item
+    // without the served field that format did not have, and nothing else in it.
+    await read(path);
+    const { listing, listMark } = await listed();
+    const { served: _served, ...item } = listing.item;
+    assert.equal(await store.runs.putListing("served-old", listMark, { item, cut: listing.cut, status: "completed", live: false, until: null, flags: 0 }), true);
+    const saved = await listed();
+    assert.equal(saved.behind, false, "the old listing is current by its mark and its clock");
+    assert.deepEqual(Object.keys(saved.listing).sort(), ["cut", "item"], "the old listing carries its item and cut alone");
+    assert.equal("served" in saved.listing.item, false);
+
+    builds = 0;
+    assert.deepEqual((await read(path)).served, served, `${path}: the old listing is built again and says served`);
+    assert.equal(builds, 1, `${path}: one build of the old listing`);
+    assert.deepEqual((await listed()).listing.item.served, served, "the listing written back says served");
+    builds = 0;
+    for (const again of ["/runs?agent=source", "/agents/source/runs"]) assert.deepEqual((await read(again)).served, served, `${again} after ${path}`);
+    assert.equal(builds, 0, `${path}: once built again, the listing is current: no read builds it`);
+  }
+});
