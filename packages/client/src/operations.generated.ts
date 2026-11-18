@@ -1012,7 +1012,7 @@ export type Capabilities = {
     default_permission: "allow" | "ask" | "deny";
     permissions: Array<"allow" | "ask" | "deny">;
     ask_needs?: "password";
-    key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+    key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
   }>;
   workflows?: {
     nodes: Array<string>;
@@ -1043,6 +1043,7 @@ export type Capabilities = {
     condition: string;
     limit: string;
   };
+  run_isolation?: "uid" | "process";
 };
 
 export type Features = {
@@ -2206,6 +2207,7 @@ export type CreatePairingResponse = {
   id: string;
   code: string;
   expires_at: string;
+  runs_refused: string | null;
 };
 
 /** Forget this server's calendar (DELETE /settings/calendar). */
@@ -2415,6 +2417,7 @@ export type ListComputersResponse = {
     kind: string;
     serves: Array<"none" | "sandbox" | "desktop" | "phone" | "browser">;
     unserved: string | null;
+    runs_refused: string | null;
     os: string;
     os_version: string | null;
     device: {
@@ -2456,6 +2459,7 @@ export type ListComputersResponse = {
       }>;
       required: Array<string>;
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: Array<string>;
       why?: string;
@@ -2646,6 +2650,7 @@ export type SaveComputerKeysResponse = {
   }>;
   required: Array<string>;
   ready: boolean;
+  runs_refused: string | null;
   shell: "computer" | "local" | "none";
   host_tools: Array<string>;
   why?: string;
@@ -3981,7 +3986,7 @@ export type ListTemplatesResponse = {
 /** The tool keys a person may save, and which are set: names only, never a value (GET /settings/tool-keys). */
 export type ListToolKeysResponse = {
   keys: Array<{
-    id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+    id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
     kind: "tool" | "model";
     label: string;
     unlocks: Array<string>;

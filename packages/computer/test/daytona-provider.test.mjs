@@ -124,7 +124,7 @@ function sandbox(fields = {}) {
 	};
 }
 
-test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and a list probed from inside, a container, delete only, no mount, and the toolbox's port", () => {
+test("capabilities: a linux computer with init a child of Daytona's toolbox, a vendor lifetime up to 30 days, network none, open and a list probed from inside, a container, delete only, a synced folder, and the toolbox's port", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "daytona");
 	assert.equal(provider.version, VERSION);
@@ -140,11 +140,11 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 		groups: ["exec", "files", "processes"],
 		maxLifetimeMs: 30 * 24 * 3600 * 1000,
 		release: ["delete"],
-		mount: [],
+		mount: ["sync"],
 		vendorAgentPorts: [2280],
 		// daytona-gpu's one H100 and its limits: its stop deletes it, it runs in region earth, its size is the snapshot's, and
-		// it takes no mount.
-		gpu: { types: ["H100"], max: 1, preemptible: true, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 102400, diskMb: 409600 }, mounts: [], unmounted: { why: "Daytona's GPU runtime gives it no /dev/fuse", yet: false } },
+		// it takes a synced folder alone.
+		gpu: { types: ["H100"], max: 1, preemptible: true, stopDeletes: true, region: "earth", perGpu: { cpus: 16, memoryMb: 102400, diskMb: 409600 }, mounts: ["sync"], unmounted: { why: "Daytona's GPU runtime gives it no /dev/fuse", yet: false } },
 	});
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend(): Daytona's TTL is set once, at create");
@@ -154,17 +154,17 @@ test("capabilities: a linux computer with init a child of Daytona's toolbox, a v
 	assert.equal(rec.requests.length, 0);
 });
 
-test("capabilities with an Archil egress: the provider declares an Archil mount, as the descriptor's mountsWith says for DAYTONA_ARCHIL_EGRESS; its GPU computers still take none", () => {
+test("capabilities with an Archil egress: the provider declares an Archil mount beside the synced folder, as the descriptor's mountsWith says for DAYTONA_ARCHIL_EGRESS; its GPU computers still take a synced folder alone", () => {
 	const { provider, rec } = setup({}, { archilEgress: EGRESS });
-	assert.deepEqual(provider.capabilities().mount, ["archil"]);
-	assert.deepEqual(provider.capabilities().gpu.mounts, [], "Daytona's GPU host gives no /dev/fuse");
+	assert.deepEqual(provider.capabilities().mount, ["archil", "sync"]);
+	assert.deepEqual(provider.capabilities().gpu.mounts, ["sync"], "Daytona's GPU host gives no /dev/fuse");
 	// The provider's facts and the descriptor's agree: what mountsOf gives for the key set, and for none.
-	assert.deepEqual({ mounts: provider.host.descriptor.mounts, unmounted: provider.host.descriptor.unmounted }, mountsOf(DAYTONA, (name) => name === "DAYTONA_ARCHIL_EGRESS"));
+	assert.deepEqual({ mounts: provider.capabilities().mount, unmounted: provider.host.descriptor.unmounted }, mountsOf(DAYTONA, (name) => name === "DAYTONA_ARCHIL_EGRESS"));
 	assert.deepEqual(provider.host.descriptor.unmounted, {}, "no reason left for the kind it now takes");
-	const plain = setup().provider.host.descriptor;
-	assert.deepEqual({ mounts: plain.mounts, unmounted: plain.unmounted }, mountsOf(DAYTONA, () => false));
-	assert.deepEqual(DAYTONA.mounts, [], "the static descriptor declares no mount: hosted Daytona is the default");
-	assert.deepEqual(setup({}, { archilEgress: "" }).provider.capabilities().mount, [], "an empty egress is none");
+	const plain = setup().provider;
+	assert.deepEqual({ mounts: plain.capabilities().mount, unmounted: plain.host.descriptor.unmounted }, mountsOf(DAYTONA, () => false));
+	assert.deepEqual(DAYTONA.mounts, [], "the static descriptor lists no mount: hosted Daytona is the default, and the synced folder is derived");
+	assert.deepEqual(setup({}, { archilEgress: "" }).provider.capabilities().mount, ["sync"], "an empty egress is none");
 	assert.equal(rec.requests.length, 0);
 });
 
@@ -232,7 +232,7 @@ const NO_ARCHIL = "Archil mounts don't work on Daytona's hosted cloud, where Arc
 
 test("with no Archil egress (hosted Daytona), an Archil mount is refused up front, in one sentence saying why, and nothing is asked of Daytona", async () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().mount, [], "Daytona declares no mount kind");
+	assert.deepEqual(provider.capabilities().mount, ["sync"], "Daytona declares a synced folder alone");
 	assert.deepEqual(provider.check(ARCHIL_SPEC), [{ field: "mount", message: NO_ARCHIL }], "exactly one refusal");
 	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, gpu: GPU, image: "daytona-gpu" }).map((r) => r.message)[0], NO_ARCHIL, "a GPU computer's own refusal comes after it");
 	const made = await provider.create(ARCHIL_SPEC, { requestId: "r-archil" });
@@ -755,7 +755,7 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
 	assert.equal(caps.daemon, "child", "init is agentrun-dial's child, and agentrun-dial the toolbox's entrypoint session's");
-	assert.deepEqual(caps.mount, [], "no Archil mount on dial, even with an egress");
+	assert.deepEqual(caps.mount, ["sync"], "no Archil mount on dial, even with an egress: a synced folder alone, its /workspace made by agentrun-dial");
 	assert.equal(caps.gpu, undefined, "no GPU on dial");
 	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
 	const mount = provider.check(ARCHIL_SPEC);

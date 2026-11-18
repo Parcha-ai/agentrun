@@ -29,7 +29,7 @@ Create an agent home.
 
 Route: `POST /agents`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--note STRING` (string): What the revision changes, kept with it (GET /agents/{agent_id}/revisions).
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
@@ -250,10 +250,10 @@ Route: `POST /files`.
 - `--path STRING` (string): With the file's bytes as the body: the file's path (FilePathString). Its presence makes the body the file.
 - `--content-type STRING` (string): With `path`: the file's type. Absent, the request's own type when it names one (not application/octet-stream, not application/x-www-form-urlencoded), else the path's extension's, else application/octet-stream.
 - `--sha256 STRING` (string): With `path`: the hash the bytes must have (`422 input_invalid` at sha256 when they do not).
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--size-bytes INTEGER` (integer, required): At most `limits.max_upload_bytes`.
-- `--body JSON|@FILE|-` (application/json, application/octet-stream, */*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/json, application/octet-stream, */*; any other than JSON is sent as given.
+- `--body JSON|@FILE|-` (application/json, application/octet-stream, `*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json, application/octet-stream, `*/*`; any other than JSON is sent as given.
 
 ### `agentrun files delete FILE_ID`
 
@@ -314,8 +314,8 @@ Write one file of the agent's home.
 
 Route: `PUT /agents/{agent_id}/home/files/{path}`. PATH keeps its slashes.
 
-- `--body JSON|@FILE|-` (application/octet-stream, */*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/octet-stream, */*; any other than JSON is sent as given.
+- `--body JSON|@FILE|-` (application/octet-stream, `*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/octet-stream, `*/*`; any other than JSON is sent as given.
 
 ## learning
 
@@ -463,8 +463,8 @@ Fire a Composio trigger: a request it checks, no token.
 
 Route: `POST /hooks/composio/{hook}`.
 
-- `--body JSON|@FILE|-` (*/*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of */*; any other than JSON is sent as given.
+- `--body JSON|@FILE|-` (`*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of `*/*`; any other than JSON is sent as given.
 
 ### `agentrun local rotate-composio-secret NAME`
 
@@ -612,7 +612,7 @@ Start a run of an agent another system owns, given inline.
 
 Route: `POST /runs`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--note STRING` (string): What the version changes, kept with its revision by the version's first run (GET /agents/{agent_id}/revisions); not part of its definition.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
@@ -699,7 +699,7 @@ Send the run a message.
 
 Route: `POST /runs/{run_id}/messages`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--content STRING` (string, required): At most `limits.max_message_chars`. Not only whitespace.
 - `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
@@ -742,7 +742,7 @@ Start a run.
 
 Route: `POST /agents/{agent_id}/runs`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
@@ -995,7 +995,7 @@ Apply a template package: make its agent, with its skills, then its triggers.
 
 Route: `POST /templates/{template}/apply`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--agent-id STRING` (string): An agent this package made here (GET /agents `template.id` is the package's id): the apply writes a new revision of it in place of making another, answered 200 with the same id. Its runs and its learning (corrections and workflows) stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are reconciled by name: one of a name it has is changed in place (its id, a feed trigger's seen items, a webhook trigger's secret and whether it is on are kept; a `catchup_window_s` or `max_active_runs` the package leaves out goes back to its default, as a fresh apply makes it; a source the package leaves as it was is not rewritten, so a schedule keeps its next time, and an `every_s` one with no `start_at` the grid its first apply set), a new name is made, and one this package's apply made or kept that the package no longer lists is removed (a feed trigger whose feeds are left empty is not listed). Which triggers are the package's is kept on each trigger, never in an API body: one the owner made, one moved to the agent from another (or away and back), and one made before this was kept are never removed; a removal that fails is done by the next apply. Such an unmarked trigger with a package trigger's name is adopted only when it can be changed in place (the same kind, and for a Composio trigger the same server, event and config), and is the package's from then on; one that would have to be made again, or one another package made, is 409 name_taken under `triggers.<i>.name` before anything is written: rename or delete it, then apply again. A trigger moved to another agent while the update runs is neither changed nor removed; its name is made anew. A Composio trigger it keeps keeps its sealed config when the package sends the same values; one whose server, event or config the package changes (another key too) is made again, as one whose source kind changed is: the old trigger and its Composio instance are removed first, and the new one is off where the owner turned the old one off. When Composio does not delete the old instance, the new one is not made, and the apply is 424 upstream_failed with the new revision standing (the old trigger is gone here; apply again). What the package owns and its new version leaves out (an input or answer schema, a checkout, a default cap, learning) is gone from the agent; what the host set (its harness, computer, sdk and native references) is kept. Updates of one agent run one after the other on a server, and each writes only onto the revision it read: one whose read went stale meanwhile (an edit, or an update elsewhere) is 412 precondition_failed, with nothing changed. An agent made otherwise, or from another package, is 422 under `agent_id`, saying which; an unknown id is 404; an archived agent is 409 agent_archived.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
@@ -1085,7 +1085,7 @@ Make a trigger: a schedule or a signed webhook that starts a capped run of an ag
 
 Route: `POST /triggers`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--name STRING` (string): Default the trigger's id.
 - `--enabled` (boolean): Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up.
 - `--catchup-window-s INTEGER` (integer)

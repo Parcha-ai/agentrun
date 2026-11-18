@@ -197,6 +197,30 @@ test('a stop while the proxy starts closes the proxy that comes back and never s
   assert.equal(fakeEvents(recipe).some((e) => e.type === 'start'), false, 'the agent was never started');
 });
 
+test("the proxy hook is given the session's booking, its tools' names and a halt of its drive, and its env reaches the agent", async (t) => {
+  const recipe = fakeRecipe(scratch(), { script: [{ hang: true }] }, { billing: { kind: 'proxy' } });
+  const asked = [];
+  let closed = 0;
+  const proxy = async (session) => {
+    asked.push(session);
+    return { env: { FAKE_PROXY_URL: 'http://127.0.0.1:1' }, close: async () => void (closed += 1) };
+  };
+  const tools = [tool('lookup', () => 'found'), tool('note', () => 'noted')];
+  const { session, io } = await openSession(t, recipe, { tools, options: { proxy } });
+  await session.send('go');
+  await until(() => fakeEvents(recipe).some((e) => e.type === 'prompt'), 'the prompt to reach the agent');
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].models, io.models, "the runner's booking: the proxy asks it before each paid request and books each");
+  assert.deepEqual(asked[0].tools, ['lookup', 'note']);
+  assert.ok(fakeEvents(recipe).find((e) => e.type === 'start').env.includes('FAKE_PROXY_URL'));
+  // What the proxy sees end the turn (a provider's content filter) ends the drive with its reason.
+  asked[0].halt(new Error('the provider stopped on its content filter'));
+  const end = await session.turnEnd();
+  assert.equal(end.status, 'failed');
+  assert.match(end.error, /content filter/);
+  await until(() => closed === 1, 'the proxy to be closed', 5_000);
+});
+
 test("the session's instructions go as the system prompt the agent advertises, else ahead of the first prompt", async (t) => {
   const withSystem = fakeRecipe(scratch(), { script: [{ say: 'ok' }], systemPrompt: true });
   const a = await openSession(t, withSystem, { system: ['Be brief.'] });

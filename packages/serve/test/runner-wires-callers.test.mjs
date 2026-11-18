@@ -77,7 +77,7 @@ async function askOn(t, route) {
   await agentWithRevision(store);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  const answer = await bookedAsk(route)({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(claim), flush: () => store.flush() });
+  const answer = await bookedAsk(route, { capUsd: undefined, beside: async () => 0, freeRequests: 100 })({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(claim), flush: () => store.flush() });
   return { answer, store };
 }
 

@@ -98,12 +98,19 @@ export function providerOptions(providerId: string, keys: Readonly<Record<string
   if (missing.length > 0) {
     return refused("missing_key", `${label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers (PUT /v2/computers/${providerId}/keys)`);
   }
+  return { ok: true, options: { ...options, ...settingOptions(providerId, settings, table) } };
+}
+
+/** The create() options provider `providerId`'s settings fill from the server's settings (each of its descriptor's
+ *  settings, by name, else its default), with no key: what a provider is made with that is no secret (its connect). */
+export function settingOptions(providerId: string, settings: ProviderSettings = {}, table: KeyTable = KEY_TABLE): Record<string, string> {
+  const options: Record<string, string> = {};
   for (const setting of table.settings && has(table.settings, providerId) ? table.settings[providerId]! : []) {
     const given = has(settings, setting.name) ? settings[setting.name]?.trim() : undefined;
     const value = given || setting.default;
     if (value !== undefined && value !== "") options[setting.option] = value;
   }
-  return { ok: true, options };
+  return options;
 }
 
 /** `text` with every key value in `values` replaced by "[the key]". */

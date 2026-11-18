@@ -428,6 +428,7 @@ const held = (back: MountReadBack): { exclusive?: unknown; epoch?: unknown } => 
 const shown = (back: MountReadBack): string => {
   if ("other" in back) return back.other;
   if (back.kind === "bind") return `a bind of ${back.path}`;
+  if (back.kind === "sync") return `a synced folder under epoch ${back.epoch}`;
   const { exclusive, epoch } = held(back);
   const hold = exclusive === undefined ? "" : exclusive === true ? ", exclusive" : ", not exclusive";
   return `${back.disk}:/${back.folder} in ${back.region}${hold}${epoch === undefined ? "" : ` under epoch ${String(epoch)}`}`;

@@ -106,6 +106,8 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
     kind: "desktop",
     serves: ["desktop"],
     unserved: null,
+    // Its runner is beside the server, so its runs can use it.
+    runs_refused: null,
     os: DRIVER_HELLO.os,
     os_version: DRIVER_HELLO.osVersion,
     device: null,

@@ -3401,6 +3401,7 @@ class CreatePairingResponse(TypedDict):
     id: str
     code: str
     expires_at: str
+    runs_refused: str | None
 
 
 class DeleteComposioSubscriptionResponse(TypedDict):
@@ -3637,6 +3638,7 @@ class ListComputersResponsePairedItem(TypedDict):
     kind: str
     serves: list[Literal["none", "sandbox", "desktop", "phone", "browser"]]
     unserved: str | None
+    runs_refused: str | None
     os: str
     os_version: str | None
     device: ListComputersResponsePairedItemDevice | None
@@ -3690,6 +3692,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     secrets: list[ListComputersResponseKindsItemProvidersItemSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -3950,6 +3953,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     secrets: list[SaveComputerKeysResponseSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -5718,6 +5722,7 @@ class Capabilities(_CapabilitiesRequired, total=False):
     links: CapabilitiesLinks
     home: CapabilitiesHome
     secrets: CapabilitiesSecrets
+    run_isolation: Literal["uid", "process"]
 
 
 class _CapabilitiesServerRequired(TypedDict):
@@ -6011,7 +6016,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
     ask_needs: Literal["password"]
-    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
 
 CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
@@ -6523,7 +6528,7 @@ class ListToolKeysResponse(TypedDict):
 
 
 class ListToolKeysResponseKeysItem(TypedDict):
-    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
     kind: Literal["tool", "model"]
     label: str
     unlocks: list[str]

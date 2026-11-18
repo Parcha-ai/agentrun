@@ -181,8 +181,8 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `--own-network` needs, or `--cap-add ALL`, as 1000:1000, the refusal of 0:0 and the refusal without CAP_SETPCAP), and
   computerd's end at its deadline with the Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run
   as root in a container by hand: `internal/isolate`'s and the isolated `TestBecome...` need CAP_SYS_ADMIN and
-  CAP_NET_ADMIN (`docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN`), and the refusal without them a container
-  with Docker's defaults.
+  CAP_NET_ADMIN (`docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN`), and the refusal without them needs a
+  container with Docker's defaults.
 - `computerd probe [--sockets] [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the
   kernel's release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under
   `--own-network`), `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and
@@ -197,7 +197,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   [Network none, read from inside](#network-none-read-from-inside-nothing-answers). `computerd probe --diagnose` asks
   more: for 1.1.1.1, 8.8.8.8, 9.9.9.9 and 151.101.1.57 (Fastly's anycast edge, which is no resolver) on 443/tcp,
   80/tcp and 53/udp it reports `refused` (no TCP accept, no UDP answer), `accepted` (an accept, no answer) or
-  `answered` (a TLS ServerHello, an `HTTP/1.` status line, a DNS response with the query's id), with 3 s to connect and
+  `answered` (a TLS ServerHello, an `HTTP/1.x` status line, a DNS response with the query's id), with 3 s to connect and
   3 s to answer, 15 s in all and at most 4 KiB read per check, and a `verdict`: `egress`, `accepted-only` or `none`.
   It sends nothing of the computer's: a ClientHello with a random nonce, `HEAD / HTTP/1.0`, a query for `example.com`.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
@@ -680,6 +680,11 @@ setting:
   constructions run one at a time: none sees another's server.
 - **E2B, `E2B_SANDBOX_URL`** (`ambientProblem` in `src/e2b.ts`). The SDK sends every sandbox call to it when it is set,
   and no option clears it, so the provider refuses to start while it is set. It only reads.
+
+A proxy isn't read from the environment either. E2B's SDK and Morph's SSH gateway, the two clients Node's own proxy
+doesn't reach, follow the one the process installed into Node (`--use-env-proxy`, `NODE_USE_ENV_PROXY` or
+`http.setGlobalProxyFromEnv`, which serve calls at start), as `fetch` does: `src/env-proxy.ts` reads it from Node's
+`https.globalAgent`. A process that installed none has them go direct.
 
 `scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/`, those
 in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted,
@@ -3084,9 +3089,13 @@ fills, and whether it is required), `settings` (a setting that is no key but fil
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
 `prepareImage` (a provider whose `prepareImage()` answers its image before a run: it builds, pulls or names it), `imageEnv` (the server's environment variable
-that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
+that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `connect`
+(whether its machines dial the server: `dial` always, as Fly Machines' and Cloudflare's; `either`, as its `connect`
+option says, which one of its settings fills, as E2B's, Daytona's and Modal's; absent, never), `local`
 (a computer on this host), and
-`ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
+`ledger` (the option a provider's ledger fills). `connectOf(descriptor, options)` answers `dial` or `exec` for a provider
+made with those options, without building it; its built host's `facts.connect` is the same answer, and a server reads
+it to say where its runs can't take a dial (a runner in a process of its own). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
 `ProviderModule` is:
 

@@ -14,8 +14,8 @@ export const MODAL_GPU_TYPES = ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", 
 export const MODAL_GPU_MAX = 8;
 /**
  * The GPUs Modal offers, as capabilities().gpu and its configuration declare them: on gVisor, Modal's one GPU runtime;
- * preemptible, as Modal may end a GPU container to free capacity; no mount yet, the Archil client's FUSE mount not
- * being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
+ * preemptible, as Modal may end a GPU container to free capacity; a synced folder alone, the Archil client's FUSE mount
+ * not being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
  * namespace itself (a live probe, 11-11: unshare -n refused, unshare -Urn allowed).
  */
 export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({
@@ -23,7 +23,7 @@ export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({
 	max: MODAL_GPU_MAX,
 	isolation: "gvisor",
 	preemptible: true,
-	mounts: [],
+	mounts: ["sync" as const],
 	// Its gVisor runtime gives /dev/fuse (modal-6, 11-11: a character device 10:229 that opens), but Archil's FUSE mount
 	// under gVisor is not proven safe for the Archil client.
 	unmounted: Object.freeze({ why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true }),
@@ -44,6 +44,7 @@ export const MODAL = defineProvider({
 		{ name: "modalApp", option: "app", default: "agentrun" },
 		{ name: "modalConnect", option: "connect" },
 	],
+	connect: "either",
 	metered: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with

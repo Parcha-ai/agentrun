@@ -140,7 +140,7 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
   try {
     const check = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
     try {
-      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, 11, "the store stays at version 11");
+      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, SCHEMA_VERSION, "the server's open brings version 11 to this version");
       const column = check.prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'").get();
       assert.deepEqual({ ...column }, { name: "mcp_pin", type: "TEXT", notnull: 0 }, "the open adds revisions.mcp_pin, nullable TEXT");
       assert.equal(check.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'mcp_pins'").get().n, 0, "the open drops mcp_pins");
@@ -259,7 +259,7 @@ for (const missing of [["mcp_pin"], ["monid_pin"], ["mcp_pin", "monid_pin"], []]
       } finally { await runner.close(); }
     } finally { await server.close(); }
     const upgraded = snapshot();
-    assert.equal(upgraded.version, 11, "this additive metadata does not change the SQLite version policy");
+    assert.equal(upgraded.version, SCHEMA_VERSION, "this additive metadata does not change the SQLite version policy");
     assert.equal(upgraded.revision.body, before.revision.body, "the exact stored body JSON bytes are unchanged");
     assert.equal(upgraded.legacy, null, "only the server removes the obsolete per-run table");
     const raw = new DatabaseSync(file);

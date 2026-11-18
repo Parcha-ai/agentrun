@@ -86,6 +86,7 @@ import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
+import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
@@ -151,6 +152,9 @@ export interface AdapterRunSpec {
    *  run, its model requests, its paid tool calls and its decisions, is admitted and booked through it. An uncapped run
    *  gives capUsd: () => undefined. */
   readonly runCap: RunCapConfig;
+  /** This claim's model-request retry policy over the loop's defaults. A provider whose failed request may already be
+   *  billed can disable automatic retries for every conversation in the claim, including its subagents. */
+  readonly retry?: Partial<ConversationRetryPolicy>;
   /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
    *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words), at the
    *  cap the run is held to when it parks (`capUsd`: the newest raise's, else the launch's), which its pending budget
@@ -1640,7 +1644,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: { restartLimit, retry, stream }, onReport: () => {},
+          models: () => models, registry, settings: () => ({ restartLimit, retry: { ...retry, ...specNow?.retry }, stream }), onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {
@@ -2117,6 +2121,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // (A price from the host's table, `estimated`, is a cost; what bookCut tells of an earlier claim's requests, owed
             // at their hold or cut, comes before `capNote.live` and is never one.)
             if (capNote.live && event.type === "request_end" && event.host === undefined && !notOwn.has(event.turn) && typeof event.usage.usd === "number" && event.usage.usd > 0 && !event.usage.cut && !event.usage.givenBack) capNote.costs.push(event.usage.usd);
+            // A request that billed more input than the bound its hold was priced on (the booking's holdShort): one warn
+            // line, ids and figures only (print.ts warnHoldShort). Its booking, the hold and the cap are as they were.
+            warnHoldShort(claim.runId, spec.adapter.id, event);
             if (event.type === "request_start") {
               // A new request means the model's last message is over: what it said so far is on the record before the request,
               // so an answer shows while the turn goes on (a CLI that answers, then makes another request).

@@ -252,6 +252,11 @@ test("install.sh: --tailscale is in its help, and an install with no service man
   const serve = run("serve", "7340", "again", `https://${HOST}/`);
   assert.equal(serve.status, 0);
   assert.match(serve.stdout, /AgentRun is on your tailnet at https:\/\/box\.tail1234\.example\//);
+  assert.match(serve.stdout, /the newest "Set up this server" line in .*\.agentrun\/logs\/agentrun\.log has the link/);
+  // --vps names where its server's log is: Docker Compose's, not a file of this user's.
+  const vps = run("serve", "7340", "again", `https://${HOST}/`, "`docker compose logs` in /opt/agentrun");
+  assert.equal(vps.status, 0);
+  assert.match(vps.stdout, /the newest "Set up this server" line in `docker compose logs` in \/opt\/agentrun has the link\./);
   writeFileSync(join(box.state, "funnel"), "");
   const refused = run("address", "7340", "curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale");
   assert.deepEqual([refused.status, refused.stdout], [1, ""]);

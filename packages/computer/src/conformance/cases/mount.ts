@@ -78,8 +78,9 @@ export async function mounted(t: CaseContext, folder: RunFolder, epoch: number, 
 
 const text = (bytes: Uint8Array | undefined) => (bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8"));
 
-/** "mounts the run's folder" for one kind: on a computer of its own, made with a fresh run folder from the run. */
-const runFolder = (kind: MountKind): Case =>
+/** "mounts the run's folder" for one kind: on a computer of its own, made with a fresh run folder from the run. A synced
+ *  folder's cases come with its runner's sink. */
+const runFolder = (kind: Exclude<MountKind, "sync">): Case =>
 	mount(
 		`run-folder-${kind}`,
 		async (t) => {
@@ -271,6 +272,7 @@ const archilLoopToolEdit = mount(
 
 /** A mount of each kind the provider does not declare, with a token this case alone knows. */
 function undeclaredMount(kind: MountKind, token: string): MountSpec {
+	if (kind === "sync") return { kind };
 	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", region: "conformance-region", folder: "agents/conformance/runs/r/work", token };
 }
 

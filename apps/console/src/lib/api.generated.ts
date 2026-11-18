@@ -218,7 +218,7 @@ export interface components {
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
       ask_needs?: "password";
-      key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+      key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
     }[];
     workflows?: {
       nodes: string[];
@@ -249,6 +249,7 @@ export interface components {
       condition: string;
       limit: string;
     };
+    run_isolation?: "uid" | "process";
   };
   CommitSha: string;
   Cost: {
@@ -1483,6 +1484,7 @@ export interface operations {
       id: string;
       code: string;
       expires_at: string;
+      runs_refused: string | null;
     };
   };
   createQuote: {
@@ -3459,6 +3461,7 @@ export interface operations {
         kind: string;
         serves: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
         unserved: string | null;
+        runs_refused: string | null;
         os: string;
         os_version: string | null;
         device: {
@@ -3500,6 +3503,7 @@ export interface operations {
           }[];
           required: string[];
           ready: boolean;
+          runs_refused: string | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -3940,7 +3944,7 @@ export interface operations {
     body: never;
     answer: {
       keys: {
-        id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+        id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
         kind: "tool" | "model";
         label: string;
         unlocks: string[];
@@ -4216,6 +4220,7 @@ export interface operations {
     answer: {
       computer: string;
       token: string;
+      runs_refused: string | null;
     };
   };
   pauseRun: {
@@ -4841,6 +4846,7 @@ export interface operations {
       }[];
       required: string[];
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;

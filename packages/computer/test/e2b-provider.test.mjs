@@ -725,7 +725,7 @@ test("connect dial takes kind linux alone, its default there, no Archil mount an
 	assert.equal(new E2BProvider(options).capabilities().kind, "desktop");
 	assert.throws(() => new E2BProvider({ ...options, connect: "ssh" }), /connect is how E2B reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	const provider = new E2BProvider({ ...options, kind: "linux", connect: "dial" });
-	assert.deepEqual(provider.capabilities().mount, []);
+	assert.deepEqual(provider.capabilities().mount, ["sync"], "a synced folder alone: agentrun-dial makes /workspace");
 	assert.deepEqual(provider.check({ ...SPEC, mount: { ...MOUNT } }).map(({ field, message }) => [field, message.includes("dial")]), [["mount", true]]);
 	const plain = new E2BProvider(options);
 	assert.equal(plain.host.facts.connect, undefined);

@@ -80,7 +80,7 @@ async function until(check, ms = 5_000) {
 
 // --- what it declares ---
 
-test("a Morph computer is kind linux in a VM, daemon child over SSH, a vendor TTL, network none, open and a list from inside, the guest's sshd port, and no mount", async () => {
+test("a Morph computer is kind linux in a VM, daemon child over SSH, a vendor TTL, network none, open and a list from inside, the guest's sshd port, and a synced folder alone", async () => {
 	const { provider } = restOnly();
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
@@ -91,7 +91,7 @@ test("a Morph computer is kind linux in a VM, daemon child over SSH, a vendor TT
 	assert.equal(caps.isolation, "vm");
 	assert.deepEqual(caps.network, ["none", "open", "allow"]);
 	assert.deepEqual(caps.vendorAgentPorts, [22]);
-	assert.deepEqual(caps.mount ?? [], []);
+	assert.deepEqual(caps.mount, ["sync"]);
 	const { PROVIDERS } = await import("../dist/index.js");
 	const entry = PROVIDERS.find((one) => one.id === "morph");
 	assert.equal(entry.prepareImage, true, "serve starts every computer from the box snapshot prepareImage answers");
