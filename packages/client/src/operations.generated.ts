@@ -261,6 +261,7 @@ export type DefinitionInput = {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
+    agree_on?: Array<string>;
     audit_every?: number;
     audit_every_later?: number;
     audit_later_after?: number;
@@ -1477,6 +1478,7 @@ export type ListLearningPromotionsResponse = {
       agree_min: number;
       alone_min: number;
       attempt: 1 | 2;
+      agree_on?: Array<string>;
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1560,6 +1562,7 @@ export type ListLearningPromotionsResponse = {
         agree_min: number;
         alone_min: number;
         attempt: 1 | 2;
+        agree_on?: Array<string>;
         n?: number;
         agreed?: number;
         alone?: number;
@@ -3878,7 +3881,7 @@ export type ImportTemplateResponse = {
     budget: {
       per_run_usd: number;
     } | null;
-    learning: boolean;
+    learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
     triggers: Array<Record<string, unknown>>;
     skills: Array<string>;
@@ -3970,7 +3973,7 @@ export type ListTemplatesResponse = {
     budget: {
       per_run_usd: number;
     } | null;
-    learning: boolean;
+    learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
     triggers: Array<Record<string, unknown>>;
     skills: Array<string>;

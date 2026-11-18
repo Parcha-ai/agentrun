@@ -13,7 +13,7 @@ import type { RunRow, Store } from "../store/store.js";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { createHash } from "node:crypto";
 import { LEARNED_MAX_TURNS, WORKFLOW_NAME } from "./workflow-draft.js";
-import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf } from "./promote.js";
+import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, fieldsWords, type PromotionRecord, promotionOf } from "./promote.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
 import type { Problem } from "./check.js";
@@ -478,7 +478,7 @@ function heldLine(workflow: string, held: HeldAsk): string {
   }
   if (check && check.n !== undefined) {
     const shares = checkShares({ n: check.n, agreed: check.agreed ?? 0, alone: check.alone ?? 0 });
-    return `Your learned workflow \`${workflow}\` does not run first: checked on ${check.n} ${check.n === 1 ? "input" : "inputs"} of your last ${check.compile_after} completed runs, it answered ${check.alone ?? 0} alone (${pct(shares.alone)}, at least ${pct(check.alone_min)} needed), and ${check.agreed ?? 0} of those said what you said (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed).`;
+    return `Your learned workflow \`${workflow}\` does not run first: checked on ${check.n} ${check.n === 1 ? "input" : "inputs"} of your last ${check.compile_after} completed runs, it answered ${check.alone ?? 0} alone (${pct(shares.alone)}, at least ${pct(check.alone_min)} needed), and ${check.agreed ?? 0} of those said what you said${check.agree_on?.length ? ` on ${fieldsWords(check.agree_on)}` : ""} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed).`;
   }
   const why = `it was held (${clean(held.reason, 400).replace(/\n/g, " ").replace(/\.$/, "")}).`;
   return `Your learned workflow \`${workflow}\` does not run first: ${why} It stays held until a new revision of it.`;

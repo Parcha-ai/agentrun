@@ -773,7 +773,8 @@ whose sandboxes reach Archil through an Archil egress relay takes the mount.
 A provider whose computers run computerd with files and exec takes the synced folder (`sync`) with no work of yours:
 the computer holds a plain /workspace, and the server pushes the run's folder in at the claim and syncs each change
 back before the call that made it answers. In Mode 2 a server gives a run the Archil mount where the provider takes
-one and its image is there, and the synced folder elsewhere (hosted Daytona, a GPU with no FUSE). Your create makes
+one and its image is there, and the synced folder elsewhere (hosted Daytona, a GPU with no FUSE, a paired Linux box of
+a person's own, whose `/workspace` its owner makes once: [attach.md, A Linux box](../../spec/computer/attach.md#a-linux-box)). Your create makes
 /workspace empty and owned by the computer's user, and `attach` and `list` read the mount back as `{ kind: "sync",
 epoch }`; the `mount.sync-*` cases check the push, the sync before each answer, a delete and the entry cap.
 

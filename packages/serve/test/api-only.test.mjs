@@ -1,15 +1,19 @@
 // The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes alone, for a caller's
 // backend, and refuses every other address with a 404 before the request is read further: the console, the store page's
 // data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
-// has no owner. Off by default: the same server without it serves those routes as before.
+// has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
+// writes, tests and key choices refused. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
-import { serve } from "./support.mjs";
+import { serve, withEnv } from "./support.mjs";
 
 const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
 const { banner } = await import("../dist/print.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
+const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 /** A password or key for a request the profile refuses before reading it, plainly no secret (as mcp.test.mjs makes them). */
 const notSecret = (name) => `not-a-secret-${name}`;
 
@@ -36,6 +40,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
     ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["GET", "/v2/computers/daemon"],
+    ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
@@ -44,7 +49,9 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["DELETE", "/v2/runs/run_1"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/openapi.json"], ["POST", "/v2/templates/x/apply"], ["GET", "/v2/v2/runs"],
-    ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers"],
+    ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
+    ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
+    ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
   ]) assert.equal(served(method, raw), false, `${method} ${raw}`);
 });
 
@@ -89,6 +96,38 @@ test("an API-only server serves an agent's Archil disk, read and removed, with t
   assert.equal((await send(server, "GET", `/v2/agents/${agent}/archil`, { token: false })).status, 401, "and takes the token");
 });
 
+test("an API-only server serves the computers list and the Archil settings with the token: key names and saved or not, never a value", async (t) => {
+  // A computer key and the Archil account key planted, sealed under a seal key the test knows, and the Archil settings in
+  // the server's environment: neither answer may carry a planted value, a sealed blob, the seal key or the token.
+  const sealKey = randomBytes(32);
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey.toString("base64"), AGENTRUN_ARCHIL_REGION: "aws-us-east-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.archil.example" }, ["AGENTRUN_SEAL_KEY", "ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE", "FAUX_SANDBOX_KEY"]);
+  const server = await serve(t, { apiOnly: true, runner: false });
+  // Each sealed row and the value planted in it.
+  const planted = [["FAUX_SANDBOX_KEY", "fake-test-key-planted-computer-0001"], [ARCHIL_API_KEY_ROW, "fake-test-key-planted-archil-0001"]];
+  for (const [row, value] of planted) await putSealedKey(server.store, sealKey, row, value);
+  // Each sealed row's bytes as an answer could carry them: base64 and hex.
+  const sealed = (await Promise.all(planted.map(([row]) => server.store.sealedKeys.get(row)))).map((bytes) => Buffer.from(bytes));
+  const never = [...planted.map(([, value]) => value), ...sealed.flatMap((bytes) => [bytes.toString("base64"), bytes.toString("hex")]), sealKey.toString("base64"), server.token];
+
+  const computers = await send(server, "GET", "/v2/computers");
+  assert.equal(computers.status, 200, JSON.stringify(computers.body));
+  const sandbox = computers.body.kinds.flatMap((kind) => kind.providers).find((one) => one.id === "faux-sandbox");
+  assert.deepEqual([sandbox.secrets[0].name, sandbox.secrets[0].set, sandbox.secrets[0].source, typeof sandbox.ready], ["computer:faux-sandbox:FAUX_SANDBOX_KEY", true, "console", "boolean"], "the key's name and saved, and whether the provider is ready");
+  const archil = await send(server, "GET", "/v2/workspace/archil");
+  assert.equal(archil.status, 200, JSON.stringify(archil.body));
+  assert.deepEqual(archil.body, { on: true, source: "env", region: "aws-us-east-1", s3Url: "https://s3.archil.example", secret: { name: "workspace:archil", set: true, source: "console", changed_at: archil.body.secret.changed_at } });
+  for (const [what, answer] of [["computers", computers], ["archil", archil]]) {
+    const text = JSON.stringify(answer.body);
+    for (const value of never) assert.ok(!text.includes(value), `${what} carries no planted value, sealed blob, seal key or token`);
+  }
+
+  for (const path of ["/v2/computers", "/v2/workspace/archil"]) {
+    const refused = await send(server, "GET", path, { token: false });
+    assert.equal(refused.status, 401, `${path} without the token`);
+    assert.equal(refused.body.error?.code, "unauthenticated");
+  }
+});
+
 const REFUSED = [
   ["the console", "GET", "/", { token: false, headers: { accept: "text/html" } }],
   ["the console's assets", "GET", "/assets/index.js", { token: false }],
@@ -103,6 +142,12 @@ const REFUSED = [
   ["a webhook hook", "POST", "/v2/hooks/trg_1", { token: false, body: {} }],
   ["agents", "GET", "/v2/agents", {}],
   ["llms.txt", "GET", "/llms.txt", { token: false }],
+  ["the Archil settings' save", "PUT", "/v2/workspace/archil", { body: { region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: notSecret("key") } } }],
+  ["Archil turned off", "DELETE", "/v2/workspace/archil", {}],
+  ["the Archil settings' test", "POST", "/v2/workspace/archil/test", {}],
+  ["a computer key's save", "PUT", "/v2/computers/faux-sandbox/keys", { body: { FAUX_SANDBOX_KEY: notSecret("key") } }],
+  ["a computer provider's test", "POST", "/v2/computers/faux-sandbox/test", {}],
+  ["a computer key's choices", "GET", "/v2/computers/faux-sandbox/choices", {}],
 ];
 
 for (const [what, method, path, options] of REFUSED) {

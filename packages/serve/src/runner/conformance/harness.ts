@@ -216,6 +216,10 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
   const handed = new Set<number>();
   /** The command rows a loop's command() has answered: a steer it took is with the session by then (a CLI's has it). */
   const answered = new Set<number>();
+  /** What each command row's command() said, in order (taken, later or refused with its reason, or what it threw): for a
+   *  case's failure message to name the branch a command took, never asserted on. */
+  const outcomes = new Map<number, string[]>();
+  const outcomeSaid = (id: number, said: string) => outcomes.set(id, [...(outcomes.get(id) ?? []), said]);
   /** Each runner's claims in flight (store.runs.claimMany), by its name: what claimsSettled waits for. */
   const claiming = new Map<string, Set<Promise<unknown>>>();
   /** `store` as runner `name` is handed it: the same store, its claims in flight counted (claiming). */
@@ -284,7 +288,13 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
         command: (command) => {
           handed.add(command.id);
           const outcome = loop.command(command);
-          void Promise.resolve(outcome).then(() => answered.add(command.id), () => undefined);
+          void Promise.resolve(outcome).then(
+            (said) => {
+              outcomeSaid(command.id, said === null || typeof said !== "object" ? String(said) : "taken" in said ? "taken" : "later" in said ? `later: ${said.later}` : `refused: ${said.refused}`);
+              answered.add(command.id);
+            },
+            (error) => outcomeSaid(command.id, `threw ${(error as Error)?.name ?? String(error)}`),
+          );
           return outcome;
         },
       };
@@ -381,7 +391,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     assert.ok(ask, "the run wrote its ask");
     return String((ask.data as { callId?: unknown }).callId);
   };
-  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), answered: (id: number) => answered.has(id), liveRows, servedRows };
+  return { dir, storeUrl: url, storeEnv, clockFile, runOut, runOutUnknown, claimsSettled, server, start, run, read, ended, began, commandRow, askedCall, events, handedOver: (id: number) => handed.has(id), answered: (id: number) => answered.has(id), outcomeOf: (id: number) => (outcomes.get(id) ?? ["not answered"]).join(", then "), liveRows, servedRows };
 }
 
 interface Case {
@@ -728,9 +738,13 @@ const CASES: readonly Case[] = [
     async body(subject, t) {
       const w = await world(subject, t);
       const { tools, letSlowGo, slowStarted } = suiteTools();
-      await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
+      // What the subject's model was handed, and at what priority, when it can say: a failure names it with the loop's
+      // outcome for the steer, so the branch that placed it is on the record (a CLI's own turn after the call reads `echo:`).
+      const received: { text: string; priority?: string }[] = [];
+      await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet, received: (message) => void received.push({ ...message }) });
       await w.began(slowStarted, "the slow tool to start");
       const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "check the totals" } });
+      const why = () => `the loop's outcome for the steer: ${w.outcomeOf(steer.id)}; the model was handed: ${JSON.stringify(received)}`;
       // The tool goes on once the loop has answered the steer: the turn in flight has it, never a timer (as in
       // message-mid-turn-kept). A steer that reaches a CLI only after the tool's end is the next turn by its facts.
       await until(() => w.answered(steer.id), "the steer placed by the loop mid-turn");
@@ -743,11 +757,11 @@ const CASES: readonly Case[] = [
       // Everything the model said once the call started. What it said with the call, before the call's row (a CLI's
       // "Calling slow."), is that step's, as deny-note reads it; the step after the call said only the steer.
       const said = messages.filter((message) => message.role === "model" && message.entry > slow.startEntry);
-      assert.equal(steered?.text, "check the totals", `the steer is in the journal: ${JSON.stringify(messages)}`);
-      assert.ok(steered.entry > slow.endEntry, "after the tool's end: mid-turn, not lost");
-      assert.deepEqual(said.map((message) => message.text), ["check the totals"], `the next step saw it: ${JSON.stringify(messages)}`);
-      assert.ok(said[0]!.entry > steered.entry);
-      assert.ok((await w.commandRow(steer.id)).takenAt !== null, "the steer row is taken");
+      assert.equal(steered?.text, "check the totals", `the steer is in the journal: ${JSON.stringify(messages)}; ${why()}`);
+      assert.ok(steered.entry > slow.endEntry, `after the tool's end: mid-turn, not lost; ${why()}`);
+      assert.deepEqual(said.map((message) => message.text), ["check the totals"], `the next step saw it: ${JSON.stringify(messages)}; ${why()}`);
+      assert.ok(said[0]!.entry > steered.entry, why());
+      assert.ok((await w.commandRow(steer.id)).takenAt !== null, `the steer row is taken; ${why()}`);
     },
   },
   {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.45 (2026-11-18)
+
+- Claude Agent can run on the claude CLI's own login on the same machine instead of a model key. `claudeLoginStatus` asks the CLI `claude auth status` and returns what it said (signed in, method, email, plan), never a token. `claudeLoginEnv` gives the run's CLI the login's directories and no `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key. `claudeLoginCommand` and `startClaudeLogin` give or start the CLI's own `auth login`. A session on the login keeps its directory out of the sandbox's reads, never wipes it, and books its tokens with no dollars. <!-- changes/run-adapters-claude-agent.md -->
+
 ## 0.1.0-beta.41 (2026-11-16)
 
 - A message sent to a working `claude-agent` run now steers it mid-turn. Before, it waited for the turn's end, and a run whose whole job is one turn read it only after the work was done. The model now reads it at its next step, after the tool calls in flight finish, in the same turn. `POST /v2/runs/{id}/messages` answers mode `steer` for a working claude-agent run (it answered `follow_up`), and `GET /v2/capabilities` lists `claude-agent` with `steer: true`.

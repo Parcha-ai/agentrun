@@ -1298,6 +1298,7 @@ class DefinitionLearning(TypedDict, total=False):
     compile_after: int
     agree_min: float
     alone_min: float
+    agree_on: list[str]
     audit_every: int
     audit_every_later: int
     audit_later_after: int
@@ -1772,6 +1773,7 @@ class DefinitionInputLearning(TypedDict, total=False):
     compile_after: int
     agree_min: float
     alone_min: float
+    agree_on: list[str]
     audit_every: int
     audit_every_later: int
     audit_later_after: int
@@ -2211,6 +2213,7 @@ class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
 
 
 class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
+    agree_on: list[str]
     n: int
     agreed: int
     alone: int
@@ -2325,6 +2328,7 @@ class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict)
 
 
 class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
+    agree_on: list[str]
     n: int
     agreed: int
     alone: int
@@ -6310,7 +6314,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ImportTemplateResponseTemplateBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]
@@ -6431,7 +6435,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ListTemplatesResponseTemplatesItemBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]

@@ -8,8 +8,9 @@ import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn (an agentic revision's; absent is off): true, its owner's corrections and a
- *  learned workflow; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min). */
-export type LearningSetting = boolean | { compile_after?: number; agree_min?: number; alone_min?: number };
+ *  learned workflow; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min) and the answer
+ *  fields its check and audit compare on (agree_on). */
+export type LearningSetting = boolean | { compile_after?: number; agree_min?: number; alone_min?: number; agree_on?: string[] };
 /** Whether a definition's `learning` is on: true or an object of the loop's numbers. */
 export const learningOn = (learning: unknown): boolean => learning === true || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
