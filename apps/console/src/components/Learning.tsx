@@ -19,9 +19,10 @@ import { type Agent, editBody, learningOn, learningWriteError } from "@/lib/agen
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
-  type AgentLearning, APPROVE_SIGN_IN, type Approval, approval, bytesOf, CHANGED, change, changeWords, correctionLines, corrections, costsShown, counted, dropKind, dropWords,
-  impactBase, impactWords, type LastChange, type LearnedItem, learningCost, type LearningProblem, money, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, UNREADABLE_RETIRED,
+  type AgentLearning, APPROVE_SIGN_IN, type Approval, approval, bytesOf, CHANGED, changeWords, correctionLines, corrections, counted, dropKind, dropWords,
+  impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, learningWords, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
 } from "@/lib/learning";
+import { learningPerRun } from "@/lib/learningBill";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
@@ -179,7 +180,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
     <div className="space-y-6">
       {/* The loop at a glance. */}
       <LoopStory stages={story} />
-      {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
+      {shownImpact(view.impact) && <ImpactCard impact={view.impact} cost={cost} />}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
       <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
@@ -255,21 +256,22 @@ function Skeleton() {
 }
 
 /** Before and after the agent first learned (a correction or a workflow: the server counts a run that started from
- *  either on the after side), as a flat panel like the others: the median time to its answer and the median cost of a
- *  run, each side's, how many runs the after side counts, and what learning itself costs a run when the server says.
- *  Said as the numbers are, a slower or costlier after included: a change down is in the primary colour, one up in the
- *  warning colour, and neither is ever left out. Shown only when the server has two runs on each side. */
-function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }) {
+ *  either on the after side), as a flat panel like the others: the median time to its answer, each side's, how many
+ *  runs the after side counts, and what learning itself books a run, the bill's (`cost`, the tab's cost read: its
+ *  compile turns, audit shadows and replays over the runs that did a job). What a run costs is the cost card's all-in
+ *  before and after alone: a median of the job's own cost here left learning out and said a second ratio. Said as the
+ *  numbers are, a slower after included: a change down is in the primary colour, one up in the warning colour, and
+ *  neither is ever left out. Shown only when the server has two runs on each side. */
+function ImpactCard({ impact, cost }: { impact: NonNullable<AgentLearning["impact"]>; cost: LearningCost | null }) {
   const { before: b, after: a } = impact;
   const stats: { label: string; now: string; was: string; delta: number | null }[] = [
-    { label: "Answers in", now: took(a.median_duration_s), was: took(b.median_duration_s), delta: change(b.median_duration_s, a.median_duration_s) },
-    ...(costsShown(impact) ? [{ label: "A run costs", now: money(a.median_cost_usd!), was: money(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
+    // The change is of the times as shown, so "1.5s instead of 1.4s" never reads +7% against "2s instead of 1s".
+    { label: "Answers in", now: took(a.median_duration_s), was: took(b.median_duration_s), delta: tookChange(b.median_duration_s, a.median_duration_s) },
   ];
-  const learning = learningCost(impact);
-  const basis = [`Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a correction or a workflow).`,
-    `Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`].join(" ");
+  const learning = cost?.bill ? learningPerRun(cost.bill) : null;
+  const basis = `Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a correction or a workflow).`;
   return (
-    <section className="border" aria-label={impactWords(impact)}>
+    <section className="border" aria-label={impactWords(impact, learning)}>
       <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-4 py-3">
         <div className="flex items-baseline gap-2.5">
           <span className="caps text-small font-semibold">Since it learned</span>
@@ -289,7 +291,7 @@ function ImpactCard({ impact }: { impact: NonNullable<AgentLearning["impact"]> }
           {learning !== null && (
             <div className="flex items-baseline gap-3">
               <dt className="caps text-micro text-muted-foreground">Learning itself</dt>
-              <dd className="font-mono text-body text-muted-foreground">{money(learning)} a run</dd>
+              <dd className="font-mono text-body text-muted-foreground" title="The bill's learning spend (compile turns, audits' shadow runs, replays) over the runs that did a job.">{learningWords(learning)}</dd>
             </div>
           )}
         </dl>
@@ -332,7 +334,7 @@ function Off({ server }: { server?: "on" | "off" | null }) {
 }
 
 /** Nothing learned yet, as the console says a tab is empty: a bordered centred line, one sentence on what learning is,
- *  and the switch as the next step (or, with learning on, how many runs looked back). */
+ *  and the switch as the next step (or, with learning on, how many runs had their compile turn). */
 function Empty({ on, lookedBack, switchRow }: { on: boolean; lookedBack: number; switchRow: ReactNode }) {
   return (
     <section className="mx-auto max-w-xl border" aria-label="Learning">
@@ -343,7 +345,7 @@ function Empty({ on, lookedBack, switchRow }: { on: boolean; lookedBack: number;
           {on ? "Every later run is given your corrections whole, and a job it does again compiles into a workflow. Both show here."
             : "With learning on, every later run is given your corrections, and a job it does again compiles into a workflow."}
         </p>
-        {on && lookedBack > 0 && <p className="mt-3 font-mono text-small text-muted-foreground">{runsWord(lookedBack)} looked back: nothing worth keeping yet.</p>}
+        {on && lookedBack > 0 && <p className="mt-3 font-mono text-small text-muted-foreground">{runsWord(lookedBack)} had their compile turn: no workflow kept yet.</p>}
       </div>
       <div className="border-t">{switchRow}</div>
     </section>
@@ -737,7 +739,7 @@ function NotKept({ runs }: { runs: Run[] }) {
           ))}
         </ul>
       )}
-      {nothing > 0 && <p className={cn("px-4 py-3 font-mono text-label text-muted-foreground", listed.length > 0 && "border-t")}>{listed.length ? `${nothing} more ${nothing === 1 ? "run" : "runs"} had` : `${runsWord(nothing)} had`} nothing new to remember.</p>}
+      {nothing > 0 && <p className={cn("px-4 py-3 font-mono text-label text-muted-foreground", listed.length > 0 && "border-t")}>{listed.length ? `${nothing} more ${nothing === 1 ? "run" : "runs"} had` : `${runsWord(nothing)} had`} nothing new to compile.</p>}
     </Panel>
   );
 }

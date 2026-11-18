@@ -6,10 +6,12 @@ import type { Bill } from "./v2";
 export const hour = (h: number) => new Date(Date.UTC(2026, 10, 17) + h * 3_600_000).toISOString();
 const POINTS: [number, number, number][] = [[1, 1, 1], [2, 2.2, 2], [3, 3, 3], [4, 4.5, 4], [5, 4.9, 5], [6, 5.3, 6], [7, 6.6, 7], [8, 6.8, 8], [9, 7, 9]];
 /** An agent's bill before any run: what the server answers with no run. */
-export const EMPTY_BILL: Bill = { baseline: null, promoted: null, points: [], break_even: null, gap_usd: null, withheld: 0, booked_usd: 0, revisions: [], unattributed_usd: 0, holds: [] };
+export const EMPTY_BILL: Bill = { baseline: null, promoted: null, learning_usd: 0, points: [], break_even: null, gap_usd: null, withheld: 0, booked_usd: 0, revisions: [], unattributed_usd: 0, holds: [] };
 export const BILL: Bill = {
   baseline: { runs: 3, mean_usd: 1 },
   promoted: { n: 4, run_id: "run-4", at: hour(4) },
+  // What learning booked: the bill less the jobs' own $ ($3 by the agent, $1.60 over the six runs it served).
+  learning_usd: 2.4,
   points: POINTS.map(([n, actual, agent]) => ({ n, run_id: `run-${n}`, actual_usd: actual, agent_usd: agent })),
   break_even: { n: 5, run_id: "run-5" },
   gap_usd: null,

@@ -45,57 +45,37 @@ export function learningStats(rows: readonly RunRow[], filter: AnalyticsFilter, 
   return out;
 }
 
-/** One side of an agent's impact: how many runs, their median time to the answer, the median of their job's own cost
- *  over the `cost_runs` whose cost is known, and the median of what learning itself cost a run (its compile turn), over
- *  the runs that learn whose learning cost is known. */
-export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number; median_learning_usd: number | null };
+/** One side of an agent's impact: how many runs and their median time to the answer. What a run costs is the cost
+ *  read's all-in figure (learning-cost.ts: the takeover's before and after, learning included) and what learning cost
+ *  is its bill's `learning_usd`: never a second cost here. */
+export type ImpactSide = { runs: number; median_duration_s: number };
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 
 /** What a run's learning tells its impact, from its learning end and its launch: how it ended and when, how many learned
- *  items it started from (its corrections' lines and the learned workflows its claims laid), when its answer was final
- *  and its costs; `look_back_usd` 0 for an ended run whose end-of-run step asked no model turn. */
-export type ImpactLearning = { state: string; reason: string | null; at: string; seed_corrections?: number; seed_workflows?: number; answered_at?: string; job_cost_usd?: number | null; look_back_usd?: number | null };
+ *  items it started from (its corrections' lines and the learned workflows its claims laid) and when its answer was
+ *  final. */
+export type ImpactLearning = { state: string; reason: string | null; at: string; seed_corrections?: number; seed_workflows?: number; answered_at?: string };
 /** How many learned items a run started from. */
 const seededItems = (learning: ImpactLearning | null | undefined): number => (learning?.seed_corrections ?? 0) + (learning?.seed_workflows ?? 0);
-/** A completed run as its impact counts it: from its start to its answer, its job's own cost, and what its learning
- *  cost (undefined for a run with learning off; null when unknown). */
-type Figures = { seconds: number; cost: number | null; learning?: number | null };
-/** The middle of `values` (the mean of the two middle ones when there is an even count); undefined for none. */
-const median = (values: readonly number[]): number | undefined => {
-  if (!values.length) return undefined;
+/** The middle of `values` (the mean of the two middle ones when there is an even count). */
+const median = (values: readonly number[]): number => {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length >> 1;
   return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 };
-const usd = (value: number | undefined) => (value === undefined ? null : Math.round(value * 1e6) / 1e6);
-const sideOf = (runs: readonly Figures[]): ImpactSide => {
-  const costs = runs.flatMap((run) => (run.cost === null ? [] : [run.cost]));
-  return {
-    runs: runs.length,
-    median_duration_s: Math.round(median(runs.map((run) => run.seconds))! * 10) / 10,
-    median_cost_usd: usd(median(costs)),
-    cost_runs: costs.length,
-    median_learning_usd: usd(median(runs.flatMap((run) => (typeof run.learning === "number" ? [run.learning] : [])))),
-  };
-};
-/** Completed run `row` as its impact counts it, `learning` what its learning says. One whose end-of-run step asked a
- *  model turn answered when its job ended, and its job's cost is what it had cost by then; any other's are its row's end
- *  and cost. */
-function figuresOf(row: RunRow, learning: ImpactLearning | null | undefined): Figures {
-  const looked = learning?.answered_at !== undefined;
-  const answered = looked ? Date.parse(learning!.answered_at!) : Date.parse(row.endedAt!);
-  const cost = looked ? (learning!.job_cost_usd ?? null) : (row.costUsd ?? null);
-  const seconds = (answered - Date.parse(row.startedAt)) / 1000;
-  if (!learning) return { seconds, cost };
-  return { seconds, cost, learning: typeof learning.look_back_usd === "number" ? learning.look_back_usd : null };
+const sideOf = (seconds: readonly number[]): ImpactSide => ({ runs: seconds.length, median_duration_s: Math.round(median(seconds) * 10) / 10 });
+/** Completed run `row`'s seconds to its answer, `learning` what its learning says: one whose end-of-run step asked a
+ *  model turn answered when its job ended; any other when its row ended. */
+function secondsOf(row: RunRow, learning: ImpactLearning | null | undefined): number {
+  const answered = learning?.answered_at !== undefined ? Date.parse(learning.answered_at) : Date.parse(row.endedAt!);
+  return (answered - Date.parse(row.startedAt)) / 1000;
 }
 /** What learning changed for an agent, from its run rows (`rows`) and what its runs' learning says (`learningOf`),
  *  never a run's files. `after`: its completed agentic runs that started from at least one learned item (seededItems).
  *  `before`: its completed agentic runs that started before its first item, the earlier of its first merge's end and the
- *  start of its first run that started from one; none of them could have. Each side's figures (sideOf, figuresOf): its
- *  time to the answer in seconds to a tenth, its job's own cost, what learning cost. An imported or archived run is on
- *  neither side, nor is a later one with learning off or seeded with nothing. Null unless both sides hold 2 runs or
- *  more. */
+ *  start of its first run that started from one; none of them could have. Each side (sideOf, secondsOf): its median
+ *  time to the answer in seconds to a tenth. An imported or archived run is on neither side, nor is a later one with
+ *  learning off or seeded with nothing. Null unless both sides hold 2 runs or more. */
 export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow) => ImpactLearning | null | undefined): Impact {
   const done = rows.filter((row) => row.kind === "agentic" && !row.importedFrom && !row.archivedAt && row.state === "completed" && row.endedAt);
   const after = done.filter((row) => seededItems(learningOf(row)) > 0);
@@ -104,7 +84,7 @@ export function learningImpact(rows: readonly RunRow[], learningOf: (row: RunRow
     return learning?.state === "merged" ? [Date.parse(learning.at)] : [];
   });
   const first = Math.min(...merges, ...after.map((row) => Date.parse(row.startedAt)));
-  const counted = (side: readonly RunRow[]) => side.map((row) => figuresOf(row, learningOf(row)));
+  const counted = (side: readonly RunRow[]) => side.map((row) => secondsOf(row, learningOf(row)));
   const [before, later] = [counted(done.filter((row) => Date.parse(row.startedAt) < first)), counted(after)];
   return before.length >= 2 && later.length >= 2 ? { before: sideOf(before), after: sideOf(later) } : null;
 }

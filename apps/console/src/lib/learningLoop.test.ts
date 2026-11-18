@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compileAfterOf, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
+import { timesOf } from "./costPerRun";
 import { EMPTY_BILL } from "./learningBill.fixture";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
@@ -7,7 +8,7 @@ import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 // standings, the check line, and the story.
 
 const at = (h: number) => new Date(Date.UTC(2026, 10, 1) + h * 3_600_000).toISOString();
-const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", learned_revision: null, cost_usd: 0.1, cost_upper_bound: false, learning_usd: 0, total_usd: 0.1 });
+const run = (n: number, path: CostRun["path"], tookOver = false): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", digest: path === "agent" ? null : "a".repeat(16), took_over: tookOver, audited: false, cost_usd: 0.1, cost_upper_bound: false, learning_usd: 0, total_usd: 0.1 });
 const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a".repeat(16), at: at(3), decided: "promote", check: CHECK, reason: "as good as the agent", ...over } as Promotion);
 // The one check a promotion record keeps: n inputs of the agent's own runs, how many it answered alone and how many of those
 // said what the agent said, against the bar (agree_min, alone_min).
@@ -15,25 +16,44 @@ const outcomes = (handedBack: number) => ({ answered: 20 - handedBack, handed_ba
 const CHECK = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1 as const, n: 20, agreed: 17, alone: 18, of: [] as string[], outcomes: outcomes(2) };
 
 describe("markers on the run axis", () => {
-  const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow"));
-  it("puts each record on the first run started at or after it, by its kind", () => {
+  const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow", n === 4));
+  it("puts each record on the first run started at or after it, by its kind; a promotion on the run the server says its revision took over at", () => {
     const records = [
       record({ decided: "replaying", at: at(1.5) }),
       record({ decided: "promote", at: at(3) }),
       record({ decided: "hold", at: at(5.5) }),
       record({ decided: "hold", at: at(9) }),
     ];
-    expect(markersOf(runs, records).map((m) => [m.kind, m.n])).toEqual([["revision", 2], ["promote", 3], ["hold", 6]]);
+    expect(markersOf(runs, records).map((m) => [m.kind, m.n])).toEqual([["revision", 2], ["promote", 4], ["hold", 6]]);
   });
   it("keeps two records of one kind on one run, each its own marker", () => {
     const records = [
-      record({ decided: "promote", workflow: "sort-invoice", at: at(2.2) }),
-      record({ decided: "promote", workflow: "tag-vendor", digest: "c".repeat(16), at: at(2.6) }),
+      record({ decided: "hold", workflow: "sort-invoice", at: at(2.2) }),
+      record({ decided: "hold", workflow: "tag-vendor", digest: "c".repeat(16), at: at(2.6) }),
     ];
-    expect(markersOf(runs, records).map((m) => [m.kind, m.n, m.workflow])).toEqual([["promote", 3, "sort-invoice"], ["promote", 3, "tag-vendor"]]);
+    expect(markersOf(runs, records).map((m) => [m.kind, m.n, m.workflow])).toEqual([["hold", 3, "sort-invoice"], ["hold", 3, "tag-vendor"]]);
+  });
+  it("one numbering: a promotion written while its first served run started stands on that run (the takeover's, the bill's promoted), and a replay is never a marker's run", () => {
+    // Jobs 1-3 by the agent, two replays (no number), then job 4, the first the workflow served: its promotion was written
+    // as job 4 was claimed, after it started. A hold written between the replays stands on the next job.
+    const replay = (h: number, id: string): CostRun => ({ ...run(0, "replay"), n: null, run_id: id, started_at: at(h) });
+    const series = [run(1, "agent"), run(2, "agent"), run(3, "agent"), replay(3.2, "p1"), replay(3.4, "p2"), run(4, "workflow", true), run(5, "workflow")];
+    const records = [record({ decided: "hold", at: at(3.3) }), record({ decided: "promote", at: at(4.1) })];
+    expect(markersOf(series, records).map((m) => [m.kind, m.n])).toEqual([["hold", 4], ["promote", 4]]);
+  });
+  it("a promotion stands on the run the server says its revision took over at (took_over), never found by time: jobs queued before the promoting claim never move it", () => {
+    // Jobs 4 and 5 were both queued (started_at) before job 4 was claimed and promoted the revision: the record's `at` is
+    // after both starts. The takeover and the bill say job 4, and so does the flag.
+    const queued = [run(1, "agent"), run(2, "agent"), run(3, "agent"), run(4, "workflow", true), run(5, "workflow"), run(6, "workflow")];
+    expect(markersOf(queued, [record({ decided: "promote", at: at(5.5) })]).map((m) => [m.kind, m.n])).toEqual([["promote", 4]]);
+    // A second revision promoted later stands on its own first served run.
+    const next = [...queued, { ...run(7, "workflow", true), digest: "b".repeat(16) }, { ...run(8, "workflow"), digest: "b".repeat(16) }];
+    expect(markersOf(next, [record({ decided: "promote", at: at(5.5) }), record({ decided: "promote", digest: "b".repeat(16), at: at(8.5) })]).map((m) => [m.kind, m.n])).toEqual([["promote", 4], ["promote", 7]]);
+    // Its took-over run older than the runs read (a limited read): no flag, never the first of its runs that was read.
+    expect(markersOf(queued.slice(4), [record({ decided: "promote", at: at(5.5) })])).toEqual([]);
   });
   it("leaves out a record older than the runs read, and draws nothing without runs", () => {
-    expect(markersOf(runs, [record({ at: at(-5) })])).toEqual([]);
+    expect(markersOf(runs, [record({ decided: "hold", at: at(-5) })])).toEqual([]);
     expect(markersOf([], [record({})])).toEqual([]);
   });
   it("names a kind from its record", () => {
@@ -131,7 +151,7 @@ describe("the story", () => {
     const stages = storyOf({ ...base, corrections: 3,runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({})],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
-      ["corrections", "3 corrections", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7x cheaper", "done"], ["unsure", "33% handed back", "warn"],
+      ["corrections", "3 corrections", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7.0x cheaper", "done"], ["unsure", "33% handed back", "warn"],
     ]);
     expect(stages[4]!.detail).toBe("of 3 runs it ran first");
   });
@@ -141,18 +161,22 @@ describe("the story", () => {
   const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
   const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, corrections: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
   const passed = (agreed: number, alone: number, n = alone) => ({ n, workflow_pct: Math.round((agreed / alone) * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: 0.8 });
-  it("with a cleared check: about N times cheaper, the agreement check it passed (N of M agreed, its bar) and what it served under it, never the same accuracy", () => {
+  it("with a cleared check: N times cheaper, the agreement check it passed (N of M agreed, its bar) and what it served under it, never the same accuracy", () => {
     const stage = cheaper({ times_cheaper: 7, replay: passed(32, 40) });
-    expect([stage.value, stage.detail, stage.state]).toEqual(["About 7x cheaper", "Passed the agreement check: 32 of 40 agreed (bar 80%) · served 59 runs, handed back 3", "done"]);
+    expect([stage.value, stage.detail, stage.state]).toEqual(["7.0x cheaper", "Passed the agreement check: 32 of 40 agreed (bar 80%) · served 59 runs, handed back 3", "done"]);
     expect(`${stage.value} ${stage.detail}`).not.toMatch(/same accuracy|as accurate/);
-    expect(cheaper({ times_cheaper: 6.6, replay: passed(17, 20), hand_backs: { ran: 1, back: 0 } })).toMatchObject({ value: "About 7x cheaper", detail: "Passed the agreement check: 17 of 20 agreed (bar 80%) · served 1 run, handed back 0" });
-    expect(cheaper({ times_cheaper: 1.3, replay: { ...passed(9, 10, 12), agree_min: 0.9 } })).toMatchObject({ value: "About 1.3x cheaper", detail: "Passed the agreement check: 9 of 10 agreed (bar 90%) · served 59 runs, handed back 3" });
+    expect(cheaper({ times_cheaper: 6.6, replay: passed(17, 20), hand_backs: { ran: 1, back: 0 } })).toMatchObject({ value: "6.6x cheaper", detail: "Passed the agreement check: 17 of 20 agreed (bar 80%) · served 1 run, handed back 0" });
+    expect(cheaper({ times_cheaper: 1.3, replay: { ...passed(9, 10, 12), agree_min: 0.9 } })).toMatchObject({ value: "1.3x cheaper", detail: "Passed the agreement check: 9 of 10 agreed (bar 90%) · served 59 runs, handed back 3" });
+  });
+  it("one ratio: the strip says the server's times_cheaper as the cost chart does (timesOf), never rounded to a whole 'about'", () => {
+    expect(cheaper({ times_cheaper: 1.6, replay: passed(32, 40) }).value).toBe(`${timesOf(1.6)} cheaper`);
+    expect(cheaper({ times_cheaper: 1.6 }).value).toBe("1.6x cheaper");
   });
   it("without a cleared check: the ratio alone, and why accuracy is not claimed", () => {
     const none = cheaper({ times_cheaper: 7 });
-    expect([none.value, none.detail, none.state]).toEqual(["7x cheaper", "accuracy not claimed: no check yet", "done"]);
+    expect([none.value, none.detail, none.state]).toEqual(["7.0x cheaper", "accuracy not claimed: no check yet", "done"]);
     const below = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 70, agent_pct: 82, cleared: false, agreed: 28, alone: 40, agree_min: 0.8 } });
-    expect([below.value, below.detail]).toEqual(["7x cheaper", "accuracy not claimed: its check was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
+    expect([below.value, below.detail]).toEqual(["7.0x cheaper", "accuracy not claimed: its check was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
   });
   // The after side is served runs only (never a replay): its count said with its level, and no figure when none is priced.
   it("says the after side's served runs, and in words when none is served or priced", () => {

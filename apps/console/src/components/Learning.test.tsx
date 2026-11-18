@@ -406,9 +406,10 @@ describe("what runs did not keep", () => {
     const rows = [...list.querySelectorAll("li")].map((li) => li.textContent);
     expect(rows[0]).toContain("Not kept: the draft did not pass the checks.");
     expect(rows[0]).toContain("kith.com");
-    expect(rows[1]).toContain("Skipped: no budget left in this run to look back.");
+    expect(rows[1]).toContain("Skipped: no budget left in this run to write what it learned.");
     expect(rows).toHaveLength(2);
-    expect(list.textContent).toContain("2 more runs had nothing new to remember.");
+    expect(list.textContent).toContain("2 more runs had nothing new to compile.");
+    expect(list.textContent).not.toMatch(/remember|look back|notes/);
   });
 
   it("lists each sentence as served, under a title that does not say Not kept again", async () => {
@@ -422,23 +423,28 @@ describe("what runs did not keep", () => {
 });
 
 describe("the before and after", () => {
-  const IMPACT = { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03, cost_runs: 4, median_learning_usd: null } };
-  it("shows run time and cost before and after it learned, on the after side's runs, in words that name a correction or a workflow", async () => {
+  const IMPACT = { before: { runs: 2, median_duration_s: 18 }, after: { runs: 4, median_duration_s: 12 } };
+  it("shows run time before and after it learned, on the after side's runs, in words that name a correction or a workflow, and no cost of a run of its own", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: IMPACT }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
+    expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
     expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
-    expect(card.textContent).toContain("A run costs$0.03 est.instead of $0.11 est.−73%");
+    // A run's cost is the cost card's all-in before and after, learning included: a median of the job's own cost here
+    // left learning out and read -86% beside the cost card's 2.0x cheaper.
+    expect(card.textContent).not.toContain("A run costs");
     expect(card.textContent).not.toContain("Learning itself");
-    expect(card.querySelector('[title^="Medians of"]')!.getAttribute("title")).toContain("Medians of 2 runs before it first learned and 4 runs that started from what it learned (a correction or a workflow).");
+    expect(card.querySelector('[title^="Medians of"]')!.getAttribute("title")).toBe("Medians of 2 runs before it first learned and 4 runs that started from what it learned (a correction or a workflow).");
   });
-  it("says what learning itself costs a run when the server does, and a costlier after as it is, in the warning colour", async () => {
-    const t = await open(agent(true), { learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4, median_learning_usd: 0.008 } } }) });
+  it("says what learning itself costs a run from the bill (compile turns, audit shadows, replays over its runs), and a slower after as it is, in the warning colour", async () => {
+    const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 9, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: { ...BILL, learning_usd: 0.0675 } });
+    // Learning's cost is the bill's: the impact has no figure of its own (its old median of mostly-zero rows read $0).
+    const t = await open(agent(true), { cost, learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2 }, after: { runs: 4, median_duration_s: 1.3 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.textContent).toContain("Learning itself$0.0080 est. a run");
-    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+3%")!;
+    expect(card.textContent).toContain("Learning itself$0.0075 a run, booked");
+    expect(card.textContent).not.toContain("$0.0000");
+    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+8%")!;
+    expect(card.textContent).toContain("Answers in1.3sinstead of 1.2s+8%");
     expect(up.className).toContain("text-warning-text");
-    expect(card.querySelector('[title^="Medians of 2 runs"]')?.getAttribute("title")).toContain("Costs are of the 2 and 4 runs whose cost is known.");
   });
   it("renders for an agent that learned only a workflow", async () => {
     const t = await open(agent(true), { learning: async () => view({ corrections: "", workflows: [flow()], impact: IMPACT }) });
@@ -476,7 +482,8 @@ describe("the switch and the empty states", () => {
   it("with learning on and nothing learned yet: says so, how many runs looked back, and the corrections can be written", async () => {
     const t = await open(agent(true), { learning: async () => none(), runs: [RUNS[0], RUNS[2]] });
     expect(t.text()).toContain("Nothing learned yet");
-    expect(t.text()).toContain("2 runs looked back: nothing worth keeping yet.");
+    expect(t.text()).toContain("2 runs had their compile turn: no workflow kept yet.");
+    expect(t.text()).not.toMatch(/looked back|look-back/);
     expect(t.button(/^Edit corrections$/)).toBeTruthy();
   });
   it("learning set as an object is on: the switch shows it on", async () => {
@@ -833,12 +840,12 @@ describe("the loop on the Learning tab", () => {
     const t = await open(agent(true, { learning: { compile_after: 200 } }), { runs, loop });
     expect(t.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("150 of 200 completed runs");
   });
-  it("the cheaper stage: 'about N times cheaper' over the agreement check it passed (N of M agreed, its bar) when the serving check cleared, never 'the same accuracy'; the reason in its place when a run's cost isn't all known", async () => {
+  it("the cheaper stage: 'N times cheaper' (the chart's ratio) over the agreement check it passed (N of M agreed, its bar) when the serving check cleared, never 'the same accuracy'; the reason in its place when a run's cost isn't all known", async () => {
     const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
     const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 80, agent_pct: 100, cleared: true, agreed: 32, alone: 40, agree_min: 0.8 }, ...over }, workflows: [], bill: EMPTY_BILL });
     const t = await open(agent(true), { cost: costOf({}) });
     const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;
-    expect(stage.querySelector('[data-testid="stage-cheaper-value"]')!.textContent).toBe("About 7x cheaper");
+    expect(stage.querySelector('[data-testid="stage-cheaper-value"]')!.textContent).toBe("7.0x cheaper");
     expect(stage.textContent).toContain("Passed the agreement check: 32 of 40 agreed (bar 80%) · served 59 runs, handed back 3");
     expect(stage.textContent).not.toMatch(/same accuracy/);
     act(() => root!.unmount());
@@ -930,7 +937,7 @@ describe("learning-loop refresh integration", () => {
 describe("the bill", () => {
   it("shows the booked bill against the agent for all of it, the break-even marker and the audit line, and no equal-cache figure", async () => {
     const digest = "d".repeat(16);
-    const runs = BILL.points.map((p) => ({ n: p.n, run_id: p.run_id, started_at: hour(p.n), path: p.n < 4 ? "agent" as const : "workflow" as const, workflow: p.n < 4 ? null : "answer", learned_revision: null, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
+    const runs = BILL.points.map((p) => ({ n: p.n, run_id: p.run_id, started_at: hour(p.n), path: p.n < 4 ? "agent" as const : "workflow" as const, workflow: p.n < 4 ? null : "answer", digest: p.n < 4 ? null : digest, took_over: p.n === 4, audited: p.n >= 5, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
     const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
     const promotions: Promotions = {
       agent: "refunds",
@@ -945,6 +952,8 @@ describe("the bill", () => {
     expect(t.text()).toContain("Break-even at run 5");
     expect(t.text()).toContain("Last 4 audits: 3 agreed");
     expect(t.text()).toContain("All time: 4 of 5 agreed");
+    // Runs 5 to 9 were audited and each has its row: the card and the charged runs agree, nothing waits.
+    expect(t.text()).not.toContain("not scored yet");
     expect(t.text()).not.toMatch(/equal[- ]cache/i);
   });
 });

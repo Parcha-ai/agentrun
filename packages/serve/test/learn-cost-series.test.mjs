@@ -87,6 +87,31 @@ test("the summary's replay is the serving promotion's record, read from the stor
   assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 85, agent_pct: 100, cleared: true, agreed: 34, alone: 40, agree_min: 0.8 });
 });
 
+// Where a revision took over is the server's (took_over), never found by time in the console: a promotion is written at a
+// claim, after the runs queued before it started, so a search by start time skipped the run it took over at.
+test("took_over marks the first run each revision served, over every run (a limited read keeps it): the first is the summary's takeover and the bill's promoted", async (t) => {
+  const store = await agentOn(t);
+  const offering = { ...LEARNS, learning: { ...LEARNS.learning, workflows: ["answer"] } };
+  const end = async (id, metrics, costUsd) => {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: offering });
+    await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd, metrics });
+  };
+  const served = (path, digest) => ({ path, workflow: "answer", workflow_digest: digest });
+  await end("run-1", { path: "agent" }, 0.9);
+  await end("run-2", served("workflow", "d".repeat(16)), 0.1);
+  await end("run-3", served("workflow", "d".repeat(16)), 0.1);
+  // A newer revision serves from run 4 (handed back: still served by it); a replay of a third one serves no one.
+  await end("run-4", served("handed_back", "e".repeat(16)), 0.5);
+  await end("run-5", served("replay", "f".repeat(16)), 0.05);
+  await end("run-6", served("workflow", "e".repeat(16)), 0.1);
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.runs.map((run) => [run.run_id, run.path, run.took_over]), [["run-1", "agent", false], ["run-2", "workflow", true], ["run-3", "workflow", false], ["run-4", "handed_back", true], ["run-5", "replay", false], ["run-6", "workflow", false]]);
+  const first = cost.runs.find((run) => run.took_over);
+  assert.deepEqual([cost.summary.takeover, cost.bill.promoted?.run_id], [{ n: first.n, run_id: first.run_id }, first.run_id], "one source for where it took over");
+  const latest = await agentCostOverStore(store, "agent-1", 4);
+  assert.deepEqual(latest.runs.map((run) => [run.run_id, run.took_over]), [["run-3", false], ["run-4", true], ["run-5", false], ["run-6", false]], "a limited read never marks the first run it lists");
+});
+
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const HARNESS = "codex";
 const IN_FLIGHT = 8;

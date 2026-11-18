@@ -3214,7 +3214,12 @@ at once; a new one past that is held by the server's budget only, and no address
 Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
 `AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
 `uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
-that is not itself a trusted proxy). Unset, that header is never read. The owner's first sign-in of a start (the
+that is not itself a trusted proxy). Unset, that header is never read. A trusted proxy only changes which address a
+sign-in try counts against, never who the request is: `X-Forwarded-For` signs no one in, and the whole server's 100
+wrong passwords still hold. So with a wide setting such as `uniquelocal` (10/8, 172.16/12, 192.168/16 and fc00::/7; the
+VPS installer's tailnet mode sets it, since `tailscale serve` reaches the server through Docker's private bridge),
+anything on those ranges that fakes the header, an agent's Docker box among them, can only spread its tries over more
+addresses. The owner's first sign-in of a start (the
 right password) that comes with `X-Forwarded-For` from an address the server doesn't trust is logged once, with that
 address (`event=forwarded_untrusted peer=<address>`; a server from a release after 0.1.0-beta.32). Only the right
 password logs it, so the address is the one that carried the owner's own request: behind a proxy, the proxy's.
@@ -3490,8 +3495,8 @@ with the token, an archived agent's too:
   fared (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them, and `impact`, what
   learning changed: the agent's completed runs that started from at least one learned item (a correction, or a learned
   workflow) against those that started before its first, each side's `runs`; `median_duration_s`, the time to the
-  answer (the run's start to its job's end, before its end-of-run step); `median_cost_usd`, the job's own cost, over
-  the `cost_runs` whose cost is known; and `median_learning_usd`, what learning itself cost a run (its compile turn).
+  answer (the run's start to its job's end, before its end-of-run step). What a run costs, learning included, and what
+  learning itself cost are `.../learning/cost`'s (`summary.before`/`after`, the bill's `learning_usd`).
   Null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty lists and `impact: null`.
   `GET .../learning/log?cursor=&limit=` pages on, up to 200 at a time; a cursor reads the same commit its first page
   did.

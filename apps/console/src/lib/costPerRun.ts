@@ -13,9 +13,37 @@ export const PATHS: readonly { path: RunPath; label: string; fill: string; strok
 ];
 export const pathOf = (path: RunPath) => PATHS.find((p) => p.path === path)!;
 
-/** A run the chart plots: one whose all-in cost is known. */
-export type Point = CostRun & { total_usd: number };
-export const plotted = (runs: readonly CostRun[]): Point[] => runs.filter((r): r is Point => r.total_usd !== null);
+/** A run on the chart's run axis, which numbers the runs that do a job (`n`, as the bill does): `at`, where it stands. */
+export type Placed = CostRun & { at: number };
+/** Each run where it stands on the run axis: a run that does a job at its number; the replays between two jobs, which do
+ *  none and have no number, spread evenly across the gap (k of m at job + (k+1)/(m+1)), so each is drawn and hovered on
+ *  its own and none is numbered as a job. Before the first job read and after the last, the gap is the half a run the
+ *  plot shows. */
+export function placed(runs: readonly CostRun[]): Placed[] {
+  const job = (r: CostRun) => r.path !== "replay" && r.n !== null;
+  const first = runs.find(job)?.n ?? 1;
+  const last = runs.findLast(job)?.n ?? first;
+  const out: Placed[] = [];
+  let gap: CostRun[] = [];
+  let from = first - 0.5;
+  const lay = (to: number) => { gap.forEach((r, k) => out.push({ ...r, at: from + ((to - from) * (k + 1)) / (gap.length + 1) })); gap = []; };
+  for (const r of runs) {
+    if (!job(r)) { gap.push(r); continue; }
+    lay(r.n!);
+    from = r.n!;
+    out.push({ ...r, at: r.n! });
+  }
+  lay(last + 0.5);
+  return out;
+}
+
+/** A run the chart plots: one whose all-in cost is known, where it stands on the run axis. */
+export type Point = Placed & { total_usd: number };
+export const plotted = (runs: readonly CostRun[]): Point[] => placed(runs).filter((r): r is Point => r.total_usd !== null);
+
+/** A run that does a job: numbered on the run axis, as the bill numbers it (a replay has no number). */
+export type Job = CostRun & { n: number };
+export const jobsOf = (runs: readonly CostRun[]): Job[] => runs.filter((r): r is Job => r.path !== "replay" && r.n !== null);
 
 /** The rolling mean's window: about a fifteenth of the runs, from 3 to 25, so a few runs still draw a line and a
  *  thousand do not flatten it to nothing. */
@@ -38,6 +66,17 @@ export function niceTop(max: number): number {
   if (!(max > 0)) return 1;
   const p = 10 ** Math.floor(Math.log10(max));
   return [1, 2, 2.5, 5, 10].map((k) => k * p).find((v) => v >= max * (1 - 1e-9))!;
+}
+
+/** An axis just above `max`: the smallest clean step (1, 2, 2.5 or 5 times a power of ten) that reaches it in five steps
+ *  or fewer, its top the step it reaches it at, and its ticks from 0 ($1.18 reads 0 to $1.25 by $0.25, never to $2). */
+export function niceAxis(max: number): { top: number; ticks: number[] } {
+  if (!(max > 0)) return { top: 1, ticks: [0, 0.25, 0.5, 0.75, 1] };
+  const p = 10 ** Math.floor(Math.log10(max / 5));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * p).find((s) => Math.ceil(max / s - 1e-9) <= 5)!;
+  const steps = Math.max(1, Math.ceil(max / step - 1e-9));
+  const ticks = Array.from({ length: steps + 1 }, (_, i) => Math.round(i * step * 1e12) / 1e12);
+  return { top: ticks.at(-1)!, ticks };
 }
 
 /** The y axis' ticks from 0 to `top` (a niceTop): a clean step (1, 2 or 5 times a power of ten, 2.5 for a top of 10), four
@@ -73,10 +112,30 @@ export function runTicks(first: number, last: number, most = 6): number[] {
   return ticks;
 }
 
-/** The index of the point nearest run `n`. */
-export function nearest(points: readonly Point[], n: number): number {
+/** The least room between two labels in a chart's gutter: one label's line. */
+export const LABEL_GAP = 14;
+/** A gutter right of a plot wide enough for `labels` (the charts' 11px mono, 0.6em a character) 6px off the plot, with
+ *  room to spare at its right edge: a label never runs past the chart. */
+export const gutterFor = (labels: readonly string[]) => Math.ceil(6 + Math.max(0, ...labels.map((l) => l.length)) * 6.6 + 8);
+/** Labels at their places down a gutter (`at`, top down), moved apart so each pair is at least LABEL_GAP apart and all
+ *  stay within `lo` to `hi`: a close pair moves out from its middle, never past the gutter's ends. In the order given. */
+export function spread<L extends { at: number }>(labels: readonly L[], lo: number, hi: number): L[] {
+  const moved = labels.map((l) => ({ ...l }));
+  const out = [...moved].sort((a, b) => a.at - b.at);
+  for (let i = 1; i < out.length; i++) {
+    const short = LABEL_GAP - (out[i]!.at - out[i - 1]!.at);
+    if (short > 0) { out[i - 1]!.at -= short / 2; out[i]!.at += short / 2; }
+  }
+  // Back inside the gutter, keeping the gaps: from the bottom up, then from the top down.
+  for (let i = out.length - 1; i >= 0; i--) out[i]!.at = Math.min(out[i]!.at, hi - (out.length - 1 - i) * LABEL_GAP);
+  for (let i = 0; i < out.length; i++) out[i]!.at = Math.max(out[i]!.at, lo + i * LABEL_GAP, i ? out[i - 1]!.at + LABEL_GAP : -Infinity);
+  return moved;
+}
+
+/** The index of the point nearest place `at` on the run axis. */
+export function nearest(points: readonly Point[], at: number): number {
   let best = 0;
-  for (let i = 1; i < points.length; i++) if (Math.abs(points[i]!.n - n) < Math.abs(points[best]!.n - n)) best = i;
+  for (let i = 1; i < points.length; i++) if (Math.abs(points[i]!.at - at) < Math.abs(points[best]!.at - at)) best = i;
   return best;
 }
 
@@ -103,11 +162,13 @@ export type Block = { from: number; to: number; runs: number; counts: Record<Run
  *  more, about 20 blocks at most however many runs there are. */
 export const blockSizeOf = (count: number) => (count <= 20 ? 1 : Math.max(5, Math.ceil(count / 20)));
 
-/** The runs in blocks of `size`, in order (the last may be shorter): every run counts, its cost known or not. */
+/** The runs that do a job in blocks of `size`, in order (the last may be shorter): every one counts, its cost known or
+ *  not; a replay does no job and is in none. */
 export function blocksOf(runs: readonly CostRun[], size: number): Block[] {
+  const jobs = jobsOf(runs);
   const blocks: Block[] = [];
-  for (let i = 0; i < runs.length; i += size) {
-    const slice = runs.slice(i, i + size);
+  for (let i = 0; i < jobs.length; i += size) {
+    const slice = jobs.slice(i, i + size);
     // Every path in the legend at 0, so a path's first run counts 1, never NaN.
     const counts = Object.fromEntries(PATHS.map(({ path }) => [path, 0])) as Record<RunPath, number>;
     for (const r of slice) counts[r.path]++;

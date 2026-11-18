@@ -1,5 +1,5 @@
 import { Brain, ChevronRight, CircleAlert, CircleDollarSign, CirclePause, FileText, Flag, MessageCircleQuestion, MessageSquareText, Monitor, Scale, ShieldQuestion, User, Workflow, Wrench } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
 import { callWords, type ComputerCallRow } from "@timeline/computer";
 import { nameOf } from "@timeline/labels";
@@ -42,21 +42,28 @@ const triggerParts = (row: TimelineRow): { who: string | null; said: string } =>
   const m = /^([^:]+):\s*/.exec(summary);
   return m ? { who: m[1]!, said: summary.slice(m[0].length) } : { who: null, said: summary };
 };
-/** A line's own Markdown, bold (`**…**`) and code (`` `…` ``) only, as elements; the rest stays text (React escapes it,
- *  so no HTML gets through), and a mark with no partner stays as typed. Code inside bold is code; bold inside code is
- *  as typed. `__…__` is not bold here: a step names files like `__init__.py`. */
+/** A line's own Markdown, bold (`**…**`) and code (`` `…` ``) as elements, and a link (`[text](url)`, `<https://…>`) as
+ *  its words; the rest stays text (React escapes it, so no HTML gets through), and a mark with no partner stays as typed
+ *  (`[note]` with no address too). Code inside bold is code; bold inside code is as typed, and so is a link. A link is
+ *  never an anchor here: the line sits in the row's button, which opens the text with its links. `__…__` is not bold
+ *  here: a step names files like `__init__.py`. */
 function inline(text: string): ReactNode {
-  const parts = text.split(/(\*\*[^*\n]+?\*\*|`[^`\n]+`)/);
+  const parts = text.split(/(\*\*[^*\n]+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:[^()\s]|\([^()\s]*\))+\)|<https?:\/\/[^>\s]+>)/);
   if (parts.length === 1) return text;
   return parts.map((p, i) =>
     i % 2 === 0 ? p
       : p.startsWith("`") ? <code key={i} className="font-mono">{p.slice(1, -1)}</code>
+      // A link's words keep their own bold and code; its address is left out (one level of parentheses in it, as a
+      // Wikipedia address has, is the address's).
+      : p.startsWith("[") ? <Fragment key={i}>{inline(p.slice(1, p.indexOf("](")))}</Fragment>
+      : p.startsWith("<") ? p.slice(1, -1)
       // A command inside bold is code there too (a model's heading, **Run `npm test` first**); bold can't nest in bold.
       : <strong key={i} className="font-semibold">{inline(p.slice(2, -2))}</strong>);
 }
 
 /** The title a row shows: its summary without the kind's own prefix ("Thinking: ", "You: ", a server message's
- *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: ", which is that row's label). */
+ *  "AgentRun: ", a trigger's "<Source> <its name>: ", e.g. "Webhook inbound-lead: ", which is that row's label). Its
+ *  Markdown is drawn by `inline`: bold and code as such, a link as its words, never as an anchor. */
 const title = (row: TimelineRow) => {
   const text = fromTrigger(row) ? triggerParts(row).said : (row.summary ?? "").replace(fromServer(row) ? /^AgentRun:\s*/ : /^(You|Thinking|Asked you|Waiting for you):\s*/, "");
   // A workflow run's input is a JSON object: show its fields, not its braces.
@@ -67,7 +74,7 @@ const title = (row: TimelineRow) => {
   // rest is a click away (the row opens its text whole), never dropped unseen.
   const more = (row.text ?? "").split("\n").filter((l) => l.trim()).length > 1 ? "…" : "";
   // An answer's first line without its block marks (a heading's #, a quote's >, a list's -); its bold and code are
-  // drawn by `inline`. An answer left empty is said, not shown as a blank step.
+  // drawn by `inline`, which reads a link as its words. An answer left empty is said, not shown as a blank step.
   if (row.kind === "final_answer") {
     if (!text.trim() && !row.text?.trim()) return NO_ANSWER;
     return `${text.replace(/^\s*(#{1,6}\s+|>\s+|[-*+]\s+)/, "")}${more}`;
