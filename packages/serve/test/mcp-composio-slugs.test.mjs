@@ -75,3 +75,32 @@ test("paging: a slug on a later page of the tool list counts, and one on no page
   assert.match(refused.body.error.fields[0].message, /slow_write/);
   assert.deepEqual(writes(missing), []);
 });
+
+test("a list longer than its page limit refuses nothing past what it read: the save reads 10 pages and the check after it names the action", async (t) => {
+  // 11 actions, one a page: the 11th is past the 10 pages the save reads. The fake MCP server serves `add`, not ACTION_11.
+  const eleven = [tool("add"), ...Array.from({ length: 10 }, (_, i) => tool(`ACTION_${i + 2}`))];
+  const s = await setup(t, { toolkits: { hackernews: { no_auth: true, tools: eleven } }, toolsPage: 1 });
+  const res = await save(s, "hn", ["add", "ACTION_11"]);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const read = s.composio.to("/api/v3/tools");
+  assert.deepEqual(read.map((call) => call.query.cursor), [undefined, "1", "2", "3", "4", "5", "6", "7", "8", "9"], "exactly 10 pages were read");
+  assert.deepEqual(res.body.not_served, ["ACTION_11"], "the check after the save names the action its server leaves out");
+  assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/custom", "POST")[0].body.allowed_tools, ["add", "ACTION_11"]);
+});
+
+test("a huge unknown slug against a big toolkit is refused at once, its name cut in the answer", async (t) => {
+  const many = Array.from({ length: 500 }, (_, i) => tool(`STRIPE_ACTION_NUMBER_${i}`));
+  const s = await setup(t, { toolkits: { hackernews: { no_auth: true, tools: [tool("add"), ...many] } } });
+  const huge = "A".repeat(200_000);
+  const started = performance.now();
+  const res = await save(s, "hn", ["add", huge]);
+  const took = performance.now() - started;
+  assert.equal(res.status, 422, JSON.stringify(res.body).slice(0, 300));
+  assert.deepEqual(res.body.error.fields.map((f) => [f.field, f.reason]), [["tools", "not_found"]]);
+  assert.ok(took < 3000, `the refusal took ${Math.round(took)} ms`);
+  const message = res.body.error.fields[0].message;
+  assert.ok(message.includes(`${"A".repeat(64)}… (200000 characters)`), "the slug is cut to its first 64 characters and its length");
+  assert.ok(message.length < 1000, `the message is ${message.length} characters`);
+  assert.ok(JSON.stringify(res.body).length < 4000, "the answer doesn't carry the slug back");
+  assert.deepEqual(writes(s), []);
+});
