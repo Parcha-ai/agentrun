@@ -196,7 +196,9 @@ export type IcsFaux = {
   move(path: string, to: string): void;
   /** Every request answers `status` (its body naming the address asked for), or, with undefined, as before. */
   failing(status: number | undefined): void;
-  /** The requests it answered, oldest first. */
+  /** The requests it answered for its own paths (a calendar it serves, a path it moves and that move's target), oldest
+   *  first. A request for any other path is answered 404 and not counted: a host process that polls every loopback
+   *  listener (GET /) is no reader of the calendar. */
   requests(): IcsRequest[];
   close(): Promise<void>;
 };
@@ -210,9 +212,12 @@ export async function startIcsFaux(options: { port?: number; text?: string } = {
   const files = new Map<string, Held>();
   const moves = new Map<string, string>();
   const log: IcsRequest[] = [];
+  // Every path it has served or moved, and each move's target on it: the paths whose requests it counts. Never shrinks.
+  const own = new Set<string>();
   let failure: number | undefined;
   let version = 0;
   const hold = (text: string, path: string) => {
+    own.add(path);
     version += 1;
     // Whole seconds, as an HTTP date says it, each version a second on so If-Modified-Since tells them apart.
     const modified = new Date(Date.UTC(2026, 9, 1, 0, 0, version));
@@ -225,7 +230,7 @@ export async function startIcsFaux(options: { port?: number; text?: string } = {
     const ifNoneMatch = req.headers["if-none-match"];
     const ifModifiedSince = req.headers["if-modified-since"];
     const done = (status: number, headers: Record<string, string> = {}, body?: string) => {
-      log.push({ path, status, ...(typeof ifNoneMatch === "string" ? { ifNoneMatch } : {}), ...(typeof ifModifiedSince === "string" ? { ifModifiedSince } : {}) });
+      if (own.has(path)) log.push({ path, status, ...(typeof ifNoneMatch === "string" ? { ifNoneMatch } : {}), ...(typeof ifModifiedSince === "string" ? { ifModifiedSince } : {}) });
       res.writeHead(status, headers).end(body);
     };
     if (failure !== undefined) return done(failure, { "content-type": "text/plain" }, `Server error reading ${origin}${req.url}`);
@@ -249,7 +254,11 @@ export async function startIcsFaux(options: { port?: number; text?: string } = {
     address: `${origin}${secret}`,
     at: (path) => `${origin}${path}`,
     serve: (text, path = secret) => hold(text, path),
-    move: (path, to) => void moves.set(path, to),
+    move: (path, to) => {
+      own.add(path);
+      if (!/^[a-z]+:\/\//i.test(to)) own.add(to);
+      moves.set(path, to);
+    },
     failing: (status) => void (failure = status),
     requests: () => log.map((one) => ({ ...one })),
     close: () => new Promise<void>((resolve) => {

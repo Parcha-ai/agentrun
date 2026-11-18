@@ -133,6 +133,19 @@ test("a calendar on a private address is refused, on loopback only for a local i
   assert.equal(faux.requests().length, 0, "nothing reached loopback");
 });
 
+test("the fake calendar counts the requests for its own paths only: a host's poller asking for / is answered 404 and never counted", async (t) => {
+  const faux = await calendarFaux(t);
+  faux.move("/old.ics", "/new.ics");
+  // As a host process that polls every loopback listener does (GET /), between a test's reads.
+  const stray = await fetch(`${faux.origin}/`);
+  await stray.arrayBuffer();
+  assert.equal(stray.status, 404);
+  assert.deepEqual(faux.requests(), [], "a poller's request is none of the calendar's");
+  // Its own: its calendar, a path it moves, and that move's target, held or not.
+  for (const [url, init] of [[faux.address], [faux.at("/old.ics"), { redirect: "manual" }], [faux.at("/new.ics")]]) await (await fetch(url, init)).arrayBuffer();
+  assert.deepEqual(faux.requests().map((one) => [one.path, one.status]), [[new URL(faux.address).pathname, 200], ["/old.ics", 302], ["/new.ics", 404]]);
+});
+
 test("each hop under the server's one address rule (mcp-oauth.ts calendarAt): a private IP, a public address that redirects to the link-local metadata address, a name that resolves to a private address, and plain http on a public host are each refused before a byte is sent to them", async (t) => {
   const { forgetCalendarsForTests, readCalendar } = await import("../dist/calendar/fetch.js");
   forgetCalendarsForTests();
