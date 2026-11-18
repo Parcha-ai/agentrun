@@ -131,7 +131,7 @@ export default async function reply(context, faux) {
     const beacon = JSON.parse(first.slice("Reach ".length));
     const run = { ...(await reach(beacon)), status: (await probe(DATA)).status, uid: process.getuid() };
     const child = childOf(`(async () => ({ ...(await (${reach.toString()})(${JSON.stringify(beacon)})), status: (await (${probe.toString()})(${JSON.stringify(DATA)})).status, uid: process.getuid() }))()`);
-    return faux.message(JSON.stringify({ run, child }));
+    return faux.message(JSON.stringify({ run, child }, null, 1));
   }
   const run = await probe(DATA);
   const child = childOf(`(${probe.toString()})(${JSON.stringify(DATA)})`);
@@ -143,5 +143,6 @@ export default async function reply(context, faux) {
     run,
     child,
   };
-  return faux.message(JSON.stringify(report));
+  // One entry a line: a served answer holds no run of text past 8 KiB without whitespace (redactedAnswer).
+  return faux.message(JSON.stringify(report, null, 1));
 }
