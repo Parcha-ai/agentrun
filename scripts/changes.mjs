@@ -160,6 +160,28 @@ export async function unreleasedEdits(root, base) {
 /** The bullet a fragment becomes: its first line behind "- ", the rest indented under it. */
 export const bulletOf = body => body.split('\n').map((line, index) => (index === 0 ? `- ${line}` : line.trim() ? `  ${line}` : '')).join('\n');
 
+/**
+ * A fragment's marker, `<!-- changes/<file> -->`: the fold writes it at the end of the first line of each bullet it makes of the
+ * fragment, so a section says which fragments it holds by their file names, whatever its words. A release pull request that rewrites a
+ * folded bullet keeps its marker anywhere in its entry (one entry may carry several); the fold then holds that fragment as written.
+ * GitHub and the website's renderer hide an HTML comment; the release notes and the Slack post take it out (`withoutMarkers`).
+ */
+export const markerOf = file => `<!-- changes/${file} -->`;
+const marker = /[ \t]*<!-- changes\/([a-z0-9][a-z0-9-]*\.md) -->/g;
+/** The file names of the fragments whose markers `text` carries, in order. */
+export const markersIn = text => [...text.matchAll(marker)].map(match => match[1]);
+/** `text` with every marker taken out, and a line that held nothing else dropped: a changelog section as a reader is shown it. */
+export const withoutMarkers = text => text.split('\n').flatMap(line => {
+  const plain = line.replace(marker, '');
+  return plain.trim() || !line.trim() ? [plain] : [];
+}).join('\n');
+/** The bullet the fold writes for `fragment`: `bulletOf` its body, with the fragment's marker on its first line. An entry the fold makes
+ *  that is no fragment's (the root's "Package changes only" line) has no file and no marker. */
+const foldedBullet = fragment => {
+  const [first, ...rest] = bulletOf(fragment.body).split('\n');
+  return [fragment.file ? `${first} ${markerOf(fragment.file)}` : first, ...rest].join('\n');
+};
+
 /** Whether `line` is the heading of `version`'s section: "## 0.1.0-beta.13, 2026-10-20", "## 0.1.0-beta.13" or "## [0.1.0-beta.13] ...". */
 export const isVersionHeading = (line, version) => line.startsWith('## ') && line.slice(3).replace(/^\[/, '').split(/[\],\s]/)[0] === version;
 
@@ -181,13 +203,13 @@ const isBreakingLabel = line => /^breaking$/i.test(blockLabel.exec(line)?.[1]?.t
 
 /**
  * Puts the bullets of `fragments` (in the fold's order) into the section headed at `lines[heading]`, in place: the one place every fold
- * path writes bullets. A breaking change goes under the section's **Breaking:** heading, after what that block holds. A section without
+ * path writes bullets, each with its fragment's marker (`foldedBullet`). A breaking change goes under the section's **Breaking:** heading, after what that block holds. A section without
  * one gets it at its top, ahead of every other entry, and what the section holds then goes under **Changes:** unless it opens with a
  * heading of its own. Every other bullet goes at the section's end, under a new **Changes:** heading when the section's last block is
  * Breaking. A fold with no breaking change writes what it always did.
  */
 function placeBullets(lines, heading, fragments) {
-  const bulletsOf = breaking => fragments.filter(fragment => (fragment.kind === 'breaking') === breaking).map(fragment => bulletOf(fragment.body));
+  const bulletsOf = breaking => fragments.filter(fragment => (fragment.kind === 'breaking') === breaking).map(foldedBullet);
   const breaking = bulletsOf(true);
   const rest = bulletsOf(false);
   const labels = () => {
@@ -261,14 +283,11 @@ const publishedAt = (previous, file) => file === 'CHANGELOG.md' || !previous.hel
  *  the root, as any name with no changelog of its own does). */
 const anyPackage = { has: () => true, *[Symbol.iterator]() {} };
 
-/** Whether `version`'s section of `lines` holds `bullet` as a whole entry of its own: its lines from a line's start, and no
- *  indented line of the entry after them. A nested line under another entry, or the start of a longer entry, is not it. */
-function sectionHolds(lines, version, bullet) {
+/** Whether `version`'s section of `lines` holds the fragment named `file`: it carries the fragment's marker (`markerOf`). Its words
+ *  decide nothing, so a release pull request may rewrite a folded bullet as long as the marker stays. */
+function sectionHolds(lines, version, file) {
   const at = lines.findIndex(line => isVersionHeading(line, version));
-  if (at < 0) return false;
-  const section = lines.slice(at + 1, sectionEnd(lines, at));
-  const want = bullet.split('\n');
-  return section.some((line, index) => want.every((part, offset) => section[index + offset] === part) && !/^\s+\S/.test(section[index + want.length] ?? ''));
+  return at >= 0 && markersIn(lines.slice(at + 1, sectionEnd(lines, at)).join('\n')).includes(file);
 }
 
 /**
@@ -293,7 +312,8 @@ function addToSection(lines, version, date, fragments, newer) {
  * Folds the release into the changelogs. Every changelog is visited: one whose Unreleased section holds bullets or that gets
  * fragments has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
  * Unreleased section opened above it. A breaking fragment's bullet goes under the section's **Breaking:** heading, which the fold
- * opens at the section's top when the section has none (`placeBullets`). The root changelog is dated also when it holds nothing and the release has fragments. A
+ * opens at the section's top when the section has none (`placeBullets`). Every bullet the fold writes carries its fragment's marker
+ * (`markerOf`). The root changelog is dated also when it holds nothing and the release has fragments. A
  * fragment goes to its package's own changelog, else the root. A changelog with neither held bullets nor fragments is untouched;
  * one that already has the version's section gets the fragments' bullets appended to it. A held package (its manifest says
  * `"private": true`) ships nothing in this release, so its changelog is never dated: its fragments' bullets are appended to its
@@ -302,7 +322,8 @@ function addToSection(lines, version, date, fragments, newer) {
  * A fragment that the previous release's tag carried (`previousRelease`) shipped in that release: the release workflow folded it into
  * the archives at the tag, after the release pull request's fold. Its bullet, in the text the tag carried, goes into that release's
  * section, under that release's date from the root changelog, and never into this one, so main's changelogs end up saying what each
- * release published: also when a pull request edited the fragment after the tag, or deleted it. That holds
+ * release published: also when a pull request edited the fragment after the tag, or deleted it. A section that carries the
+ * fragment's marker holds it already and gets nothing (`sectionHolds`): the marker decides, never the bullet's words. That holds
  * per changelog: a package held at that tag and published now did not ship there, so its changelog gets the bullet in this release. A held
  * package's changelog has no sections: those bullets join its Unreleased in the fold's order with the rest. `options.previous` gives
  * that release (`previousRelease`'s shape, or null) for a `root` that is not the repository, as release-preflight's refold of a tag is.
@@ -327,6 +348,8 @@ export async function fold(root, version, date, options = {}) {
   // A fragment the tag carried is that release's by its file name, and its bullet is the text the tag carried, which is what the
   // release published: a pull request that edited it since (a retired package dropped from its packages, say) changes neither.
   const tagged = (file, text) => ({ file, text, ...parseFragment(text, `changes/${file} at ${previous.tag}`, anyPackage) });
+  // Whether that release's section of the changelog `target` holds the fragment `file` already: it carries its marker.
+  const holds = async (target, file) => sectionHolds((await readFile(join(root, target), 'utf8')).split('\n'), previous.version, file);
   for (const fragment of [...fragments].sort(foldOrder)) {
     const was = previous?.carried.get(fragment.file);
     if (was == null) {
@@ -337,10 +360,10 @@ export async function fold(root, version, date, options = {}) {
     // The tag's text decides only the changelogs that release published and that are published now: their sections say what each
     // release published. A changelog held now has no sections (its bullets join Unreleased, which the check reads against the
     // fragments this change deleted, in their own text), and one held at the tag ships the fragment in this release: for both, the
-    // fragment as it is now decides, as for any other.
+    // fragment as it is now decides, as for any other. A section that carries the fragment's marker holds it already.
     const then = tagged(fragment.file, was);
     for (const file of await filesOf(then)) {
-      if (publishedAt(previous, file) && !await heldChangelog(root, file)) { targets.get(file).before.push(then); shipped.add(then); }
+      if (publishedAt(previous, file) && !await heldChangelog(root, file) && !await holds(file, then.file)) { targets.get(file).before.push(then); shipped.add(then); }
     }
     for (const file of await filesOf(fragment)) {
       const heldNow = await heldChangelog(root, file);
@@ -349,15 +372,16 @@ export async function fold(root, version, date, options = {}) {
     }
   }
   // One the tag carried and a pull request deleted since (its only package retired, say) shipped all the same: its bullet goes into
-  // that release's section too, unless that section already holds it, as it does once this release's fold has taken it (the release
-  // workflow's fold at this release's tag sees every fragment of the previous tag deleted). Never into a changelog held now: it has
-  // no release sections, and its Unreleased takes only fragments this change deletes.
+  // that release's section too, unless that section already holds it by its marker, as it does once this release's fold has taken it
+  // (the release workflow's fold at this release's tag sees every fragment of the previous tag deleted), or once a pull request
+  // curated that section by hand and kept the marker. Never into a changelog held now: it has no release sections, and its Unreleased
+  // takes only fragments this change deletes.
   for (const [file, text] of previous?.carried ?? []) {
     if (text === null || fragments.some(fragment => fragment.file === file)) continue;
     const then = tagged(file, text);
     for (const target of await filesOf(then)) {
       if (!publishedAt(previous, target) || await heldChangelog(root, target)) continue;
-      if (sectionHolds((await readFile(join(root, target), 'utf8')).split('\n'), previous.version, bulletOf(then.body))) continue;
+      if (await holds(target, file)) continue;
       targets.get(target).before.push(then); shipped.add(then);
     }
   }
