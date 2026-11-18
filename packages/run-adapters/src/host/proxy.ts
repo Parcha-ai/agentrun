@@ -553,6 +553,8 @@ export interface ProxyRequest {
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
+  /** The conversation its client says it is asked in (CONVERSATION_HEADER), when it names one: its client's own label. */
+  conversation?: string;
   /** Aborted when its client goes before it is admitted (ModelRequest.signal): a wait for room ends then. */
   signal?: AbortSignal;
 }
@@ -714,6 +716,15 @@ const RETRY_HEADERS = ["retry-after", "retry-after-ms", "x-should-retry"] as con
 const ID_HEADER = /^(?:[a-z0-9]+[-_])*(?:request|call)[-_]id$/;
 /** What an id looks like: nothing else (a cookie, a token, prose) is ever kept. */
 const ID_VALUE = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+/** The request header by which a session's client names the conversation a request is asked in: its own label for it,
+ *  opaque here. The host is told it with the request (ProxyRequest.conversation), so it knows which of several
+ *  conversations asking at once a booking is; it is never forwarded to the provider. */
+export const CONVERSATION_HEADER = "x-agentrun-conversation";
+/** A conversation's label as CONVERSATION_HEADER carries it: id-shaped (ID_VALUE), else undefined (never sent, never told). */
+export function conversationLabel(value: unknown): string | undefined {
+  return typeof value === "string" && ID_VALUE.test(value) ? value : undefined;
+}
 
 /** The ids a response's headers give its request, by header name, so a run's books can be joined to the provider's (or
  *  a gateway's) request by request; undefined when there are none. Only id-named headers with id-shaped values. */
@@ -1180,6 +1191,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     const sentKey = policy.keyOf(req.headers);
     const host = sameKey(sentKey, key) ? undefined : sideOf(sentKey);
     if (host === undefined && !sameKey(sentKey, key)) return refuse(res, 401, "this session's key is required", req);
+    // The conversation its client names for it, told to the host with its admission; no header sent on carries it.
+    const conversation = conversationLabel(req.headers[CONVERSATION_HEADER]);
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
@@ -1408,6 +1421,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(effort === undefined ? {} : { effort }),
         ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
+        ...(conversation === undefined ? {} : { conversation }),
         ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {
