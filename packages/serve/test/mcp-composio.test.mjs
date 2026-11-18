@@ -15,7 +15,10 @@ const TOOLS = [
   { slug: "GITHUB_STAR_REPO", name: "Star a repo", description: "Star a repository." },
   { slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "List a repository's issues." },
 ];
-const TOOLKITS = { github: { no_auth: false, tools: TOOLS }, slack: { no_auth: false, tools: TOOLS }, hackernews: { no_auth: true, tools: TOOLS } };
+// A save checks its slugs against the toolkit's list first: slack and hackernews list `add` too, the fake MCP server's
+// action (fake-mcp-server.mjs) that their saves grant.
+const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
+const TOOLKITS = { github: { no_auth: false, tools: TOOLS }, slack: { no_auth: false, tools: [...TOOLS, ADD] }, hackernews: { no_auth: true, tools: [...TOOLS, ADD] } };
 
 async function setup(t, options = {}) {
   const composio = await startFakeComposio({ toolkits: TOOLKITS, ...options });
