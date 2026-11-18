@@ -21,7 +21,7 @@ type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server with the webhook `state`: GET answers it, PUT sets it (201 with the secret the first time), DELETE removes
  *  it; the deliveries are `attempts`; a test or a redelivery answers `sent` and adds it to the log. */
-function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail?: boolean }, sent: () => Response = () => json(200, attempt({ type: "webhook.test" }))) {
+function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail?: boolean; rotateFails?: boolean }, sent: () => Response = () => json(200, attempt({ type: "webhook.test" }))) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined };
@@ -34,7 +34,10 @@ function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail
       state.webhook = { ...SET, url: (call.body as { url: string }).url };
       return json(created ? 201 : 200, { ...state.webhook, ...(created ? { signing_secret: SECRET } : {}) });
     }
-    if (path === "/v2/settings/webhook/secret" && call.method === "POST") return json(200, { ...state.webhook, signing_secret: ROTATED });
+    if (path === "/v2/settings/webhook/secret" && call.method === "POST") {
+      if (state.rotateFails) return json(500, { error: { code: "internal", message: "the rotation failed", retryable: true } });
+      return json(200, { ...state.webhook, signing_secret: ROTATED });
+    }
     if (path === "/v2/settings/webhook" && call.method === "DELETE") { state.webhook = NONE; return new Response(null, { status: 204 }); }
     if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: state.attempts });
     if (path === "/v2/settings/webhook/test" || path.endsWith("/redeliver")) {
@@ -200,10 +203,40 @@ describe("WebhookPage", () => {
     const shown = page.host.querySelector('[aria-label="Webhook secret"]');
     expect(shown?.textContent).toContain(ROTATED);
     expect(shown?.textContent).toContain("shown this once");
+    // The same box as a save's, so it copies with one press, and the focus its question held moves to it.
+    expect(page.button(/Copy secret/, shown!)).toBeDefined();
+    expect(document.activeElement).toBe(shown);
     expect(page.host.querySelector('[role="alertdialog"]')).toBeNull();
     act(() => root!.unmount()); root = undefined;
     const again = await open(v2);
     expect(again.host.textContent).not.toContain(ROTATED);
+  });
+
+  it("copies a rotated secret with one press", async () => {
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { writes.push(text); } } });
+    try {
+      const { v2 } = server({ webhook: SET, attempts: [] });
+      const page = await open(v2);
+      await page.click(/^Rotate secret$/);
+      await page.click(/^Rotate the secret$/, page.host.querySelector('[role="alertdialog"]')!);
+      const shown = page.host.querySelector('[aria-label="Webhook secret"]')!;
+      await page.click(/Copy secret/, shown);
+      expect(writes).toEqual([ROTATED]);
+      expect(shown.querySelector('[role="status"]')?.textContent).toBe("Copied");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    }
+  });
+
+  it("a rotation that fails says so, shows no secret, and puts the focus back on Rotate secret", async () => {
+    const { v2 } = server({ webhook: SET, attempts: [], rotateFails: true });
+    const page = await open(v2);
+    await page.click(/^Rotate secret$/);
+    await page.click(/^Rotate the secret$/, page.host.querySelector('[role="alertdialog"]')!);
+    expect(page.host.textContent).toContain("The secret was not rotated");
+    expect(page.host.querySelector('[aria-label="Webhook secret"]')).toBeNull();
+    expect(document.activeElement).toBe(page.button(/^Rotate secret$/));
   });
 
   it("Cancel on Rotate secret rotates nothing", async () => {

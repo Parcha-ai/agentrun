@@ -29,9 +29,12 @@ export function WebhookPage({ v2 }: { v2: Client }) {
   const [problem, setProblem] = useState<{ title: string; error: ApiError } | null>(null);
   const [tested, setTested] = useState<WebhookAttempt | null>(null);
   const [removing, setRemoving] = useState(false);
-  // Rotate secret, asked first: the old secret stops signing at once. The focus goes back to its button after.
+  // Rotate secret, asked first: the old secret stops signing at once. Cancel puts the focus back on its button; a rotation
+  // puts it on the new secret, or back on the button when it fails, once the page has drawn it (the effect below).
   const [rotating, setRotating] = useState(false);
   const rotateButton = useRef<HTMLButtonElement>(null);
+  const secretBox = useRef<HTMLElement>(null);
+  const [focusAfter, setFocusAfter] = useState<"secret" | "rotate" | null>(null);
   const [busy, setBusy] = useState(false);
   // What the person types to save. The server shows a saved URL shortened (its origin and last four characters), so the
   // field never takes it: a save sends only a URL typed here, never the shortened one, which would move the receiver.
@@ -50,15 +53,25 @@ export function WebhookPage({ v2 }: { v2: Client }) {
     load();
   };
   const closeRotate = () => { setRotating(false); requestAnimationFrame(() => rotateButton.current?.focus()); };
-  const rotate = () => {
+  const rotate = async () => {
     setRotating(false);
-    void act("The secret was not rotated", async () => {
+    let shown = false;
+    await act("The secret was not rotated", async () => {
       // As a first save's: shown this once, from the answer that made it.
       const { signing_secret: fresh, ...view } = await v2.rotateWebhookSecret();
       setSecret(fresh);
       setWebhook(view);
+      shown = true;
     });
+    setFocusAfter(shown ? "secret" : "rotate");
   };
+  // The focus a rotation leaves: its question, which held it, is gone. Moved once the target is drawn and, for the
+  // button, enabled again (not busy).
+  useEffect(() => {
+    if (!focusAfter || busy) return;
+    (focusAfter === "secret" ? secretBox.current : rotateButton.current)?.focus();
+    setFocusAfter(null);
+  }, [focusAfter, busy]);
   const save = (e: FormEvent) => {
     e.preventDefault();
     void act("The webhook was not saved", async () => {
@@ -90,7 +103,7 @@ export function WebhookPage({ v2 }: { v2: Client }) {
             </Banner>
           )}
           {secret && (
-            <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Webhook secret">
+            <section ref={secretBox} tabIndex={-1} className="border border-warning/50 bg-warning/5 p-4 outline-none" aria-label="Webhook secret">
               <p className="caps text-small font-semibold text-warning-text">The signing secret, shown this once</p>
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-body">{secret}</code><CopyButton text={secret} label="Copy secret" /></div>
               <p className="mt-2 text-body text-muted-foreground">Keep it where the receiver checks <span className="font-mono">webhook-signature</span>. This server never shows it again.</p>
@@ -121,7 +134,7 @@ export function WebhookPage({ v2 }: { v2: Client }) {
             {rotating && (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-body" role="alertdialog" aria-label="Rotate the signing secret?" onKeyDown={(e) => { if (e.key === "Escape") closeRotate(); }}>
                 <span>The old secret stops signing at once; your receiver needs the new one.</span>
-                <Button type="button" variant="solid" disabled={busy} onClick={rotate}>Rotate the secret</Button>
+                <Button type="button" variant="solid" disabled={busy} onClick={() => void rotate()}>Rotate the secret</Button>
                 <Button type="button" variant="ghost" autoFocus onClick={closeRotate}>Cancel</Button>
               </div>
             )}
