@@ -628,3 +628,30 @@ test("a trigger setting the package's new version leaves out goes back to its de
     weekly: { id: before.weekly.id, enabled: true, catchup_window_s: 120, max_active_runs: null },
   }, "each kept in place: new-pr's cap gone (null) and daily's catch-up back to 3600, as a fresh apply of 0.2.0 makes them; weekly's the 120 0.2.0 sets; daily still off, as the owner left it");
 });
+
+test("an update in place keeps an every_s schedule's grid when the package's schedule is unchanged: its start_at and next time are as they were, never restarted from the update; a schedule the package changes is the new one", { timeout: 120_000 }, async (t) => {
+  const EVERY = (name, every) => `  - name: ${name}
+    source: { kind: schedule, every_s: ${every} }
+    target: { kind: start_run, input: { content: "A note on \${parameters.topic}." } }`;
+  // 0.1.0: hourly and slow, each every hour from when the apply made it (no start_at), and daily, a cron schedule.
+  const V1_EVERY = { version: "0.1.0", triggers: [EVERY("hourly", 3600), EVERY("slow", 3600), SCHEDULE("daily", "0 9 * * *")] };
+  // 0.2.0: new instructions; hourly and daily as they were; slow every two hours.
+  const V2_EVERY = { version: "0.2.0", instructions: "Write a short piece about ${parameters.topic}.", triggers: [EVERY("hourly", 3600), EVERY("slow", 7200), SCHEDULE("daily", "0 9 * * *")] };
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const clock = fakeClock(T0);
+  const first = await serve(t, { templates: await templates(t, V1_EVERY), runner: false, triggerClock: clock, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const before = await triggersOf(first.api, made.agent_id);
+  await first.stop();
+
+  // Half an hour on, before hourly's first time: an update that restarted its grid would move it half an hour later.
+  clock.t += 30 * 60 * 1000;
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2_EVERY), runner: false, triggerClock: clock, feedsAt: () => quiet.url });
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "0.2.0 changes the instructions and slow's interval");
+  const after = await triggersOf(second.api, made.agent_id);
+  assert.equal(after.hourly.id, before.hourly.id, "hourly kept in place");
+  assert.deepEqual({ source: after.hourly.source, next_at: after.hourly.next_at }, { source: before.hourly.source, next_at: before.hourly.next_at }, "hourly's grid as 0.1.0's apply made it: the same start_at and next time");
+  assert.equal(after.daily.next_at, before.daily.next_at, "daily's next time as it was");
+  assert.equal(after.slow.source.every_s, 7200, "slow is 0.2.0's schedule");
+  assert.notEqual(after.slow.next_at, before.slow.next_at, "slow, its schedule changed, is on its new grid");
+});

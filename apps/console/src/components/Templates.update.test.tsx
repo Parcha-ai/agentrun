@@ -48,6 +48,18 @@ describe("a template that already made an agent here", () => {
     expect(go).toHaveBeenCalledWith(agentHash("notes-1"));
   });
 
+  it("offers Update for an agent it made however far down the agent list it is, past twenty pages", async () => {
+    const pages = 25;
+    const listAgents = vi.fn(async ({ cursor }: { cursor?: string | null } = {}) => {
+      const page = cursor ? Number(cursor) : 0;
+      const agents = page === pages - 1 ? [agentOf("notes-old", "Old notes", base.id)] : [agentOf(`plain-${page}`, `Plain ${page}`, null)];
+      return { agents, next_cursor: page < pages - 1 ? String(page + 1) : null };
+    });
+    const host = await mount({ ...client([]), listAgents });
+    expect(button(host, "Update Old notes")).toBeDefined();
+    expect(listAgents).toHaveBeenCalledTimes(pages);
+  });
+
   it("offers no Update when no agent here was made from it, and Apply sends no agent_id", async () => {
     const host = await mount(client([agentOf("plain", "Plain", null)]));
     expect([...host.querySelectorAll("button")].some((b) => b.textContent?.trim().startsWith("Update "))).toBe(false);
