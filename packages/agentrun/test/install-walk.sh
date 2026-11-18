@@ -5,7 +5,9 @@
 #       (SIGKILL), running the installer again, and `service uninstall`.
 #   install-walk.sh container [installer options]  no service manager: the installer piped to sh, `service install`
 #       refused in words; the default start, in the background, returns and AgentRun answers after it; an older launcher
-#       with no `agentrun stop`, then this one again, each replace it; `agentrun stop` stops it.
+#       with no `agentrun stop`, then this one again, each replace it; `agentrun stop` stops it. Then --tailscale with no
+#       tailscale, and with a fake one first on PATH (fake-tailscale.sh): logged in, where the served name opens the
+#       setup that takes the code, not an open server; operator rights refused; Funnel on; and --no-tailscale.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
@@ -90,6 +92,92 @@ piped_install() {
   cat "$out"
 }
 
+# --tailscale in the background (no service manager), with no tailscale, then a fake one (fake-tailscale.sh) in a fresh
+# state folder per case. No tailnet is touched.
+tailnet_walk() {
+  local name=box.tail1234.example again='curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale' fakes code session
+  if ! ls "$HOME"/.agentrun/lib/*/node_modules/@parcha/agentrun/lib/tailscale.mjs > /dev/null 2>&1; then
+    echo "skip: the launcher installed has no --tailscale"
+    return 0
+  fi
+  step "--tailscale with no tailscale: AgentRun starts anyway, the steps and the command to run again are said, exit 0"
+  if command -v tailscale; then die "tailscale is on PATH"; fi
+  piped_install 300 /tmp/ts-missing.log --tailscale "$@"
+  grep -q "^Tailscale is not installed here, so AgentRun is on this machine only for now" /tmp/ts-missing.log || die "no word that Tailscale is missing"
+  grep -q "1\. Install Tailscale: https://tailscale.com/download/linux" /tmp/ts-missing.log || die "no install link"
+  grep -q "2\. Connect this machine to your tailnet: .*tailscale up" /tmp/ts-missing.log || die "no tailscale up step"
+  grep -qF "Then run again: $again" /tmp/ts-missing.log || die "no command to run again"
+  grep -q "free: up to 6 users, unlimited user devices" /tmp/ts-missing.log || die "no price line"
+  grep -q "AgentRun is running at http://127.0.0.1:7340/" /tmp/ts-missing.log || die "not started on 7340"
+
+  fakes=$(mktemp -d)
+  cp "$here/test/fake-tailscale.sh" "$fakes/tailscale"
+  chmod 755 "$fakes/tailscale"
+  export PATH="$fakes:$PATH"
+  export FAKE_TAILSCALE_DIR
+
+  step "--tailscale, logged in (a fake tailscale): served at https://$name/ to 127.0.0.1:7340"
+  FAKE_TAILSCALE_DIR=$(mktemp -d)
+  : > "$FAKE_TAILSCALE_DIR/other"
+  piped_install 300 /tmp/ts.log --tailscale "$@"
+  grep -q "AgentRun is on your tailnet at https://$name/ (tailscale serve)" /tmp/ts.log || die "no tailnet address printed"
+  [ "$(cat "$FAKE_TAILSCALE_DIR/served")" = http://127.0.0.1:7340 ] || die "serve proxies $(cat "$FAKE_TAILSCALE_DIR/served")"
+  cat "$FAKE_TAILSCALE_DIR/calls"
+  grep -q "funnel" "$FAKE_TAILSCALE_DIR/calls" && die "tailscale funnel was run"
+  healthy 10
+  [ "$(base)" = http://127.0.0.1:7340/v2 ] || die "the server is at $(base), not 127.0.0.1:7340"
+
+  step "what the served name opens: the console, whose setup takes the code in the log, not an open server"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $name" -H 'accept: text/html' http://127.0.0.1:7340/)
+  [ "$code" = 200 ] || die "the page at Host $name answered $code"
+  session=$(curl -fsS -H "Host: $name" "$(base)/auth/session")
+  echo "$session"
+  grep -q '"password_set": *false' <<< "$session" || die "a password is already set"
+  grep -q '"setup_code": *true' <<< "$session" || die "setup takes no code: an open server"
+  # As the page at the served name sends it through tailscale serve (which adds X-Forwarded-Proto: https), with no code.
+  code=$(curl -s -o /tmp/ts-setup.json -w '%{http_code}' -X POST -H "Host: $name" -H "Origin: https://$name" -H 'X-Forwarded-Proto: https' -H 'content-type: application/json' --data '{"password":"not-a-secret"}' "$(base)/setup")
+  cat /tmp/ts-setup.json
+  echo
+  [ "$code" = 403 ] && grep -q "takes the setup code in its log" /tmp/ts-setup.json || die "a setup with no code answered $code"
+  grep -q "Set up this server: https://$name/setup#code=" "$log" || die "the log has no setup link at https://$name/"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: elsewhere.example' "$(base)/auth/session")
+  [ "$code" = 403 ] || die "another Host name answered $code"
+
+  step "--tailscale with operator rights refused: the one sudo line, exit 0"
+  FAKE_TAILSCALE_DIR=$(mktemp -d)
+  echo denied > "$FAKE_TAILSCALE_DIR/mode"
+  piped_install 300 /tmp/ts-denied.log --tailscale "$@"
+  grep -qx '  sudo tailscale set --operator=\$USER' /tmp/ts-denied.log || die "no operator line"
+  [ ! -s "$FAKE_TAILSCALE_DIR/served" ] || die "something was served"
+  healthy 10
+
+  step "--tailscale with Funnel on at that address: refused by name, nothing changed, AgentRun still running"
+  FAKE_TAILSCALE_DIR=$(mktemp -d)
+  echo http://127.0.0.1:7340 > "$FAKE_TAILSCALE_DIR/served"
+  : > "$FAKE_TAILSCALE_DIR/funnel"
+  if timeout 300 sh "$here/install.sh" --tailscale "$@" > /tmp/ts-funnel.log 2>&1; then
+    cat /tmp/ts-funnel.log
+    die "the installer went on with Funnel on"
+  fi
+  cat /tmp/ts-funnel.log
+  grep -q "Tailscale Funnel is on for https://$name/" /tmp/ts-funnel.log || die "the refusal does not name Funnel"
+  grep -q "^serve --bg" "$FAKE_TAILSCALE_DIR/calls" && die "serve ran with Funnel on"
+  healthy 10
+
+  step "--no-tailscale: only the entry it added goes"
+  FAKE_TAILSCALE_DIR=$(mktemp -d)
+  : > "$FAKE_TAILSCALE_DIR/other"
+  piped_install 300 /tmp/ts-on.log --tailscale "$@"
+  piped_install 300 /tmp/ts-off.log --no-tailscale "$@"
+  grep -q "Removed AgentRun from your tailnet" /tmp/ts-off.log || die "the entry was not removed"
+  [ ! -s "$FAKE_TAILSCALE_DIR/served" ] || die "still served: $(cat "$FAKE_TAILSCALE_DIR/served")"
+  [ -f "$FAKE_TAILSCALE_DIR/other" ] || die "the other entry went"
+  grep -q "reset" "$FAKE_TAILSCALE_DIR/calls" && die "tailscale serve reset was run"
+  [ ! -e "$HOME/.agentrun/tailscale.json" ] || die "the record of the entry is still there"
+  "$agentrun" stop
+  down 30
+}
+
 step "no Node.js on PATH ($PATH)"
 if command -v node; then die "node is on PATH"; fi
 uname -a
@@ -141,6 +229,8 @@ if [ "$mode" = container ]; then
   [ ! -e "$pidfile" ] || die "the pid file is still there"
   step "agentrun stop again: none running, exit 3"
   expect_exit 3 "$agentrun" stop
+
+  tailnet_walk "$@"
   echo "walk: container ok"
   exit 0
 fi

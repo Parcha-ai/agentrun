@@ -176,7 +176,7 @@ export const CLAUDE_SDK = "@anthropic-ai/claude-agent-sdk";
 /** The MCP library the SDK serves a session's tools with: its peer, installed beside it. */
 const MCP_PARTS = ["@modelcontextprotocol/sdk/server/mcp.js", "@modelcontextprotocol/sdk/types.js"] as const;
 /** The CLI an install in `dir` holds for `platform` (the SDK's platform package's). */
-const claudeCliIn = (dir: string, platform: string): string | undefined => fileInPackage(dir, `@anthropic-ai/claude-agent-sdk-${platform}`, process.platform === "win32" ? "claude.exe" : "claude");
+export const claudeCliIn = (dir: string, platform: string): string | undefined => fileInPackage(dir, `@anthropic-ai/claude-agent-sdk-${platform}`, process.platform === "win32" ? "claude.exe" : "claude");
 
 /** The SDK as installed in `dir`, checked: its package.json names it at `version`, and its entry resolves inside it. */
 export function installedSdk(dir: string, version: string): { entry: string } | undefined {

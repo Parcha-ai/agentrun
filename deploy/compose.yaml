@@ -25,6 +25,7 @@ x-agentrun-env: &agentrun-env
   AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  PARTICLE_API_KEY: ${PARTICLE_API_KEY:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
 
 # A runner: the same image with `runner --data /data --name <name>` as its command. It never sets the store up, so it

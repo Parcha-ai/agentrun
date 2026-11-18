@@ -52,12 +52,14 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, notesReadOf, runLearningEnd, type RunLearning, shadowSpendOf, usedOnly, withNotes } from "./store-reads/learning.js";
+import { laidOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
+import { LOGIN_HARNESS } from "./claude-login.js";
 import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-commands.js";
 import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
@@ -192,7 +194,7 @@ interface StoreRun {
   readonly rows: TimelineEvent[];
   readonly version: number;
   readonly harness: string;
-  readonly learningEnd: RunLearning | null;
+  readonly learningEnd: Learning | null;
   readonly view: RunView;
   /** The run's error text is withheld while this server can't read the sign-in it was handed. */
   readonly unshown: boolean;
@@ -268,11 +270,11 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd };
   // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
   // currentLearning); its record stays as the merge wrote it.
-  return { ...run, learningEnd: currentLearning(run.shownEnd as Learning, await deps.statuses(run.row.agent)) as RunLearning };
+  return { ...run, learningEnd: currentLearning(run.shownEnd, await deps.statuses(run.row.agent)) };
 }
 
 /** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
-async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: RunLearning | null }) | undefined> {
+async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
   const context = BACKGROUND_CONTEXT;
   const row = await readRun(store, runId, context);
   if (!row) return undefined;
@@ -328,14 +330,11 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const nativeSession = records.entries.findLast(e=>e.kind === "agentrun.native.session")?.data as {session_id:string}|undefined;
   const native = launch?.native ? {runtime:launch.native.runtime,project:launch.native.project,selector:launch.native.selector,machine_id:launch.native.machine_id,fingerprint:nativeConfiguration?.fingerprint ?? launch.native.fingerprint,session_id:nativeSession?.session_id??null,model:nativeEvents.at(-1)?.model??launch.native.model,learning_revision:launch.learning?.seed??null,usage:{task:nativeTaskUsage,reflection:nativeEvents.filter(e=>e.phase==="reflection").map(e=>e.usage)},model_requests:null} : undefined;
   const skip = reflectRange ? (id: number) => reflects(reflectRange, id) : undefined;
-  // The run's learning end with the notes its start gave it and those its job read (its own reads, keyed on the given, read
-  // from its rows uncut: a note whose name holds a secret is cut where it is shown, after it is matched). Before its end, a
-  // run that learns is seeded, then looking back once its end-of-run turn starts (main's seeded and reflecting).
+  // The run's learning end. Before its end, a run that learns is seeded, then looking back once its end-of-run turn starts
+  // (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
-  const read = started?.given.length ? notesReadOf(started.given, reflectRange, await runTimeline(store, runId, context, { settled: terminal })) : [];
   const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, laidOf(records.entries), reflectRange, iso(runRow.startedAt)) : null;
-  const sofar = ended ?? under;
-  const shownEnd = sofar && withNotes(sofar, started, read);
+  const shownEnd = ended ?? under;
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = live && turns.open > 0;
@@ -442,24 +441,16 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
- *  person's words cut of the host's secrets now, and, for an ended run, the notes it read. */
-function learningViewOf(learningEnd: RunLearning | null, shown: Shown, settled: boolean): unknown {
+ *  person's words cut of the host's secrets now. */
+function learningViewOf(learningEnd: Learning | null, shown: Shown): unknown {
   if (!learningEnd) return null;
-  return learningView(learningEnd as Learning, shown, settled);
+  return learningView(learningEnd, shown);
 }
 
-/** A run's learning before its end: its seed's notes and the learned skills/workflows its claims actually laid,
- *  until its end-of-run turn starts; then looking back. Merely offered skills are not counted as supplied. */
-function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<typeof laidOf>, reflect: Reflect | undefined, at: string): RunLearning {
-  return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0, laid.skills.length, laid.workflows.length), at };
-}
-
-/** A view's cost with its audit shadow run's (store-reads/learning.ts shadowSpendOf: unknown while it is queued or
- *  running, 0 when none was started) added to `usd` (unknown once either is). */
-function withShadowCost(cost: Record<string, unknown>, shadow: number | null): Record<string, unknown> {
-  if (shadow === 0) return cost;
-  const usd = typeof cost.usd === "number" && shadow !== null ? Math.round((cost.usd + shadow) * 1e6) / 1e6 : null;
-  return { ...cost, usd };
+/** A run's learning before its end: the corrections its # Learned section holds and the learned workflows its claims
+ *  laid, until its end-of-run turn starts; then looking back. */
+function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<typeof laidOf>, reflect: Reflect | undefined, at: string): Learning {
+  return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(correctionCount(started.section), laid.workflows.length), at };
 }
 
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
@@ -493,15 +484,17 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const usd = words.usd;
   const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
   const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
-  // A request billed to a ChatGPT plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
-  // $0, so it is in no unpriced count; what it used on the plan is said beside the figure.
+  // A request billed to a person's plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
+  // $0, so it is in no unpriced count; what it used on the plan is said beside the figure, and which plan: a run on the
+  // login's harness was on Claude Code's login (claude-login.ts), any other on the ChatGPT sign-in.
   const plan = run.plan;
+  const on = run.harness === LOGIN_HARNESS ? "claude_code" : "chatgpt";
   // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
   // decision of its own), that it is free.
   const soFar = counted ?? (imported || decisions?.requests ? undefined : freeOf(run.rows, usd));
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
-  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens } } : {}) };
+  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}) };
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
@@ -596,7 +589,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     error,
     review,
     pending,
-    cost: withShadowCost(costOfView(run), (await shadowSpendOf(store, runId)).usd),
+    // Its own spend: an audit's shadow run of it is learning (GET /runs/{id}'s cost.learning_usd), never its cost.usd.
+    cost: costOfView(run),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
@@ -608,7 +602,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     // The caller's labels, as given at the start ({} when none): its own strings, never cut.
     labels: runRow.labels,
     // Cut by the run's one cut (the pointers it was handed among them), and none for a withheld run, as its words.
-    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values), settled),
+    learning: unshown ? null : learningViewOf(run.learningEnd, secretsShown(values)),
     // Its screen recordings (computer.record), from the files on this machine, where its read asks for them; none for a
     // withheld run, whose files are refused. A run that left running with no end stamped (parked) ends now, each read: only
     // a file's trailer finishes it there.

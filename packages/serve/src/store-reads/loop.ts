@@ -18,7 +18,6 @@ export type LoopCompile = {
   round: number;
   at: string;
   workflow: string | null;
-  from_notes: string[];
   attempts: { ok: boolean; errors: string[] }[];
   digest: string | null;
   promoted: boolean | null;
@@ -44,7 +43,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
       const row = (kept.proposal ?? null) as { compiled?: unknown; draft_errors?: unknown } | null;
       if (!row) continue;
       const errors = texts(row.draft_errors);
-      const record = row.compiled as { workflow?: unknown; from_notes?: unknown; attempts?: unknown; digest?: unknown } | undefined;
+      const record = row.compiled as { workflow?: unknown; attempts?: unknown; digest?: unknown } | undefined;
       const named = record && typeof record === "object" && typeof record.workflow === "string" ? record : undefined;
       if (!named && !errors.length) continue;
       const attempts = Array.isArray(named?.attempts) ? named.attempts.filter((one) => one && typeof one === "object" && typeof (one as { ok?: unknown }).ok === "boolean").map((one) => ({ ok: (one as { ok: boolean }).ok, errors: texts((one as { errors?: unknown }).errors) })) : [];
@@ -54,7 +53,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
       const own = named && kept16 ? promotionOf(promotions, named.workflow as string, kept16) : undefined;
       const unchecked = own?.decided === "hold" && own.check?.stopped && own.check.n === 0 ? [own.reason] : [];
       compiles.push({
-        createdAt: kept.createdAt, run_id: run.id, round: kept.round, at: new Date(kept.createdAt).toISOString(), workflow: named ? (named.workflow as string) : null, from_notes: texts(named?.from_notes), attempts,
+        createdAt: kept.createdAt, run_id: run.id, round: kept.round, at: new Date(kept.createdAt).toISOString(), workflow: named ? (named.workflow as string) : null, attempts,
         digest: kept16, promoted: named && kept16 ? (promotedOf(promotions, named.workflow as string, kept16) ?? null) : null, draft_errors: [...errors, ...unchecked],
       });
     }

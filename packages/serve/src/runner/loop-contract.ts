@@ -2,6 +2,7 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
+import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 import type { Redact } from "./redact.js";
@@ -15,6 +16,11 @@ export type { AlsoRow, Claim, Command, Journal };
 export const cutAtLimit = (tokens?: number): string =>
   `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
 
+/** Why a run ends failed when the answer it would end on was cut at the output its cap limited it to (a CLI's turn_end
+ *  capCut): the cap stopped it, not the model, so the words name the cap and the least cap that lets it finish. */
+export const cutByCap = (cut: { capUsd: number; raiseToUsd: number }, tokens?: number): string =>
+  `the run's ${money(cut.capUsd)} cap stopped the model${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` at ${tokens} tokens` : ""} before it finished its answer: raise the cap to at least $${cut.raiseToUsd.toFixed(2)} to let it finish`;
+
 /** What the step keeps with its end-of-run turn as the turn is first asked (EndOfRunTurn ask's `keep`): written with the
  *  turn's prompt, durable before the turn's first request leaves. */
 export type EndOfRunKept = Readonly<Record<string, string | number | boolean | null>>;
@@ -25,9 +31,8 @@ export type EndOfRunAnswer = ({ readonly ended: true; readonly answer: string } 
 
 /**
  * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
- * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
- * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
- * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * loop writes the run's end. `ask` sends one more turn through the run's own session (the compile turn's attempts),
+ * its origin `reflect`, aborted at `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
  * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
  * id is one per run, so its model is asked once).
  */

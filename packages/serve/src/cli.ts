@@ -28,7 +28,7 @@ import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.j
 // command, the server and the runner alike.
 surviveClosedPipes();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner] [--harness-module MODULE ...]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose [--data DIR]
@@ -63,11 +63,6 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     resumes at the next start
   --learning on|off whether runs learn (default on, or AGENTRUN_SERVE_LEARNING): on, a run of an agent whose definition
                     says learning: true starts from what that agent learned and adds to it; off, no run does
-  --learning-budget BYTES how much of what an agent learned its run's instructions hold (default
-                    AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the index and the
-                    notes changed last, whole, while they fit
-  --grade-model MODEL the model that grades what a run proposes to learn (default AGENTRUN_SERVE_GRADE_MODEL, else the
-                    strong tier, AGENT_MODEL_STRONG, else each run's own model), named as the strong tier takes one
   --harness-module MODULE
                     a harness module to add harnesses from (repeatable; default AGENTRUN_SERVE_HARNESS_MODULES, comma-
                     separated): a path, or a package installed with npm install --prefix DIR/harnesses PACKAGE, whose
@@ -331,8 +326,6 @@ try {
       documents: { type: "string" },
       "allow-code-nodes": { type: "boolean", default: false },
       learning: { type: "string" },
-      "grade-model": { type: "string" },
-      "learning-budget": { type: "string" },
       "no-runner": { type: "boolean", default: false },
       "harness-module": { type: "string", multiple: true, default: [] },
       help: { type: "boolean", short: "h", default: false },
@@ -369,11 +362,6 @@ if (values["faux-browser"] && !values.faux) {
 }
 if (values["faux-github"] && !values.faux) {
   console.error(`--faux-github goes with --faux\n\n${USAGE}`);
-  process.exit(2);
-}
-const budget = values["learning-budget"];
-if (budget !== undefined && !/^\d+$/.test(budget)) {
-  console.error(`--learning-budget takes a whole number of bytes\n\n${USAGE}`);
   process.exit(2);
 }
 const data = values.data ?? defaultData();
@@ -438,7 +426,7 @@ try {
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
     ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
-    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), ...(values["grade-model"] ? { gradeModel: values["grade-model"] } : {}), ...(budget !== undefined ? { learningBudget: Number(budget) } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),

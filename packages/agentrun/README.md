@@ -37,10 +37,34 @@ first stops the AgentRun it started in the background itself, whatever version t
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. On Linux, a user's
+`agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. For a local model, such
+as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
+AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
+service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. `--env`
+takes those four names alone: model keys go in the console, never in a service file. On Linux, a user's
 services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
 when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
 `~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.
+
+On a machine you keep on (a Mac mini, a home server, a VPS), `--tailscale` also puts AgentRun on your own
+[Tailscale](https://tailscale.com) network, at `https://<machine>.<your tailnet's DNS name>/`, which only your devices
+on that network open:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale
+```
+
+It runs `tailscale serve --bg --https=443` to AgentRun's port, 7340, where AgentRun keeps listening on loopback only,
+and prints the address from `tailscale status --json`. The server is told that address (`AGENTRUN_PUBLIC_URL`), so its
+first visit asks for the setup code in `~/.agentrun/logs/agentrun.log`. It never uses Funnel, which would put the
+address on the public internet: where Funnel is already on for that address, or the address serves something else, it
+changes nothing and says so. It never installs Tailscale, logs in or runs sudo. With Tailscale missing or logged out,
+it starts AgentRun on this machine and prints the steps and the command to run again. On Linux, where only root or
+Tailscale's operator may change what it serves, it prints the one `sudo tailscale set --operator=$USER` line.
+`agentrun service install --tailscale` does the same for an installed service, `--no-tailscale` takes it off, and
+`agentrun service uninstall` removes the serve entry it added and no other. Tailscale's Personal plan is free: up to 6
+users, unlimited user devices ([pricing](https://tailscale.com/pricing)). The https address needs MagicDNS and HTTPS
+certificates turned on in your tailnet's [DNS settings](https://login.tailscale.com/admin/dns).
 
 The server binds its port first and says so; this command then names the address on stderr at once, and prints its line
 on stdout once the server is ready, which on a cold, slow disk can take minutes. A start that fails says why on stderr:
@@ -66,10 +90,10 @@ this app uses your ChatGPT plan. Manage usage in your ChatGPT settings. The sign
 agents on this server with it.
 
 Or add a model key. With no `AGENT_MODEL`, the server runs a current model of the first provider it has a key for,
-Anthropic, then OpenAI, then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your
-environment, or a key saved in the console's Settings → Model keys, which counts from the save on. Signed in with
-ChatGPT, pi and Codex run on the plan's model by default, key or not, unless `AGENT_MODEL` names another. Other
-commands are the server's:
+Anthropic, then OpenAI, then Particle (pi only), then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`PARTICLE_API_KEY` or `OPENROUTER_API_KEY` in your environment, or a key saved in the console's Settings → Model
+keys, which counts from the save on. Signed in with ChatGPT, pi and Codex run on the plan's model by default, key or
+not, unless `AGENT_MODEL` names another. Other commands are the server's:
 `npx @parcha/agentrun import` brings in your local Claude Code, Codex and pi sessions, and
 `npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
 its data and the port it takes.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentrun import AgentRun, AgentRunRefused, AgentRunTimeout, Run, StreamedResponse, Tagged, TimelinePage
+from agentrun import AgentRun, AgentRunRefused, AgentRunTimeout, PutLearningCorrectionsResponse, Run, StreamedResponse, Tagged, TimelinePage
 
 
 def consumer() -> None:
@@ -25,7 +25,8 @@ def consumer() -> None:
     with client.runs.read_file(run["run_id"], "notes.md", stream=True) as response:
         streamed: StreamedResponse = response
         print(streamed.read(10))
-    note: Tagged[str] = client.learning.write("notes", "policies.md", "# Policies\n", if_none_match="*", body_type="text/markdown")
+    read = client.learning.corrections("notes")
+    corrections: Tagged[PutLearningCorrectionsResponse] = client.learning.write_corrections("notes", {"text": read.body["text"] + "- Look in policies/ first.\n"}, if_match=read.body["etag"])
     client.files.upload("f1", b"\x89PNG", body_type="image/png")
     try:
         client.agents.get("notes")
@@ -33,4 +34,5 @@ def consumer() -> None:
         print(error.status, error.code, (error.error or {}).get("message"))
     except AgentRunTimeout as error:
         print(error.run["status"] if error.run else None)
-    print(first, data, note.etag)
+    cap: int = corrections.body["cap_bytes"]
+    print(first, data, corrections.etag, cap)

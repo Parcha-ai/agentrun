@@ -42,8 +42,8 @@ test("a person grades an ended run; the agent's promotions read empty until a le
 
 // The console's Grade control reads a run's grade back from GET /runs/{id}/learning (`graded`): absent before one, then
 // the newest, a later grade replacing it, in the PUT's answer's shape without `expected`. A wrong grade with words on a
-// run the agent finished opens a look-back, and the read keeps which (`feedback`), so a page read again still says it,
-// and how that round stands (`feedback_status`).
+// run the agent finished opens a correction round, and the read keeps which (`feedback`), so a page read again still says
+// it, and how that round stands (`feedback_status`).
 test("a run's learning read says its grade and the round it opened: none before one, then the newest, never its expected", async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -65,12 +65,12 @@ test("a run's learning read says its grade and the round it opened: none before 
   meets(read);
 
   const wrong = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the answer is 42, said as a number." });
-  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "look_back"], JSON.stringify(wrong.body));
+  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "correction"], JSON.stringify(wrong.body));
   await ended(api, run);
   const again = (await api("GET", `/runs/${run}/learning`)).body;
   assert.deepEqual(again.graded, { ...wrong.body, feedback_status: "ended" }, "the newer grade replaces the older, its round read ended");
-  assert.equal(again.graded.feedback, "look_back", "after the round ended, the read still says the grade opened a look-back");
-  assert.ok(again.learned?.some((note) => note.file === "reviewed.md"), `the look-back kept the reviewer's words: ${JSON.stringify(again)}`);
+  assert.equal(again.graded.feedback, "correction", "after the round ended, the read still says the grade opened a correction round");
+  assert.deepEqual([again.state, again.corrections], ["merged", 1], `the round kept the reviewer's words as a correction: ${JSON.stringify(again)}`);
   meets(again);
 });
 
@@ -108,8 +108,9 @@ test("the promotions list answers a hold, a promote on its dry run and a replayi
   assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));
   assert.deepEqual(read.body.promotions.map((one) => one.decided), ["promote", "hold", "replaying"]);
   assert.deepEqual(read.body.promotions[1].check, held.check);
-  // Beside what serves, its state, its newest decided check's numbers and its audit line (#3061).
-  assert.deepEqual(read.body.serving, [{ workflow: "answer", digest: "d0", replaying: "d2", state: "checking", check: { n: 6, agreed: 0, alone: 0, attempt: 1 }, audit: { window: 10, disagree: 3, rows: 0, disagreed: 0 }, audits_off: null, not_auditable: 0 }]);
+  // Beside what serves, its state, its newest decided check's numbers and its audit line (#3061), and the champion still
+  // serving while d2 is checked: its own check, its nodes null (no learning commit holds its text here).
+  assert.deepEqual(read.body.serving, [{ workflow: "answer", digest: "d0", replaying: "d2", state: "checking", check: { n: 6, agreed: 0, alone: 0, attempt: 1 }, audit: { window: 10, disagree: 3, rows: 0, disagreed: 0 }, audits_off: null, not_auditable: 0, champion: { digest: "d0", commit: null, nodes: null, check: dry.check } }]);
   // The schema closes a record: a field it does not name is refused.
   const extra = structuredClone(read.body);
   extra.promotions[0].source = "replay";

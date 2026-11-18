@@ -16,6 +16,7 @@ import { PLAN_HARNESSES } from "./harness.js";
 export const PICKABLE: readonly { vendor: string; ids: readonly string[] }[] = Object.freeze([
   { vendor: "anthropic", ids: Object.freeze(["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2"]) },
   { vendor: "openai", ids: Object.freeze(["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"]) },
+  { vendor: "particle", ids: Object.freeze(["particle-1"]) },
 ]);
 
 /** The vendors whose models `harness` runs: pi any; an adapter harness, its wire's vendor. */
@@ -28,7 +29,7 @@ const vendorsOf = (harness: string): readonly string[] => {
  *  (`openrouter/vendor/id`, Anthropic's id in OpenRouter's dotted name) when OpenRouter's key is the only one here. */
 export function formOf(env: NodeJS.ProcessEnv, vendor: string, id: string): string {
   const row = MODEL_KEYS.find((r) => r.id === vendor);
-  if (row && !env[row.field] && env.OPENROUTER_API_KEY) return `openrouter/${vendor}/${vendor === "anthropic" ? openRouterName(id) : id}`;
+  if (row && !env[row.field] && env.OPENROUTER_API_KEY) return `openrouter/${vendor === "particle" ? "particle-ai" : vendor}/${vendor === "anthropic" ? openRouterName(id) : id}`;
   return `${vendor}/${id}`;
 }
 

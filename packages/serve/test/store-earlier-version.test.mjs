@@ -2,7 +2,7 @@
 // found, with two choices: keep the directory with the earlier version, or start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
 // not made yet, or one holding this version's store) opens.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,13 +63,13 @@ const SHAPES = [
   ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
-test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, the kept idempotency answers and the learning usage ledger this version still keeps beside the store, and an earlier build's webhook config and outbox, which nothing reads", async (t) => {
+test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, the kept idempotency answers, and an earlier build's webhook config and outbox and learning usage ledger, which nothing reads", async (t) => {
   const dir = dataDir(t);
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   await store.close();
   // This version writes these beside its store, in the same format an earlier version did, so a directory holding them is
-  // this version's own, not an earlier version's: it opens. The webhook's two files are an earlier build's, left unread
-  // (the webhook is in the store now): they refuse nothing.
+  // this version's own, not an earlier version's: it opens. The webhook's two files and the learning usage ledger are an
+  // earlier build's, left unread (the webhook is in the store now; learning's spend is the run's own): they refuse nothing.
   for (const name of [".token", ".server.json", "box-image.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"]) file(join(dir, name), "{}");
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
@@ -93,6 +93,21 @@ for (const [what, make, named] of SHAPES) {
     assert.deepEqual(readdirSync(dir, { recursive: true }).sort(), before, "nothing made, moved or removed");
   });
 }
+
+test("a disk mounted as the data directory opens though its lost+found is root's and closed, and an earlier version's file beside it is still found", async (t) => {
+  const dir = dataDir(t);
+  const lost = join(dir, "lost+found");
+  mkdirSync(lost);
+  chmodSync(lost, 0o000);
+  try {
+    const store = await openSqliteStore({ dataDir: dir, role: "server" });
+    await store.close();
+    file(join(dir, "triggers.json"));
+    await assert.rejects(openSqliteStore({ dataDir: dir, role: "server" }), (error) => error.name === "StoreFromEarlierVersion" && error.found.includes("triggers.json"));
+  } finally {
+    chmodSync(lost, 0o700);
+  }
+});
 
 test("an empty data directory, one not made yet, and one holding this version's store all open", async (t) => {
   const empty = dataDir(t);

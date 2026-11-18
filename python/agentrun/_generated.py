@@ -38,12 +38,6 @@ __all__ = [
     "CallRunComputerResponseObject1",
     "CallRunComputerResponseObject2",
     "CallRunComputerResponseObject2Error",
-    "CancelLearningBatchResponse",
-    "CancelLearningBatchResponseLessons",
-    "CancelLearningBatchResponsePaths",
-    "CancelLearningBatchResponseRevisionsItem",
-    "CancelLearningBatchResponseRowsItem",
-    "CancelLearningBatchResponseRowsItemLearned",
     "CancelResult",
     "CancelRunResponse",
     "Capabilities",
@@ -91,13 +85,6 @@ __all__ = [
     "CreateFileResponse",
     "CreateInlineRunBody",
     "CreateInlineRunResponse",
-    "CreateLearningBatchBody",
-    "CreateLearningBatchResponse",
-    "CreateLearningBatchResponseLessons",
-    "CreateLearningBatchResponsePaths",
-    "CreateLearningBatchResponseRevisionsItem",
-    "CreateLearningBatchResponseRowsItem",
-    "CreateLearningBatchResponseRowsItemLearned",
     "CreatePairingResponse",
     "CreateRunBody",
     "CreateRunResponse",
@@ -312,14 +299,6 @@ __all__ = [
     "GetAgentLearningResponseLogItemsItem",
     "GetAgentLearningResponseLogItemsItemBy1",
     "GetAgentLearningResponseLogItemsItemBy2",
-    "GetAgentLearningResponseNotes",
-    "GetAgentLearningResponseNotesItemsItem",
-    "GetAgentLearningResponseNotesItemsItemLastChange",
-    "GetAgentLearningResponseNotesItemsItemRetired",
-    "GetAgentLearningResponseNotesItemsItemRuns",
-    "GetAgentLearningResponseSkillsItem",
-    "GetAgentLearningResponseSkillsItemLastChange",
-    "GetAgentLearningResponseSkillsItemRetired",
     "GetAgentLearningResponseWorkflowsItem",
     "GetAgentLearningResponseWorkflowsItemLastChange",
     "GetAgentLearningResponseWorkflowsItemRetired",
@@ -340,6 +319,8 @@ __all__ = [
     "GetCalendarResponse",
     "GetCapabilitiesResponse",
     "GetChatGPTSignInResponse",
+    "GetClaudeLoginResponse",
+    "GetClaudeLoginResponseAccount",
     "GetEmailAccountResponse",
     "GetEmailAccountResponseImap",
     "GetEmailAccountResponseSmtp",
@@ -353,13 +334,15 @@ __all__ = [
     "GetLearnedWorkflowReplayResponse",
     "GetLearnedWorkflowReplayResponseOutcomes",
     "GetLearnedWorkflowReplayResponseScore",
-    "GetLearningBatchResponse",
-    "GetLearningBatchResponseLessons",
-    "GetLearningBatchResponsePaths",
-    "GetLearningBatchResponseRevisionsItem",
-    "GetLearningBatchResponseRowsItem",
-    "GetLearningBatchResponseRowsItemLearned",
+    "GetLearningCorrectionsResponse",
     "GetLearningCostResponse",
+    "GetLearningCostResponseBill",
+    "GetLearningCostResponseBillBaseline",
+    "GetLearningCostResponseBillBreakEven",
+    "GetLearningCostResponseBillHoldsItem",
+    "GetLearningCostResponseBillPointsItem",
+    "GetLearningCostResponseBillPromoted",
+    "GetLearningCostResponseBillRevisionsItem",
     "GetLearningCostResponseRunsItem",
     "GetLearningCostResponseSummary",
     "GetLearningCostResponseSummaryAfter",
@@ -408,23 +391,15 @@ __all__ = [
     "GetRunLearningResponseObject",
     "GetRunLearningResponseObjectCompiled",
     "GetRunLearningResponseObjectCompiledAttemptsItem",
-    "GetRunLearningResponseObjectCostUsd",
-    "GetRunLearningResponseObjectGivenItem",
     "GetRunLearningResponseObjectGraded",
-    "GetRunLearningResponseObjectLearnedItem",
-    "GetRunLearningResponseObjectPendingItem",
     "GetRunLearningResponseObjectProblemsItem",
-    "GetRunLearningResponseObjectReadItem",
-    "GetRunLearningResponseObjectSkillsItem",
-    "GetRunLearningResponseObjectTokens",
-    "GetRunLearningResponseObjectTokensGrade",
     "GetRunLearningResponseObjectUsed",
-    "GetRunLearningResponseObjectUsedSkillsItem",
     "GetRunLearningResponseObjectUsedWorkflowsItem",
-    "GetRunLearningResponseObjectVerdict",
-    "GetRunLearningResponseObjectVerdictItemsItem",
     "GetRunLearningResponseObjectWorkflowsItem",
     "GetRunResponse",
+    "GetRunTraceResponse",
+    "GetRunTraceResponseSpansItem",
+    "GetRunTraceResponseSpansItemTokens",
     "GetSdkRunResponse",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
@@ -567,23 +542,10 @@ __all__ = [
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy2",
     "ListLearningAuditsResponse",
     "ListLearningAuditsResponseAuditsItem",
-    "ListLearningBatchesResponse",
-    "ListLearningBatchesResponseBatchesItem",
-    "ListLearningBatchesResponseBatchesItemLessons",
-    "ListLearningBatchesResponseBatchesItemPaths",
-    "ListLearningBatchesResponseBatchesItemRevisionsItem",
-    "ListLearningEvalsResponse",
-    "ListLearningEvalsResponseEvalsItem",
-    "ListLearningEvalsResponseLatest",
     "ListLearningLogResponse",
     "ListLearningLogResponseItemsItem",
     "ListLearningLogResponseItemsItemBy1",
     "ListLearningLogResponseItemsItemBy2",
-    "ListLearningNotesResponse",
-    "ListLearningNotesResponseItemsItem",
-    "ListLearningNotesResponseItemsItemLastChange",
-    "ListLearningNotesResponseItemsItemRetired",
-    "ListLearningNotesResponseItemsItemRuns",
     "ListLearningPromotionsResponse",
     "ListLearningPromotionsResponsePromotionsItem",
     "ListLearningPromotionsResponsePromotionsItemAudit",
@@ -594,6 +556,13 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemChampion",
+    "ListLearningPromotionsResponseServingItemChampionCheck",
+    "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
+    "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
@@ -696,6 +665,8 @@ __all__ = [
     "PreviewMcpServerBodyObject2",
     "PreviewMcpServerResponse",
     "PreviewMcpServerResponseToolsItem",
+    "PutLearningCorrectionsBody",
+    "PutLearningCorrectionsResponse",
     "PutToolSettingsBody",
     "PutToolSettingsBodyAskPerson",
     "PutToolSettingsBodyBash",
@@ -740,8 +711,6 @@ __all__ = [
     "ReceiveHookComposioResponseObject2FiringsItem1",
     "ReceiveHookComposioResponseObject2FiringsItem1Error",
     "ReceiveHookComposioResponseObject2FiringsItem2",
-    "RecordLearningEvalBody",
-    "RecordLearningEvalResponse",
     "RedeliverWebhookResponse",
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
@@ -785,11 +754,6 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
-    "RunLearningGivenItem",
-    "RunLearningLearnedItem",
-    "RunLearningPendingItem",
-    "RunLearningReadItem",
-    "RunLearningSkillsItem",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -815,11 +779,6 @@ __all__ = [
     "RunSummary",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
-    "RunSummaryLearningGivenItem",
-    "RunSummaryLearningLearnedItem",
-    "RunSummaryLearningPendingItem",
-    "RunSummaryLearningReadItem",
-    "RunSummaryLearningSkillsItem",
     "RunSummaryLearningWorkflowsItem",
     "RunSummaryNative",
     "RunSummaryNativeSelector",
@@ -893,6 +852,8 @@ __all__ = [
     "SkillFiles",
     "Source",
     "StartChatGPTSignInResponse",
+    "StartClaudeLoginResponse",
+    "StartClaudeLoginResponseAccount",
     "StartMcpOAuthBody",
     "StartMcpOAuthResponse",
     "StartRunBody",
@@ -902,7 +863,6 @@ __all__ = [
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
-    "StartSdkRunResponseLearningSkillsItem",
     "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
@@ -938,6 +898,11 @@ __all__ = [
     "ToolKeysResource",
     "ToolSettingsResource",
     "TriggersResource",
+    "TurnOffClaudeLoginResponse",
+    "TurnOffClaudeLoginResponseAccount",
+    "TurnOnClaudeLoginBody",
+    "TurnOnClaudeLoginResponse",
+    "TurnOnClaudeLoginResponseAccount",
     "UnarchiveAgentResponse",
     "UnarchiveRunResponse",
     "UpdateDefinitionBody",
@@ -1032,7 +997,6 @@ __all__ = [
     "WebhookResource",
     "WorkflowsResource",
     "WriteHomeFileResponse",
-    "WriteLearningFileBody",
 ]
 
 
@@ -1118,7 +1082,7 @@ class Definition(_DefinitionRequired, total=False):
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"] | DefinitionLearning
+    learning: bool | DefinitionLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1166,8 +1130,7 @@ class DefinitionNativeConfigurationItem(TypedDict):
 
 class DefinitionNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1421,8 +1384,7 @@ class AgentNativeStatusConfigurationItem(TypedDict):
 
 class AgentNativeStatusCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1549,8 +1511,7 @@ class ConnectNativeResponseNativeConfigurationItem(TypedDict):
 
 class ConnectNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1598,7 +1559,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"] | DefinitionInputLearning
+    learning: bool | DefinitionInputLearning
     checkout: Literal["pull_request", "none"]
 
 
@@ -1643,8 +1604,7 @@ class DefinitionInputNativeConfigurationItem(TypedDict):
 
 class DefinitionInputNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1881,8 +1841,7 @@ class DisconnectNativeResponseNativeConfigurationItem(TypedDict):
 
 class DisconnectNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1937,8 +1896,7 @@ class DiscoverNativeResponseTargetsItemConfigurationItem(TypedDict):
 
 class DiscoverNativeResponseTargetsItemCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2029,8 +1987,7 @@ class GetAgentResponseNativeStatusConfigurationItem(TypedDict):
 
 class GetAgentResponseNativeStatusCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2127,7 +2084,6 @@ class GetLearningLoopResponseCompilesItem(TypedDict):
     round: int
     at: str
     workflow: str | None
-    from_notes: list[str]
     attempts: list[GetLearningLoopResponseCompilesItemAttemptsItem]
     digest: str | None
     promoted: bool | None
@@ -2181,8 +2137,7 @@ class GetNativeResponseNativeConfigurationItem(TypedDict):
 
 class GetNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2325,6 +2280,7 @@ class ListLearningPromotionsResponseServingItem(TypedDict):
     audit: ListLearningPromotionsResponseServingItemAudit | None
     audits_off: str | None
     not_auditable: int
+    champion: ListLearningPromotionsResponseServingItemChampion | None
 
 
 class ListLearningPromotionsResponseServingItemCheck(TypedDict):
@@ -2339,6 +2295,71 @@ class ListLearningPromotionsResponseServingItemAudit(TypedDict):
     disagree: int
     rows: int
     disagreed: int
+
+
+class ListLearningPromotionsResponseServingItemChampion(TypedDict):
+    digest: str
+    commit: str | None
+    nodes: list[ListLearningPromotionsResponseServingItemChampionNodesItem] | None
+    check: ListLearningPromotionsResponseServingItemChampionCheck | None
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItem(TypedDict):
+    path: str
+    kind: str
+    label: str
+    tier: Literal["fast", "agent"] | None
+    checks: list[ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem]
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem(TypedDict):
+    on: Literal["when", "until"]
+    predicate: dict[str, Any]
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    cost_usd: float | None
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    stopped: Literal[True]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -2397,12 +2418,15 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
+    learning_usd: float | None
+    all_in_usd: float | None
     plan: CostPlan
 
 
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+    on: Literal["chatgpt", "claude_code"]
 
 
 class RunSummarySdk(TypedDict):
@@ -2505,43 +2529,13 @@ class RunErrorDetails(TypedDict):
 
 
 class _RunSummaryLearningRequired(TypedDict):
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
     detail: str | None
 
 
 class RunSummaryLearning(_RunSummaryLearningRequired, total=False):
-    given: list[RunSummaryLearningGivenItem]
-    read: list[RunSummaryLearningReadItem]
-    learned: list[RunSummaryLearningLearnedItem]
-    skills: list[RunSummaryLearningSkillsItem]
     workflows: list[RunSummaryLearningWorkflowsItem]
-    pending: list[RunSummaryLearningPendingItem]
-
-
-class RunSummaryLearningGivenItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunSummaryLearningReadItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunSummaryLearningLearnedItem(TypedDict):
-    file: str
-    name: str
-    supersedes: list[str]
-
-
-class _RunSummaryLearningSkillsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class RunSummaryLearningSkillsItem(_RunSummaryLearningSkillsItemRequired, total=False):
-    pending: Literal[True]
 
 
 class _RunSummaryLearningWorkflowsItemRequired(TypedDict):
@@ -2551,11 +2545,6 @@ class _RunSummaryLearningWorkflowsItemRequired(TypedDict):
 
 class RunSummaryLearningWorkflowsItem(_RunSummaryLearningWorkflowsItemRequired, total=False):
     pending: Literal[True]
-
-
-class RunSummaryLearningPendingItem(TypedDict):
-    file: str
-    name: str
 
 
 class RunSummaryReview(TypedDict):
@@ -2683,8 +2672,7 @@ class VerifyNativeResponseNativeConfigurationItem(TypedDict):
 
 class VerifyNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2788,8 +2776,7 @@ class ImportRemoteTargetBodyTargetConfigurationItem(TypedDict):
 
 class ImportRemoteTargetBodyTargetCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2842,8 +2829,7 @@ class ImportRemoteTargetResponseNativeConfigurationItem(TypedDict):
 
 class ImportRemoteTargetResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -3057,296 +3043,10 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
     unreadable: Literal[True]
 
 
-class _GetLearningBatchResponseRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: GetLearningBatchResponsePaths
-    lessons: GetLearningBatchResponseLessons
-    revisions: list[GetLearningBatchResponseRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-    current: int | None
-    rows: list[GetLearningBatchResponseRowsItem]
-
-
-class GetLearningBatchResponse(_GetLearningBatchResponseRequired, total=False):
-    error: str
-
-
-class GetLearningBatchResponsePaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class GetLearningBatchResponseLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class GetLearningBatchResponseRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
-
-
-class _GetLearningBatchResponseRowsItemRequired(TypedDict):
-    n: int
-    state: Literal["pending", "running", "done", "failed"]
-    reference: str
-
-
-class GetLearningBatchResponseRowsItem(_GetLearningBatchResponseRowsItemRequired, total=False):
-    run_id: str
-    answer: str | None
-    right: bool
-    reviewed: bool
-    path: Literal["agent", "handed_back", "workflow"]
-    cost_usd: float | None
-    learning_usd: float | None
-    total_usd: float | None
-    learned: GetLearningBatchResponseRowsItemLearned
-    merged: str | None
-    error: str
-
-
-class GetLearningBatchResponseRowsItemLearned(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class _CancelLearningBatchResponseRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: CancelLearningBatchResponsePaths
-    lessons: CancelLearningBatchResponseLessons
-    revisions: list[CancelLearningBatchResponseRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-    current: int | None
-    rows: list[CancelLearningBatchResponseRowsItem]
-
-
-class CancelLearningBatchResponse(_CancelLearningBatchResponseRequired, total=False):
-    error: str
-
-
-class CancelLearningBatchResponsePaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class CancelLearningBatchResponseLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class CancelLearningBatchResponseRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
-
-
-class _CancelLearningBatchResponseRowsItemRequired(TypedDict):
-    n: int
-    state: Literal["pending", "running", "done", "failed"]
-    reference: str
-
-
-class CancelLearningBatchResponseRowsItem(_CancelLearningBatchResponseRowsItemRequired, total=False):
-    run_id: str
-    answer: str | None
-    right: bool
-    reviewed: bool
-    path: Literal["agent", "handed_back", "workflow"]
-    cost_usd: float | None
-    learning_usd: float | None
-    total_usd: float | None
-    learned: CancelLearningBatchResponseRowsItemLearned
-    merged: str | None
-    error: str
-
-
-class CancelLearningBatchResponseRowsItemLearned(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class _CreateLearningBatchBodyRequired(TypedDict):
-    inputs: list[str]
-    answer: str
-    rows: list[dict[str, str]]
-    max_cost_usd: float
-
-
-class CreateLearningBatchBody(_CreateLearningBatchBodyRequired, total=False):
-    answer_field: str
-    effort: str
-
-
-class _CreateLearningBatchResponseRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: CreateLearningBatchResponsePaths
-    lessons: CreateLearningBatchResponseLessons
-    revisions: list[CreateLearningBatchResponseRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-    current: int | None
-    rows: list[CreateLearningBatchResponseRowsItem]
-
-
-class CreateLearningBatchResponse(_CreateLearningBatchResponseRequired, total=False):
-    error: str
-
-
-class CreateLearningBatchResponsePaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class CreateLearningBatchResponseLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class CreateLearningBatchResponseRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
-
-
-class _CreateLearningBatchResponseRowsItemRequired(TypedDict):
-    n: int
-    state: Literal["pending", "running", "done", "failed"]
-    reference: str
-
-
-class CreateLearningBatchResponseRowsItem(_CreateLearningBatchResponseRowsItemRequired, total=False):
-    run_id: str
-    answer: str | None
-    right: bool
-    reviewed: bool
-    path: Literal["agent", "handed_back", "workflow"]
-    cost_usd: float | None
-    learning_usd: float | None
-    total_usd: float | None
-    learned: CreateLearningBatchResponseRowsItemLearned
-    merged: str | None
-    error: str
-
-
-class CreateLearningBatchResponseRowsItemLearned(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class ListLearningBatchesResponse(TypedDict):
-    batches: list[ListLearningBatchesResponseBatchesItem]
-
-
-class _ListLearningBatchesResponseBatchesItemRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: ListLearningBatchesResponseBatchesItemPaths
-    lessons: ListLearningBatchesResponseBatchesItemLessons
-    revisions: list[ListLearningBatchesResponseBatchesItemRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-
-
-class ListLearningBatchesResponseBatchesItem(_ListLearningBatchesResponseBatchesItemRequired, total=False):
-    error: str
-
-
-class ListLearningBatchesResponseBatchesItemPaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class ListLearningBatchesResponseBatchesItemLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class ListLearningBatchesResponseBatchesItemRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
+class GetLearningCorrectionsResponse(TypedDict):
+    text: str
+    etag: str
+    cap_bytes: Literal[2048]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -3357,6 +3057,7 @@ class GetLearningCostResponse(TypedDict):
     unknown_path_runs: int
     workflows: list[GetLearningCostResponseWorkflowsItem]
     summary: GetLearningCostResponseSummary
+    bill: GetLearningCostResponseBill
 
 
 class GetLearningCostResponseRunsItem(TypedDict):
@@ -3437,122 +3138,71 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     agree_min: float
 
 
-class ListLearningEvalsResponse(TypedDict):
-    agent: str
-    latest: ListLearningEvalsResponseLatest | None
-    evals: list[ListLearningEvalsResponseEvalsItem]
+class GetLearningCostResponseBill(TypedDict):
+    baseline: GetLearningCostResponseBillBaseline | None
+    promoted: GetLearningCostResponseBillPromoted | None
+    points: list[GetLearningCostResponseBillPointsItem]
+    break_even: GetLearningCostResponseBillBreakEven | None
+    gap_usd: float | None
+    withheld: int
+    booked_usd: float
+    revisions: list[GetLearningCostResponseBillRevisionsItem]
+    unattributed_usd: float | None
+    holds: list[GetLearningCostResponseBillHoldsItem]
 
 
-class ListLearningEvalsResponseLatest(TypedDict):
-    id: str
-    name: str
+class GetLearningCostResponseBillBaseline(TypedDict):
+    runs: int
+    mean_usd: float
+
+
+class GetLearningCostResponseBillPromoted(TypedDict):
     n: int
-    correct: int
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-    accuracy: float
-    ci: list[float]
-    recorded_at: str
+    run_id: str
+    at: str
 
 
-class ListLearningEvalsResponseEvalsItem(TypedDict):
-    id: str
-    name: str
+class GetLearningCostResponseBillPointsItem(TypedDict):
     n: int
-    correct: int
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-    accuracy: float
-    ci: list[float]
-    recorded_at: str
+    run_id: str
+    actual_usd: float
+    agent_usd: float | None
+
+
+class GetLearningCostResponseBillBreakEven(TypedDict):
+    n: int
+    run_id: str
+
+
+class GetLearningCostResponseBillRevisionsItem(TypedDict):
+    workflow: str
+    digest: str
+    compile_usd: float | None
+    check_usd: float | None
+    spend_usd: float | None
+    k: int
+    served: int
+    attributed_usd: float | None
+    unattributed_usd: float | None
+    state: Literal["checking", "serving", "stopped"]
+
+
+class GetLearningCostResponseBillHoldsItem(TypedDict):
+    n: int | None
+    at: str
+    workflow: str
+    by: Literal["audit", "check", "dsl"]
+    reason: str
 
 
 class GetAgentLearningResponse(TypedDict):
     agent: str
     main: str | None
-    index: str
-    notes: GetAgentLearningResponseNotes
-    skills: list[GetAgentLearningResponseSkillsItem]
+    corrections: str
     workflows: list[GetAgentLearningResponseWorkflowsItem]
     log: GetAgentLearningResponseLog
     counts: GetAgentLearningResponseCounts
     impact: GetAgentLearningResponseImpact | None
-
-
-class GetAgentLearningResponseNotes(TypedDict):
-    items: list[GetAgentLearningResponseNotesItemsItem]
-    total: int
-    next_cursor: str | None
-
-
-class _GetAgentLearningResponseNotesItemsItemRequired(TypedDict):
-    file: str
-    name: str
-    description: str
-    type: Literal["user", "feedback", "project", "reference"]
-    status: Literal["active", "superseded", "retired", "pending"]
-    origin: Literal["you", "run"]
-    superseded_by: str | None
-    text: str
-    etag: str
-    runs: GetAgentLearningResponseNotesItemsItemRuns
-
-
-class GetAgentLearningResponseNotesItemsItem(_GetAgentLearningResponseNotesItemsItemRequired, total=False):
-    retired: GetAgentLearningResponseNotesItemsItemRetired
-    last_change: GetAgentLearningResponseNotesItemsItemLastChange
-
-
-class GetAgentLearningResponseNotesItemsItemRuns(TypedDict):
-    given: int
-    read: int
-
-
-_GetAgentLearningResponseNotesItemsItemRetiredRequired = TypedDict("_GetAgentLearningResponseNotesItemsItemRetiredRequired", {"at": "str", "by": "Literal[\"person\", \"run\", \"host\"]"})
-_GetAgentLearningResponseNotesItemsItemRetiredOptional = TypedDict("_GetAgentLearningResponseNotesItemsItemRetiredOptional", {"from": "Literal[\"active\", \"pending\"]", "why": "Literal[\"unreadable\"]"}, total=False)
-
-
-class GetAgentLearningResponseNotesItemsItemRetired(_GetAgentLearningResponseNotesItemsItemRetiredRequired, _GetAgentLearningResponseNotesItemsItemRetiredOptional):
-    pass
-
-
-class GetAgentLearningResponseNotesItemsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
-    by: Literal["person", "run"]
-    at: str
-
-
-class _GetAgentLearningResponseSkillsItemRequired(TypedDict):
-    name: str
-    file: str
-    description: str
-    status: Literal["active", "pending", "retired"]
-    run: str | None
-    bytes: int
-    etag: str
-
-
-class GetAgentLearningResponseSkillsItem(_GetAgentLearningResponseSkillsItemRequired, total=False):
-    retired: GetAgentLearningResponseSkillsItemRetired
-    last_change: GetAgentLearningResponseSkillsItemLastChange
-
-
-_GetAgentLearningResponseSkillsItemRetiredRequired = TypedDict("_GetAgentLearningResponseSkillsItemRetiredRequired", {"at": "str", "by": "Literal[\"person\", \"run\", \"host\"]"})
-_GetAgentLearningResponseSkillsItemRetiredOptional = TypedDict("_GetAgentLearningResponseSkillsItemRetiredOptional", {"from": "Literal[\"active\", \"pending\"]", "why": "Literal[\"unreadable\"]"}, total=False)
-
-
-class GetAgentLearningResponseSkillsItemRetired(_GetAgentLearningResponseSkillsItemRetiredRequired, _GetAgentLearningResponseSkillsItemRetiredOptional):
-    pass
-
-
-class GetAgentLearningResponseSkillsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
-    by: Literal["person", "run"]
-    at: str
 
 
 class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
@@ -3580,7 +3230,7 @@ class GetAgentLearningResponseWorkflowsItemRetired(_GetAgentLearningResponseWork
 
 
 class GetAgentLearningResponseWorkflowsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
+    kind: Literal["approved", "edited", "created", "retired", "restored", "learned"]
     by: Literal["person", "run"]
     at: str
 
@@ -3664,77 +3314,7 @@ class ListLearningLogResponseItemsItemBy2(_ListLearningLogResponseItemsItemBy2Re
     via: str
 
 
-class ListLearningNotesResponse(TypedDict):
-    items: list[ListLearningNotesResponseItemsItem]
-    total: int
-    next_cursor: str | None
-
-
-class _ListLearningNotesResponseItemsItemRequired(TypedDict):
-    file: str
-    name: str
-    description: str
-    type: Literal["user", "feedback", "project", "reference"]
-    status: Literal["active", "superseded", "retired", "pending"]
-    origin: Literal["you", "run"]
-    superseded_by: str | None
-    text: str
-    etag: str
-    runs: ListLearningNotesResponseItemsItemRuns
-
-
-class ListLearningNotesResponseItemsItem(_ListLearningNotesResponseItemsItemRequired, total=False):
-    retired: ListLearningNotesResponseItemsItemRetired
-    last_change: ListLearningNotesResponseItemsItemLastChange
-
-
-class ListLearningNotesResponseItemsItemRuns(TypedDict):
-    given: int
-    read: int
-
-
-_ListLearningNotesResponseItemsItemRetiredRequired = TypedDict("_ListLearningNotesResponseItemsItemRetiredRequired", {"at": "str", "by": "Literal[\"person\", \"run\", \"host\"]"})
-_ListLearningNotesResponseItemsItemRetiredOptional = TypedDict("_ListLearningNotesResponseItemsItemRetiredOptional", {"from": "Literal[\"active\", \"pending\"]", "why": "Literal[\"unreadable\"]"}, total=False)
-
-
-class ListLearningNotesResponseItemsItemRetired(_ListLearningNotesResponseItemsItemRetiredRequired, _ListLearningNotesResponseItemsItemRetiredOptional):
-    pass
-
-
-class ListLearningNotesResponseItemsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
-    by: Literal["person", "run"]
-    at: str
-
-
 ReadLearningFileResponse: TypeAlias = "Any"
-
-
-class _RecordLearningEvalBodyRequired(TypedDict):
-    name: str
-    n: int
-    correct: int
-
-
-class RecordLearningEvalBody(_RecordLearningEvalBodyRequired, total=False):
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-
-
-class RecordLearningEvalResponse(TypedDict):
-    id: str
-    name: str
-    n: int
-    correct: int
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-    accuracy: float
-    ci: list[float]
-    recorded_at: str
 
 
 class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
@@ -3797,8 +3377,14 @@ class ListLearnedWorkflowRevisionsResponseRevisionsItemBy2(_ListLearnedWorkflowR
     via: str
 
 
-class WriteLearningFileBody(TypedDict):
+class PutLearningCorrectionsBody(TypedDict):
     text: str
+
+
+class PutLearningCorrectionsResponse(TypedDict):
+    text: str
+    etag: str
+    cap_bytes: Literal[2048]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
@@ -3879,6 +3465,25 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     authorize_url: str
     expires_at: str
     models: list[str]
+
+
+class _GetClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: GetClaudeLoginResponseAccount
+
+
+class GetClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
 
 
 class GetEmailAccountResponse(TypedDict):
@@ -4447,6 +4052,25 @@ class StartChatGPTSignInResponse(TypedDict):
     expires_at: str
 
 
+class _StartClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: StartClaudeLoginResponseAccount
+
+
+class StartClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
 class _StartMcpOAuthBodyRequired(TypedDict):
     url: str
 
@@ -4530,6 +4154,52 @@ class TestWorkspaceArchilResponseObject1(TypedDict):
 class TestWorkspaceArchilResponseObject2(TypedDict):
     ok: Literal[False]
     why: str
+
+
+class _TurnOffClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: TurnOffClaudeLoginResponseAccount
+
+
+class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class _TurnOnClaudeLoginBodyRequired(TypedDict):
+    only_me: Literal[True]
+
+
+class TurnOnClaudeLoginBody(_TurnOnClaudeLoginBodyRequired, total=False):
+    place: Literal["agentrun", "machine"]
+
+
+class _TurnOnClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: TurnOnClaudeLoginResponseAccount
+
+
+class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
 
 
 class DeleteMcpServerResponse(TypedDict):
@@ -5154,6 +4824,7 @@ class Run(_RunRequired, total=False):
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
     audit_of: str | None
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5268,44 +4939,14 @@ class RunComputerHeld(_RunComputerHeldRequired, total=False):
 
 
 class _RunLearningRequired(TypedDict):
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
     detail: str | None
     at: str
 
 
 class RunLearning(_RunLearningRequired, total=False):
-    given: list[RunLearningGivenItem]
-    read: list[RunLearningReadItem]
-    learned: list[RunLearningLearnedItem]
-    skills: list[RunLearningSkillsItem]
     workflows: list[RunLearningWorkflowsItem]
-    pending: list[RunLearningPendingItem]
-
-
-class RunLearningGivenItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningReadItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningLearnedItem(TypedDict):
-    file: str
-    name: str
-    supersedes: list[str]
-
-
-class _RunLearningSkillsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningSkillsItem(_RunLearningSkillsItemRequired, total=False):
-    pending: Literal[True]
 
 
 class _RunLearningWorkflowsItemRequired(TypedDict):
@@ -5315,11 +4956,6 @@ class _RunLearningWorkflowsItemRequired(TypedDict):
 
 class RunLearningWorkflowsItem(_RunLearningWorkflowsItemRequired, total=False):
     pending: Literal[True]
-
-
-class RunLearningPendingItem(TypedDict):
-    file: str
-    name: str
 
 
 class RunReview(TypedDict):
@@ -5439,7 +5075,7 @@ class _GradeRunResponseRequired(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
-    feedback: Literal["look_back"] | None
+    feedback: Literal["correction"] | None
 
 
 class GradeRunResponse(_GradeRunResponseRequired, total=False):
@@ -5557,52 +5193,31 @@ GetRunLearningResponse: TypeAlias = "GetRunLearningResponseObject | None"
 
 class _GetRunLearningResponseObjectRequired(TypedDict):
     run: str
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
     detail: str | None
     at: str
     seed: str | None
     merged: str | None
-    pending: list[GetRunLearningResponseObjectPendingItem]
-    verdict: GetRunLearningResponseObjectVerdict | None
+    workflows: list[GetRunLearningResponseObjectWorkflowsItem]
+    corrections: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]
-    cost_usd: GetRunLearningResponseObjectCostUsd
-    tokens: GetRunLearningResponseObjectTokens
     used: GetRunLearningResponseObjectUsed
 
 
 class GetRunLearningResponseObject(_GetRunLearningResponseObjectRequired, total=False):
-    given: list[GetRunLearningResponseObjectGivenItem]
-    read: list[GetRunLearningResponseObjectReadItem]
-    learned: list[GetRunLearningResponseObjectLearnedItem]
-    skills: list[GetRunLearningResponseObjectSkillsItem]
-    workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     graded: GetRunLearningResponseObjectGraded
 
 
-class GetRunLearningResponseObjectPendingItem(TypedDict):
+class _GetRunLearningResponseObjectWorkflowsItemRequired(TypedDict):
     file: str
     name: str
 
 
-class GetRunLearningResponseObjectVerdict(TypedDict):
-    merge: bool
-    reason: str
-    items: list[GetRunLearningResponseObjectVerdictItemsItem]
-
-
-class _GetRunLearningResponseObjectVerdictItemsItemRequired(TypedDict):
-    file: str
-    keep: bool
-    why: str
-
-
-class GetRunLearningResponseObjectVerdictItemsItem(_GetRunLearningResponseObjectVerdictItemsItemRequired, total=False):
+class GetRunLearningResponseObjectWorkflowsItem(_GetRunLearningResponseObjectWorkflowsItemRequired, total=False):
     pending: Literal[True]
-    origin: Literal["you", "run"]
-    question: str
 
 
 class _GetRunLearningResponseObjectProblemsItemRequired(TypedDict):
@@ -5616,7 +5231,6 @@ class GetRunLearningResponseObjectProblemsItem(_GetRunLearningResponseObjectProb
 
 class GetRunLearningResponseObjectCompiled(TypedDict):
     workflow: str
-    from_notes: list[str]
     attempts: list[GetRunLearningResponseObjectCompiledAttemptsItem]
     digest: str | None
     promoted: bool | None
@@ -5627,69 +5241,14 @@ class GetRunLearningResponseObjectCompiledAttemptsItem(TypedDict):
     errors: list[str]
 
 
-class GetRunLearningResponseObjectCostUsd(TypedDict):
-    grade: float | None
-
-
-class GetRunLearningResponseObjectTokens(TypedDict):
-    grade: GetRunLearningResponseObjectTokensGrade | None
-
-
-class GetRunLearningResponseObjectTokensGrade(TypedDict):
-    input: int
-    cache_read: int
-    cache_write: int
-    output: int
-
-
 class GetRunLearningResponseObjectUsed(TypedDict):
-    skills: list[GetRunLearningResponseObjectUsedSkillsItem]
     workflows: list[GetRunLearningResponseObjectUsedWorkflowsItem]
-
-
-class GetRunLearningResponseObjectUsedSkillsItem(TypedDict):
-    name: str
-    read: bool
 
 
 class GetRunLearningResponseObjectUsedWorkflowsItem(TypedDict):
     name: str
     calls: int
     failed: int
-
-
-class GetRunLearningResponseObjectGivenItem(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectReadItem(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectLearnedItem(TypedDict):
-    file: str
-    name: str
-    supersedes: list[str]
-
-
-class _GetRunLearningResponseObjectSkillsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectSkillsItem(_GetRunLearningResponseObjectSkillsItemRequired, total=False):
-    pending: Literal[True]
-
-
-class _GetRunLearningResponseObjectWorkflowsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectWorkflowsItem(_GetRunLearningResponseObjectWorkflowsItemRequired, total=False):
-    pending: Literal[True]
 
 
 class GetRunLearningResponseObjectGraded(TypedDict):
@@ -5700,7 +5259,7 @@ class GetRunLearningResponseObjectGraded(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
-    feedback: Literal["look_back"] | None
+    feedback: Literal["correction"] | None
     feedback_status: Literal["running", "ended", "not_run"] | None
 
 
@@ -5977,9 +5536,48 @@ class TimelineRowComputerCallsItemStepsItemOn(_TimelineRowComputerCallsItemSteps
 
 
 class TimelineRowLearning(TypedDict):
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"] | None
     detail: str | None
+
+
+class GetRunTraceResponse(TypedDict):
+    run_id: Id
+    model_requests: Literal["priced", "tokens_only", "not_recorded"]
+    spans: list[GetRunTraceResponseSpansItem]
+    dropped: int
+
+
+class GetRunTraceResponseSpansItem(TypedDict):
+    id: str
+    kind: Literal["model", "tool"]
+    parent_id: str | None
+    name: str
+    agent_label: str | None
+    started_at: Timestamp
+    ended_at: str | None
+    status: Literal["ok", "failed", "refused", "interrupted", "waiting", "running"]
+    stop_reason: str | None
+    tokens: GetRunTraceResponseSpansItemTokens | None
+    usd: float | None
+    decision: bool
+    charged: bool
+    not_metered: bool
+    tool_use_id: str | None
+    input_preview: str | None
+    result_preview: str | None
+    result_size_bytes: int | None
+
+
+class _GetRunTraceResponseSpansItemTokensRequired(TypedDict):
+    input: int
+    cache_read: int
+    cache_write: int
+    output: int
+
+
+class GetRunTraceResponseSpansItemTokens(_GetRunTraceResponseSpansItemTokensRequired, total=False):
+    reasoning: int
 
 
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
@@ -6088,13 +5686,7 @@ class StartSdkRunResponseLearning(TypedDict):
     enabled: bool
     revision: str | None
     context: str
-    skills: list[StartSdkRunResponseLearningSkillsItem]
     workflows: list[StartSdkRunResponseLearningWorkflowsItem]
-
-
-class StartSdkRunResponseLearningSkillsItem(TypedDict):
-    name: str
-    files: dict[str, str]
 
 
 class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
@@ -6323,7 +5915,6 @@ Usd: TypeAlias = "float"
 
 
 class _CapabilitiesLearningRequired(TypedDict):
-    grade_model: str | None
     pending: Literal[True]
     approve: bool
 
@@ -6420,7 +6011,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
     ask_needs: Literal["password"]
-    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
 
 CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
@@ -6931,7 +6522,7 @@ class ListToolKeysResponse(TypedDict):
 
 
 class ListToolKeysResponseKeysItem(TypedDict):
-    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
     kind: Literal["tool", "model"]
     label: str
     unlocks: list[str]
@@ -8975,6 +8566,7 @@ OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "connectNative": Operation(method="POST", path="/native/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createAgent": Operation(method="POST", path="/agents", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteAgent": Operation(method="DELETE", path="/agents/{agent_id}", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteAgentArchil": Operation(method="DELETE", path="/agents/{agent_id}/archil", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectNative": Operation(method="POST", path="/agents/{agent_id}/native/disconnect", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "discoverNative": Operation(method="POST", path="/native/discover", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9008,21 +8600,15 @@ OPERATIONS: dict[str, Operation] = {
     "listHomeFiles": Operation(method="GET", path="/agents/{agent_id}/home/files", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readHomeFile": Operation(method="GET", path="/agents/{agent_id}/home/files/{path}", path_params=("agent_id", "path"), multi_segment=("path",), query=("download",), headers=(), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
     "writeHomeFile": Operation(method="PUT", path="/agents/{agent_id}/home/files/{path}", path_params=("agent_id", "path"), multi_segment=("path",), query=(), headers=(), body=OperationBody(required=True, types=("application/octet-stream", "*/*")), answer="json", secret=False, public_fields=(), tagged=False),
-    "getLearningBatch": Operation(method="GET", path="/agents/{agent_id}/learning/batches/{batch_id}", path_params=("agent_id", "batch_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "cancelLearningBatch": Operation(method="POST", path="/agents/{agent_id}/learning/batches/{batch_id}/cancel", path_params=("agent_id", "batch_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "createLearningBatch": Operation(method="POST", path="/agents/{agent_id}/learning/batches", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "listLearningBatches": Operation(method="GET", path="/agents/{agent_id}/learning/batches", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getLearningCorrections": Operation(method="GET", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=True),
     "getLearningCost": Operation(method="GET", path="/agents/{agent_id}/learning/cost", path_params=("agent_id",), multi_segment=(), query=("limit", "format"), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=False),
-    "listLearningEvals": Operation(method="GET", path="/agents/{agent_id}/learning/evals", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getAgentLearning": Operation(method="GET", path="/agents/{agent_id}/learning", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningLog": Operation(method="GET", path="/agents/{agent_id}/learning/log", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listLearningNotes": Operation(method="GET", path="/agents/{agent_id}/learning/notes", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readLearningFile": Operation(method="GET", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=True),
-    "recordLearningEval": Operation(method="POST", path="/agents/{agent_id}/learning/evals", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getLearnedWorkflowReplay": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}", path_params=("agent_id", "name", "digest", "replay_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "retireLearningFile": Operation(method="POST", path="/agents/{agent_id}/learning/files/{file}/retire", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match",), body=None, answer="text", secret=False, public_fields=(), tagged=True),
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "writeLearningFile": Operation(method="PUT", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match", "If-None-Match"), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="text", secret=False, public_fields=(), tagged=True),
+    "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteCalendar": Operation(method="DELETE", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -9034,6 +8620,7 @@ OPERATIONS: dict[str, Operation] = {
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getCalendar": Operation(method="GET", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9053,11 +8640,14 @@ OPERATIONS: dict[str, Operation] = {
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testCalendar": Operation(method="POST", path="/settings/calendar/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "turnOffClaudeLogin": Operation(method="DELETE", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "turnOnClaudeLogin": Operation(method="PUT", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getMcpServer": Operation(method="GET", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServers": Operation(method="GET", path="/settings/mcp-servers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9092,6 +8682,7 @@ OPERATIONS: dict[str, Operation] = {
     "stopRun": Operation(method="POST", path="/runs/{run_id}/stop", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getRunTrace": Operation(method="GET", path="/runs/{run_id}/trace", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9144,6 +8735,10 @@ class AgentsResource(Group):
     def create(self, body: CreateAgentBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CreateAgentResponse:
         """Create an agent home (POST /agents)."""
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
+        """Delete an agent another system owns (DELETE /agents/{agent_id})."""
+        return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
         """Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil)."""
@@ -9297,65 +8892,41 @@ class HomeResource(Group):
 class LearningResource(Group):
     """client.learning: one method per operation."""
 
-    def batch(self, agent_id: str, batch_id: str, *, timeout: float | None = None) -> GetLearningBatchResponse:
-        """A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took (GET /agents/{agent_id}/learning/batches/{batch_id})."""
-        return self._call("getLearningBatch", (agent_id, batch_id), None, None, timeout=timeout)
-
-    def batch_cancel(self, agent_id: str, batch_id: str, *, timeout: float | None = None) -> CancelLearningBatchResponse:
-        """Cancel a running learning batch (POST /agents/{agent_id}/learning/batches/{batch_id}/cancel)."""
-        return self._call("cancelLearningBatch", (agent_id, batch_id), None, None, timeout=timeout)
-
-    def batch_start(self, agent_id: str, body: CreateLearningBatchBody, *, timeout: float | None = None) -> CreateLearningBatchResponse:
-        """Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each (POST /agents/{agent_id}/learning/batches)."""
-        return self._call("createLearningBatch", (agent_id,), body, None, timeout=timeout)
-
-    def batches(self, agent_id: str, *, timeout: float | None = None) -> ListLearningBatchesResponse:
-        """The agent's learning batches, latest first (GET /agents/{agent_id}/learning/batches)."""
-        return self._call("listLearningBatches", (agent_id,), None, None, timeout=timeout)
+    def corrections(self, agent_id: str, *, timeout: float | None = None) -> Tagged[GetLearningCorrectionsResponse]:
+        """The agent's corrections.md on main, with its ETag (GET /agents/{agent_id}/learning/corrections)."""
+        return self._call("getLearningCorrections", (agent_id,), None, None, timeout=timeout)
 
     def cost(self, agent_id: str, *, limit: int | None = None, format: Literal["json", "csv"] | None = None, timeout: float | None = None) -> GetLearningCostResponse | str:
         """The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost)."""
         return self._call("getLearningCost", (agent_id,), None, {"limit": limit, "format": format}, timeout=timeout)
 
-    def evals(self, agent_id: str, *, timeout: float | None = None) -> ListLearningEvalsResponse:
-        """The agent's eval records: the latest, and every one kept, newest first (GET /agents/{agent_id}/learning/evals)."""
-        return self._call("listLearningEvals", (agent_id,), None, None, timeout=timeout)
-
     def get(self, agent_id: str, *, timeout: float | None = None) -> GetAgentLearningResponse:
-        """What the agent has learned: its index, notes, log of changes and counts (GET /agents/{agent_id}/learning)."""
+        """What the agent has learned: its corrections, workflow drafts, log of changes and counts (GET /agents/{agent_id}/learning)."""
         return self._call("getAgentLearning", (agent_id,), None, None, timeout=timeout)
 
     def log(self, agent_id: str, *, cursor: str | None = None, limit: int | None = None, timeout: float | None = None) -> ListLearningLogResponse:
         """A page of the changes on the agent's main, newest first (GET /agents/{agent_id}/learning/log)."""
         return self._call("listLearningLog", (agent_id,), None, {"cursor": cursor, "limit": limit}, timeout=timeout)
 
-    def notes(self, agent_id: str, *, cursor: str | None = None, limit: int | None = None, status: Literal["active", "superseded", "retired", "pending"] | None = None, timeout: float | None = None) -> ListLearningNotesResponse:
-        """A page of the agent's notes (GET /agents/{agent_id}/learning/notes)."""
-        return self._call("listLearningNotes", (agent_id,), None, {"cursor": cursor, "limit": limit, "status": status}, timeout=timeout)
-
     def read(self, agent_id: str, file: str, *, timeout: float | None = None) -> Tagged[ReadLearningFileResponse | str]:
-        """One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag (GET /agents/{agent_id}/learning/files/{file})."""
+        """One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag (GET /agents/{agent_id}/learning/files/{file})."""
         return self._call("readLearningFile", (agent_id, file), None, None, timeout=timeout)
-
-    def record_eval(self, agent_id: str, body: RecordLearningEvalBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> RecordLearningEvalResponse:
-        """Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals)."""
-        return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
         """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
-        """Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""
+        """Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""
         return self._call("retireLearningFile", (agent_id, file), None, {"If-Match": if_match}, timeout=timeout)
 
     def workflow_revisions(self, agent_id: str, name: str, *, limit: int | None = None, timeout: float | None = None) -> ListLearnedWorkflowRevisionsResponse:
         """A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then (GET /agents/{agent_id}/learning/workflows/{name}/revisions)."""
         return self._call("listLearnedWorkflowRevisions", (agent_id, name), None, {"limit": limit}, timeout=timeout)
 
-    def write(self, agent_id: str, file: str, body: WriteLearningFileBody | RawBody, *, if_match: str | None = None, if_none_match: str | None = None, body_type: str | None = None, timeout: float | None = None) -> Tagged[str]:
-        """Edit a note (If-Match) or create one (If-None-Match: *) (PUT /agents/{agent_id}/learning/files/{file})."""
-        return self._call("writeLearningFile", (agent_id, file), body, {"If-Match": if_match, "If-None-Match": if_none_match}, timeout=timeout, body_type=body_type)
+    def write_corrections(self, agent_id: str, body: PutLearningCorrectionsBody | RawBody, *, if_match: str | None = None, body_type: str | None = None, timeout: float | None = None) -> Tagged[PutLearningCorrectionsResponse]:
+        """Replace the agent's corrections.md (If-Match) (PUT /agents/{agent_id}/learning/corrections)."""
+        return self._call("putLearningCorrections", (agent_id,), body, {"If-Match": if_match}, timeout=timeout, body_type=body_type)
 
 
 class LocalResource(Group):
@@ -9400,6 +8971,10 @@ class LocalResource(Group):
     def get_chat_gptsign_in(self, *, timeout: float | None = None) -> GetChatGPTSignInResponse:
         """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
         return self._call("getChatGPTSignIn", (), None, None, timeout=timeout)
+
+    def get_claude_login(self, *, timeout: float | None = None) -> GetClaudeLoginResponse:
+        """Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login)."""
+        return self._call("getClaudeLogin", (), None, None, timeout=timeout)
 
     def get_email_account(self, *, timeout: float | None = None) -> GetEmailAccountResponse:
         """This server's email account: its address, servers and who signs in, never its password (GET /settings/email)."""
@@ -9469,6 +9044,10 @@ class LocalResource(Group):
         """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""
         return self._call("startChatGPTSignIn", (), None, None, timeout=timeout)
 
+    def start_claude_login(self, *, timeout: float | None = None) -> StartClaudeLoginResponse:
+        """Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login)."""
+        return self._call("startClaudeLogin", (), None, None, timeout=timeout)
+
     def test_calendar(self, body: TestCalendarBody | None = None, *, timeout: float | None = None) -> TestCalendarResponse:
         """Read the calendar and say what it holds (POST /settings/calendar/test)."""
         return self._call("testCalendar", (), body, None, timeout=timeout)
@@ -9484,6 +9063,14 @@ class LocalResource(Group):
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""
         return self._call("testWorkspaceArchil", (), None, None, timeout=timeout)
+
+    def turn_off_claude_login(self, *, timeout: float | None = None) -> TurnOffClaudeLoginResponse:
+        """Turn off Claude Code's login on this machine (DELETE /settings/claude-login)."""
+        return self._call("turnOffClaudeLogin", (), None, None, timeout=timeout)
+
+    def turn_on_claude_login(self, body: TurnOnClaudeLoginBody, *, timeout: float | None = None) -> TurnOnClaudeLoginResponse:
+        """Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login)."""
+        return self._call("turnOnClaudeLogin", (), body, None, timeout=timeout)
 
 
 class McpServersResource(Group):
@@ -9640,6 +9227,10 @@ class RunsResource(Group):
     def timeline(self, run_id: str, *, after: int | None = None, wait_ms: int | None = None, last_event_id: str | None = None, limit: int | None = None, calls: Literal["whole"] | None = None, timeout: float | None = None) -> GetTimelineResponse:
         """The run's timeline, as a page or a stream (GET /runs/{run_id}/timeline)."""
         return self._call("getTimeline", (run_id,), None, {"after": after, "wait_ms": wait_ms, "Last-Event-ID": last_event_id, "limit": limit, "calls": calls}, timeout=timeout)
+
+    def trace(self, run_id: str, *, timeout: float | None = None) -> GetRunTraceResponse:
+        """A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace)."""
+        return self._call("getRunTrace", (run_id,), None, None, timeout=timeout)
 
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""

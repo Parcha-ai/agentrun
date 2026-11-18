@@ -150,7 +150,7 @@ test("a CLI run's learned_workflow call shows the nodes its workflow ran on its 
   assert.ok(result, `a learned_workflow result row: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
   assert.deepEqual(result.learned_nodes?.map(({ label, kind, status }) => ({ label, kind, status })), [{ label: "answer", kind: "extract", status: "ok" }], JSON.stringify(result));
   assert.equal(typeof result.learned_nodes[0].duration_ms, "number");
-  assert.deepEqual(laid, { skills: [], workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
+  assert.deepEqual(laid, { workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
 });
 
 test("a CLI run whose only work is its learned workflow, answering, is not asked its end-of-run turn: its learning reads nothing new, at no cost", async (t) => {

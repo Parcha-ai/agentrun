@@ -2,7 +2,7 @@
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import { toolBridge as kernelToolBridge, type ToolBridge, type ToolBridgeOptions } from "@parcha/agentrun-kernel/process";
-import type { JsonValue, ToolImage } from "@parcha/agentrun-kernel";
+import type { CapCut, JsonValue, ToolImage } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
@@ -110,7 +110,7 @@ export interface SessionMachine {
   onRolloutLine?(listener: (line: string) => void): void;
   /** Told when the model proxy reads that the provider cut the turn's answer at its output limit, before Codex has the
    *  piece that carries the stop (its output tokens, when the answer said them): the harness ends the turn there. */
-  onCut?(listener: (stop: { outputTokens?: number }) => void): void;
+  onCut?(listener: (stop: { outputTokens?: number; capCut?: CapCut }) => void): void;
   /** The harness opens a turn: the model proxy, which refuses answer requests once it has told the harness a turn's answer
    *  stopped, admits them again (ModelProxy.openTurn). */
   openTurn?(): void;

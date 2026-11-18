@@ -8,7 +8,7 @@ import { NativeConnections } from "./NativeConnections";
 let root: Root;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-const target = { runtime: "claude-code", project: "/workspace/project", selector: { kind: "agent", name: "frontend" }, machine_id: "source-machine", version: "2.1.0", model: "sonnet", fingerprint: "abc", configuration: [{ path: ".claude/agents/frontend.md", sha256: "abc" }], skills: ["review"], mcp_servers: ["docs"], state: "needs_verification", issues: [], capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true } };
+const target = { runtime: "claude-code", project: "/workspace/project", selector: { kind: "agent", name: "frontend" }, machine_id: "source-machine", version: "2.1.0", model: "sonnet", fingerprint: "abc", configuration: [{ path: ".claude/agents/frontend.md", sha256: "abc" }], skills: ["review"], mcp_servers: ["docs"], state: "needs_verification", issues: [], capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } };
 
 it("discovers on the server host without running, connects the selected native target, and preserves history import separately", async () => {
   const calls: { path: string; body: unknown }[] = [];
