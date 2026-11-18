@@ -18,6 +18,7 @@ import type { SealedKeys } from "../store/store.js";
 import { handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
 import { held, held as runnerSeam } from "./held.js";
+import { savedGatewayIn } from "../model-gateway.js";
 import type { HeldRedact } from "./redact.js";
 import { type HeldModelKey, noServerKeyWords, runKeyEndedFor, runModelOrigin, withRunModelKey, withRunModelKeyLater } from "../run-model-key.js";
 import { openRunLaunch, type RunModelKey } from "../store/seal.js";
@@ -50,7 +51,10 @@ export async function claimSecrets(deps: ClaimSecretsDeps, revision: Revision, l
   // in its place, and the run would hold a key its model never sends and lack the one it does.
   const scoped = launch.model && !needs.tiers ? { ...needs, model: `${launch.model.provider}/${launch.model.modelId}` } : needs;
   const env: NodeJS.ProcessEnv = { ...base };
-  for (const name of keysFor(scoped, working)) if (working[name] !== undefined) env[name] = working[name];
+  // The key of a gateway saved in the console (model-gateway.ts) stays on the run environment its model routes read, never
+  // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
+  const savedGateway = savedGatewayIn(deps.env ?? {});
+  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV)) env[name] = working[name];
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   // The server's ChatGPT sign-in, read from the store for this claim: its token is asked at each request the run's model

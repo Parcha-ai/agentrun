@@ -799,6 +799,25 @@ const { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET_CHANGED_AT } 
 const SECRET_META = { set: SECRET_SET, source: SECRET_SOURCE, changed_at: SECRET_CHANGED_AT };
 /** One secret's SecretMeta, exactly { name, set, source, changed_at }: its name is "<plane>:<id>". */
 const SECRET_ITEM = (nameDescription: string) => closed({ name: { type: "string", description: nameDescription }, ...SECRET_META });
+/** GET /settings/model-gateway's answer (model-gateway.ts GatewayView): the gateway in force and its models, its key as
+ *  its SecretMeta, never a value. */
+const GATEWAY_MODEL_ID = { type: ["string", "null"], description: "A model id as the gateway lists it, sent as it is (AGENT_MODEL_GATEWAY_IDS never cuts it); null: none, and a node of the tier runs on the run's own model." };
+const MODEL_GATEWAY_VIEW = closed({
+  source: { enum: ["env", "console", null], description: "The gateway in force: `env`, the one AGENT_MODEL_BASE_URL names where AgentRun starts, which wins whole (its key, its id style, its models) and is changed only there; `console`, the one saved with PUT /settings/model-gateway; null, none, and the provider keys are in force." },
+  base_url: { type: ["string", "null"], description: "The gateway's address as given: every model request goes to its `/v1/...` routes (a trailing `/v1` is taken off)." },
+  ids: { enum: ["as_named", "bare"], description: "How the gateway takes the ids a revision or a provider key's default names: whole (`as_named`, `openai/gpt-x`), or `bare`, the part after the provider. The tiers' own models go as they are." },
+  models: closed({ default: GATEWAY_MODEL_ID, fast: GATEWAY_MODEL_ID, strong: GATEWAY_MODEL_ID }),
+  set_at_start: { type: "array", items: { type: "string" }, description: "The variables of these fields set where AgentRun starts (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_FAST, AGENT_MODEL_STRONG, AGENT_MODEL_API_KEY): each wins over what is saved here, and is changed only where AgentRun starts. A key set there goes only to the gateway AGENT_MODEL_BASE_URL names, never to a saved one." },
+  secret: { ...SECRET_ITEM("\"model:gateway\": the gateway's key, which PUT /settings/model-gateway takes as api_key and AGENT_MODEL_API_KEY sets with AGENT_MODEL_BASE_URL."), description: "The gateway's key as its SecretMeta: never a value." },
+  problem: { type: ["string", "null"], description: "Why the gateway in force runs no model, in words: an address the one rule refuses (https only, or http to this machine; no user, query, fragment or dot segment). Null when none." },
+});
+/** POST /settings/model-gateway/test's answer: the model ids the gateway lists, or why it could not be asked. */
+const MODEL_GATEWAY_TEST = {
+  oneOf: [
+    closed({ ok: { const: true }, models: { type: "array", items: { type: "string" }, description: "The model ids GET <base>/v1/models listed, in its order, at most 500." } }),
+    closed({ ok: { const: false }, why: { type: "string", description: "Why the gateway could not be asked or listed no models, in words naming what to check: never the key." } }),
+  ],
+};
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
 const COMPUTER_KIND = { enum: ["none", "sandbox", "desktop", "phone", "browser"] };
 /** A computer choice's shell (computers.ts ShellChoice): where its runs have their shell, in this server's folder mode. */
@@ -2366,6 +2385,50 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
       "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/model-gateway": {
+    get: {
+      operationId: "getModelGateway", tags: ["local"], summary: "The model gateway in force: the environment's, the one saved here, or none",
+      description: "A model gateway is an OpenAI-compatible proxy the owner already runs (LiteLLM, or another): with one in force, every model is sent to it (pi's and codex's on its Responses API, a Claude model on its Messages API), and the provider keys are not used. AGENT_MODEL_BASE_URL set where AgentRun starts wins whole; else the gateway saved here is in force, at once, with no restart. Never the key.",
+      responses: { "200": json(MODEL_GATEWAY_VIEW, "The gateway in force."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "modelgateway/1",
+    },
+    put: {
+      operationId: "saveModelGateway", tags: ["local"], summary: "Use a model gateway for every model, saved here",
+      description: "Saves the gateway and puts it in force for the next run and capabilities, with no restart. `base_url` follows the one rule AGENT_MODEL_BASE_URL does (https, or http to this machine alone; no user, query, fragment, dot segment, backslash or whitespace), else 422 input_invalid in its words. `api_key` is sealed under the server's seal key, never shown again and never put in a run's environment; null removes it (each run then brings its own `model_key`); left out, the saved key is kept, and only for the origin it was saved for: a new origin with a key saved is 422 at `api_key`. `models.default` is required unless AGENT_MODEL is set where AgentRun starts. 409 key_set_by_server while AGENT_MODEL_BASE_URL is set where AgentRun starts, or for a field whose variable is set there. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: {
+        type: "object", additionalProperties: false, required: ["base_url"],
+        properties: {
+          base_url: { type: "string", minLength: 1, description: "The gateway's address, such as https://gateway.example/v1." },
+          api_key: { type: ["string", "null"], minLength: 1, maxLength: 4096, "x-agentrun-secret": true, description: "The gateway's key, sent as a bearer token. Null removes it; left out, the saved one is kept for the same origin." },
+          ids: { enum: ["as_named", "bare"], description: "How the gateway takes the ids a revision names (the answer's `ids`). Default `as_named`." },
+          models: { type: "object", additionalProperties: false, properties: { default: { type: "string", minLength: 1, maxLength: 200 }, fast: { type: ["string", "null"], minLength: 1, maxLength: 200 }, strong: { type: ["string", "null"], minLength: 1, maxLength: 200 } }, description: "The model of each tier, as the gateway lists it (POST /settings/model-gateway/test lists them): `default` for a run that names none, `fast` and `strong` for a workflow's tiers." },
+        },
+      } } } },
+      responses: { "200": json(MODEL_GATEWAY_VIEW, "Saved, and in force."), ...errors(401, 403, 409, 415, 422, 429, 500) },
+      "x-agentrun-serve": "modelgateway/1",
+    },
+    delete: {
+      operationId: "deleteModelGateway", tags: ["local"], summary: "Stop using the saved model gateway: the provider keys are back in force",
+      description: "Removes the saved gateway and its key; the next run and capabilities read the provider keys again, with no restart. 409 key_set_by_server while AGENT_MODEL_BASE_URL is set where AgentRun starts. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(MODEL_GATEWAY_VIEW, "Removed."), ...errors(401, 403, 409, 429, 500) },
+      "x-agentrun-serve": "modelgateway/1",
+    },
+  },
+  "/settings/model-gateway/test": {
+    post: {
+      operationId: "testModelGateway", tags: ["local"], summary: "Ask a model gateway which models it serves",
+      description: "The server asks GET <base>/v1/models (OpenAI's shape, `{ data: [{ id }] }`), under the same address rule as a save, with no redirect followed and a 10-second limit, and answers the ids it lists, so the defaults can be picked from them; or why not, in words. The body may name an address and a key not saved yet (the form's); with none, the gateway in force is asked with its own key. A saved key goes only to the origin it was saved for. A secret write, since it may carry the key: the owner's signed-in session alone (ownerSession). Never the key in the answer.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { base_url: { type: "string", minLength: 1 }, api_key: { type: "string", minLength: 1, maxLength: 4096, "x-agentrun-secret": true } } } } } },
+      responses: { "200": json(MODEL_GATEWAY_TEST, "The test's answer."), ...errors(401, 403, 415, 422, 429, 500) },
+      "x-agentrun-serve": "modelgateway/1",
     },
   },
   "/auth/session": {

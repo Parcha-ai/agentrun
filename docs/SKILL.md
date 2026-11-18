@@ -283,6 +283,8 @@ because it runs on the plan you already pay for, with no key to find.
 - OpenRouter key: a key with a spend limit you set, pasted in the console.
 - Local model: free, on this computer; offer it only when a model with tool calling is already pulled.
 
+If they already run a LiteLLM or other OpenAI-compatible proxy, they answer **Model gateway** (the tool's free answer).
+
 On **Continue with ChatGPT**, they open `<console address>/#/settings/keys` (Settings → Model keys), press **Continue
 with ChatGPT** and sign in on OpenAI's page themselves. On a server that isn't this computer, the sign-in tab ends on a
 page that won't load: they copy that page's whole address into the console. The sign-in is theirs alone.
@@ -291,6 +293,10 @@ On **OpenRouter key**, they open https://openrouter.ai/keys, create a key, set i
 plenty), and paste it into Settings → Model keys, never into this chat; it works without a restart. Claude Max, Ultra
 and Team plans include monthly API credits: a key from the Claude Console organization linked to the plan, saved
 there, runs the claude-agent harness on them (AgentRun Cloud included). Pro, Free and Enterprise plans don't.
+
+On **Model gateway**, they open `<console address>/#/settings/keys` (Settings → Model keys), press **Use a model
+gateway**, enter its address and key there (never in this chat), press **Test**, pick the default model from the list
+it shows, and save; it works without a restart. Every model then goes to the gateway, not to a provider's key.
 
 On **Local model**, only on this computer, give the service the model; it restarts with it and keeps it:
 

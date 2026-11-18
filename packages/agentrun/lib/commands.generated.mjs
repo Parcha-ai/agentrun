@@ -1483,6 +1483,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "get-model-gateway"
+    ],
+    "operationId": "getModelGateway",
+    "method": "GET",
+    "path": "/settings/model-gateway",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The model gateway in force: the environment's, the one saved here, or none"
+  },
+  {
+    "command": [
+      "local",
       "get-workspace-archil"
     ],
     "operationId": "getWorkspaceArchil",

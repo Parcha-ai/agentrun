@@ -1,3 +1,4 @@
+import { envGatewayInForce, readSavedGateway, withSavedGateway } from "../model-gateway.js";
 import { createSdkLoop } from "./sdk-loop.js";
 import { createNativeLoop } from "./native-loop.js";
 // The runner's dispatch switch (design 2.1: "the runner takes every run"): which loop a claimed run runs, by its revision
@@ -32,8 +33,12 @@ export class NeverFits extends ClaimRefused {
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
-export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
+export function resolveRunnerLoop(given: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
   return async (harness, launch, runId) => {
+    // The model gateway saved in the console (model-gateway.ts), read from the store at each claim and laid over the run
+    // environment as its variables would be, so a gateway saved or removed since reaches the next run with no restart. A
+    // gateway the runner's environment names wins, and nothing saved is read over it.
+    const deps = await withSavedGatewayDeps(given);
     // A workflow revision runs on the workflow loop whatever the harness its body names (its default is pi): read the
     // revision to tell it apart from an agentic pi run.
     const run = await deps.store.runs.get(runId);
@@ -96,4 +101,13 @@ export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
     launchOf: (runId) => deps.store.runs.launch(runId),
     resolve: resolveRunnerLoop(deps),
   });
+}
+
+/** `deps` with the model gateway saved in the console laid over its run environment (model-gateway.ts withSavedGateway),
+ *  read from the store now; `deps` itself where none is saved or the runner's environment names its own. */
+async function withSavedGatewayDeps(deps: AdapterSpecDeps): Promise<AdapterSpecDeps> {
+  const base = deps.env ?? process.env;
+  if (envGatewayInForce(base)) return deps;
+  const saved = await readSavedGateway(deps.store, deps.sealKey);
+  return saved ? { ...deps, env: withSavedGateway(base, saved) } : deps;
 }

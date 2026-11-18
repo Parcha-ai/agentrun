@@ -233,7 +233,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     } catch (error) {
       return { why: (error as Error).message, host: true, needs: "key" };
     }
-    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
+    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
     // A name equal to one of the host's configured ids (the picker lists them: model-form.ts pickerCandidates) is that

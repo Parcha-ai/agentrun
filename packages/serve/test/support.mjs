@@ -68,6 +68,9 @@ export const SECRET_WRITE_PATHS = [
   // The server's calendar (calendar/routes.ts): its read, its save and removal, and its test.
   { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/calendar$/ },
   { methods: ["POST"], path: /^\/settings\/calendar\/test$/ },
+  // The model gateway saved in the console (model-gateway.ts): its save, removal and test.
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/model-gateway$/ },
+  { methods: ["POST"], path: /^\/settings\/model-gateway\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
