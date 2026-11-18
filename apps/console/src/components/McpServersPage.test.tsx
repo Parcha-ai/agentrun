@@ -518,6 +518,8 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=Not_A_Toolkit").add).toEqual({ name: "slack" });
     expect(route("#/settings/mcp?change=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE").add)
       .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"], change: true });
+    // A Composio toolkit's slug may hold "_" (Composio's rule, not a server name's).
+    expect(route("#/settings/mcp?add=google-sheets&preset=composio&toolkit=google_sheets").add).toEqual({ name: "google-sheets", preset: "composio", toolkit: "google_sheets" });
   });
 
   it("routes a refused secret write's link to the form filled with its name, address, kind of credential and toolkit: a user or password in the address is dropped", () => {
@@ -575,6 +577,19 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect((p.host.querySelector('input[name="mcp-auth"][value="none"]') as HTMLInputElement).checked).toBe(true);
     await p.click(/^Save$/);
     expect(s.writes().at(-1)).toMatchObject({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { auth: { type: "none" } } });
+  });
+
+  it("a second link opened on the same page starts a form of its own: its toolkit, and no credential typed for the first", async () => {
+    const s = server([[]]);
+    const first = route(`#/settings/mcp?add=crm&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=crm-one`).add;
+    const p = await open(s.v2, { add: first });
+    expect(p.input("mcp-toolkit").value).toBe("crm-one");
+    await p.type("mcp-token", VARS.token);
+    const second = route(`#/settings/mcp?add=crm&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=crm-two`).add;
+    await act(async () => { root!.render(createElement(McpServersPage, { v2: s.v2, writable: true, open: () => {}, add: second })); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(p.input("mcp-toolkit").value).toBe("crm-two");
+    expect(p.input("mcp-token").value).toBe("");
   });
 
   it("opens the add form for a template's url need with its toolkit filled, and saves the server as url and that toolkit", async () => {

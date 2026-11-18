@@ -25,6 +25,8 @@ export const GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/";
 export type McpSource = "composio" | "github" | "url";
 export const SOURCE_LABEL: Record<McpSource, string> = { composio: "Composio", github: "GitHub", url: "URL" };
 const TOOLKIT = /^[a-z][a-z0-9-]{0,31}$/;
+/** A Composio toolkit's slug as the preset takes it (the server's composio-preset.ts): "_" and up to 64 characters. */
+const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 /** A URL preset of the add form: a remote MCP server the free templates use, filled in one click. `name` is both the
  *  server's name (the first free one) and its toolkit, the name a template gives its tools; `note`, one line about it;
@@ -71,7 +73,7 @@ export function addOf(query: string | undefined): McpAdd | undefined {
   if (!name || !TOOLKIT.test(name)) return undefined;
   const toolkit = q.get("toolkit") ?? "";
   const preset = q.get("preset") ?? undefined;
-  if (preset === "composio" && TOOLKIT.test(toolkit)) {
+  if (preset === "composio" && COMPOSIO_TOOLKIT.test(toolkit)) {
     const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
     return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}), ...(added === null ? { change: true as const } : {}) };
   }

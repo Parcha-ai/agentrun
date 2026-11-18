@@ -136,6 +136,17 @@ test("a token's Composio save over a saved server's name links to replace it (ch
   assert.deepEqual(queryOf(refusedWithLink(res, origin)), { change: "slack", preset: "composio", toolkit: "slack", tools: "SLACK_SEND_MESSAGE" });
 });
 
+test("a Composio link carries the toolkit as the preset takes it: trimmed and lower-cased, with Composio's own underscores", async (t) => {
+  const { origin, token } = await started(t);
+  const upper = await token("PUT", "/settings/mcp-servers/slack/composio", { api_key: fake("composio"), toolkit: " SLACK ", tools: ["SLACK_SEND_MESSAGE"] });
+  assert.deepEqual(queryOf(refusedWithLink(upper, origin)), { add: "slack", preset: "composio", toolkit: "slack", tools: "SLACK_SEND_MESSAGE" });
+  const listing = await token("POST", "/settings/mcp-servers/composio/tools", { api_key: fake("composio"), toolkit: "google_sheets" });
+  assert.deepEqual(queryOf(refusedWithLink(listing, origin)), { add: "google-sheets", preset: "composio", toolkit: "google_sheets" });
+  // A toolkit the preset would refuse opens the page alone, never the plain form under a Composio name.
+  const bad = await token("PUT", "/settings/mcp-servers/slack/composio", { api_key: fake("composio"), toolkit: "not a toolkit" });
+  assert.equal(refusedWithLink(bad, origin), `${origin}/#/settings/mcp`);
+});
+
 test("every other secret write links to its own page: a trigger's, the webhook's, an agent's sign-ins, each settings page", async (t) => {
   const { origin, token } = await started(t);
   const pages = [

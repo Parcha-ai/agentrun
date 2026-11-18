@@ -9,6 +9,7 @@
 //   since they widen where a sign-in sends its code and tokens.
 // A server with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a refresh (each keeps
 // nothing new) stay open to a token.
+import { COMPOSIO_TOOLKIT } from "./composio-preset.js";
 import type { InputIssue } from "./errors.js";
 import { secretShapes } from "./learn/secrets.js";
 import { urlOf } from "./mcp-probe.js";
@@ -135,12 +136,16 @@ export const mcpSecretPage = (operation: string) => async (body: unknown, reques
   const toolkit = linkName(given.toolkit);
   const servers = (request.store as SavedServers).mcp;
   if (operation === "listComposioTools" || operation === "saveComposioServer") {
-    const name = linkName(operation === "saveComposioServer" ? request.params[0] : given.toolkit);
-    if (!name) return MCP_PAGE;
+    // The toolkit as the preset takes it (composio-preset.ts: trimmed, lower-cased, Composio's slug rule, which allows
+    // "_" and 64 characters); a listing names no server, so its link's name is that toolkit as a server's name can be.
+    const slug = typeof given.toolkit === "string" ? given.toolkit.trim().toLowerCase() : "";
+    const composio = COMPOSIO_TOOLKIT.test(slug) && !keyShaped(slug) ? slug : undefined;
+    const name = linkName(operation === "saveComposioServer" ? request.params[0] : composio?.replace(/_/g, "-").slice(0, 32));
+    if (!name || !composio) return MCP_PAGE;
     // A save over a saved server's name replaces that server: `change`, so the console saves under the name asked for and
     // never moves it to a free `<name>-2` beside the old one. A listing names no server, so it is always a new one's.
     const replaces = operation === "saveComposioServer" && (await servers.server(name)) !== undefined;
-    const query = new URLSearchParams({ [replaces ? "change" : "add"]: name, preset: "composio", ...(toolkit ? { toolkit } : {}) });
+    const query = new URLSearchParams({ [replaces ? "change" : "add"]: name, preset: "composio", toolkit: composio });
     const tools = Array.isArray(given.tools) ? given.tools.filter((tool): tool is string => typeof tool === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(tool) && !keyShaped(tool)).slice(0, 64) : [];
     if (tools.length) query.set("tools", tools.join(","));
     return `${MCP_PAGE}?${query}`;
