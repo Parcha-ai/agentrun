@@ -2999,7 +2999,9 @@ or plain http to this machine only, with one trailing `/v1` dropped. The gateway
 - take `POST <base>/v1/messages` (Claude Code adds `?beta=true`) with the key in `x-api-key`, never as a bearer token, and
   accept the `anthropic-version` and `anthropic-beta` headers the pinned CLI sends;
 - accept Anthropic's own model ids (`claude-haiku-5-5`, with dashes);
-- report each answer's usage: the run is booked from it at serve's catalog price for that id, not at the gateway's.
+- report each answer's usage: the run is booked from it at serve's catalog price for that id. When the gateway's
+  response carries a positive `x-litellm-response-cost` (LiteLLM's), that figure is booked instead, with the catalog's
+  kept beside it; a missing, malformed or zero figure (LiteLLM writes 0 on a streamed answer) leaves the catalog price.
 
 AgentRun asks Anthropic's token count only on `api.anthropic.com`, so through a gateway a run's `max_cost_usd` holds each
 request at a bound from its size instead. The same setting routes pi's Anthropic models (above). Contract test:
