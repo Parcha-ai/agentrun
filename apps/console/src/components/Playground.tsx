@@ -18,10 +18,11 @@ import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
+import { capWords } from "@/components/NeedsYou";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
-const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
+const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "This run's spend cap in dollars. Empty uses the agent's default cap, or none if it has none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
 
@@ -59,6 +60,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
+  // The agent's own default cap, which an empty max_cost_usd box leaves in force (as the run bar says it).
+  const agentCap = typeof agent?.definition.max_cost_usd === "number" ? agent.definition.max_cost_usd : null;
   const native = nativeReadinessOf(agent);
   const sdk = backendSdkOf(agent?.definition);
   const kind = agent?.kind ?? "agentic";
@@ -210,8 +213,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Input id="playground-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
                 </Label>}
                 {kind === "agentic" && !native && (
-                  <Label htmlFor="playground-cap" name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                  <Label htmlFor="playground-cap" name="max_cost_usd" note={agentCap !== null ? `This run's spend cap in dollars. Empty uses the agent's default cap, ${capWords(agentCap)}.` : "This run's spend cap in dollars. Empty runs it with no cap."} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder={agentCap !== null ? capWords(agentCap) : "e.g. 0.50"} className={field} />
                     <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
                 )}
