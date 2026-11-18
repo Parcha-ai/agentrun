@@ -351,8 +351,9 @@ test("service install --public-url opens the setup page at the public address, a
   const file = join(home, ".config", "systemd", "user", UNIT);
   assert.equal(await service.install({ env: ["AGENT_MODEL=llama3.2"] }), 0);
   assert.deepEqual(unitArgs(readFileSync(file, "utf8")), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://box.example.test/"]);
-  assert.equal(await service.install({ "public-url": "https://other.example.test/" }), 0, "a new --public-url replaces it");
-  assert.deepEqual(unitArgs(readFileSync(file, "utf8")).slice(-2), ["--public-url", "https://other.example.test/"]);
+  // A new --public-url replaces it, and changes that only: the data folder and port stay.
+  assert.equal(await service.install({ "public-url": "https://other.example.test/" }), 0);
+  assert.deepEqual(unitArgs(readFileSync(file, "utf8")), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://other.example.test/"]);
 });
 
 test("service install with --data waits on that directory's server, and a restart waits for a record newer than itself", async () => {

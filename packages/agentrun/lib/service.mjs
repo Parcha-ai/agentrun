@@ -434,9 +434,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         if (value === "") delete model[key];
         else model[key] = value;
       }
-      // --tailscale, --no-tailscale or --env on an installed service changes that only: its data folder, port and public
-      // address stay unless named (the installer passes the flag alone). --tailscale names its own address instead.
-      if ((tailscale !== undefined || changes.length > 0) && installed()) {
+      // --tailscale, --no-tailscale, --env or --public-url on an installed service changes that only: its data folder, port
+      // and public address stay unless named (the installer passes the flag alone). --tailscale names its own address instead.
+      if ((tailscale !== undefined || changes.length > 0 || given !== undefined) && installed()) {
         const now = argsNow();
         const option = (name) => (now.includes(name) ? now[now.indexOf(name) + 1] : undefined);
         data ??= option("--data");

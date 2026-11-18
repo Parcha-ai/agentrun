@@ -89,7 +89,8 @@ setup code. On loopback (no `--listen`, or a loopback one) it also sets `AGENTRU
 `--tailscale` does, so sign-in limits count each visitor by the address the proxy names rather than everyone as one;
 an `AGENTRUN_TRUSTED_PROXIES` you set stays as it is (an empty one trusts no proxy), and with `--listen` on another address nothing is trusted. The
 service keeps the flag on its command line, so every restart has both, and so does a later `agentrun service install
---env` or `--no-tailscale` (`--tailscale` replaces it with the tailnet address). It must be an `https://` address, or
+--env` or `--no-tailscale` (`--tailscale` replaces it with the tailnet address). A later `--public-url` changes the address
+alone: the data folder and port stay. It must be an `https://` address, or
 `http://` on this machine (`localhost`, `127.0.0.1`), with no path beyond `/` and no user name or password; anything else
 is refused with exit 2 before the server starts. `AGENTRUN_PUBLIC_URL` still works; given with `--public-url`, the two
 must name the same address. `--public-url` and `--tailscale` don't go together: `--tailscale` names its own.
