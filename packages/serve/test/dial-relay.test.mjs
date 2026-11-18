@@ -186,7 +186,14 @@ function machine(address, token, { maxPayload = MAX_LINE_BYTES, headers = {} } =
     if (binary) return;
     const text = data.toString("utf8");
     texts.push(text);
-    const message = JSON.parse(text);
+    // A line that is no JSON (the frame-limit test's, should the relay ever let one through) is kept in `texts`, where
+    // the test's assertions read it, and never throws out of this handler.
+    let message;
+    try {
+      message = JSON.parse(text);
+    } catch {
+      return;
+    }
     if (message.method === "hello") ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: HELLO }));
     else if (message.method === "ping") ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }));
   });
