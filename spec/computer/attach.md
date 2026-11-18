@@ -112,8 +112,9 @@ as a synced folder in its `/workspace` (Mode 2; Mode 1 runs a sandbox only on Do
   then `systemd-tmpfiles --create /etc/tmpfiles.d/agentrun.conf`. A claim reads it from inside, as init's user, and
   refuses a box whose `/workspace` is missing, a link, not a directory, another user's, or open to its group or others,
   in words naming this fix. The box is let go, and nothing is written.
-- **Each claim** empties `/workspace` of what an earlier run left (each entry removed, a link never followed), then
-  pushes the run's folder in. Each change goes back to the run's folder before the call that made it answers, and once
+- **Each claim** ends every program computerd still runs (an earlier run's, left when its hold ended at its deadline:
+  KILL to its process group, waited for up to 5 s, the box refused if one outlives it), empties `/workspace` of what
+  an earlier run left (each entry removed, a link never followed), then pushes the run's folder in. Each change goes back to the run's folder before the call that made it answers, and once
   more at release, through the claim's epoch fence: a run that has lost the box can't write the folder. The next run
   on the box finds its folder as the run's folder holds it, never as the box was left.
 - **Only under `/workspace`.** On a person's own machine the synced folder writes only under its workspace directory,

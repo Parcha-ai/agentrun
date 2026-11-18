@@ -496,6 +496,27 @@ async function pairedWorkspaceWhy(client: ComputerClient, name: string, signal?:
 	return ok(undefined);
 }
 
+/** Every program computerd still runs on `name` ended, waited for up to 5 s each: the box outlives its runs, and one
+ *  run holds it at a time, so a program running at a claim is an earlier run's (a background program left when its hold
+ *  ended at its deadline, or its runner was lost), which could read or write the next run's folder. KILL goes to its
+ *  process group; init kills what left that group once its guard is gone. */
+async function endPrograms(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
+	const options = signal ? { signal } : {};
+	const words = (message: string) => `ending an earlier run's programs on ${name}: ${message}`;
+	for (let from = 0; ; ) {
+		const listed = await client.call("process.list", { from }, options);
+		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
+		for (const program of listed.value.processes.filter((one) => one.running)) {
+			const killed = await client.call("process.signal", { id: program.id, signal: "KILL" }, options);
+			if (!killed.ok && killed.error.code !== "not_found") return fail(killed.error.code, words(killed.error.message));
+			const waited = await client.call("process.wait", { id: program.id, timeoutMs: 5_000 }, options);
+			if (waited.ok && waited.value.running) return fail("refused", words(`${program.argv.join(" ")} (pid ${program.pid}) is still running 5 s after KILL`));
+		}
+		if (!listed.value.truncated) return ok(undefined);
+		from = listed.value.next;
+	}
+}
+
 /** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
  *  level, a directory with what it holds, a link removed and never followed (files.remove). */
 async function emptyWorkspace(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
@@ -553,6 +574,8 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	const mine = (asked: { id: string }) => named(asked) !== undefined;
 	/** The hold each create request made: a request id makes one hold, ever. */
 	const holdsBy = new Map<string, string>();
+	/** A create still readying the box's synced folder, by its request id: a retry meanwhile shares its answer. */
+	const startingBy = new Map<string, Promise<Result<ComputerRef & { notes: string[] }>>>();
 	const ended = () => fail("gone", `this run's hold on ${paired.name} has ended (released, or at its deadline): another run may hold it now`);
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
 	const offline = () => fail("gone", `${paired.name} is not attached now: open its driver, which dials this server`);
@@ -568,16 +591,19 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 		return epoch.ok ? { kind: "sync", epoch: epoch.value } : { other: `a synced folder with no epoch to read it back under (${epoch.error.message})` };
 	};
 	/** The synced folder read back from inside the box: its /workspace as pairedWorkspaceWhy holds it, else in words.
-	 *  `empty`: what an earlier run left in it is removed first (each entry, a link removed and never followed), so the
-	 *  run's push goes into an empty folder, as into a hosted computer's new one. */
-	const folder = async (signal?: AbortSignal, empty = false): Promise<Result<MountReadBack>> => {
+	 *  `fresh`: what an earlier run left is ended and removed first, its programs (endPrograms) and then each entry of the
+	 *  folder (a link removed and never followed), so the run's push goes into an empty folder no other run's program
+	 *  reaches, as into a hosted computer's new one. */
+	const folder = async (signal?: AbortSignal, fresh = false): Promise<Result<MountReadBack>> => {
 		const connection = hub.connection(paired.id);
 		if (connection === undefined) return offline();
 		try {
 			const why = await pairedWorkspaceWhy(connection.client, paired.name, signal);
 			if (!why.ok) return why;
 			if (why.value !== undefined) return ok({ other: why.value });
-			if (empty) {
+			if (fresh) {
+				const stopped = await endPrograms(connection.client, paired.name, signal);
+				if (!stopped.ok) return stopped;
 				const emptied = await emptyWorkspace(connection.client, paired.name, signal);
 				if (!emptied.ok) return emptied;
 			}
@@ -608,6 +634,8 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (typeof context?.requestId !== "string" || context.requestId === "") return fail("invalid", "create needs a request id (CreateContext.requestId): pass the same one to retry the same request");
 			// One hold per request id (provider.md, Idempotent create): a retry while it holds answers it, and after it ended
 			// is refused, so a retry never takes the machine from the run that holds it next.
+			const starting = startingBy.get(context.requestId);
+			if (starting !== undefined) return starting;
 			const before = holdsBy.get(context.requestId);
 			if (before !== undefined) {
 				if (hub.hold(paired.id) !== before) return fail("exists", `${paired.name}'s hold ${before} was made for this request and has ended: create with a new request id`);
@@ -623,18 +651,26 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			const deadline = spec.owner === undefined ? new Date(Date.now() + runLifetimeMs(spec)) : undefined;
 			const hold = hub.claim(paired.id, spec.labels ?? {}, deadline);
 			if (hold === undefined) return fail("refused", `${paired.name} is held by another run: one run at a time`);
+			if (spec.mount?.kind !== "sync") {
+				holdsBy.set(context.requestId, hold);
+				return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
+			}
 			// The run's synced folder goes in the box's /workspace, which must be computerd's user's own directory before
-			// anything is pushed there, and is emptied of an earlier run's: one that is not lets the hold go, in words.
-			if (spec.mount?.kind === "sync") {
+			// anything is pushed there, and is cleared of an earlier run's programs and files: one that is not lets the hold
+			// go, in words. A retry of this request meanwhile shares this answer.
+			const requestId = context.requestId;
+			const made = (async () => {
 				const read = await folder(context.signal, true);
 				if (!read.ok || "other" in read.value) {
 					hub.unclaim(paired.id, hold);
 					return read.ok ? fail("refused", (read.value as { other: string }).other) : read;
 				}
 				syncedHold = hold;
-			}
-			holdsBy.set(context.requestId, hold);
-			return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
+				holdsBy.set(requestId, hold);
+				return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
+			})().finally(() => startingBy.delete(requestId));
+			startingBy.set(requestId, made);
+			return made;
 		},
 		async attach(asked, context) {
 			if ("id" in asked) {
