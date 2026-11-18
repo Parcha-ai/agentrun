@@ -166,6 +166,10 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   // Explain a known absent default without blocking observation or the handoff that can configure it.
   // Explicit models and older servers leave readiness to the execution path.
   const needsModel = !sdk && !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
+  // What the run's own check would refuse now (the agent read's run_blockers), each once: a harness this server doesn't
+  // run, or a model it has none of, is said by its own banner above, not twice.
+  const blockers = agent.archived_at ? [] : (agent.run_blockers?.fields.length ? agent.run_blockers.fields : agent.run_blockers ? [{ field: "", reason: "", message: agent.run_blockers.message }] : [])
+    .filter((b) => !(offText && b.field === "definition.harness") && !(needsModel && b.field === "definition.model"));
   const facts: [string, string, string?][] = [
     ...(sdk ? [["Runtime", backendSdkLabel(sdk.runtime)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
@@ -222,6 +226,12 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           </dl>
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
+          {blockers.length > 0 && (
+            <Banner tone="warning" aria-label="Runs refused">
+              <p>A run of this agent is refused until this is fixed:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">{blockers.map((b, i) => <li key={`${b.field}:${i}`}>{b.message}</li>)}</ul>
+            </Banner>
+          )}
           {stale && <Banner tone="error">Couldn't refresh this agent. <Button size="sm" onClick={() => void reread()}>Retry</Button></Banner>}
           {/* Keep the create answer's warnings beside its configuration; a later read carries none. */}
           {agent.warnings?.length ? (

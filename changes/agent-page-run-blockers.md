@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+`GET /v2/agents/{agent_id}` on a local server carries `run_blockers`: what the run's own check would refuse now (`409 agent_not_runnable`), as `{message, fields}`, or null when a run would start. The console's agent page shows each blocker as a warning before Run ("A run of this agent is refused until this is fixed: …"), so an agent that can't run (an agent imported with empty instructions or a model no key here reaches, a harness this server doesn't run, a key a granted tool needs) says why on its page, not only after Run. Native and SDK agents, archived agents, and a revision whose MCP tools its first run would pin read null.
