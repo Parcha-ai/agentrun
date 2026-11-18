@@ -296,3 +296,16 @@ test("in a run's own process (no seal key), the runner's mark says the gateway i
   const tools = await claimSecrets({ store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: deps.env }, { kind: "agentic", body: { tools: [] } }, { model: { provider: "agent-model", modelId: "m-1" } });
   assert.equal(JSON.stringify(Object.getOwnPropertyNames(tools).map((name) => tools[name])).includes(CANARY), false, "not on the tools' environment");
 });
+
+test("the test reads no more of the gateway's answer than MAX_TEST_BYTES: a longer one is said so, and the rest is never read", async () => {
+  const { testGateway, MAX_TEST_BYTES } = await import("../dist/model-gateway.js");
+  let pulled = 0;
+  const chunk = new Uint8Array(64 * 1024).fill(32);
+  const body = new ReadableStream({ pull(controller) { pulled += chunk.byteLength; controller.enqueue(chunk); } }); // never ends
+  const fetch = async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  const store = { settings: { get: async () => undefined }, sealedKeys: { get: async () => undefined } };
+  const answer = await testGateway({ store, sealKey: Buffer.alloc(32), env: {}, changed: async () => {}, fetch }, { base_url: "https://gateway.example", api_key: CANARY });
+  assert.equal(answer.ok, false);
+  assert.match(answer.why, /is over 4 MB/);
+  assert.ok(pulled <= MAX_TEST_BYTES + 4 * chunk.byteLength, `read ${pulled} bytes`);
+});

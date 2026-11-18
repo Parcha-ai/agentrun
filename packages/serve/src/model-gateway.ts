@@ -65,6 +65,8 @@ const MAX_ID_CHARS = 200;
 /** How long the test waits for the gateway, and how many ids it lists. */
 export const TEST_TIMEOUT_MS = 10_000;
 const MAX_LISTED = 500;
+/** The most of the gateway's answer to the test that is read: a list of MAX_LISTED models is far smaller. */
+export const MAX_TEST_BYTES = 4 * 1024 * 1024;
 
 /** The saved row. */
 export type GatewaySetting = { v: 1; base_url: string; ids: GatewayIds; models: Partial<Record<Tier, string>> };
@@ -374,7 +376,9 @@ async function listModels(root: string, key: string | undefined, fetcher: typeof
     await answer.body?.cancel();
     return { ok: false, why: `The gateway answered GET ${url} with a redirect (${answer.status}), and AgentRun follows none: a key goes only to the address you give. Use the address it redirects to.` };
   }
-  const text = await answer.text().catch(() => "");
+  const read = await textUpTo(answer, MAX_TEST_BYTES);
+  if (read === undefined) return { ok: false, why: `The gateway's answer to GET ${url} is over ${MAX_TEST_BYTES / (1024 * 1024)} MB, more than a list of models: is this an OpenAI-compatible gateway's address?` };
+  const text = read;
   if (answer.status === 401 || answer.status === 403) return { ok: false, why: `The gateway refused the key (${answer.status}): check the key, then test again.${detail(text, scrub)}` };
   if (!answer.ok) return { ok: false, why: `The gateway answered ${answer.status} to GET ${url}.${detail(text, scrub)}` };
   let parsed: unknown;
@@ -388,6 +392,30 @@ async function listModels(root: string, key: string | undefined, fetcher: typeof
   // An id that holds the key is left out: the answer, and the console's model list, never show it.
   const ids = [...new Set(data.flatMap((entry) => (isObject(entry) && typeof entry.id === "string" && !idIssue(entry.id) && !(key && entry.id.includes(key)) ? [entry.id] : [])))].slice(0, MAX_LISTED);
   return { ok: true, models: ids };
+}
+
+/** `answer`'s body as text, read up to `max` bytes; undefined once it is longer (the rest is cancelled, never read), and
+ *  "" for a body that could not be read. */
+async function textUpTo(answer: Response, max: number): Promise<string | undefined> {
+  const reader = answer.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel().catch(() => {});
+        return undefined;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return "";
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** The gateway's own words after a refusal: its JSON's error message, else its text, short. */
