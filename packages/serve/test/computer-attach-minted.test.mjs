@@ -56,7 +56,7 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   const token = await server.dial.tokens.mint("computer-00000000000a", { ...MINT, expiresAt: inMs(60_000) });
   assert.match(token, /^art_[0-9a-f]{64}$/, "art_ and 32 random bytes in hex");
   const row = await server.store.mintedTokens.get("computer-00000000000a");
-  assert.deepEqual({ ...row, createdAt: typeof row.createdAt }, { machine: "computer-00000000000a", ...MINT, expiresAt: row.expiresAt, revokedAt: null, createdAt: "number" });
+  assert.deepEqual({ ...row, createdAt: typeof row.createdAt }, { machine: "computer-00000000000a", ...MINT, expiresAt: row.expiresAt, revokedAt: null, createdAt: "number", runner: null, incarnation: null }, "the server's own process minted it: no runner on its row");
   const db = new DatabaseSync(join(server.data, "store.sqlite"), { readOnly: true });
   t.after(() => db.close());
   assert.equal(db.prepare("SELECT token_sha256 FROM minted_tokens WHERE machine = ?").get("computer-00000000000a").token_sha256, sha256(token), "the store keeps the SHA-256");

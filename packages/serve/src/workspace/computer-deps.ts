@@ -381,7 +381,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     // made as without it.
     ...(faux ? {
       keyTable: { keys: { ...KEY_TABLE.keys, ...faux.keyTable.keys }, labels: { ...KEY_TABLE.labels, ...faux.keyTable.labels } },
-      launch: (entry, spec) => faux.launch(entry as never, spec),
+      launch: (entry, spec) => faux.launch(entry as never, spec, options.dial ? { dial: options.dial } : {}),
       launches: (provider) => faux.owns(provider),
     } satisfies Pick<ComputerDeps, "keyTable" | "launch" | "launches"> : {}),
     ...(options.answers ? { answers: options.answers } : {}),
