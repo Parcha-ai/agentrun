@@ -15,7 +15,7 @@ import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
 import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
-import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, slotsUnder, storeCall } from "../dist/runner/run-child-host.js";
+import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, SlotHold, slotId, Slots, slotsUnder, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
@@ -24,6 +24,13 @@ import { agent, client, printed } from "./support.mjs";
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const BREAKER = new URL("./fixtures/faux-channel.mjs", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const readFileSafe = (file) => {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+};
 const scratchDir = (t, prefix) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), prefix));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -78,6 +85,37 @@ test("a slot's reap sweeps every folder of the host its uid can leave a file in:
   const swept = args.flatMap((arg, i) => (arg === "--sweep" ? [args[i + 1]] : []));
   assert.deepEqual(swept.sort(), ["/dev/mqueue", "/dev/shm", "/run/lock", "/tmp", "/var/lock", "/var/tmp"]);
   assert.deepEqual(args.slice(0, 2), ["reap", "0"]);
+});
+
+test("a run's kill reaps its slot only while the run holds it: a kill still reaping holds the give-back, and a kill after it leaves the slot's next run alive", async (t) => {
+  const dir = scratchDir(t, "hold-");
+  const helper = join(dir, "agentrun-runas");
+  // `run`: records its pid as its slot's, then becomes the program. `reap`: half a second in, kills the slot's recorded
+  // process, as the helper's reap kills every process of the slot's uid.
+  writeFileSync(helper, `#!/bin/sh\nd=$(dirname "$0")\ncase "$1" in\nrun) echo $$ > "$d/slot-$2.pid"; shift 2; [ "$1" = -- ] && shift; exec "$@" ;;\nreap) echo "reap $2 start" >> "$d/log"; sleep 0.5; kill -9 "$(cat "$d/slot-$2.pid")" 2>/dev/null; echo "reap $2 end" >> "$d/log" ;;\nesac\n`);
+  chmodSync(helper, 0o755);
+  const log = () => readFileSync(join(dir, "log"), "utf8");
+  const runOn = async (slot) => {
+    const child = spawn(helper, ["run", String(slot), "--", "sleep", "30"], { stdio: "ignore" });
+    t.after(() => void child.kill("SIGKILL"));
+    for (const end = Date.now() + 5_000; readFileSafe(join(dir, `slot-${slot}.pid`)).trim() !== String(child.pid); await sleep(20)) assert.ok(Date.now() < end, "the stand-in run never started");
+    return child;
+  };
+  const alive = (child) => child.exitCode === null && child.signalCode === null;
+  // The slot's first run, its kill (a stop's, late) still reaping as its run ends and gives the slot back.
+  await runOn(0);
+  const hold = new SlotHold(0, helper, () => undefined);
+  const killing = hold.kill();
+  await sleep(100);
+  await hold.settle();
+  assert.match(log(), /reap 0 end/, "the slot went back while its run's kill was still reaping it");
+  await killing;
+  // The slot's next run, then the first run's kill once more, after the give-back.
+  const next = await runOn(0);
+  await hold.kill();
+  await sleep(800);
+  assert.ok(alive(next), "a kill after the give-back killed the slot's next run");
+  assert.equal(log().match(/reap 0 start/g).length, 1, log());
 });
 
 /** A stand-in helper whose `check` exits `code`, saying `said` on stderr. */

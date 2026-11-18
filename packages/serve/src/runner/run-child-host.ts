@@ -146,6 +146,37 @@ export class Slots {
 /** A slot's uid (and gid). */
 export const slotId = (slot: number): number => FIRST_RUN_ID + slot;
 
+/** One run's hold on its slot, bound at its spawn: a kill reaps this slot alone, and only while the run holds it. Once
+ *  settled, no kill starts, and the settle ends only when every kill already reaping has ended, so the slot goes back
+ *  (and its next run starts) with no reap of this run still killing the slot's uid. */
+export class SlotHold {
+  #settled = false;
+  readonly #kills = new Set<Promise<unknown>>();
+  readonly slot: number;
+  readonly #helper: string;
+  readonly #log: (line: string) => void;
+  constructor(slot: number, helper: string, log: (line: string) => void) {
+    this.slot = slot;
+    this.#helper = helper;
+    this.#log = log;
+  }
+  async kill(): Promise<void> {
+    if (this.#settled) return;
+    const reaping = execText(this.#helper, ["reap", String(this.slot)], 120_000);
+    this.#kills.add(reaping);
+    try {
+      const reaped = await reaping;
+      if (reaped.code !== 0) this.#log(`slot ${this.slot}'s kill said: ${reaped.stderr.trim()}`);
+    } finally {
+      this.#kills.delete(reaping);
+    }
+  }
+  async settle(): Promise<void> {
+    this.#settled = true;
+    await Promise.all(this.#kills);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The folders of a run, by the slot that runs it.
 
@@ -733,16 +764,13 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
    *  before then waits for it, as the dispatch buffers what comes before its inner loop is chosen. */
   let ready!: () => void;
   const up = new Promise<void>((resolve) => (ready = resolve));
-  /** The slot the run's process runs on (uid isolation), from its spawn to its reap. */
-  let slotHeld: number | undefined;
+  /** This run's hold on its slot (uid isolation), bound at its spawn and settled before the slot goes back. */
+  let hold: SlotHold | undefined;
   /** Kills the run's process and every process it started: its group (process isolation; a program that left the group
-   *  with setsid escapes it, a local install's limit), or every process of its slot's uid (uid isolation). */
+   *  with setsid escapes it, a local install's limit), or every process of its own slot's uid while it holds the slot
+   *  (uid isolation: never a slot it gave back, which another run may hold). */
   const kill = async (): Promise<void> => {
-    if (isolation.kind === "uid" && slotHeld !== undefined) {
-      const reaped = await execText(isolation.helper, ["reap", String(slotHeld)], 120_000);
-      if (reaped.code !== 0) log(`slot ${slotHeld}'s kill said: ${reaped.stderr.trim()}`);
-      return;
-    }
+    if (isolation.kind === "uid") return hold?.kill();
     if (child?.pid === undefined) return;
     try {
       process.kill(-child.pid, "SIGKILL");
@@ -786,7 +814,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           return value === undefined ? [] : [[name, value] as const];
         }));
         const slot = slots?.take();
-        slotHeld = slot;
+        if (isolation.kind === "uid" && slot !== undefined) hold = new SlotHold(slot, isolation.helper, log);
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         const heldSide = heldFor(deps, { claim, run: runRow, launch, revision, claimed }, cut, log);
         try {
@@ -871,8 +899,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           ready();
           await end(slot, tops).catch((error: unknown) => log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`));
           await heldSide.release();
+          // No kill of this run reaps the slot once it is given back: those still reaping end first.
+          await hold?.settle();
           if (slot !== undefined) slots?.give(slot);
-          slotHeld = undefined;
         }
       })());
     },
