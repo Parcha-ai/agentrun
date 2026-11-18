@@ -573,20 +573,24 @@ test("a paired Linux box is a sandbox that takes the run's folder as a synced fo
 	hub.revoke(paired.id, "the test is over");
 });
 
-test("a paired Linux box whose truncated /workspace listing holds nothing a remove can reach is refused in words naming what was left, and the hold let go", async () => {
+test("a paired Linux box whose /workspace holds entries a remove can't reach is refused in words naming what was left, whole listing or truncated, and the hold let go", async () => {
 	const hub = new AttachHub();
 	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
 	const provider = attachedProvider(paired, hub);
 	const [serve, computer] = socketPair();
-	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], truncated: true, unreachable: true, calls: [], programs: [], stat: Promise.resolve() };
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], unreachable: true, calls: [], programs: [], stat: Promise.resolve() };
 	linuxBox(computer, box);
 	assert.equal((await hub.accept(paired, serve)).ok, true);
-	const answer = await provider.create(SYNCED, req());
-	const claimed = hub.claimed(paired.id);
+	const words = "emptying /workspace on lab of an earlier run's folder: 2 entries could not be removed (first: /workspace/a: lstat /workspace/a: no such file or directory)";
+	for (const truncated of [false, true]) {
+		box.truncated = truncated;
+		box.calls.length = 0;
+		const answer = await provider.create(SYNCED, req());
+		assert.deepEqual(answer.error, { code: "refused", message: words }, `truncated: ${truncated}`);
+		assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+		assert.equal(box.calls.filter((call) => call === "files.list /workspace").length, 1, "a pass that removes nothing ends it");
+	}
 	hub.revoke(paired.id, "the test is over");
-	assert.deepEqual(answer.error, { code: "refused", message: "emptying /workspace on lab of an earlier run's folder: 2 entries could not be removed (first: /workspace/a: lstat /workspace/a: no such file or directory)" });
-	assert.equal(claimed, undefined, "the hold is let go");
-	assert.equal(box.calls.filter((call) => call === "files.list /workspace").length, 1, "a pass that removes nothing ends it");
 });
 
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {

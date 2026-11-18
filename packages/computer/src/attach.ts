@@ -518,9 +518,9 @@ async function endPrograms(client: ComputerClient, name: string, signal?: AbortS
 }
 
 /** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
- *  level, a directory with what it holds, a link removed and never followed (files.remove). A truncated listing is
- *  listed again until a pass removes nothing: what it holds then (a name a remove can't find, as one that is not UTF-8
- *  reaches the wire changed) refuses the box in words. */
+ *  level, a directory with what it holds, a link removed and never followed (files.remove). An entry a remove can't
+ *  find (a name that is not UTF-8 reaches the wire changed) is left: a whole listing with one left, or a truncated one
+ *  that a pass removes nothing of, refuses the box in words naming what was left. */
 async function emptyWorkspace(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
 	const options = signal ? { signal } : {};
 	const words = (message: string) => `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${message}`;
@@ -534,8 +534,10 @@ async function emptyWorkspace(client: ComputerClient, name: string, signal?: Abo
 			if (removed.error.code !== "not_found") return fail(removed.error.code, words(removed.error.message));
 			left.push(`${entry.path}: ${removed.error.message}`);
 		}
+		// A truncated listing is listed again while a pass removes something; what is left past that stays.
+		const stuck = listed.value.truncated ? left.length === listed.value.entries.length : left.length > 0;
+		if (stuck) return fail("refused", words(`${left.length} entries could not be removed (first: ${left[0] ?? "none listed"})`));
 		if (!listed.value.truncated) return ok(undefined);
-		if (left.length === listed.value.entries.length) return fail("refused", words(`${left.length} entries could not be removed (first: ${left[0] ?? "none listed"})`));
 	}
 }
 
