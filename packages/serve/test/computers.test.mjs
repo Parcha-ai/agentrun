@@ -415,7 +415,7 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
   const daytona = providerOf(view, "sandbox", "daytona").gpu;
-  assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.mounts], [["H100"], 1, true, true, "earth", { cpus: 16, memoryMb: 102400, diskMb: 409600 }, []]);
+  assert.deepEqual([daytona.types, daytona.max, daytona.preemptible, daytona.stopDeletes, daytona.region, daytona.perGpu, daytona.mounts], [["H100"], 1, true, true, "earth", { cpus: 16, memoryMb: 102400, diskMb: 409600 }, ["sync"]]);
   // Mode 2 mounts the run's folder from Archil, which no GPU computer can yet: why, and what to use instead.
   // Each provider's own reason, from its descriptor; never a field of the view.
   const noFolder = (label) =>
@@ -426,7 +426,7 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   assert.equal("unmounted" in daytona, false, "the reason is in why, not a field of its own");
   assert.equal(daytona.why, noFolder("Daytona"));
   const modal = providerOf(view, "sandbox", "modal").gpu;
-  assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, []]);
+  assert.deepEqual([modal.types.slice(0, 2), modal.isolation, modal.preemptible, modal.mounts], [["T4", "L4"], "gvisor", true, ["sync"]]);
   assert.equal(modal.why, noFolder("Modal"));
   assert.equal(providerOf(view, "sandbox", "docker").gpu, undefined, "Docker declares no GPU");
   assert.equal(providerOf(view, "desktop", "e2b").gpu, undefined, "only a sandbox takes GPUs");

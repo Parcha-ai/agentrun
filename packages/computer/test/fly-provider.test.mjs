@@ -151,14 +151,14 @@ test("Fly's errors are codes in Fly's words, never the token; a 429 create is se
 	assert.equal(tries, 1, "a create that got no answer may have made a machine: never sent again");
 });
 
-test("the provider dials: kind linux, no exec or upload, no mount, the box image; a server with no public address calls Fly for nothing", async () => {
+test("the provider dials: kind linux, no exec or upload, a synced folder alone, the box image; a server with no public address calls Fly for nothing", async () => {
 	const fly = fakeFly(() => undefined);
 	const flyProvider = provider(fly, { dial: { tokens: new MemoryMachineTokens(), hub: new AttachHub() } });
 	assert.equal(flyProvider.host.facts.connect, "dial");
 	assert.equal(flyProvider.host.exec, undefined);
 	assert.equal(flyProvider.host.upload, undefined);
 	const caps = flyProvider.capabilities();
-	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network], ["linux", "microvm", [], ["none", "open", "allow"]]);
+	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network], ["linux", "microvm", ["sync"], ["none", "open", "allow"]]);
 	assert.match((await flyProvider.prepareImage()).value, /^ghcr\.io\/parcha-ai\/agentrun-box:[0-9a-f]{12}$/);
 	const refused = await flyProvider.create({ image: "img", lifetimeMs: 600_000, network: "none" }, { requestId: "fly-no-address" });
 	assert.equal(refused.error?.code, "refused");
