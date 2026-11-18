@@ -3,7 +3,8 @@
 // contents read; decision and tier keys of the claim's learned workflows alone, as the runner chose them; the settings of
 // the server's shared configuration and the claim's own rows, never another run's; its viewers' address under its own
 // run's proof key, never the runners' shared one; no channel post; the computer it made let go by the runner at the
-// claim's release; the install it asks for, readable by its user. Which runs stay in the runner. And the channel lets go of a function it handed once the other side's
+// claim's release; the install it asks for, readable by its user. Which runs stay in the runner, and the run on Claude
+// Code's login refused at its claim where runs have users of their own. And the channel lets go of a function it handed once the other side's
 // stand-in for it is gone. No key, no network: a fake GitHub on loopback, dummy keys.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -169,15 +170,12 @@ test("a run that runs no agent's code here stays in its runner: a learning run, 
   for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
 });
 
-test("a run whose agent works on what the server's user alone reads stays in its runner: a workflow run on a server's documents directory, a run on Claude Code's login on this machine (not one on its caller's own model key)", async (t) => {
-  assert.equal(typeof host.staysInRunner, "function", "the runner says, per run, which runs stay in it");
-  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-stays-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
-  const runner = { mode: "runner" };
+/** staysInRunner's deps for a run of a revision of `kind`, with Claude Code's login on this machine turned on when
+ *  `login`; run "run-keyed" holds a model key of its own (model_key), sealed on its launch as the server seals it. */
+function staysDeps(data, kind, login) {
   const sealKey = randomBytes(32);
-  // A run its caller handed a model key (model_key): sealed on its launch as the server seals it.
   const modelKeyed = sealRunLaunch(sealKey, "run-keyed", { model: { key: "sk-fake-run-own", origin: "https://gateway.invalid" } });
-  const deps = (kind, login) => ({
+  return {
     data,
     env: {},
     sealKey,
@@ -186,15 +184,46 @@ test("a run whose agent works on what the server's user alone reads stays in its
       agents: { revision: async () => ({ id: "rev-own", kind, body: {} }) },
       settings: { get: async (key) => (key === "claude_login" && login ? { v: 1, place: "agentrun", host: hostname(), only_me: true } : null) },
     },
+  };
+}
+// Where each run is a user of its own (the image's helper), and where every run is the runner's own user: by
+// AGENTRUN_RUN_USER=same, or a local install with no helper.
+const PER_RUN_USERS = { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 };
+const SAME_USER = { kind: "process", why: "AGENTRUN_RUN_USER=same" };
+const NO_HELPER = { kind: "process", why: "no helper on this host" };
+
+test("a workflow run on a server's documents directory stays in its runner, where runs have users of their own too; a run on the model keys, or on its caller's own model key under Claude Code's login, is a process of its own", async (t) => {
+  assert.equal(typeof host.staysInRunner, "function", "the runner says, per run, which runs stay in it");
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-stays-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const runner = { mode: "runner" };
+  for (const isolation of [PER_RUN_USERS, SAME_USER, NO_HELPER]) {
+    const on = (words) => `${words} (${isolation.kind}: ${isolation.why ?? "a user of its own"})`;
+    assert.equal(await host.staysInRunner(staysDeps(data, "workflow"), "pi", { input: {}, place: runner, documents: data }, "run-own", isolation), true, on("a workflow run rooted at the server's documents directory"));
+    assert.equal(await host.staysInRunner(staysDeps(data, "workflow"), "pi", { input: {}, place: runner }, "run-own", isolation), false, on("a workflow run with no documents directory (rooted at /tmp) is a process of its own"));
+    assert.equal(await host.staysInRunner(staysDeps(data, "agentic"), "pi", { input: {}, place: runner, documents: data }, "run-own", isolation), false, on("an agentic run, which never reads the documents directory"));
+    assert.equal(await host.staysInRunner(staysDeps(data, "agentic", true), "claude-agent", { input: {}, place: runner }, "run-keyed", isolation), false, on("a claude-agent run on its caller's own model key, which its CLI runs on instead of the login (cli-run-spec.ts)"));
+    assert.equal(await host.staysInRunner(staysDeps(data, "agentic", true), "codex", { input: {}, place: runner }, "run-own", isolation), false, on("a harness the login is not for"));
+    assert.equal(await host.staysInRunner(staysDeps(data, "agentic"), "claude-agent", { input: {}, place: runner }, "run-own", isolation), false, on("a claude-agent run on model keys, the login off"));
+    assert.equal(await host.staysInRunner(staysDeps(data, "agentic"), "learning", { input: {}, place: runner }, "run-own", isolation), true, on("runsInRunner's runs too"));
+  }
+});
+
+test("a claude-agent run on Claude Code's login on this machine, with no model_key of its own, is refused at its claim where runs have users of their own, in words naming the login and AGENTRUN_RUN_USER=same; where runs are the server's own user it stays in the runner", async (t) => {
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const launch = { input: {}, place: { mode: "runner" } };
+  await assert.rejects(host.staysInRunner(staysDeps(data, "agentic", true), "claude-agent", launch, "run-own", PER_RUN_USERS), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good, the run failed in its words: ${error.stack}`);
+    assert.match(error.message, /Claude Code's login on this machine/);
+    assert.match(error.message, /the server's own user/);
+    assert.match(error.message, /AGENTRUN_RUN_USER=same/);
+    assert.match(error.message, /model_key/);
+    return true;
   });
-  assert.equal(await host.staysInRunner(deps("workflow"), "pi", { input: {}, place: runner, documents: data }, "run-own"), true, "a workflow run rooted at the server's documents directory");
-  assert.equal(await host.staysInRunner(deps("workflow"), "pi", { input: {}, place: runner }, "run-own"), false, "a workflow run with no documents directory (rooted at /tmp) is a process of its own");
-  assert.equal(await host.staysInRunner(deps("agentic"), "pi", { input: {}, place: runner, documents: data }, "run-own"), false, "an agentic run, which never reads the documents directory");
-  assert.equal(await host.staysInRunner(deps("agentic", true), "claude-agent", { input: {}, place: runner }, "run-own"), true, "a claude-agent run on this machine's Claude Code login");
-  assert.equal(await host.staysInRunner(deps("agentic", true), "claude-agent", { input: {}, place: runner }, "run-keyed"), false, "a claude-agent run on its caller's own model key, which its CLI runs on instead of the login (cli-run-spec.ts)");
-  assert.equal(await host.staysInRunner(deps("agentic", true), "codex", { input: {}, place: runner }, "run-own"), false, "a harness the login is not for");
-  assert.equal(await host.staysInRunner(deps("agentic"), "claude-agent", { input: {}, place: runner }, "run-own"), false, "a claude-agent run on model keys, the login off");
-  assert.equal(await host.staysInRunner(deps("agentic"), "learning", { input: {}, place: runner }, "run-own"), true, "runsInRunner's runs too");
+  assert.equal(await host.staysInRunner(staysDeps(data, "agentic", true), "claude-agent", launch, "run-own", SAME_USER), true, "AGENTRUN_RUN_USER=same: the run stays in the runner, as the server's user, and runs on the login");
+  assert.equal(await host.staysInRunner(staysDeps(data, "agentic", true), "claude-agent", launch, "run-own", NO_HELPER), true, "a local install with no helper: the same");
+  assert.equal(await host.staysInRunner(staysDeps(data, "agentic", true), "claude-agent", launch, "run-keyed", PER_RUN_USERS), false, "a run on its caller's own model key is a process of its own, never refused");
 });
 
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {

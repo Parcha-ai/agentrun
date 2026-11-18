@@ -2,13 +2,14 @@
 // childLoops): an upload named at a run's start is in its work folder before its process starts; a priced MCP tool's
 // call from a run's process is held and booked under its run's cap; an SDK backend run past its deadline is closed by its
 // runner and ends; a slot whose reap does not hold is retired before
-// any run of it starts; and the server started with its runner beside it (serveWithRunner, the image's start) runs each
-// run in a process of its own. image-custody.sh shows the same as the image's users.
+// any run of it starts; where runs have users of their own, a claude-agent run on Claude Code's login on this machine
+// fails at its claim in words naming the setting; and the server started with its runner beside it (serveWithRunner, the
+// image's start) runs each run in a process of its own. image-custody.sh shows the same as the image's users.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -126,6 +127,26 @@ test("a slot whose reap does not end every process of its user is retired before
   assert.match(asked[0], /^reap 0 /, asked[0]);
   assert.ok(!asked[0].includes("--fix"), `reaped before the run's folders were laid: ${asked[0]}`);
   assert.notEqual((await server.api("GET", `/runs/${runId}`)).body.state, "completed");
+});
+
+test("where runs have users of their own, a claude-agent run on Claude Code's login on this machine with no model_key of its own fails at its claim in words naming the login and AGENTRUN_RUN_USER=same: never run, never a hang", { timeout: 90_000 }, async (t) => {
+  withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret" }, ["AGENTRUN_CLAUDE_CODE_LOGIN", "CLAUDE_CODE_OAUTH_TOKEN"]);
+  const dir = scratchDir(t, "runas-login-");
+  const helper = join(dir, "agentrun-runas");
+  writeFileSync(helper, `#!/bin/sh\necho "$*" >> "$(dirname "$0")/log"\nexit 0\n`);
+  chmodSync(helper, 0o755);
+  const lines = [];
+  const server = await serve(t, { faux: undefined, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 1 }, log: (line) => void lines.push(line) } });
+  // Claude Code's login on this machine, turned on for this machine as the owner's turn-on saves it.
+  await server.store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  const runId = await started(server.api, "on-login", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }, { input: { content: "Say hi." } });
+  const { last } = await follow(server.api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "failed", lines.join("\n"));
+  const error = JSON.stringify((await server.api("GET", `/runs/${runId}`)).body.error);
+  assert.match(error, /Claude Code's login on this machine/, error);
+  assert.match(error, /AGENTRUN_RUN_USER=same/, error);
+  assert.match(error, /model_key/, error);
+  assert.equal(existsSync(join(dir, "log")), false, `the helper was never asked to run the run: ${existsSync(join(dir, "log")) ? readFileSync(join(dir, "log"), "utf8") : ""}`);
 });
 
 test("the server started with its runner beside it (serveWithRunner) runs each run in a process of its own", { timeout: 90_000 }, async (t) => {
