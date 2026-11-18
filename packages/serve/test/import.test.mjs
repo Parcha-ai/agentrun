@@ -17,7 +17,7 @@ import { agentIdOf, candidatesOf, importCommand, importedInstructions, MAX_RUN_B
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
-import { listRuns } from "../dist/store-reads/runs.js";
+import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
@@ -1322,8 +1322,9 @@ test("a run its source did not price gets the catalog's estimate at its own prov
   });
   const priced = [];
   for (const run of runs) {
-    const { costUsdEst, costBasis } = await storedMetrics(store, run.id);
-    priced.push([run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null]);
+    // The stored cost (the row's column), never the estimate beside it: that is what a read shows (costOfRun).
+    const { costUsd, metrics: { costUsdEst, costBasis } } = await store.runs.get(run.id);
+    priced.push([run.importedFrom.source, costUsd, costUsdEst ?? null, costBasis ?? null]);
   }
   const codex = await listPrice("openai", "gpt-6.1-sol", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
   const claude = await listPrice("anthropic", "claude-sonnet-5", { input: 3 + 5, cacheRead: 1000 + 1300, cacheWrite: 200 + 100, output: 50 + 30 });
@@ -1393,6 +1394,9 @@ test("an imported session its source did not price reads the catalog's estimate 
   assert.deepEqual(stats.analytics.by_source.map((g) => [g.source, g.cost_usd, g.unknown_cost_runs]).sort(), [["claude-code", 0.0421, 0], ["codex", costUsdEst, 1]]);
   const usage = (await api("GET", "/usage?group_by=agent&from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z")).body;
   assert.deepEqual([usage.total_usd, usage.unpriced_runs, usage.basis], [both, 1, "estimate"]);
+
+  // The one rule every reader goes through: a recorded cost wins over an estimate kept beside it, a recorded $0 included.
+  assert.deepEqual([{ costUsd: 0.5, metrics: { costUsdEst: 0.9 } }, { costUsd: 0, metrics: { costUsdEst: 0.9 } }, { costUsd: null, metrics: { costUsdEst: 0.9 } }, { costUsd: null, metrics: {} }, { costUsd: null, metrics: null }].map(costOfRun), [0.5, 0, 0.9, null, null]);
 });
 
 test("import ends with the summary of every session found, read again from the store once held; a dry run prints the same from what it would import; hours are local", { timeout: 60_000 }, async (t) => {
@@ -1710,7 +1714,7 @@ async function measuredAndImported(t, write) {
   await runImport(store, await planImport(options(h)), options(h));
   const runs = [];
   for (const run of await rowsOf(store)) runs.push({ run, metrics: await storedMetrics(store, run.id) });
-  return { measured, found: plan.found.length, runs, imported: runs.reduce((n, { metrics: m }) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0) };
+  return { store, measured, found: plan.found.length, runs, imported: runs.reduce((n, { metrics: m }) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0) };
 }
 
 test("a Codex thread resumed in a new file of the same id is one run, in the project of its first file: each file's requests and its child's once, as the dry run counts them, whatever the files' names", async (t) => {
@@ -1922,7 +1926,7 @@ test("a subagent's failed request with zero tokens is a request of known zero to
 
 test("a moved Claude Code session whose copy adds work it could not price has an unknown cost and the catalog's estimate, never the original's total, in either folder order", async (t) => {
   for (const moved of ["-a-moved", "~z-moved"]) {
-    const { runs } = await measuredAndImported(t, (home, project) => {
+    const { store, runs } = await measuredAndImported(t, (home, project) => {
       const file = claudeSession(home, project, 203, { cost: 1 });
       const base = { sessionId: sessionId(203), cwd: project, isSidechain: false, userType: "external", version: "2.1.0" };
       writeSession(join(home, ".claude", "projects", moved, `${sessionId(203)}.jsonl`), [
@@ -1932,7 +1936,8 @@ test("a moved Claude Code session whose copy adds work it could not price has an
         { type: "cost-state", sessionId: sessionId(203), totalCostUSD: 1.25, hasUnknownModelCost: true, timestamp: minute(31) },
       ]);
     });
-    assert.deepEqual(runs.map(({ run, metrics }) => [run.costUsd ?? null, typeof metrics.costUsdEst, metrics.costBasis]), [[null, "number", "catalog"]], moved);
+    const stored = await Promise.all(runs.map(async ({ run }) => (await store.runs.get(run.id)).costUsd));
+    assert.deepEqual(runs.map(({ metrics }, i) => [stored[i], typeof metrics.costUsdEst, metrics.costBasis]), [[null, "number", "catalog"]], moved);
   }
 });
 

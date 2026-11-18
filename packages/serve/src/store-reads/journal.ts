@@ -19,6 +19,7 @@ import { journalEntries, journalRecords, recordOf } from "../runner/journal-read
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked, costWordsOf } from "../runner/metrics.js";
 import type { Store } from "../store/store.js";
+import { costOfRun } from "./runs.js";
 import { mcpNameOf, mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
 
@@ -239,8 +240,27 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   // the run's rows are rendered again with those names' catalog names, so each is labelled by its own.
   const hashed = hashedMcp(catalog?.values() ?? []);
   const rendered = hashed.size ? render(hashed) : first;
-  const rows = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries);
+  const priced = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries);
+  // An imported run's usage row says the cost its run reads (costOfRun), never a sum of its transcript's unpriced requests.
+  const run = await store.runs.get(runId);
+  const rows = run?.importedFrom ? importedUsage(priced, costOfRun(run), options) : priced;
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
+}
+
+/** An imported run's `rows` with its usage row in its run's cost (store-reads/runs.ts costOfRun): what its source
+ *  recorded, else the catalog's estimate the import kept beside it, else unknown. The renderer's row sums the transcript's
+ *  requests, which a source that priced the session as a whole (Claude Code) or not at all (Codex) left unpriced, so it
+ *  read "$0 known, 4 not priced" beside a run whose cost is known. A row that already says the run's cost is kept. */
+function importedUsage(rows: readonly TimelineEvent[], usd: number | null, options: TimelineOptions): TimelineEvent[] {
+  const at = rows.findLastIndex((row) => row.kind === "usage");
+  const row = rows[at];
+  const requests = row?.usage?.requests;
+  if (!row?.usage || typeof requests !== "number" || (row.usage.usd === usd && row.usage.so_far_usd === undefined)) return [...rows];
+  const spent = usd === null ? "unknown" : usd === 0 ? "$0" : `$${usd.toFixed(4)}`;
+  const notMetered = row.usage.not_metered ?? 0;
+  const summary = `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${toolCallWords(0, notMetered)}`;
+  const usage = { usd, requests, ...(notMetered ? { not_metered: notMetered } : {}) };
+  return rows.map((each, i) => (i === at ? { ...row, summary, usage } : each));
 }
 
 /** The run's MCP tools and monid endpoints by the wire name its harness called each (catalog.ts wireName of each pinned

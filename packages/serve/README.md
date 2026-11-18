@@ -3275,6 +3275,11 @@ CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
 only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
 
+A run's cost is what its source recorded (Claude Code's and pi's). A session its source did not price, such as a Codex
+session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
+cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
+analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
+
 - `--dry-run` lists what it would import and writes nothing.
 - `--from claude-code,codex,pi` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you

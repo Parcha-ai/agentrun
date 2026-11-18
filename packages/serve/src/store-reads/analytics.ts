@@ -6,7 +6,7 @@
 import { sdkOf } from "../sdk/runs.js";
 import type { RunRow, Store } from "../store/store.js";
 import { DEFAULT_HARNESS } from "../harness.js";
-import { runReadState } from "./runs.js";
+import { costOfRun, runReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
 
 export type ImportSource = "claude-code" | "codex" | "pi";
@@ -94,7 +94,8 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     facts.push({
       startedMs: run.startedAt,
       endedMs: run.endedAt,
-      costUsd: run.costUsd,
+      // As its read says it (costOfRun): an imported session's catalog estimate when its source priced none.
+      costUsd: costOfRun(run),
       running,
       pending: isPending,
       state: isPending ? pending[run.id]! : read,

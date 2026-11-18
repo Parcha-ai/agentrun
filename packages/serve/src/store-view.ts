@@ -56,7 +56,7 @@ import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
-import { type RunReadState, readRun } from "./store-reads/runs.js";
+import { costOfRun, type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
@@ -491,11 +491,12 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // Its cost in the Cost's words (CostWords), each figure by the one rule (costWordsOf): a hold is never spend, so while
   // the total is unknown each held request counts as not priced, and a bound says its exact part and held count beside it.
   // A run still going or ended unbooked: its usage row joined with its decisions' booking (costWordsOfView). An imported
-  // run: what the import stored, exact. An ended run that booked its requests: its booking's words, or, where its end
-  // stored a figure, that figure, with what the booking says beside it only where the two agree (the same unknown, the
-  // same bound); a bound its end stored is said so (cost_upper_bound), the bound the list and the column read too.
+  // run: what the import stored, exact, else the catalog's estimate it kept beside it (costOfRun). An ended run that
+  // booked its requests: its booking's words, or, where its end stored a figure, that figure, with what the booking says
+  // beside it only where the two agree (the same unknown, the same bound); a bound its end stored is said so
+  // (cost_upper_bound), the bound the list and the column read too.
   const bookedWords = booked ? costWordsOf([booked]) : undefined;
-  const words = !booked ? (imported ? { usd: stored ?? null } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
+  const words = !booked ? (imported ? { usd: costOfRun(run.runRow) } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
   const usd = words.usd;
   const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
   const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
