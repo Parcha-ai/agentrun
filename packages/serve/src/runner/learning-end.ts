@@ -52,6 +52,7 @@ import { type Committed, createReflectHook, type DraftCommit } from "./reflect-h
 import { sdkDraftTools, type SdkWorkflowTool } from "../sdk/workflows.js";
 import { runnerSecrets } from "./redact.js";
 import { mcpNameOf } from "../tool-names.js";
+import { held, heldEndOfRun } from "./held.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a draft or
@@ -87,6 +88,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const start = learningStartOf(launch);
   // A run that only uses what its agent learned (`learning: "use"`) is asked nothing and keeps nothing, at every end.
   if (!start || start.use) return undefined;
+  // In a run's own process the step is its runner's (held.ts): what the run must never learn is every secret the runner
+  // holds, and a run's process is given none but its own keys.
+  if (held()) return heldEndOfRun();
   const env = deps.env ?? process.env;
   const hookFor = (seed: string, round: number) => createReflectHook({
     round,

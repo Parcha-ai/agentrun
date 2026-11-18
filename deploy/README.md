@@ -89,6 +89,57 @@ secrets over a one-character alphabet (always `7340` and `0`), and model keys ar
 Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
 then picks up again after the restart.
 
+## One command on a server you rent
+
+On a fresh Linux server (Ubuntu or Debian, x64 or arm64), logged in as root:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+Its agents get a shell in Docker sandboxes, and it stays private. In order, it:
+
+1. Picks the release: the server image `ghcr.io/parcha-ai/agentrun-server:v<version>` that the latest `@parcha/agentrun`
+   depends on. `--version V` picks another release; `--image IMAGE` names an image.
+2. Uses the Docker already on the server, if it is Docker Engine 26 or later with the compose plugin, and never changes
+   it. With no Docker, it installs Docker Engine and the compose plugin from Docker's apt repository, as
+   [Docker's install guide](https://docs.docker.com/engine/install/ubuntu/) does.
+3. Writes `/opt/agentrun` (mode 700): `compose.yaml`, written again on every run, and `.env` (mode 600), whose
+   `AGENTRUN_TOKEN` and `AGENTRUN_SEAL_KEY` it makes once with `openssl rand` and then keeps. Lines you add to `.env`
+   (a model key, a price, `AGENTRUN_BOX_ALLOW`) stay and reach the server. A `compose.override.yaml` of your own stays too.
+4. Starts it with `docker compose up` and waits for its health check. If the first visit would not ask for the setup
+   code, it stops the server and says so.
+5. Prints the address, the setup link with its code, and the line that reads the code again later:
+   `cd /opt/agentrun && docker compose logs agentrun | grep 'Set up this server' | tail -n 1`.
+
+Running it again upgrades to the release it names and keeps the token, the seal key and the data volume.
+
+Where you open it:
+
+- **Tailscale logged in.** On your own tailnet only, at `https://<server>.<tailnet DNS name>/`, through `tailscale serve`,
+  never Funnel, as `--tailscale` does on your own computer. The installer runs that step from the server's image with
+  the server's `tailscale` and its socket. The address needs MagicDNS and HTTPS certificates on in your tailnet's
+  [DNS settings](https://login.tailscale.com/admin/dns). Tailscale's Personal plan is free.
+- **No Tailscale, or logged out.** The server's loopback only. The installer prints the steps (install Tailscale, then
+  `tailscale up`) and the command to run again, and exits 0. It never installs Tailscale or logs in for you. Until
+  then, open it through an SSH tunnel: the installer prints the one `ssh -N -L` line to run on your computer.
+- **`--public`.** Every address of the server, port 7340, over plain HTTP, at `http://<its IPv4 address>:7340/`. Behind
+  NAT, name the address: `curl -fsSL https://agentrun.ai/install | AGENTRUN_PUBLIC_URL=http://<address>:7340/ sh -s --
+  --vps --public`. Before it starts, the installer says what this exposes. Anyone who reaches the address reaches the
+  console and the API, and the setup code, your password and the token cross the network unencrypted. A later run
+  without `--public` makes it private again.
+
+The server's container gets the server's Docker socket, so a run's computer can be a Docker sandbox: a container beside
+it with no socket, every capability dropped, no network but its egress proxy (`AGENTRUN_BOX_ALLOW`, by default the
+package registries and GitHub), and only its run's folder of the data volume. Whatever reaches that socket is root on
+the server, and the AgentRun server reaches it. Keep the server for AgentRun alone, with no other services, keys or
+data on it.
+
+It runs on 1 GB of memory, with room for a run or two at once; 2 GB holds more. At the providers' prices when this was
+written, a Hetzner Cloud CPX02 (1 vCPU, 1 GB, 20 GB) is from €5.49 a month before VAT
+([pricing](https://www.hetzner.com/cloud/regular-performance)), and a DigitalOcean Basic Droplet (1 vCPU, 1 GiB, 25
+GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). The $4 Droplet's 512 MiB is too little.
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -98,6 +149,7 @@ password. The console says where to look and never shows the code. It is in one 
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
 | Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
+| A server you rent (`--vps`) | The installer prints it. Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
 
@@ -139,6 +191,8 @@ What each takes, from its environment alone:
 | `AGENTRUN_STORE_SCHEMA` | optional | optional | The Postgres schema the store is in (default `agentrun`). One server holds a schema at a time (its owner lock). A server started while another holds it waits up to 2 minutes for it to let go, then serves; past that it exits 1. Deploy the server with recreate (stop the old one, start the new one): the new one takes the schema as soon as the old one lets it go. API calls fail for the few seconds the new server takes to start, so a launcher should retry them. A deploy that waits for the new server to be healthy before stopping the old one can't hand a schema over, since the new one isn't healthy until it holds the schema. A server whose owner-lock connection is lost (a failover, a restarted database) refuses calls while it takes the lock back, and exits 1 if another server has taken it, so its platform restarts it. |
 | `AGENTRUN_STORE_POOL_SIZE` | optional | optional | The most connections this process's Postgres store holds at once (default `10`): a whole number from 1 to 1000; any other value stops the process at start, in words. Each process holds its own pool, plus one connection for renewing claims, and the server one more for its owner lock, so a server with a runner beside it holds up to twice the size plus three. Keep the sum over every server and runner below the database's `max_connections`. With the SQLite store the size has no effect, but a value that is no size still stops the start. |
 | `AGENTRUN_MAX_RUNS` | optional | optional | The most runs at once: the server's `--max-runs` and a runner's `--loops` when not given. Unset, as many pi runs as the host's memory holds. |
+| `AGENTRUN_RUN_USER` | optional | optional | Unset, each run runs as a user of its own (slot `s`: uid `1001 + s`) where the image's helper can switch, and the runner refuses to claim, in words, where the platform stripped its file capabilities or set `no-new-privileges`. `same`: every run as the runner's own user, each still a process of its own, said on the runner's log. |
+| `AGENTRUN_RUN_SLOT_FIRST` | | optional | The first slot (0 to 255, default 0) of this runner's runs. Runners in containers of their own on one `/data` volume each take a range of their own, as `deploy/compose.yaml`'s do (0 and 128): two runs on one slot would be one user on the volume. |
 | `AGENTRUN_DRAIN_TIMEOUT` | | optional | A runner's `--drain-timeout` when not given (`8s`, `500ms`, `1m`); unset, `6s`. Keep it plus 25 s below the grace a SIGKILL waits for. |
 | `AGENTRUN_MCP_ALLOW_LOOPBACK` | optional | optional | `1` says this machine is one you alone use: an MCP server on loopback (`127.0.0.1`, `localhost`) is taken at the save and the pin (server) and reached by the runs (runner). Each process reads its own: set it on the server and on every runner that should reach one, and give each runner a server or forwarder at that address on its own loopback, which is its own container's or machine's, not the server's unless they share one. A runner never reaches loopback at a server's own port: 7340, a loopback `AGENTRUN_PUBLIC_URL`'s, or where the server listens (it keeps that in the store at each start). |
 | `AGENTRUN_RUNNER_NAME` | | optional | The runner's name when `--name` gives none: in the runs it claims, its log lines and its heartbeat. Give each runner its own. |

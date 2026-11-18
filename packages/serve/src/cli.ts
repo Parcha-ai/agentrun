@@ -19,6 +19,7 @@ import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
 import { harnessModulesOf } from "./harness-table.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
+import { installEnvProxy } from "./env-proxy.js";
 import { startTelemetry } from "./telemetry.js";
 // The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
 // on a slow disk that load is most of a start. Nothing above loads more than a few files.
@@ -27,6 +28,9 @@ import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.j
 // A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
 // command, the server and the runner alike.
 surviveClosedPipes();
+// Every outbound call through the proxy HTTPS_PROXY or HTTP_PROXY names, NO_PROXY's hosts and loopback direct
+// (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
+installEnvProxy();
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
@@ -411,7 +415,7 @@ let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 // Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
 // under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
-const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
+const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {
   try {
@@ -424,7 +428,8 @@ if (!values["no-runner"] && askedAt === undefined) {
     // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
+    // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();

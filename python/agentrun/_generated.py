@@ -5714,6 +5714,7 @@ class Capabilities(_CapabilitiesRequired, total=False):
     links: CapabilitiesLinks
     home: CapabilitiesHome
     secrets: CapabilitiesSecrets
+    run_isolation: Literal["uid", "process"]
 
 
 class _CapabilitiesServerRequired(TypedDict):

@@ -161,9 +161,9 @@ test("Settings → Computers' factories are built from the same makers: one plac
 });
 
 test("the computer package's registry gives Modal and E2B Archil mounts, the remote sandboxes Mode 2 runs on; Daytona none, saying why", () => {
-  for (const id of ["modal", "e2b"]) assert.deepEqual(PROVIDERS.find((one) => one.id === id)?.mounts, ["archil"], id);
+  for (const id of ["modal", "e2b"]) assert.deepEqual(PROVIDERS.find((one) => one.id === id)?.mounts, ["archil", "sync"], id);
   const daytona = PROVIDERS.find((one) => one.id === "daytona");
-  assert.deepEqual(daytona?.mounts, []);
+  assert.deepEqual(daytona?.mounts, ["sync"]);
   assert.deepEqual(daytona?.unmounted, { archil: "Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS" });
 });
 
