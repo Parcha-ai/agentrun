@@ -4006,7 +4006,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   switch: the runner then refuses to claim, saying so and naming the setting. `AGENTRUN_RUN_USER=same` runs every run as
   the runner's own user instead, still each in a process of its own, said on the runner's log at its start. Runners in
   containers of their own on one `/data` volume each take slots from an `AGENTRUN_RUN_SLOT_FIRST` of their own
-  (`deploy/compose.yaml`: 0 and 128), or two of their runs would be one user on the volume.
+  (`deploy/compose.yaml`: 0 and 128). A runner told to hold more runs (`--loops`, `AGENTRUN_MAX_RUNS`) than the slots
+  from its first to the last (255) refuses to start, in words; with no number told, it holds those slots. Each run's
+  slot is also locked on the volume (`/data/run-slots`, util-linux `flock`) from before its run starts until after its
+  reap, so runners whose ranges overlap never run two runs as one user: a slot another runner holds is skipped, and a
+  run that finds every free slot held is handed back unstarted, said on the runner's log.
 - A local install (`npx`, `node dist/cli.js`) has no helper: each run is a process of its own as the user who started
   the server, and `run_isolation` is `"process"`. Its runs, and a program one starts, can read what that user reads,
   another run's folder and the data directory included, as before; keep a local server to agents you trust as you trust

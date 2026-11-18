@@ -11,11 +11,12 @@ export const DRAIN_TIMEOUT = "30s";
  *  number maxRunsOf gives the capabilities' max_concurrent_runs: AGENTRUN_MAX_RUNS, else as many pi runs as this host's
  *  memory holds), and on its close lets each held run finish its turn for up to --drain-timeout (default DRAIN_TIMEOUT)
  *  before it stops the rest to resume. The server has checked both by the time this reads them (startServe). */
-export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: string }, env: NodeJS.ProcessEnv): { loops: number; drainMs: number } {
+export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: string }, env: NodeJS.ProcessEnv): { loops: number; loopsTold: boolean; drainMs: number } {
   const drainTimeout = serve.drainTimeout ?? DRAIN_TIMEOUT;
   const drainMs = durationMs(drainTimeout);
   if (drainMs === undefined) throw new Error(`the drain timeout ${drainTimeout} is not a duration such as 8s`);
-  return { loops: maxRunsOf(env, serve.maxRuns), drainMs };
+  // `loopsTold`: the number was given (--max-runs, AGENTRUN_MAX_RUNS), not the host's memory's count.
+  return { loops: maxRunsOf(env, serve.maxRuns), loopsTold: serve.maxRuns !== undefined || Boolean(env.AGENTRUN_MAX_RUNS), drainMs };
 }
 
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
@@ -33,8 +34,9 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  too (workspace/computer-janitor.ts), as the CLI's start asks. `hub`: the server's AttachHub (Serve.attachHub), which
  *  holds each paired computer's socket in this process, so a run here takes one. `dial`: the server's (Serve.dial), which
  *  a remote provider's create takes, so a machine that dials the server lands in this process's hub. Returns the runner
- *  and a close() that stops both and closes its store. */
-export async function runnerBeside(dataDir: string, { loops, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+ *  and a close() that stops both and closes its store. `loopsTold`: `loops` was given (besideRunnerOptions), so on uid
+ *  isolation a number past the helper's slots is refused rather than cut. */
+export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; loopsTold?: boolean; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -80,12 +82,13 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
   if (ownProcesses && !evalFakes && !harnessInstall) {
     const { isolationLoops, runIsolationOf } = await import("./run-child-host.js");
     try {
-      isolation = await runIsolationOf(process.env, loops ?? Number.MAX_SAFE_INTEGER, deps.log);
+      isolation = await runIsolationOf(process.env, loopsTold ? loops : undefined, deps.log);
     } catch (error) {
       await store.close();
       seal.release();
       throw error;
     }
+    if (loops !== undefined && isolation.kind === "uid" && loops > isolation.slots) deps.log(`each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
     if (loops !== undefined) held = isolationLoops(isolation, loops);
     else if (isolation.kind === "uid") held = isolation.slots;
   }
@@ -132,9 +135,9 @@ export async function runnerBeside(dataDir: string, { loops, drainMs, env, janit
 export async function serveWithRunner(options: import("../server.js").ServeOptions): Promise<{ serve: import("../server.js").Serve; close(): Promise<void> }> {
   const { fauxEnvOf, startServe } = await import("../server.js");
   const { besideRunEnv } = await import("./main.js");
-  const { loops, drainMs } = besideRunnerOptions(options, process.env);
+  const { loops, loopsTold, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

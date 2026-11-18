@@ -94,7 +94,8 @@ services:
   # Each runs every run as a user of its own (uid 1001 + its slot), from a first slot of its own
   # (AGENTRUN_RUN_SLOT_FIRST): runners on one /data volume never share a slot, or two of their runs would be one user
   # on the volume. A runner takes as many slots from its first as it holds runs at once (its --loops, else its memory's:
-  # fifteen at most at 2 GB), so runner-1's stay below runner-2's 128 while it holds fewer than 128 runs.
+  # fifteen at most at 2 GB), so runner-1's stay below runner-2's 128 while it holds fewer than 128 runs. Each run's
+  # slot is locked on /data too, so ranges that overlap never put two runs on one slot at once.
   runner-1:
     <<: *runner
     hostname: runner-1

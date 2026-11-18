@@ -40,24 +40,68 @@ const scratchDir = (t, prefix) => {
 // ---------------------------------------------------------------------------------------------------------------------
 // Slots and the isolation a host gives.
 
-test("every slot of a runner is a uid of its own in the helper's range, and a slot given back is the next one taken", () => {
+test("every slot of a runner is a uid of its own in the helper's range, and a slot given back is the next one taken", async () => {
   for (const [first, count] of [[0, RUN_SLOTS], [128, 128], [3, 5]]) {
     const slots = new Slots(first, count);
-    const taken = Array.from({ length: count }, () => slots.take());
+    const taken = [];
+    for (let i = 0; i < count; i++) taken.push(await slots.take());
     const uids = taken.map(slotId);
     assert.equal(new Set(uids).size, count, `slots ${first}..${first + count - 1} share a uid: ${uids.join(" ")}`);
     assert.deepEqual([...taken].sort((a, b) => a - b), Array.from({ length: count }, (_, i) => first + i), "a runner takes exactly its own slots");
     for (const uid of uids) assert.ok(uid >= FIRST_RUN_ID && uid < FIRST_RUN_ID + RUN_SLOTS, `uid ${uid} is outside the helper's ${FIRST_RUN_ID}-${FIRST_RUN_ID + RUN_SLOTS - 1}`);
-    assert.throws(() => slots.take(), /every run slot of this runner is held/);
-    slots.give(taken[1]);
-    assert.equal(slots.take(), taken[1]);
+    await assert.rejects(async () => slots.take(), /every run slot of this runner is held/);
+    await slots.give(taken[1]);
+    assert.equal(await slots.take(), taken[1]);
   }
-  // Two runners on one data directory, from first slots of their own (deploy/compose.yaml: 0 and 128), never share a uid.
-  const one = new Slots(0, 15);
-  const two = new Slots(128, 15);
-  const ones = Array.from({ length: 15 }, () => slotId(one.take()));
-  const twos = Array.from({ length: 15 }, () => slotId(two.take()));
-  assert.deepEqual(ones.filter((uid) => twos.includes(uid)), []);
+});
+
+test("two runners on one data directory never run two runs on one slot at once, their ranges overlapping or not: a slot another runner holds is skipped, and none free is no slot", async (t) => {
+  const locks = scratchDir(t, "run-slots-");
+  const held = [];
+  t.after(async () => {
+    for (const [slots, slot] of held) await slots.give(slot);
+  });
+  const takeAll = async (slots, n) => {
+    const got = [];
+    for (let i = 0; i < n; i++) {
+      const slot = await slots.take();
+      got.push(slot);
+      if (slot !== undefined) held.push([slots, slot]);
+    }
+    return got;
+  };
+  // runner-1 from 0 holding 4, runner-2 from 2 holding 4: 2 and 3 are both runners'.
+  const one = new Slots(0, 4, locks);
+  const two = new Slots(2, 4, locks);
+  const ones = await takeAll(one, 4);
+  assert.deepEqual([...ones].sort(), [0, 1, 2, 3]);
+  const twos = await takeAll(two, 4);
+  assert.deepEqual(twos.filter((slot) => ones.includes(slot)), [], `runner-2 took ${twos.join(" ")} while runner-1 held ${ones.join(" ")}`);
+  assert.deepEqual(twos.filter((slot) => slot !== undefined).sort(), [4, 5]);
+  assert.equal(twos.filter((slot) => slot === undefined).length, 2, "with every free slot of its held by the other, a runner has none to take");
+  // Given back by runner-1 (after its run's reap), the slot is runner-2's to take.
+  await one.give(2);
+  held.splice(held.findIndex(([slots, slot]) => slots === one && slot === 2), 1);
+  const after = await two.take();
+  assert.equal(after, 2);
+  held.push([two, after]);
+  // A runner that dies (SIGKILL: no give-back) holds no slot: its lock ends with it.
+  const module = new URL("../dist/runner/run-child-host.js", import.meta.url).href;
+  // (Its interval first: a runner's own work keeps it alive; the lock's holder does not.)
+  const dying = spawn(process.execPath, ["--input-type=module", "-e", `setInterval(() => {}, 1000); import { Slots } from ${JSON.stringify(module)}; console.log(await new Slots(6, 1, ${JSON.stringify(locks)}).take());`], { stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => void dying.kill("SIGKILL"));
+  const took = await new Promise((resolve) => {
+    dying.stdout.once("data", (chunk) => resolve(String(chunk).trim()));
+    dying.once("exit", (code) => resolve(`exited ${code}`));
+  });
+  assert.equal(took, "6");
+  const three = new Slots(6, 1, locks);
+  assert.equal(await three.take(), undefined, "a slot a live runner holds is no other's");
+  dying.kill("SIGKILL");
+  let again;
+  for (const end = Date.now() + 5_000; (again = await three.take()) === undefined; await sleep(50)) assert.ok(Date.now() < end, "the dead runner's slot stayed locked");
+  assert.equal(again, 6);
+  held.push([three, again]);
 });
 
 test("a run's folder is given to its next slot however deep an earlier claim's slot wrote in it, and a symlink out of it is never followed", async (t) => {
@@ -131,8 +175,11 @@ test("a host gives uid isolation when the helper can switch, process isolation w
   const log = (line) => void lines.push(line);
   const able = helperOf(t, 0);
   assert.deepEqual(await runIsolationOf({}, 8, log, able), { kind: "uid", helper: able, first: 0, slots: 8 });
-  assert.deepEqual(await runIsolationOf({ AGENTRUN_RUN_SLOT_FIRST: "250" }, 8, log, able), { kind: "uid", helper: able, first: 250, slots: 6 });
-  assert.match(lines.at(-1), /holds at most 6 runs at once/);
+  // Runs it was told to hold past the helper's last slot: refused in words, never quietly fewer (runner-1 at 0 with 200
+  // loops would take runner-2's 128 and up); with no number given it holds the slots from its first.
+  await assert.rejects(runIsolationOf({ AGENTRUN_RUN_SLOT_FIRST: "250" }, 8, log, able), (error) => error instanceof RunIsolationRefused && /slots 250\.\.257/.test(error.message) && /at most 6/.test(error.message) && /AGENTRUN_RUN_SLOT_FIRST/.test(error.message));
+  assert.deepEqual(await runIsolationOf({ AGENTRUN_RUN_SLOT_FIRST: "250" }, 6, log, able), { kind: "uid", helper: able, first: 250, slots: 6 });
+  assert.deepEqual(await runIsolationOf({ AGENTRUN_RUN_SLOT_FIRST: "250" }, undefined, log, able), { kind: "uid", helper: able, first: 250, slots: 6 });
   assert.equal((await runIsolationOf({}, 8, log, join(scratchDir(t, "none-"), "agentrun-runas"))).kind, "process");
   assert.deepEqual(await runIsolationOf({ AGENTRUN_RUN_USER: "same" }, 8, log, able), { kind: "process", why: "AGENTRUN_RUN_USER=same" });
   assert.match(lines.at(-1), /AGENTRUN_RUN_USER=same: every run runs as this runner's own user/);

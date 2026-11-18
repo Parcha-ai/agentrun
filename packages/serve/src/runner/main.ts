@@ -503,15 +503,18 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   }
   // Each run a process of its own, as a user of its own where the image's helper can switch: a helper that cannot is
   // refused here in words that name the setting (run-child-host.ts runIsolationOf), before any run is claimed. The slots
-  // the helper reaches bound the runs held at once.
+  // the helper reaches bound the runs held at once: a number it was told (--loops, AGENTRUN_MAX_RUNS) past them is
+  // refused, and its memory's count is cut to them, said on its log.
   let isolation: RunIsolation;
+  const told = args.loops !== undefined || Boolean(env.AGENTRUN_MAX_RUNS);
   try {
-    isolation = await runIsolationOf(env, holds.loops, (line) => void console.error(`agentrun-serve runner: ${line}`));
+    isolation = await runIsolationOf(env, told ? holds.loops : undefined, (line) => void console.error(`agentrun-serve runner: ${line}`));
   } catch (error) {
     if (!(error instanceof RunIsolationRefused)) throw error;
     console.error(`agentrun-serve runner: ${error.message}`);
     return 2;
   }
+  if (isolation.kind === "uid" && holds.loops > isolation.slots) console.error(`agentrun-serve runner: each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
   holds = { ...holds, loops: isolationLoops(isolation, holds.loops) };
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();

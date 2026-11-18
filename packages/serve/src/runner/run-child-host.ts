@@ -95,8 +95,10 @@ const execText = (file: string, args: readonly string[], timeoutMs: number): Pro
 
 /** This host's isolation for `loops` runs at once, by `env` and the helper: the helper's own check that it can switch
  *  (its effective set holds what it needs) decides `uid`; none installed (a local install), `process`; `same`, `process`
- *  said in the log. A helper that cannot switch is refused in words naming the setting, never a quiet fall back. */
-export async function runIsolationOf(env: NodeJS.ProcessEnv, loops: number, log: (line: string) => void, helper: string = RUNAS_HELPER): Promise<RunIsolation> {
+ *  said in the log. A helper that cannot switch is refused in words naming the setting, never a quiet fall back. `loops`
+ *  the runner was told (--loops, AGENTRUN_MAX_RUNS) past the helper's last slot from its first is refused too; none told
+ *  (a host's memory's count, or no bound), it holds the slots from its first. */
+export async function runIsolationOf(env: NodeJS.ProcessEnv, loops: number | undefined, log: (line: string) => void, helper: string = RUNAS_HELPER): Promise<RunIsolation> {
   const asked = env[RUN_USER_ENV];
   if (asked !== undefined && asked !== "" && asked !== "same" && asked !== "slot") throw new RunIsolationRefused(`${RUN_USER_ENV}=${asked} is not a setting this runner knows: unset it (each run as a user of its own, where the image's helper can switch) or set it to "same" (every run as the runner's own user).`);
   if (asked === "same") {
@@ -118,27 +120,77 @@ export async function runIsolationOf(env: NodeJS.ProcessEnv, loops: number, log:
   const firstText = env[RUN_SLOT_FIRST_ENV];
   const first = firstText === undefined || firstText === "" ? 0 : Number(firstText);
   if (!Number.isSafeInteger(first) || first < 0 || first >= RUN_SLOTS) throw new RunIsolationRefused(`${RUN_SLOT_FIRST_ENV}=${firstText} is not a slot 0..${RUN_SLOTS - 1}.`);
-  const slots = Math.min(loops, RUN_SLOTS - first);
-  if (slots < 1) throw new RunIsolationRefused(`${RUN_SLOT_FIRST_ENV}=${first} leaves this runner no slot of the ${RUN_SLOTS} the helper reaches.`);
-  if (slots < loops) log(`each run runs as a user of its own, and the helper reaches ${slots} from slot ${first}: this runner holds at most ${slots} runs at once`);
-  return { kind: "uid", helper, first, slots };
+  const reach = RUN_SLOTS - first;
+  if (loops !== undefined && loops > reach) {
+    throw new RunIsolationRefused(
+      `This runner will not claim runs: it holds ${loops} at once from ${RUN_SLOT_FIRST_ENV}=${first}, slots ${first}..${first + loops - 1}, and the helper's last slot is ${RUN_SLOTS - 1}. ` +
+        `Hold at most ${reach} (--loops, AGENTRUN_MAX_RUNS) or start from a lower ${RUN_SLOT_FIRST_ENV}; runners on one data directory each take a range of their own.`,
+    );
+  }
+  return { kind: "uid", helper, first, slots: loops ?? reach };
 }
 
 /** The runs a runner holds at once, as `uid` isolation lets it: its slots. */
 export const isolationLoops = (isolation: RunIsolation, loops: number): number => (isolation.kind === "uid" ? Math.min(loops, isolation.slots) : loops);
 
-/** The slots of a uid runner, each held by one run at a time. */
+/** The folder of the data directory where each slot's lock is (`<slot>.lock`, the server's user's alone). */
+export const slotLocks = (data: string): string => join(data, "run-slots");
+
+/** Slot `slot`'s lock under `dir`, taken for as long as the process it returns lives: an exclusive flock (util-linux's
+ *  flock) its holder keeps until its stdin closes, which the runner's end closes too, so a runner that dies holds no
+ *  slot. Undefined when another holds it. */
+async function lockSlot(dir: string, slot: number): Promise<ChildProcess | undefined> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const holder = spawn("flock", ["-n", "-E", "75", join(dir, `${slot}.lock`), "sh", "-c", "echo held; exec cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+  holder.unref();
+  for (const stream of [holder.stdin, holder.stdout, holder.stderr] as unknown as { unref?: () => void }[]) stream?.unref?.();
+  let said = "";
+  holder.stderr!.on("data", (chunk) => void (said += chunk));
+  return new Promise((resolve, reject) => {
+    holder.stdout!.once("data", () => resolve(holder));
+    holder.once("error", (error) => reject(new Error(`slot ${slot}'s lock could not be taken: ${error.message}`)));
+    holder.once("exit", (code) => (code === 75 ? resolve(undefined) : reject(new Error(`slot ${slot}'s lock could not be taken: flock exited ${code}${said ? `: ${said.trim()}` : ""}`))));
+  });
+}
+
+/** Ends a slot's lock: its holder's stdin closed, and its exit waited for. */
+async function unlockSlot(holder: ChildProcess): Promise<void> {
+  if (holder.exitCode !== null || holder.signalCode !== null) return;
+  const gone = new Promise((resolve) => holder.once("exit", resolve));
+  holder.stdin?.end();
+  await gone;
+}
+
+/** The slots of a uid runner, each held by one run at a time. With `locks` (the data directory's slotLocks), each slot
+ *  taken is locked there too, so runners on one data directory whose ranges overlap never run two runs on one slot: a
+ *  slot another runner holds is skipped. */
 export class Slots {
   readonly #free: number[];
-  constructor(first: number, count: number) {
+  readonly #locks: string | undefined;
+  readonly #held = new Map<number, ChildProcess>();
+  constructor(first: number, count: number, locks?: string) {
     this.#free = Array.from({ length: count }, (_, i) => first + count - 1 - i);
+    this.#locks = locks;
   }
-  take(): number {
-    const slot = this.#free.pop();
-    if (slot === undefined) throw new Error("every run slot of this runner is held: it claimed more runs than it has slots");
-    return slot;
+  /** A free slot of this runner no other runner holds; undefined when another holds every free one. */
+  async take(): Promise<number | undefined> {
+    if (this.#free.length === 0) throw new Error("every run slot of this runner is held: it claimed more runs than it has slots");
+    if (this.#locks === undefined) return this.#free.pop();
+    for (const slot of [...this.#free].reverse()) {
+      if (!this.#free.includes(slot)) continue;
+      const holder = await lockSlot(this.#locks, slot);
+      if (!holder) continue;
+      this.#free.splice(this.#free.indexOf(slot), 1);
+      this.#held.set(slot, holder);
+      return slot;
+    }
+    return undefined;
   }
-  give(slot: number): void {
+  /** Gives `slot` back, its lock ended first. */
+  async give(slot: number): Promise<void> {
+    const holder = this.#held.get(slot);
+    this.#held.delete(slot);
+    if (holder) await unlockSlot(holder);
     this.#free.push(slot);
   }
 }
@@ -728,7 +780,9 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  the runner's model route), and its one write is the merge into the agent's learning folder, which no run's process
  *  may write. */
 export function childLoops(options: ChildLoopsOptions): LoopFactory {
-  const slots = options.isolation.kind === "uid" ? new Slots(options.isolation.first, options.isolation.slots) : undefined;
+  // Each slot locked on the data directory too: another runner on it whose range overlaps this one's never runs a run
+  // on a slot this one holds.
+  const slots = options.isolation.kind === "uid" ? new Slots(options.isolation.first, options.isolation.slots, slotLocks(options.deps.data)) : undefined;
   const own: LoopFactory = (loopDeps) => childLoop(options, slots, loopDeps);
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
@@ -813,7 +867,14 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const value = handed(name);
           return value === undefined ? [] : [[name, value] as const];
         }));
-        const slot = slots?.take();
+        const slot = await slots?.take();
+        if (slots && slot === undefined) {
+          // Every free slot of this runner is held by another runner on the data directory (ranges that overlap): the run
+          // is handed back unstarted, for a runner with a slot to claim.
+          log(`run ${claim.runId}: handed back unstarted: every free slot of this runner is held by another runner on this data directory; give each runner on one data directory a range of its own (${RUN_SLOT_FIRST_ENV}, --loops)`);
+          ready();
+          return { state: "interrupted" };
+        }
         if (isolation.kind === "uid" && slot !== undefined) hold = new SlotHold(slot, isolation.helper, log);
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         const heldSide = heldFor(deps, { claim, run: runRow, launch, revision, claimed }, cut, log);
@@ -901,7 +962,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           await heldSide.release();
           // No kill of this run reaps the slot once it is given back: those still reaping end first.
           await hold?.settle();
-          if (slot !== undefined) slots?.give(slot);
+          if (slot !== undefined) await slots?.give(slot);
         }
       })());
     },
