@@ -5,7 +5,7 @@
 // recorder uses fails. It waits on the recorder, up to a deadline (60 s, or the ms given), and a deadline passed fails
 // by name: the frame format that was never written, the files, the frames written and dropped.
 //   node ffmpeg-check.mjs [deadline-ms]
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -81,9 +81,14 @@ const stopThenFail = async (why) => {
   await recorder.stop("ended");
   fail(why);
 };
+// A frame counts as written once ffmpeg's input took it (the pipe's buffer), which is before ffmpeg has made its file, or
+// even started: one that refuses JPEG frames can take one and then exit with no file made, and a stop that comes before
+// the recorder hears of the exit reads no `ended`. So the JPEG file is done once it is on the disk too; until then the loop
+// goes on, and the ffmpeg that exited fails by name (`ended`), never as a read of a file that is not there. (The PNG file
+// is finished, so on the disk, once the switch to JPEG closes it.)
 for (const [format, file, done] of [
   ["png", "frame.png", () => facts().written >= 1],
-  ["jpeg", "frame.jpg", () => switchedAt !== undefined && facts().files.length === 2 && facts().written > switchedAt],
+  ["jpeg", "frame.jpg", () => switchedAt !== undefined && facts().files.length === 2 && facts().written > switchedAt && existsSync(join(dir, facts().files[1]))],
 ]) {
   const bytes = new Uint8Array(readFileSync(fileURLToPath(new URL(file, import.meta.url))));
   while (!done()) {
