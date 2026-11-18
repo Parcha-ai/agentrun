@@ -93,7 +93,7 @@ authed "$api/agents" > /dev/null || die "the API refused the token in .env"
 session=$(curl -fsS "$api/auth/session")
 echo "$session"
 jq -e '.password_set == false and .setup_code == true' <<< "$session" > /dev/null || die "the first visit takes no setup code: an open server"
-code=$(curl -s -o "$logs/setup.json" -w '%{http_code}' -X POST -H 'Origin: http://127.0.0.1:7340' -H 'content-type: application/json' --data '{"password":"vps-walk-not-a-secret"}' "$api/setup")
+code=$(curl -s -o "$logs/setup.json" -w '%{http_code}' -X POST -H 'Origin: http://127.0.0.1:7340' -H 'content-type: application/json' --data '{"password":"not-a-secret"}' "$api/setup")
 cat "$logs/setup.json"
 echo
 [ "$code" = 403 ] && grep -q "takes the setup code in its log" "$logs/setup.json" || die "a setup with no code answered $code"
@@ -196,7 +196,7 @@ said "$logs/5.log" "the setup code, your password and the API"
 jq -e '.setup_code == true' <<< "$(curl -fsS "http://$address:7340/v2/auth/session")" > /dev/null || die "the first visit takes no setup code: an open server"
 code=$(sed -n 's/^Set up this server: .*#code=\([A-Za-z0-9_-]*\) .*/\1/p' "$logs/5.log" | tail -n 1)
 [ -n "$code" ] || die "no setup code printed"
-setup=$(jq -n --arg code "$code" '{password: "vps-walk-not-a-secret", code: $code}')
+setup=$(jq -n --arg code "$code" '{password: "not-a-secret", code: $code}')
 answer=$(curl -s -o "$logs/setup.json" -w '%{http_code}' -X POST -H "Origin: http://$address:7340" -H 'content-type: application/json' --data "$setup" "http://$address:7340/v2/setup")
 cat "$logs/setup.json"
 echo

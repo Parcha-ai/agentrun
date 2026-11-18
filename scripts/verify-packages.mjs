@@ -132,6 +132,10 @@ const allowedEndpoints = {
       'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
     // The native-connect skill documents a loopback port placeholder for the server on the source machine.
     ['skills/agentrun-cli/SKILL.md', 'http://127.0.0.1:PORT'],
+    // The --vps installer reads the server it started where its port is published, the server loopback, and the compose
+    // file it writes checks the health of that server inside its own container.
+    ['install.sh',
+      'http://127.0.0.1:7340'], // key-gate: loopback-rule the port the --vps installer publishes on the server loopback
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
