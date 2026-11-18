@@ -3,7 +3,7 @@
 // hello that is not what the computer paired as is closed with its code; one run holds the computer at a time.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -461,6 +461,136 @@ test("a run's hold on an attached computer ends at its lifetime, released or not
 	assert.equal(agent.ok, true, JSON.stringify(agent));
 	assert.equal(hub.deadline(paired.id), undefined, "an agent's hold has no deadline");
 	driver.close();
+});
+
+/** What computerd init says on a Linux box with no display: a sandbox's machine. */
+const LINUX = { protocol: PROTOCOL_VERSION, version: "0.2.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+/** A run's create on it, its folder a synced folder, under the run's claim epoch 3. */
+const SYNCED = { image: "attached", lifetimeMs: 60_000, network: "open", mount: { kind: "sync" }, labels: { "agentrun.run": "r1", "agentrun.epoch": "3" } };
+
+/** A Linux box's computerd on `computer`'s end, scripted: it runs as uid 1000, its /workspace is `box.workspace` ({ type,
+ *  uid, mode }, or none), holding the names in `box.entries` (its listing truncated when `box.truncated`, and a remove
+ *  finding none of them when `box.unreachable`, as for a name that is not UTF-8 and reaches the wire changed); each
+ *  files call is recorded with its path. */
+function linuxBox(computer, box) {
+	computer.onText((text) => {
+		const { id, method, params } = JSON.parse(text);
+		if (id === undefined) return;
+		if (method.startsWith("files.")) box.calls.push(`${method} ${params.path}${params.recursive ? " recursive" : ""}`);
+		if (method.startsWith("process.")) box.calls.push(`${method}${params.id ? ` ${params.id}` : ""}${params.signal ? ` ${params.signal}` : ""}`);
+		const reply = (result) => computer.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+		const refuse = (kind, message) => computer.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message, data: { kind } } }));
+		const program = box.programs.find((one) => one.id === params?.id);
+		if (method === "hello") return reply(LINUX);
+		if (method === "files.read" && params.path === "/proc/self/status") return reply({ data: Buffer.from("Name:\tcomputerd\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n").toString("base64"), eof: true, size: 0 });
+		if (method === "files.stat" && params.path === "/workspace") return void box.stat.then(() => (box.workspace ? reply({ size: 0, mtimeMs: 0, gid: 1000, ...box.workspace }) : refuse("not_found", "stat /workspace: no such file or directory")));
+		if (method === "process.list") return reply({ processes: box.programs.map((one) => ({ pid: 40, argv: ["sleep", "1000"], argvClipped: false, pty: false, startedAt: 0, endedAt: one.running ? null : 1, exitCode: null, signal: null, ...one })), truncated: false, next: box.programs.length });
+		if (method === "process.signal") return program.stubborn ? reply({}) : ((program.running = false), reply({}));
+		if (method === "process.wait") return reply({ running: program.running, exitCode: null, signal: program.running ? null : "KILL" });
+		// A loop of listings never yields to a timer here (each answer is a microtask), so the fake bounds it.
+		if (method === "files.list" && box.calls.filter((call) => call.startsWith("files.list")).length > 50) return refuse("limit", "listed /workspace 50 times: emptying it would go on forever");
+		if (method === "files.list") return reply({ entries: box.entries.map((name) => ({ path: `/workspace/${name}`, type: "file", size: 0, mode: 0o644, mtimeMs: 0, uid: 1000, gid: 1000 })), truncated: box.truncated === true });
+		if (method === "files.remove" && box.unreachable) return refuse("not_found", `lstat ${params.path}: no such file or directory`);
+		if (method === "files.remove") {
+			box.entries = box.entries.filter((name) => `/workspace/${name}` !== params.path);
+			return reply({});
+		}
+		return reply({});
+	});
+}
+
+test("a paired Linux box is a sandbox that takes the run's folder as a synced folder in its own /workspace: one that is missing, a link, another user's or open to others is refused naming the fix and the hold let go; an earlier run's folder is emptied; the folder reads back under the claim epoch, from inside", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const { kind, daemon, mount, vendorAgentPorts } = provider.capabilities();
+	assert.deepEqual({ kind, daemon, mount, vendorAgentPorts }, { kind: "linux", daemon: "child", mount: ["sync"], vendorAgentPorts: [] }, "computerd init runs there, a child of its service manager, and attach dials out");
+	const fields = (spec) => provider.check(spec).map((refusal) => refusal.field);
+	assert.deepEqual(fields(SYNCED), []);
+	assert.deepEqual(fields({ ...SYNCED, mount: { kind: "bind", path: "/srv/runs/r1" } }), ["mount"], "a synced folder alone");
+	assert.deepEqual(fields({ ...SYNCED, mount: { kind: "archil", disk: "d", region: "r", folder: "f", token: "not-a-secret" } }), ["mount"]);
+	assert.deepEqual(fields({ ...SYNCED, labels: { "agentrun.run": "r1" } }), ["labels"], "read back under the run's claim epoch");
+	const mac = attachedProvider(pairedFor(new Mac(), "c-mac"), hub);
+	assert.equal(mac.capabilities().mount, undefined, "a desktop takes no mount");
+	assert.match(mac.check(SYNCED).find((refusal) => refusal.field === "mount")?.message ?? "", /declares no mount kind/);
+
+	const [serve, computer] = socketPair();
+	const box = { workspace: undefined, entries: ["old.txt"], calls: [], programs: [], stat: Promise.resolve() };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const fix = "make /workspace a directory of computerd's user's own, mode 0700, as root: the tmpfiles.d line in spec/computer/attach.md, A Linux box (d /workspace 0700 <user> <user> -), then systemd-tmpfiles --create";
+	for (const [workspace, words] of [
+		[undefined, `lab has no /workspace, where a run's synced folder goes: ${fix}`],
+		[{ type: "symlink", uid: 1000, mode: 0o777, target: "/home/ada" }, `/workspace on lab is a link, and a run's synced folder is never written through one: remove it, then ${fix}`],
+		[{ type: "file", uid: 1000, mode: 0o600 }, `/workspace on lab is a file, where a run's synced folder needs a directory: remove it, then ${fix}`],
+		[{ type: "dir", uid: 0, mode: 0o700 }, `/workspace on lab is uid 0's, not uid 1000's, the user computerd runs as: ${fix}`],
+		[{ type: "dir", uid: 1000, mode: 0o755 }, `/workspace on lab is open to its group or others (mode 0755): ${fix}`],
+	]) {
+		box.workspace = workspace;
+		const refused = await provider.create(SYNCED, req());
+		assert.deepEqual(refused.error, { code: "refused", message: words });
+		assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+	}
+	assert.deepEqual(box.calls.filter((call) => !call.startsWith("files.read") && !call.startsWith("files.stat")), [], "nothing is ended, listed or removed on a box whose /workspace is not its own");
+
+	// An earlier run's program that outlives KILL: the box is not handed on, and the hold is let go.
+	box.workspace = { type: "dir", uid: 1000, mode: 0o700 };
+	box.programs = [{ id: "p9", pid: 49, running: true, stubborn: true }];
+	assert.deepEqual((await provider.create(SYNCED, req())).error, { code: "refused", message: "ending an earlier run's programs on lab: sleep 1000 (pid 49) is still running 5 s after KILL" });
+	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+	assert.deepEqual(box.entries, ["old.txt"], "nothing removed while it runs");
+
+	// An earlier run's program still running, and one that ended: the running one is killed and waited for, then the
+	// folder emptied, before the push. A retry of the same request while that goes on shares its answer; another request
+	// finds the box held.
+	box.programs = [{ id: "p0", running: false }, { id: "p1", pid: 41, running: true }];
+	box.calls.length = 0;
+	let stat;
+	box.stat = new Promise((resolve) => (stat = resolve));
+	const first = req();
+	const making = provider.create(SYNCED, first);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	const retried = provider.create(SYNCED, first);
+	assert.deepEqual((await provider.create({ ...SYNCED, labels: { "agentrun.run": "r2", "agentrun.epoch": "4" } }, first)).error?.code, "exists", "a retry with other labels is another request, while the first is pending too");
+	assert.match((await provider.create(SYNCED, req())).error?.message ?? "", /^lab is held by another run/);
+	stat();
+	const held = (await making).value;
+	assert.deepEqual((await retried).value, held, "the retry's answer is the first's");
+	assert.deepEqual(box.calls, ["files.read /proc/self/status", "files.stat /workspace", "process.list", "process.signal p1 KILL", "process.wait p1", "files.list /workspace", "files.remove /workspace/old.txt recursive"], "an earlier run's programs are ended and its folder emptied before the push");
+	assert.deepEqual((await provider.attach({ id: held.id })).value.spec.mount, { kind: "sync", epoch: 3 });
+	assert.deepEqual((await provider.list({ "agentrun.run": "r1" })).value.map((one) => one.mount), [{ kind: "sync", epoch: 3 }]);
+	// Swapped for a link while the run holds it: the read-back says so, and the claim's check refuses it.
+	box.workspace = { type: "symlink", uid: 1000, mode: 0o777, target: "/home/ada" };
+	assert.deepEqual((await provider.attach({ id: held.id })).value.spec.mount, { other: `/workspace on lab is a link, and a run's synced folder is never written through one: remove it, then ${fix}` });
+	assert.equal((await provider.release(held, "delete")).ok, true);
+	assert.equal((await provider.attach({ id: held.id })).error?.code, "gone");
+
+	// A run that takes no folder there: nothing is read on the box, and nothing read back.
+	box.calls.length = 0;
+	const plain = (await provider.create({ ...SYNCED, mount: undefined }, req())).value;
+	assert.equal((await provider.attach({ id: plain.id })).value.spec.mount, undefined);
+	assert.deepEqual(box.calls, []);
+	hub.revoke(paired.id, "the test is over");
+});
+
+test("a paired Linux box whose /workspace holds entries a remove can't reach is refused in words naming what was left, whole listing or truncated, and the hold let go", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], unreachable: true, calls: [], programs: [], stat: Promise.resolve() };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const words = "emptying /workspace on lab of an earlier run's folder: 2 entries could not be removed (first: /workspace/a: lstat /workspace/a: no such file or directory)";
+	for (const truncated of [false, true]) {
+		box.truncated = truncated;
+		box.calls.length = 0;
+		const answer = await provider.create(SYNCED, req());
+		assert.deepEqual(answer.error, { code: "refused", message: words }, `truncated: ${truncated}`);
+		assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+		assert.equal(box.calls.filter((call) => call === "files.list /workspace").length, 1, "a pass that removes nothing ends it");
+	}
+	hub.revoke(paired.id, "the test is over");
 });
 
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
