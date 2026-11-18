@@ -107,8 +107,9 @@ test("five failed firings in a row turn the trigger off; each sends one signed t
   const library = new Webhook(secret);
   for (const [i, message] of failures().entries()) {
     const verified = library.verify(message.body, message.headers);
-    assert.deepEqual(Object.keys(verified.data).sort(), ["auto_paused", "error", "firing_key", "name", "nominal_at", "trigger_id"]);
+    assert.deepEqual(Object.keys(verified.data).sort(), ["agent_id", "agent_name", "auto_paused", "error", "firing_key", "name", "nominal_at", "trigger_id"]);
     assert.equal(verified.data.trigger_id, id);
+    assert.deepEqual([verified.data.agent_id, verified.data.agent_name], ["flaky", "flaky"], "the agent the trigger runs as");
     assert.equal(verified.data.error.code, "agent_not_runnable");
     assert.equal(message.headers["webhook-id"], `msg_${createHash("sha256").update(`trigger.failed\n${verified.data.firing_key}`).digest("hex").slice(0, 32)}`, "its id from the firing's key");
     assert.equal(verified.data.auto_paused, i === 6, "the fifth in a row says it turned the trigger off");

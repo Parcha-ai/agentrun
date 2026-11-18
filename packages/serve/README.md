@@ -2243,12 +2243,13 @@ the webhook was set is never sent.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
-  "data": { "run_id": "…", "agent_id": "triage", "status": "input_required", "title": "…",
+  "data": { "run_id": "…", "agent_id": "triage", "agent_name": "Triage", "status": "input_required", "title": "…",
             "url": "https://agents.example.com/#/runs/…", "pending": { "kind": "question" } } }
 ```
 
-A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). The title is the run's own, as the store holds it: a trigger's
+A message is thin: ids, the agent's name, the status, the title and a link to the run on the page; never a tool's
+arguments, an output or an input, which the API reads (`GET /v2/runs/{id}`). `agent_name` is the agent's name as the
+message is built (a rename after it is not sent again), or its id when it has none. The title is the run's own, as the store holds it: a trigger's
 run is titled from its trigger, `<Source> <name>` and the event when its source names one ("Webhook reviews:
 pull_request opened"), never from its input; a workflow run's from its agent's name and its input; any other run's
 from its input. `pending.kind` is `question` (an `ask_person`),
@@ -2318,8 +2319,10 @@ one `missed` firing with their count, and the schedule goes on from now; the lat
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
 because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
-gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
-`webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
+gets a `trigger.failed` message for it (`data: {trigger_id, name, agent_id, agent_name, firing_key, nominal_at, error,
+auto_paused}`, its `webhook-id` made from the firing's key, so a restart never sends it twice). `agent_id` is the agent
+the trigger runs as, which every trigger has: a `start_run` target's agent, or the agent of the run a `message_run`
+target names; `agent_name` is that agent's name as the message is built, or its id when it has none. Five failed firings in a row turn the
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
