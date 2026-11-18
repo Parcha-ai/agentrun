@@ -53,8 +53,9 @@ export const MODAL = defineProvider({
 	network: ["none", "open", "allow"],
 	// A linux computer, with GPUs when asked; or, on connect dial alone, a desktop with none: the box image's X server and
 	// xfwm4, started through computerd over the socket the sandbox dialed, at the adapter's default size of 2 CPUs and
-	// 4 GiB (modal.ts). A provider on connect exec refuses kind desktop when it is made.
-	capabilities: [{ ...SANDBOX, gpu: MODAL_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop" } }],
+	// 4 GiB (modal.ts). The desktop's configuration selects dial itself, whatever modalConnect says: a provider on connect
+	// exec refuses kind desktop when it is made.
+	capabilities: [{ ...SANDBOX, gpu: MODAL_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop", connect: "dial" } }],
 	// No default image: every computer starts from the box image its prepareImage() answers.
 	prepareImage: true,
 	load: () => import("../modal.js"),

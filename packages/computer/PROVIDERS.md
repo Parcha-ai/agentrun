@@ -435,10 +435,12 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
     The box image is about 400 MB compressed (amd64); its size unpacked is **unverified**, but well under standard-1's
     8 GB.
   - **Modal**: `kind: "desktop"` on `connect: "dial"` alone; 2 CPUs and 4 GiB on Modal's VM runtime, with no GPU (a GPU
-    sandbox runs on gVisor). On `connect: "exec"` the constructor refuses a desktop in words.
+    sandbox runs on gVisor). On `connect: "exec"` the constructor refuses a desktop in words; the descriptor's desktop
+    configuration selects dial itself.
   - **Daytona**: `kind: "desktop"` on `connect: "dial"` alone, from the operator's snapshot of `box/Dockerfile`
     (`AGENTRUN_DAYTONA_SNAPSHOT`), with its 2 CPUs, 4 GB and 10 GB of disk (`box/build-daytona.py`); no resources may be
-    sent beside a snapshot, and no GPU on dial. On `connect: "exec"` the constructor refuses a desktop in words.
+    sent beside a snapshot, and no GPU on dial. On `connect: "exec"` the constructor refuses a desktop in words; the
+    descriptor's desktop configuration selects dial itself.
 
   Xvfb and the window manager on Fly, Cloudflare, Modal and Daytona are **unverified**: no live run yet. The window
   manager runs under `unshare --user --map-current-user --net` as the tool user; whether each vendor's runtime lets an

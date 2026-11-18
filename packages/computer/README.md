@@ -1398,7 +1398,10 @@ on exec, as before).
 
 A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server and xfwm4, started over the socket it
 dialed, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
-constructor refuses `kind: "desktop"` in words. **Unverified**: Xvfb and the window manager on Modal (no live run yet).
+constructor refuses `kind: "desktop"` in words. The descriptor's desktop configuration selects `connect: "dial"` itself,
+so a server whose `modalConnect` is exec still makes its desktop over dial (it needs the dial's public address). In
+serve's Mode 2 the run's folder is an Archil mount, which a dial machine takes none of yet, so a Modal desktop there is
+refused at `check()` in those words. **Unverified**: Xvfb and the window manager on Modal (no live run yet).
 
 ## Daytona
 
@@ -1671,8 +1674,9 @@ no exec and no upload, and nothing goes through the toolbox: create sends the bo
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server and xfwm4, started over the socket it dialed, with the snapshot's 2 CPUs
-and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words.
-**Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
+and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words. The
+descriptor's desktop configuration selects `connect: "dial"` itself, so a server whose `daytonaConnect` is exec still
+makes its desktop over dial. **Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).

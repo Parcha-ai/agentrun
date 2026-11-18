@@ -113,8 +113,9 @@ export const DAYTONA = defineProvider({
 	network: ["none", "open", "allow"],
 	// A linux computer, with GPUs when asked; or, on connect dial alone, a desktop with none: a snapshot of box/Dockerfile's
 	// X server and xfwm4, started through computerd over the socket the sandbox dialed, at the snapshot's 2 CPUs and 4 GiB
-	// (box/build-daytona.py). A provider on connect exec refuses kind desktop when it is made.
-	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop" } }],
+	// (box/build-daytona.py). The desktop's configuration selects dial itself, whatever daytonaConnect says: a provider on
+	// connect exec refuses kind desktop when it is made.
+	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop", connect: "dial" } }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset. A
 	// computer with an Archil mount needs a snapshot of box/Dockerfile (box/build-daytona.py prints its name).
