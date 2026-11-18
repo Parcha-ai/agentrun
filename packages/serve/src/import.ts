@@ -16,7 +16,7 @@ import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./t
 import { defaultData } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
-import { REPEAT_MS } from "./stop-signals.js";
+import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
 import { logLine } from "./print.js";
 import { launchBody } from "./run-launch.js";
@@ -337,14 +337,12 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
   }
   const toRead = onProgress ? plan.projects.flatMap((p) => byRun(p.sessions)).filter((files) => !held(files[0]!)).length : 0;
   let readSoFar = 0;
-  onProgress?.("keys", 0, toRead);
   for (const project of plan.projects) {
     for (const files of byRun(project.sessions)) {
       if (signal?.aborted) break;
       const listed = files[0]!;
       if (held(listed)) continue;
       onProgress?.("keys", readSoFar++, toRead);
-      if (signal?.aborted) break;
       // Its own count of records seen: the import's, shared across its files, is the write's to keep.
       const seen = new Set<string>();
       const parts: Session[] = [];
@@ -1137,7 +1135,6 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   const known = await findKeys(plan, add, text, (listed) => held.get(`${listed.source}:${listed.id}`) !== undefined, options.signal, options.onProgress);
   const toTake = options.onProgress ? plan.projects.reduce((n, p) => n + byRun(p.sessions).length, 0) : 0;
   let written = 0;
-  if (!options.signal?.aborted) options.onProgress?.("write", 0, toTake);
   const scannedAs = known.stamps;
   const epoch0 = new Date(0).toISOString();
   for (const project of plan.projects) {
@@ -1178,7 +1175,6 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     const seen = await seenIn(store, project.agentId);
     for (const files of byRun(project.sessions)) {
       options.onProgress?.("write", written++, toTake);
-      // Checked after the progress is said: a stop asked as it is shown takes no more.
       if (options.signal?.aborted) break;
       const listed = files[0]!;
       // A run the store holds already is left as it is: importRun is atomic, so a held run is a whole run.
@@ -1333,56 +1329,22 @@ type ImportDeps = {
   progress?: Progress;
 };
 
-/** `agentrun-serve import ARGS`: its exit code. A Ctrl+C it took is in the code (130) whenever it came, the summary's
- *  last line included: its listeners stay until everything it says is printed. */
+/** `agentrun-serve import ARGS`: its exit code. The first Ctrl+C (or SIGTERM) once it writes stops it between two
+ *  sessions: each is written whole (importRun is atomic), what is written stays, and the next import picks up the rest.
+ *  Its listeners stay until everything it says is printed, since its lines are held until the end; a Ctrl+C it took is
+ *  in the code (130) whenever it came. */
 export async function importCommand(args: string[], usage: string, deps: ImportDeps = {}): Promise<number> {
   const progress = deps.progress ?? terminalProgress();
-  const stops = stopOnCtrlC(progress);
+  const stops = stopOnce(() => {
+    progress.done();
+    console.error("agentrun-serve import: stopping; a session being saved is finished first, what is saved stays, and the summary follows (Ctrl+C again to quit now)");
+  });
   try {
     const code = await importWith(args, usage, { ...deps, progress }, stops);
     return code === 0 && stops.signal.aborted ? 130 : code;
   } finally {
     stops.unhook();
   }
-}
-
-/** The import's Ctrl+C (SIGINT, and SIGTERM): `hook` listens from when the import starts to write, `unhook` once the
- *  command has printed everything. The first one stops the import between two sessions: each session is written whole
- *  (importRun is atomic), what is written stays, and the next import picks up the rest. One that comes once the sessions
- *  are written (`written`) stops nothing, since nothing is left to stop: the summary is printed all the same. A second
- *  one, a while after the first, leaves at once; sooner, it is the launcher's copy of the first (stop-signals.ts). */
-type Stops = { signal: AbortSignal; hook: () => void; written: () => void; unhook: () => void };
-
-function stopOnCtrlC(progress: Progress): Stops {
-  const stop = new AbortController();
-  let stoppedAt = 0;
-  let written = false;
-  const onStop = () => {
-    if (stop.signal.aborted) {
-      if (Date.now() - stoppedAt > REPEAT_MS) process.exit(130);
-      return;
-    }
-    stoppedAt = Date.now();
-    progress.done();
-    console.error(
-      written
-        ? "agentrun-serve import: the sessions are saved; printing the summary (Ctrl+C again to quit now)"
-        : "agentrun-serve import: stopping after the session being saved; what is saved stays, and the next import picks up the rest (Ctrl+C again to quit now)",
-    );
-    stop.abort();
-  };
-  return {
-    signal: stop.signal,
-    hook: () => {
-      process.on("SIGINT", onStop);
-      process.on("SIGTERM", onStop);
-    },
-    written: () => void (written = true),
-    unhook: () => {
-      process.off("SIGINT", onStop);
-      process.off("SIGTERM", onStop);
-    },
-  };
 }
 
 async function importWith(
@@ -1396,7 +1358,7 @@ async function importWith(
     out = console.log,
     progress,
   }: ImportDeps & { progress: Progress },
-  stops: Stops,
+  stops: ReturnType<typeof stopOnce>,
 ): Promise<number> {
   // The server's own secrets, kept sealed in the store, open only under the server's seal key: it is
   // booted the one way the server and runner boot it (seal-key.ts bootSealKey) once the store is open (keyed below), and
@@ -1460,12 +1422,12 @@ async function importWith(
       console.error(`${(error as Error).message}\n\n${usage}`);
       return 2;
     }
-    const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
-    if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    const port = values.port === undefined ? undefined : Number(values.port);
+    if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65_535)) {
       console.error(`--port takes a port number\n\n${usage}`);
       return 2;
     }
-    const open = openAt(env, values.port === undefined ? undefined : port);
+    const open = openAt(env, port);
     const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
     const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
     if (unknown.length) {
@@ -1529,7 +1491,7 @@ async function importWith(
       out(`${plan.projects.length} projects, ${sessionsOf(plan.projects.flatMap((p) => p.sessions)).length} sessions; nothing was written (dry run)`);
       if (plan.secretsFound !== undefined) out(`${plan.secretsFound} secret${plan.secretsFound === 1 ? "" : "s"} would be removed`);
       for (const line of leftOutLines(plan.skipped)) out(line);
-      for (const line of summaryLines(found, open, { dryRun: true })) out(line);
+      for (const line of summaryLines(found, open)) out(line);
       return 0;
     }
     // A data directory an earlier version wrote (its store a file-era store.sqlite, or its settings files), or one a running
@@ -1542,7 +1504,6 @@ async function importWith(
       store = await openStore({ dataDir: dir, role: "server" });
     } catch (error) {
       if (error instanceof StoreFromEarlierVersion || error instanceof StoreOwned) {
-        // The server holds the store while it runs: the import goes in while it is stopped, so say how.
         warnings.push(`agentrun-serve import: ${error.message}${error instanceof StoreOwned ? `\n${STOP_SERVER_FIRST}` : ""}`);
         return 1;
       }
@@ -1555,8 +1516,6 @@ async function importWith(
         if (sealRefused(error)) return 1;
         throw error;
       }
-      // A Ctrl+C from here on is the import's own (stopOnCtrlC), until the command has printed everything: the lines are
-      // held until the end, so a Ctrl+C left to end the process after the sessions are written would print none of them.
       stops.hook();
       let plan: Plan;
       let report: ImportReport;
@@ -1570,25 +1529,24 @@ async function importWith(
         progress.show("Looking for sessions…");
         plan = await planImport(options, store);
         report = await runImport(store, plan, options);
-        // A stop asked while sessions were being written; one asked later stops no session, and the summary says none.
         stopped = stops.signal.aborted;
-        stops.written();
       } finally {
         progress.done();
       }
       for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.already ? `, already imported ${agent.already}` : ""}`);
       if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
       if (values.verbose) for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
-      out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
+      const taken = report.agents.reduce((n, a) => n + a.runs, 0);
+      out(`${report.agents.length} agents, ${taken} runs imported into ${dir}`);
       out(`${report.secretsRemoved ?? 0} secret${report.secretsRemoved === 1 ? "" : "s"} removed`);
       for (const line of leftOutLines(report.skipped)) out(line);
       for (const { cwd, source, model } of report.modelsLeftOut ?? []) out(`model not kept: ${cwd} (${source}) ran on ${model}, which no model catalog here lists; its agent runs on the server's default model until you pick one`);
       // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
       const held = await importedIn(store);
       const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
-      const imported = { sessions: report.agents.reduce((n, a) => n + a.runs, 0), agents: report.agents.filter((a) => a.runs > 0).length, stopped };
-      for (const line of summaryLines([...(await foundAll(store, runs)), ...(await untiedFound(plan))], open, { imported })) out(line);
-      return stopped ? 130 : 0;
+      const imported = { sessions: taken, agents: report.agents.filter((a) => a.runs > 0).length, stopped };
+      for (const line of summaryLines([...(await foundAll(store, runs)), ...(await untiedFound(plan))], open, imported)) out(line);
+      return 0;
     } finally {
       await store.close();
     }
@@ -1625,14 +1583,15 @@ function openAt(env: NodeJS.ProcessEnv, port: number | undefined): OpenAt {
 }
 
 /** What a refused import says when the server holds the store: it runs with the server stopped. */
-export const STOP_SERVER_FIRST = "Stop the server first (Ctrl+C where it runs, or `npx @parcha/agentrun service stop` when it runs as a service), run the import, then start the server again.";
+const STOP_SERVER_FIRST = "Stop the server first (Ctrl+C where it runs, or `npx @parcha/agentrun service stop` when it runs as a service), run the import, then start the server again.";
 
 /** Where the CLI says how far an import is: `show` a line in place of the last, `done` clears it. */
 export type Progress = { show: (text: string) => void; done: () => void };
 
 /** Progress on stderr when it is a terminal: one line rewritten in place, at most every 100 ms, cleared at the end; off a
  *  terminal (a log, a pipe), nothing. It holds counts alone, never a name or a path, so nothing in it is a secret. */
-function terminalProgress(stream: NodeJS.WriteStream = process.stderr): Progress {
+function terminalProgress(): Progress {
+  const stream = process.stderr;
   if (!stream.isTTY) return { show: () => undefined, done: () => undefined };
   let shownAt = 0;
   let shown = false;

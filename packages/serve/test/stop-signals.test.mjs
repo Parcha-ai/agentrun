@@ -3,7 +3,7 @@
 // runs resume on the next start. cli-stop.test.mjs walks the first two through the real CLI.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEADLINE_MARGIN_MS, REPEAT_MS, stopOnSignals } from "../dist/stop-signals.js";
+import { DEADLINE_MARGIN_MS, REPEAT_MS, stopOnce, stopOnSignals } from "../dist/stop-signals.js";
 
 function harness({ runs = 1, boundMs = 4_000 } = {}) {
   let clock = 0;
@@ -88,4 +88,23 @@ test("a stop asked earlier (a signal during the start, handed over once the star
   h.stop();
   assert.deepEqual(h.codes, [130], "a window past the first signal, though not past the hand-over");
   assert.match(h.said[0], /^stopping now; runs resume on the next start/);
+});
+
+test("a command's stop: the first signal says its line and aborts, a repeat within the window is that same stop, a later one exits 130, and nothing listens once unhooked", () => {
+  let clock = 0;
+  const said = [];
+  const codes = [];
+  const stop = stopOnce(() => said.push("stopping"), { now: () => clock, exit: (code) => codes.push(code) });
+  assert.equal(process.emit("SIGINT"), false, "nothing listens before the hook");
+  stop.hook();
+  assert.equal(process.emit("SIGINT"), true);
+  assert.equal(stop.signal.aborted, true);
+  clock = REPEAT_MS - 1;
+  process.emit("SIGTERM");
+  assert.deepEqual([said, codes], [["stopping"], []], "the launcher's copy of the first signal is not a second stop");
+  clock = REPEAT_MS;
+  process.emit("SIGINT");
+  assert.deepEqual([said, codes], [["stopping"], [130]]);
+  stop.unhook();
+  assert.deepEqual([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")], [0, 0]);
 });

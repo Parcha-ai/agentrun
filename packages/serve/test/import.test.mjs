@@ -1433,15 +1433,16 @@ test("import ends with the summary of every session found, read again from the s
 });
 
 test("the summary says unknown where it has no data", () => {
-  const lines = summaryLines([{ source: "codex", agent: "a" }, { source: "pi", agent: "b", metrics: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, tools: {} } }], "http://127.0.0.1:7340");
+  const open = { url: "http://127.0.0.1:7340", known: true };
+  const lines = summaryLines([{ source: "codex", agent: "a" }, { source: "pi", agent: "b", metrics: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, tools: {} } }], open);
   assert.deepEqual(lines, [
     "Found 2 sessions  Codex 1 · pi 1",
-    "Imported into 2 agents (one per project)",
+    "Would import into 2 agents (one per project)",
     "+ tokens unknown · agent time unknown · 1 session unknown",
     "+ Busiest hour: unknown · top tool: none",
     "Open http://127.0.0.1:7340/",
   ]);
-  assert.deepEqual(summaryLines([], "http://127.0.0.1:7340").slice(0, 4), ["Found 0 sessions", "Imported into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
+  assert.deepEqual(summaryLines([], open).slice(0, 4), ["Found 0 sessions", "Would import into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
 });
 
 test("an imported agent runs as imported: a project with no instructions file gets the import's own, and a coding app's own model (one no catalog lists) is not pinned, while a listed one is", { timeout: 60_000 }, async (t) => {
@@ -1479,20 +1480,14 @@ test("an imported agent runs as imported: a project with no instructions file ge
 
 test("the summary says what this import took: new sessions out of every agent, nothing new as nothing new, a stop as a stop", () => {
   const found = [{ source: "codex", agent: "a" }, { source: "codex", agent: "b" }, { source: "pi", agent: "c" }];
-  const second = (imported) => summaryLines(found, "http://127.0.0.1:7340", { imported })[1];
+  const open = { url: "http://127.0.0.1:7340", known: true };
+  const second = (imported) => summaryLines(found, open, imported)[1];
   assert.equal(second({ sessions: 3, agents: 3 }), "Imported 3 sessions into 3 agents (one per project)");
   assert.equal(second({ sessions: 1, agents: 1 }), "Imported 1 session into 1 of 3 agents (one per project)");
   assert.equal(second({ sessions: 0, agents: 0 }), "Nothing new to import: all 3 sessions are in 3 agents already");
   assert.equal(second({ sessions: 2, agents: 2, stopped: true }), "Stopped: imported 2 sessions into 2 of 3 agents before Ctrl+C; run the import again for the rest");
-  assert.equal(summaryLines([], "http://127.0.0.1:7340", { imported: { sessions: 0, agents: 0 } })[1], "Nothing to import");
-  assert.equal(summaryLines(found, "http://127.0.0.1:7340", { dryRun: true, imported: { sessions: 0, agents: 0 } })[1], "Would import into 3 agents (one per project)", "a dry run says what it would take");
-});
-
-test("the summary's last line names an address only when it is known: a guessed default port says the server may take another", () => {
-  const last = (open) => summaryLines([], open).at(-1);
-  assert.equal(last({ url: "http://127.0.0.1:7555", known: true }), "Open http://127.0.0.1:7555/");
-  assert.equal(last({ url: "http://127.0.0.1:7340", known: false }), "Start the server, then open the address it prints (http://127.0.0.1:7340/ unless that port is taken)");
-  assert.equal(last({ known: false }), "Start the server, then open the address it prints");
+  assert.equal(summaryLines([], open, { sessions: 0, agents: 0 })[1], "Nothing to import");
+  assert.equal(second(undefined), "Would import into 3 agents (one per project)", "a dry run says what it would take");
 });
 
 test("import with no --port does not promise the default port; --port 0 names none", async (t) => {

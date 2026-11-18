@@ -45,15 +45,14 @@ function importedLine({ sessions, agents, stopped }: Imported, all: number, foun
 
 /** The last line: where to open the console. A guessed address says it is the default, which the server's start may
  *  pass over for the next free port. */
-function openLine(open: string | OpenAt): string {
-  const { url, known } = typeof open === "string" ? { url: open, known: true } : open;
+function openLine({ url, known }: OpenAt): string {
   if (known && url) return `Open ${url}/`;
   return `Start the server, then open the address it prints${url ? ` (${url}/ unless that port is taken)` : ""}`;
 }
 
-/** The summary's lines for `found`, ending with where to open the server (`open`, its address). `dryRun`: what an import
- *  would take, nothing taken yet; `imported`, what the import wrote (absent: every agent found counted as imported). */
-export function summaryLines(everything: readonly Found[], open: string | OpenAt, { dryRun = false, imported }: { dryRun?: boolean; imported?: Imported } = {}): string[] {
+/** The summary's lines for `found`, ending with where to open the server (`open`). `imported`: what the import wrote;
+ *  absent, a dry run's summary: what an import would take, nothing taken yet. */
+export function summaryLines(everything: readonly Found[], open: OpenAt, imported?: Imported): string[] {
   // Sessions, agents, time and hours are the sessions'; tokens and tool calls take in the untied subagents' too.
   const found = everything.filter((f) => !f.untied);
   const by = SOURCES.map((source) => [source, found.filter((f) => f.source === source).length] as const).filter(([, n]) => n > 0);
@@ -80,7 +79,7 @@ export function summaryLines(everything: readonly Found[], open: string | OpenAt
   const tool = !measured.length ? "unknown" : top === undefined || !total ? "none" : `${top} (${Math.round((100 * topCalls!) / total)}%)`;
   return [
     `Found ${plural(found.length, "session")}${by.length ? `  ${by.map(([source, n]) => `${NAMES[source]} ${count(n)}`).join(" · ")}` : ""}`,
-    !dryRun && imported ? importedLine(imported, agents, found.length) : `${dryRun ? "Would import into" : "Imported into"} ${plural(agents, "agent")} (one per project)`,
+    imported ? importedLine(imported, agents, found.length) : `Would import into ${plural(agents, "agent")} (one per project)`,
     `+ ${used.join(" · ")}`,
     `+ Busiest hour: ${busiest === undefined ? "unknown" : `${String(busiest).padStart(2, "0")}:00`} · top tool: ${tool}`,
     openLine(open),
