@@ -90,6 +90,18 @@ describe("Settings → Model keys, Use a model gateway", () => {
     expect(page.host.innerHTML).not.toContain(KEY);
   });
 
+  it("in use, Use no key: Test asks with no key (api_key null), never the saved one, as Save then sends", async () => {
+    const { v2, calls } = server(() => IN_USE, (call) => (call.path.endsWith("/test") ? { ok: true, models: ["gpt-6.1-sol"] } : IN_USE));
+    const page = await open(v2);
+    await page.click(/^Change$/);
+    const box = page.row().querySelector<HTMLInputElement>('input[name="no_key"]')!;
+    await act(async () => { box.click(); });
+    await page.click(/^Test$/);
+    expect(calls.find((c) => c.method === "POST")).toEqual({ method: "POST", path: "/v2/settings/model-gateway/test", body: { base_url: "https://gateway.example/v1", api_key: null } });
+    await page.submit();
+    expect((calls.find((c) => c.method === "PUT")?.body as { api_key?: unknown }).api_key).toBeNull();
+  });
+
   it("a refused address is said at its field, in the server's words", async () => {
     const words = "base_url must be an https URL of a gateway, with a path if it serves the API under one; it is http, not https.";
     const { v2 } = server(() => OFF, () => json(422, { error: { code: "input_invalid", message: words, retryable: false, fields: [{ field: "base_url", reason: "invalid", message: words }] } }));

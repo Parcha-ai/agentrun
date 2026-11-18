@@ -7,7 +7,10 @@
 //   - an address is refused by the one rule AGENT_MODEL_BASE_URL is (provider.ts gatewayBase), in its words;
 //   - AGENT_MODEL_BASE_URL set where AgentRun starts wins whole: the saved gateway and its key are never used, and its
 //     changes are 409;
-//   - the test lists the gateway's models, with its key, follows no redirect, and never says the key;
+//   - the test lists the gateway's models, with its key (or with none, said outright), follows no redirect, and never
+//     says the key, not even inside a model id;
+//   - the key is sealed with the origin it was saved for, and read with an address of another origin (a change caught
+//     between its two writes, or one whose second write failed) it is not handed on;
 //   - the key (a canary) is in no answer, log line, the store's bytes in the clear, this process's environment, or what a
 //     run's environment is made of.
 import assert from "node:assert/strict";
@@ -71,6 +74,11 @@ test("a gateway saved from the owner's session puts every model on it at once: c
   assert.deepEqual([(await models()).ready, (await models()).source], [true, "gateway"], "in force at once, with no restart");
   // Test with no body: the gateway in force, on its saved key.
   assert.deepEqual((await said("POST", "/settings/model-gateway/test")).body, { ok: true, models: [MODEL, "gpt-6.1-sol"] });
+  // api_key null (the form's "Use no key"): asked with no key, never the saved one, so it fails as a save of no key would.
+  const before = gw.requests.length;
+  const keyless = await said("POST", "/settings/model-gateway/test", { base_url: `${gw.url}/v1`, api_key: null });
+  assert.equal(keyless.body.ok, false, JSON.stringify(keyless.body));
+  assert.deepEqual(gw.requests.slice(before).map((request) => request.headers.authorization), [undefined], "the test went with no key");
 
   assert.equal((await api("POST", "/agents", agent("on-gateway"))).status, 201);
   const started = await said("POST", "/agents/on-gateway/runs", { input: { content: "Answer." } });
@@ -205,4 +213,45 @@ test("a claimed run's tools never get the saved gateway's key: its model routes 
   const tools = await claimSecrets({ store, sealKey: randomBytes(32), env: runEnv }, { kind: "agentic", body: { tools: [] } }, { model: { provider: "agent-model", modelId: "m-1" } });
   assert.equal(JSON.stringify(Object.getOwnPropertyNames(tools).map((name) => tools[name])).includes(CANARY), false, "not on the tools' environment");
   assert.equal(claimModelEnv(runEnv, tools, undefined).AGENT_MODEL_API_KEY, CANARY, "the model routes read it");
+});
+
+test("the saved key is sealed with its origin: read beside an address of another origin, between a change's two writes or after the second failed, it is not handed on", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { randomBytes } = await import("node:crypto");
+  const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+  const { saveGateway, readSavedGateway, GATEWAY_SETTING } = await import("../dist/model-gateway.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "gateway-bound-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => { await store.close().catch(() => {}); rmSync(dir, { recursive: true, force: true }); });
+  const sealKey = randomBytes(32);
+  const deps = { store, sealKey, env: {}, changed: async () => {} };
+  await saveGateway(deps, { base_url: "https://a.example/v1", api_key: CANARY, models: { default: "m-1" } });
+  assert.equal((await readSavedGateway(store, sealKey)).key, CANARY, "with its own origin's address: handed on");
+  // Moving to B writes B's key, then B's address. Caught between the two (or with the second failed): A's address, B's key.
+  await putSealedKey(store, sealKey, (await import("../dist/model-gateway.js")).GATEWAY_KEY_ROW, JSON.stringify({ v: 1, origin: "https://b.example", key: WRONG }));
+  const between = await readSavedGateway(store, sealKey);
+  assert.deepEqual([between.base_url, between.key], ["https://a.example/v1", undefined], "B's key never goes to A");
+  // The other order: B's address read beside A's key.
+  await saveGateway(deps, { base_url: "https://a.example/v1", api_key: CANARY, models: { default: "m-1" } });
+  await store.settings.put(GATEWAY_SETTING, { v: 1, base_url: "https://b.example/v1", ids: "as_named", models: { default: "m-1" } });
+  assert.equal((await readSavedGateway(store, sealKey)).key, undefined, "A's key never goes to B");
+  // A key sealed with no origin (not this shape) is no key.
+  await putSealedKey(store, sealKey, GATEWAY_KEY_ROW, CANARY);
+  assert.equal((await readSavedGateway(store, sealKey)).key, undefined);
+  // And a save that keeps the saved key (api_key left out) keeps it only for the origin it was sealed with.
+  await saveGateway(deps, { base_url: "https://a.example/v1", api_key: CANARY, models: { default: "m-1" } });
+  await assert.rejects(saveGateway(deps, { base_url: "https://b.example/v1", models: { default: "m-1" } }), (error) => error.code === "input_invalid" && !error.message.includes(CANARY));
+  await saveGateway(deps, { base_url: "https://a.example/other", models: { default: "m-2" } });
+  assert.equal((await readSavedGateway(store, sealKey)).key, CANARY, "the same origin keeps it");
+});
+
+test("the test leaves out a model id that holds the key it asked with", async () => {
+  const { testGateway } = await import("../dist/model-gateway.js");
+  const fetch = async () => new Response(JSON.stringify({ object: "list", data: [{ id: `echo-${CANARY}` }, { id: "m-1" }] }), { status: 200, headers: { "content-type": "application/json" } });
+  const store = { settings: { get: async () => undefined }, sealedKeys: { get: async () => undefined } };
+  const answer = await testGateway({ store, sealKey: Buffer.alloc(32), env: {}, changed: async () => {}, fetch }, { base_url: "https://gateway.example", api_key: CANARY });
+  assert.deepEqual(answer, { ok: true, models: ["m-1"] });
 });

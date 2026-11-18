@@ -2792,7 +2792,7 @@ export type SaveEmailAccountResponse = {
   password_unreadable: boolean;
 };
 
-/** Use a model gateway for every model, saved here (PUT /settings/model-gateway). */
+/** Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type SaveModelGatewayBody = {
   base_url: string;
   api_key?: string | null;
@@ -2906,10 +2906,10 @@ export type TestEmailAccountResponse = {
   };
 };
 
-/** Ask a model gateway which models it serves (POST /settings/model-gateway/test). */
+/** Ask a model gateway which models it serves (POST /settings/model-gateway/test). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type TestModelGatewayBody = {
   base_url?: string;
-  api_key?: string;
+  api_key?: string | null;
 };
 export type TestModelGatewayResponse = {
   ok: true;
@@ -5604,7 +5604,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
   saveComputerKeys: {"method":"PUT","path":"/computers/{provider}/keys","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveEmailAccount: {"method":"PUT","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  saveModelGateway: {"method":"PUT","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveModelGateway: {"method":"PUT","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url","ids","models.default","models.fast","models.strong"],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startClaudeLogin: {"method":"POST","path":"/settings/claude-login/login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5612,7 +5612,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   testCalendar: {"method":"POST","path":"/settings/calendar/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testComputer: {"method":"POST","path":"/computers/{provider}/test","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testEmailAccount: {"method":"POST","path":"/settings/email/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  testModelGateway: {"method":"POST","path":"/settings/model-gateway/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  testModelGateway: {"method":"POST","path":"/settings/model-gateway/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url"],"tagged":false},
   testWorkspaceArchil: {"method":"POST","path":"/workspace/archil/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   turnOffClaudeLogin: {"method":"DELETE","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   turnOnClaudeLogin: {"method":"PUT","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},

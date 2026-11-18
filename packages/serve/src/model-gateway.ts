@@ -23,6 +23,11 @@
 // lays it over its reading at each save (no restart), and the runner over its run environment at each claim
 // (harness-loops.ts), from the store. The key is a non-enumerable property, as every saved key is (secrets.ts withSecrets):
 // readable by name, never in a spread, a spawn or a run's environment, and cut from every text the server shows.
+//
+// The key is sealed together with the origin it was saved for (one sealed value, `{ origin, key }`), and a reading hands
+// it on only with an address of that origin. The address row and the key row are written one after the other, and a
+// runner in another process may read them between the two writes, or after a write that failed: a pair that does not
+// match is read as a gateway with no key, so a key never goes to an address it was not saved for.
 import { gatewayBase, HarnessUnavailable } from "./provider.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { envValue, type KeyEnv } from "./key-meta.js";
@@ -79,11 +84,34 @@ export async function gatewaySettingOf(settings: Pick<Settings, "get">): Promise
   return { v: 1, base_url: row.base_url, ids: row.ids as GatewayIds, models };
 }
 
-/** The saved gateway with its key opened under `sealKey` (none without one), or undefined when none is saved. */
+/** The key's sealed value: the key and the origin it was saved for, sealed as one. */
+type BoundKey = { readonly origin: string; readonly key: string };
+
+/** The saved key and its origin, opened under `sealKey`; undefined with none saved, or one that does not open or is not
+ *  of this shape (never a key without the origin it was saved for). */
+async function openGatewayKey(store: { readonly sealedKeys: Pick<SealedKeys, "get"> }, sealKey: Buffer | undefined): Promise<BoundKey | undefined> {
+  const opened = sealKey ? await getSealedKey(store, sealKey, GATEWAY_KEY_ROW) : undefined;
+  if (opened === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(opened);
+    if (isObject(parsed) && parsed.v === 1 && typeof parsed.origin === "string" && typeof parsed.key === "string" && parsed.key.length) return { origin: parsed.origin, key: parsed.key };
+  } catch {
+    // Not this shape: no key.
+  }
+  return undefined;
+}
+
+/** The origin of an address the one rule takes, or undefined for one it refuses. */
+const originIfValid = (base: string): string | undefined => (baseProblem("base_url", base) ? undefined : originOf(base));
+
+/** The saved gateway with its key opened under `sealKey`, or undefined when none is saved. The key is there only when it
+ *  was saved for the address's origin: none without a seal key, one that does not open, or one saved for another origin
+ *  (an address changed while this read, or a save that failed between its two writes). */
 export async function readSavedGateway(store: { readonly settings: Pick<Settings, "get">; readonly sealedKeys: Pick<SealedKeys, "get"> }, sealKey: Buffer | undefined): Promise<SavedGateway | undefined> {
   const setting = await gatewaySettingOf(store.settings);
   if (!setting) return undefined;
-  const key = sealKey ? await getSealedKey(store, sealKey, GATEWAY_KEY_ROW) : undefined;
+  const bound = await openGatewayKey(store, sealKey);
+  const key = bound && bound.origin === originIfValid(setting.base_url) ? bound.key : undefined;
   return { ...setting, ...(key ? { key } : {}) };
 }
 
@@ -233,16 +261,20 @@ export async function saveGateway(deps: ModelGatewayDeps, body: unknown): Promis
   // A field the environment sets wins: 409, as a tool key the server is started with is, never saved to no effect.
   const held = [...(body.ids !== undefined && envValue(env, IDS_VAR) !== undefined ? [IDS_VAR] : []), ...TIERS.filter((tier) => isObject(models) && models[tier] !== undefined && models[tier] !== null && envValue(env, TIER_VARS[tier]) !== undefined).map((tier) => TIER_VARS[tier])];
   if (held.length) throw new ApiError("key_set_by_server", `This server is started with ${held.join(" and ")}: change it where the server is started.`, { details: { fields: held } });
-  // The saved key goes only to the origin it was saved for: a new origin takes a new key, or none said outright.
-  const before = await gatewaySettingOf(store.settings);
+  // The saved key goes only to the origin it was saved for (sealed with it): a new origin takes a new key, or none said
+  // outright. A saved key that does not open is never kept either.
+  const origin = originOf(base!);
   const keySaved = (await store.sealedKeys.get(GATEWAY_KEY_ROW)) !== undefined;
-  if (body.api_key === undefined && keySaved && (!before || baseProblem("base_url", before.base_url) || originOf(before.base_url) !== originOf(base!))) {
-    throw invalid([{ field: "api_key", reason: "missing", message: `The saved key was for ${before && !baseProblem("base_url", before.base_url) ? originOf(before.base_url) : "another gateway"}, and a saved key goes only to the origin it was saved for: enter the key for ${originOf(base!)}, or send api_key null to use this gateway with no key.` }]);
+  const bound = keySaved ? await openGatewayKey(store, sealKey) : undefined;
+  if (body.api_key === undefined && keySaved && bound?.origin !== origin) {
+    throw invalid([{ field: "api_key", reason: "missing", message: `The saved key was for ${bound ? bound.origin : "another gateway"}, and a saved key goes only to the origin it was saved for: enter the key for ${origin}, or send api_key null to use this gateway with no key.` }]);
   }
   const given = models as Record<string, unknown>;
   const setting: GatewaySetting = { v: 1, base_url: base!, ids: (body.ids as GatewayIds | undefined) ?? "as_named", models: Object.fromEntries(TIERS.flatMap((tier) => (typeof given[tier] === "string" ? [[tier, given[tier] as string]] : []))) };
+  // The key first, sealed with its origin, then the address: a reader between the two (or after the second failed) finds
+  // a key whose origin is not the address's, which it reads as no key (readSavedGateway).
   if (body.api_key === null) await removeSealedKey(store, GATEWAY_KEY_ROW);
-  else if (typeof body.api_key === "string") await putSealedKey(store, sealKey, GATEWAY_KEY_ROW, body.api_key);
+  else if (typeof body.api_key === "string") await putSealedKey(store, sealKey, GATEWAY_KEY_ROW, JSON.stringify({ v: 1, origin, key: body.api_key }));
   await store.settings.put(GATEWAY_SETTING, setting);
   await store.flush();
   await deps.changed();
@@ -266,14 +298,15 @@ export async function removeGateway(deps: ModelGatewayDeps): Promise<GatewayView
 export async function testGateway(deps: ModelGatewayDeps, body: unknown, signal?: AbortSignal): Promise<GatewayTest> {
   const { store, sealKey, env } = deps;
   const given = body === undefined || body === null ? {} : body;
-  if (!isObject(given)) throw new ApiError("input_invalid", "the body is a JSON object: { base_url?, api_key? }");
+  if (!isObject(given)) throw new ApiError("input_invalid", "the body is a JSON object: { base_url?, api_key? } (api_key null: test with no key)");
   const issues: InputIssue[] = unknownFields(given, ["base_url", "api_key"]);
   if (given.base_url !== undefined && (typeof given.base_url !== "string" || !given.base_url.trim())) issues.push({ field: "base_url", reason: "wrong_type", message: "base_url is the gateway's address as text" });
   else if (typeof given.base_url === "string") {
     const problem = baseProblem("base_url", given.base_url.trim());
     if (problem) issues.push({ field: "base_url", reason: "invalid", message: problem });
   }
-  if (given.api_key !== undefined) {
+  // null: test with no key (the form's "Use no key"), never the saved one.
+  if (given.api_key !== undefined && given.api_key !== null) {
     const problem = keyIssue(given.api_key);
     if (problem) issues.push({ field: "api_key", reason: "invalid", message: problem });
   }
@@ -289,7 +322,7 @@ export async function testGateway(deps: ModelGatewayDeps, body: unknown, signal?
   if (problem) return { ok: false, why: problem };
   const root = gatewayBase(field, base);
   const sameOrigin = inForce !== undefined && !baseProblem(inForce.field, inForce.base) && new URL(gatewayBase(inForce.field, inForce.base)).origin === new URL(root).origin;
-  const key = typeof given.api_key === "string" ? given.api_key : sameOrigin ? inForce!.key : undefined;
+  const key = typeof given.api_key === "string" ? given.api_key : given.api_key === null ? undefined : sameOrigin ? inForce!.key : undefined;
   return listModels(root, key, deps.fetch ?? fetch, signal);
 }
 
@@ -322,7 +355,8 @@ async function listModels(root: string, key: string | undefined, fetcher: typeof
   }
   const data = isObject(parsed) && Array.isArray(parsed.data) ? parsed.data : undefined;
   if (!data) return { ok: false, why: `The gateway's answer to GET ${url} lists no models (no "data" array): is this an OpenAI-compatible gateway's address?` };
-  const ids = [...new Set(data.flatMap((entry) => (isObject(entry) && typeof entry.id === "string" && !idIssue(entry.id) ? [entry.id] : [])))].slice(0, MAX_LISTED);
+  // An id that holds the key is left out: the answer, and the console's model list, never show it.
+  const ids = [...new Set(data.flatMap((entry) => (isObject(entry) && typeof entry.id === "string" && !idIssue(entry.id) && !(key && entry.id.includes(key)) ? [entry.id] : [])))].slice(0, MAX_LISTED);
   return { ok: true, models: ids };
 }
 

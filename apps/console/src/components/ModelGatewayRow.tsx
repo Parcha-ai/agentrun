@@ -136,8 +136,9 @@ function GatewayForm({ v2, view, onCancel, onSaved }: { v2: Client; view: ModelG
   const test = async () => {
     setTesting(true); setTested(null); setErrors({});
     try {
-      const key = noKey ? undefined : typedKey();
-      const answer = await v2.testModelGateway({ ...(base.trim() ? { base_url: base.trim() } : {}), ...(key ? { api_key: key } : {}) });
+      // "Use no key" tests with none (api_key null), never the saved key, so a test that passes is what Save will use.
+      const key = typedKey();
+      const answer = await v2.testModelGateway({ ...(base.trim() ? { base_url: base.trim() } : {}), ...(noKey ? { api_key: null } : key ? { api_key: key } : {}) });
       setTested(answer);
       if (answer.ok) {
         setListed(answer.models);

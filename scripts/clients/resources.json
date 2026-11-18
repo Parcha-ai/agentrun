@@ -1,10 +1,12 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
     "startMcpOAuth": ["url", "scopes.[]", "client_id"],
     "listComposioTools": ["toolkit"],
+    "saveModelGateway": ["base_url", "ids", "models.default", "models.fast", "models.strong"],
+    "testModelGateway": ["base_url"],
     "saveComposioServer": ["toolkit", "tools.[]", "user_id"]
   },
   "bodyFill": {

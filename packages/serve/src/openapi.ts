@@ -2423,10 +2423,10 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/model-gateway/test": {
     post: {
       operationId: "testModelGateway", tags: ["local"], summary: "Ask a model gateway which models it serves",
-      description: "The server asks GET <base>/v1/models (OpenAI's shape, `{ data: [{ id }] }`), under the same address rule as a save, with no redirect followed and a 10-second limit, and answers the ids it lists, so the defaults can be picked from them; or why not, in words. The body may name an address and a key not saved yet (the form's); with none, the gateway in force is asked with its own key. A saved key goes only to the origin it was saved for. A secret write, since it may carry the key: the owner's signed-in session alone (ownerSession). Never the key in the answer.",
+      description: "The server asks GET <base>/v1/models (OpenAI's shape, `{ data: [{ id }] }`), under the same address rule as a save, with no redirect followed and a 10-second limit, and answers the ids it lists, so the defaults can be picked from them; or why not, in words. The body may name an address and a key not saved yet (the form's), or `api_key` null to ask with no key; with none, the gateway in force is asked with its own key. A saved key goes only to the origin it was saved for. A model id that holds the key it was asked with is left out of the list. A secret write, since it may carry the key: the owner's signed-in session alone (ownerSession). Never the key in the answer.",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
-      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { base_url: { type: "string", minLength: 1 }, api_key: { type: "string", minLength: 1, maxLength: 4096, "x-agentrun-secret": true } } } } } },
+      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { base_url: { type: "string", minLength: 1, description: "The gateway's address to ask; left out, the gateway in force." }, api_key: { type: ["string", "null"], minLength: 1, maxLength: 4096, "x-agentrun-secret": true, description: "The key to ask with. Null: ask with no key, never the saved one; left out, the saved key, and only when the address is of the origin it was saved for." } } } } } },
       responses: { "200": json(MODEL_GATEWAY_TEST, "The test's answer."), ...errors(401, 403, 415, 422, 429, 500) },
       "x-agentrun-serve": "modelgateway/1",
     },

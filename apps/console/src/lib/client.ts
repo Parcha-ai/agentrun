@@ -318,7 +318,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Removes the saved gateway and its key: the provider keys are back in force. */
     removeModelGateway: () => call<ModelGateway>("DELETE", "/settings/model-gateway"),
     /** Asks a gateway which models it lists: the form's address and key when given, else the one in force. */
-    testModelGateway: (body: { base_url?: string; api_key?: string }) => call<ModelGatewayTest>("POST", "/settings/model-gateway/test", { body }),
+    testModelGateway: (body: { base_url?: string; api_key?: string | null }) => call<ModelGatewayTest>("POST", "/settings/model-gateway/test", { body }),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
