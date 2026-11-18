@@ -617,6 +617,28 @@ test("(agree_on) a revision read that fails while the audit is settled leaves it
   assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, true, "settled at the later claim on agree_on");
 });
 
+// Review on #3182 (PRRT_kwDOUmdVMs65A5Eo): the check's side of the same rule. A revision read that fails when a new
+// revision's check starts saves no bar (a bar with no agree_on would compare the whole answer for the check's life): the
+// agent takes that run, and the next claim starts the check on the definition's agree_on.
+test("(agree_on) a revision read that fails when a check starts saves no check: the agent takes the run, the next claim checks on agree_on", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { prior: 3, learning: { compile_after: 3, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
+  const revision = w.store.agents.revision.bind(w.store.agents);
+  let failing = false;
+  w.store.agents.revision = (id) => (failing && /loopOfRevision/.test(new Error().stack ?? "") ? Promise.reject(new Error("the store is busy")) : revision(id));
+  await landRevision(w.dir, answerFlow(REVISED), "prior-2");
+  failing = true;
+  const first = await w.start("run-a", "Question 50");
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).find((one) => one.digest === DIGEST_2), undefined, "no check saved while the read fails");
+  // promotionGate's catch: a promotion that could not be read leaves the run to its agent.
+  assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
+  assert.ok(w.logs.some((line) => line.includes("could not be read") && line.includes("the store is busy")), w.logs.join("\n"));
+  failing = false;
+  await w.start("run-b", "Question 51");
+  const checking = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.digest === DIGEST_2 && one.decided === "replaying");
+  assert.deepEqual(checking?.check?.agree_on, ["answer", "sure"], JSON.stringify(checking));
+  await w.replaysEnded(3);
+});
+
 // No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
 // echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
 test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
