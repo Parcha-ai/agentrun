@@ -176,7 +176,7 @@ async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, runnin
   writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
   const served = join(dir, "served.json");
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
-require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, pid: process.pid }));
+require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, proxies: process.env.AGENTRUN_TRUSTED_PROXIES ?? null, pid: process.pid }));
 if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
@@ -547,6 +547,21 @@ test("--public-url URL is the server's public address: the server gets it as AGE
   // Plain http is taken for this machine's own names.
   const local = await throughStub(t, ["--no-open", "--public-url", "http://127.0.0.1:8080/"], { STUB_OPEN: "http://127.0.0.1:8080/" });
   assert.deepEqual([local.code, local.public], [0, "http://127.0.0.1:8080/"], local.err);
+});
+
+test("--public-url on loopback trusts the proxy in front (AGENTRUN_TRUSTED_PROXIES=loopback), as --tailscale does, so each visitor's sign-ins count by their own address; an operator's value stays, and a non-loopback --listen trusts none", { timeout: 60_000 }, async (t) => {
+  // The service's command line (service install --public-url): every start of it gets the same.
+  const loop = await throughStub(t, ["--no-open", "--port", "7345", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL });
+  assert.deepEqual([loop.code, loop.public, loop.proxies], [0, TAILNET_URL, "loopback"], loop.err);
+  const named = await throughStub(t, ["--no-open", "--listen", "127.0.0.1", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL });
+  assert.equal(named.proxies, "loopback", named.err);
+  const operator = await throughStub(t, ["--no-open", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL, AGENTRUN_TRUSTED_PROXIES: "10.0.0.0/8" });
+  assert.deepEqual([operator.code, operator.proxies], [0, "10.0.0.0/8"], operator.err);
+  const wide = await throughStub(t, ["--no-open", "--listen", "0.0.0.0", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL });
+  assert.deepEqual([wide.code, wide.public, wide.proxies], [0, TAILNET_URL, null], wide.err);
+  // No --public-url: nothing trusted, as before.
+  const plain = await throughStub(t, ["--no-open"]);
+  assert.equal(plain.proxies, null, plain.err);
 });
 
 test("--public-url is refused, exit 2 before the server starts, when it is no https root address or AGENTRUN_PUBLIC_URL names another", { timeout: 60_000 }, async (t) => {

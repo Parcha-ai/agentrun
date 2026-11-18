@@ -420,7 +420,8 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         if (SWITCH_ENV.includes(key) && !["", "1"].includes(pair.slice(at + 1))) throw fail(2, `${key} takes 1 (on) or nothing (off), not ${pair.slice(at + 1)}: the server reads it as on at 1 alone.`);
         return [key, pair.slice(at + 1)];
       });
-      // --public-url goes on the service's command line, so every start of it (a restart, a login) has it.
+      // --public-url goes on the service's command line, so every start of it (a restart, a login) has it, and with it
+      // the launcher's AGENTRUN_TRUSTED_PROXIES=loopback.
       const publicUrl = given === undefined ? undefined : publicUrlOf(given);
       if (publicUrl?.error !== undefined) throw fail(2, publicUrl.error);
       need();
