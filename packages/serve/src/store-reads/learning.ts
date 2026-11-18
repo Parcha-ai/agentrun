@@ -10,7 +10,7 @@ import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import { said, STOPPED } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact } from "../learning-run.js";
-import { amortize, type Bill, type BillHold, billOf, type CostReplay, costSummary, type CostRun, type CostSummary, JOB_PATHS, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, runCostOf, SERVED_PATHS } from "../learning-cost.js";
+import { amortize, type Bill, type BillHold, billOf, type CostReplay, costSummary, type CostRun, type CostSummary, JOB_PATHS, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, runCostOf, SERVED_PATHS, tookOverOf } from "../learning-cost.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf, workflowNameOf } from "../runner/learning-end.js";
 import { feedbackStatus } from "../runner/feedback-round.js";
@@ -237,7 +237,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const records = await agentRecordsOf(store, agentId, listed);
   // An audit's shadow run is no run of the series: its cost is its served run's learning (allInOf).
   const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
-  const runs: CostRun[] = [];
+  const rows: Omit<CostRun, "took_over">[] = [];
   let unknownPath = 0;
   // One numbering, the bill's: the runs that do a job, 1 the first; a replay checks a revision and has none.
   let jobs = 0;
@@ -250,8 +250,10 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
       unknownPath += 1;
       continue;
     }
-    runs.push(await costRunOf(records, run, JOB_PATHS.includes(placed.path) ? (jobs += 1) : null));
+    rows.push(await costRunOf(records, run, JOB_PATHS.includes(placed.path) ? (jobs += 1) : null));
   }
+  // Where each revision took over, over every run before the limit cuts the read (the first is the summary's takeover).
+  const runs = tookOverOf(rows);
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
   // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
@@ -259,11 +261,10 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const promotions = await promotionsOf(store.settings, agentId);
   const replay = servingReplayOf(promotions, runs);
   // The owner's bill: booked $, every run of the series (billOf), from the series' first run on a served path (the
-  // summary's takeover: read from the run rows, as the promotion feed is trimmed and its oldest record need not be the
-  // first promotion), and each revision's compile and check over the served runs that carry it.
+  // summary's takeover: read from the run rows by their place, as the promotion feed is trimmed and its oldest record need
+  // not be the first promotion), and each revision's compile and check over the served runs that carry it.
   const ledger = await agentLedgerOf(records, promotions, listed);
-  const servedFrom = runs.find((run) => SERVED_PATHS.includes(run.path))?.started_at ?? null;
-  const booked = billOf(runs, servedFrom);
+  const booked = billOf(runs);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
   // feed lands here, never nowhere: unknown while any run's figures are.
   let carried: number | null = 0;
@@ -483,8 +484,9 @@ export async function shadowSpendOf(store: { readonly runs: Pick<RunRecords["run
 }
 
 /** One run of the cost series, as number `n` of it (null for a replay): its figures (allInOf), its path, the workflow
- *  revision that ran it and whether an audit's shadow ran for it (agentCostOverStore's loop body). */
-export async function costRunOf(store: RunRecords, run: RunRecord, n: number | null): Promise<CostRun> {
+ *  revision that ran it and whether an audit's shadow ran for it (agentCostOverStore's loop body); `took_over` is the
+ *  series' (tookOverOf). */
+export async function costRunOf(store: RunRecords, run: RunRecord, n: number | null): Promise<Omit<CostRun, "took_over">> {
   const started = await learningStartOfRun(store, run.id);
   // A run with no path named is placed as the agent's here, and left out by the series.
   const { path, workflow } = pathOfRow(run.metrics, started) ?? { path: "agent" as const, workflow: null };

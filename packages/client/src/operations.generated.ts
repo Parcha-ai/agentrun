@@ -1934,6 +1934,7 @@ export type GetLearningCostResponse = {
     path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
     digest: string | null;
+    took_over: boolean;
     audited: boolean;
     cost_usd: number | null;
     cost_upper_bound: boolean;

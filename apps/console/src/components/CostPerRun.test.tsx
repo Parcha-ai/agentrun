@@ -31,7 +31,7 @@ function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[
   return host;
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
-const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", digest: path === "agent" ? null : "d".repeat(16), audited: false, cost_usd: total, cost_upper_bound: false, learning_usd: total === null ? null : 0, total_usd: total });
+const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", digest: path === "agent" ? null : "d".repeat(16), took_over: false, audited: false, cost_usd: total, cost_upper_bound: false, learning_usd: total === null ? null : 0, total_usd: total });
 /** A replay run started after job `after` (half an hour on): it does no job, so it has no number. */
 const replayRun = (id: string, after: number, total: number | null): CostRun => ({ ...run(after, "replay", total), n: null, run_id: id, started_at: new Date(Date.UTC(2026, 9, 1, after, 30)).toISOString() });
 const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: summary.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...summary }, workflows: [], bill: EMPTY_BILL });

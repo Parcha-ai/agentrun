@@ -3067,6 +3067,7 @@ class GetLearningCostResponseRunsItem(TypedDict):
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     digest: str | None
+    took_over: bool
     audited: bool
     cost_usd: float | None
     cost_upper_bound: bool

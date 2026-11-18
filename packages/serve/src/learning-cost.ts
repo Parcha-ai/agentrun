@@ -62,6 +62,10 @@ export type CostRun = {
   /** The revision of that workflow that ran it (its record's metrics.workflow_digest: the first 16 hex characters of its
    *  workflow.json's sha256); null when no learned workflow ran. One value while one revision serves. */
   digest: string | null;
+  /** The first run its revision (`workflow` at `digest`) served, over every run of the series (tookOverOf): where that
+   *  revision took over, its promotion's flag on the chart. The first of them is the summary's takeover (a workflow that
+   *  ran first always names its revision); false for a replay and a run no revision ran (`digest` null). */
+  took_over: boolean;
   /** An audit's shadow run was started for it (runner/audit.ts): its cost is in `learning_usd`. */
   audited: boolean;
   cost_usd: number | null;
@@ -90,6 +94,20 @@ export type CostReplay = { n: number; workflow_pct: number; agent_pct: number; c
 /** The paths a learned workflow served a run on: it ran first and answered alone (`workflow`) or handed back
  *  (`handed_back`). A `replay` checks a new revision on a graded input and serves no one; an `agent` run is by hand. */
 export const SERVED_PATHS: readonly RunPath[] = ["workflow", "handed_back"];
+
+/** Each run of the series (every run, oldest first, before a read's limit) with `took_over`: true on the first run a
+ *  revision (`workflow` at `digest`) served (SERVED_PATHS), never on a replay or a run no revision ran. A promotion is
+ *  written as a run is claimed, after the runs queued before it started, so where a revision took over is read from the
+ *  runs it served, never from start times. */
+export function tookOverOf(runs: readonly Omit<CostRun, "took_over">[]): CostRun[] {
+  const seen = new Set<string>();
+  return runs.map((run) => {
+    const revision = run.digest !== null && SERVED_PATHS.includes(run.path) ? JSON.stringify([run.workflow, run.digest]) : null;
+    const first = revision !== null && !seen.has(revision);
+    if (revision !== null) seen.add(revision);
+    return { ...run, took_over: first };
+  });
+}
 
 /** Why the after side has a figure or not: `priced`, it has; `no_served_runs`, no learned workflow has taken over (a
  *  replay is no served run); `cost_unknown`, runs were served but none's all-in cost is known exactly. */
@@ -192,17 +210,19 @@ export type Bill = {
   holds: BillHold[];
 };
 
-/** The bill over `runs` (the cost series, oldest first, replays among them) and `promotedAt` (when the agent's first
- *  run on a served path started, null for none): each run that does a job, all in (its own $, its compile turn and its
- *  audit shadow), with each replay's $ joining the run that does a job it followed (the first one when none did),
- *  cumulative; against the baseline times the runs shown so far. Spend booked with no point to join (a replay after a
- *  job of unknown cost) is carried to the next point, and with none after it is still booked: in the gap, and no
- *  break-even while it puts the bill over the line. Every sum and difference has its float noise rounded off (noiseOff),
- *  so a tie reads as a tie and a decision's sub-micro-dollar cost is booked as the usage row books it. */
-export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omit<Bill, "revisions" | "unattributed_usd" | "holds"> {
+/** The bill over `runs` (the cost series, oldest first, replays among them): each run that does a job, all in (its own
+ *  $, its compile turn and its audit shadow), with each replay's $ joining the run that does a job it followed (the first
+ *  one when none did), cumulative; against the baseline times the runs shown so far. Spend booked with no point to join
+ *  (a replay after a job of unknown cost) is carried to the next point, and with none after it is still booked: in the
+ *  gap, and no break-even while it puts the bill over the line. Every sum and difference has its float noise rounded off
+ *  (noiseOff), so a tie reads as a tie and a decision's sub-micro-dollar cost is booked as the usage row books it. */
+export function billOf(runs: readonly CostRun[]): Omit<Bill, "revisions" | "unattributed_usd" | "holds"> {
   const jobs = runs.filter((run) => JOB_PATHS.includes(run.path));
   const priced = (run: CostRun) => run.total_usd !== null && !run.cost_upper_bound;
-  const before = jobs.filter((run) => run.path === "agent" && (promotedAt === null || run.started_at < promotedAt) && run.cost_usd !== null && !run.cost_upper_bound);
+  // The first run a learned workflow served (the summary's takeover): by its place in the series, never by a start time,
+  // which two runs queued together can share.
+  const first = jobs.findIndex((run) => SERVED_PATHS.includes(run.path));
+  const before = (first < 0 ? jobs : jobs.slice(0, first)).filter((run) => run.path === "agent" && run.cost_usd !== null && !run.cost_upper_bound);
   const baseline = before.length ? { runs: before.length, mean_usd: usd(before.reduce((sum, run) => sum + run.cost_usd!, 0) / before.length) } : null;
   // Each replay's $ joins the job it followed; one before every job joins the first.
   const extra = new Map<string, number>();
@@ -244,8 +264,7 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
   actual = noiseOff(early.reduce((sum, one) => sum + one, actual));
   // Of it, learning's: the booked total less the priced jobs' own $ (each priced job's total is its own $ and its learning).
   const learning = noiseOff(jobs.reduce((rest, run) => (priced(run) ? noiseOff(rest - run.cost_usd!) : rest), actual));
-  const first = promotedAt === null ? -1 : jobs.findIndex((run) => run.started_at >= promotedAt);
-  const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: promotedAt! };
+  const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: jobs[first]!.started_at };
   // The booked total against the line at the last point: spend after it (carried to no point) is in.
   const tail = line === null ? Number.NaN : noiseOff(actual - noiseOff(line * shown));
   let breakEven: Bill["break_even"] = null;

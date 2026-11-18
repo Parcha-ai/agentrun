@@ -248,6 +248,7 @@
    "path": "workflow",
    "workflow": "sort-invoice",
    "digest": "a12596c0a12596c0",
+   "took_over": true,
    "audited": false,
    "cost_usd": 0.113774,
    "learning_usd": 0,

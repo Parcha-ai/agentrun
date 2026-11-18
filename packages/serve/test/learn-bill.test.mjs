@@ -35,9 +35,9 @@ const SERIES = [
 const PROMOTED = at(6);
 
 test("billOf: the cumulative booked $ against the agent for all of it, shadows and checks included; break-even once the bill stays at or under it", () => {
-  const bill = billOf(SERIES, PROMOTED);
+  const bill = billOf(SERIES);
   assert.deepEqual(bill.baseline, { runs: 3, mean_usd: 1 }, "the agent runs before the promotion, own $");
-  assert.deepEqual(bill.promoted, { n: 4, run_id: "run-06", at: PROMOTED }, "the first run from the promotion on, by its index among the runs");
+  assert.deepEqual(bill.promoted, { n: 4, run_id: "run-06", at: at(7) }, "the first run a learned workflow served, by its index among the runs, and when it started");
   // The index counts the runs that do a job: a replay is no run of it; its cost joins the run it followed.
   assert.deepEqual(bill.points.map((p) => [p.n, p.run_id, p.actual_usd, p.agent_usd]), [
     [1, "run-01", 1, 1], [2, "run-02", 2.2, 2], [3, "run-03", 3.6, 3],
@@ -51,27 +51,27 @@ test("billOf: the cumulative booked $ against the agent for all of it, shadows a
 });
 
 test("billOf: not yet while the bill is over the line at its last run, with the gap; a run over it again moves break-even later", () => {
-  const short = billOf(SERIES.slice(0, 7), PROMOTED);
+  const short = billOf(SERIES.slice(0, 7));
   assert.equal(short.break_even, null);
   assert.equal(short.gap_usd, 0.05, "the bill less the line at the last run");
   // A dear shadow at run 7 puts the bill over the line again: break-even is where it stays under.
   const dear = SERIES.map((one) => (one.run_id === "run-09" ? { ...one, learning_usd: 1.5, total_usd: 1.6 } : one));
-  const again = billOf(dear, PROMOTED);
+  const again = billOf(dear);
   assert.deepEqual(again.points.slice(5).map((p) => [p.n, p.actual_usd, p.agent_usd]), [[6, 5.15, 6], [7, 7.25, 7], [8, 7.35, 8], [9, 7.45, 9]]);
   assert.deepEqual(again.break_even, { n: 8, run_id: "run-11" });
 });
 
 test("billOf: before any promotion the line is every agent run's mean and there is no break-even, only the gap; a run of unknown cost is on neither line and counted", () => {
-  const before = billOf(SERIES.slice(0, 3), null);
+  const before = billOf(SERIES.slice(0, 3));
   assert.deepEqual(before.baseline, { runs: 3, mean_usd: 1 });
   assert.equal(before.promoted, null);
   assert.equal(before.break_even, null);
   assert.equal(before.gap_usd, 0);
-  const unknown = billOf(SERIES.map((one) => (one.run_id === "run-02" ? { ...one, cost_usd: null, total_usd: null } : one)), PROMOTED);
+  const unknown = billOf(SERIES.map((one) => (one.run_id === "run-02" ? { ...one, cost_usd: null, total_usd: null } : one)));
   assert.equal(unknown.withheld, 1);
   assert.deepEqual(unknown.baseline, { runs: 2, mean_usd: 0.9 });
   assert.deepEqual(unknown.points.slice(0, 3).map((p) => [p.n, p.actual_usd, p.agent_usd]), [[1, 1, 0.9], [3, 2.4, 1.8], [4, 2.9, 2.7]], "its index kept, the line counting the runs it shows");
-  assert.equal(billOf([], null).points.length, 0);
+  assert.equal(billOf([]).points.length, 0);
 });
 
 test("amortize: a revision's spend over its first K served runs to the micro-dollar; what a stopped or short revision has not passed on is unattributed", () => {
@@ -94,7 +94,7 @@ test("amortize: a revision's spend over its first K served runs to the micro-dol
 test("A8 (5): spend under a micro-dollar is booked as the usage row books it: the bill's points, total and gap, and a revision's split, never rounded to the micro-dollar", () => {
   // Two TypeSafe decisions at 120 tokens x $0.042/M each: $0.00001008 a run.
   const runs = [1, 2].map((n) => ({ ...row(n, "agent", n, 0.00001008), total_usd: 0.00001008 }));
-  const bill = billOf(runs, null);
+  const bill = billOf(runs);
   assert.deepEqual(bill.points.map((point) => point.actual_usd), [0.00001008, 0.00002016]);
   assert.equal(bill.booked_usd, 0.00002016);
   assert.equal(bill.baseline.mean_usd, 0.00001, "a mean is a quotient, rounded to the micro-dollar");
@@ -168,14 +168,14 @@ test("over the store: the series' bill, each run's all-in over v2 (a shadow's co
 test("billOf: booked spend after a withheld last job joins no point but is in the gap: a priced replay after it leaves no false break-even", () => {
   // The r1 series breaks even at run 6; a last job of unknown cost, then a $3.00 replay after it.
   const tail = [...SERIES, row(13, "workflow", 14, null), { ...row(14, "replay", 15, 3), run_id: "replay-4" }];
-  const bill = billOf(tail, PROMOTED);
+  const bill = billOf(tail);
   assert.equal(bill.withheld, 1, "the job of unknown cost is on neither line");
   assert.equal(bill.points.at(-1).run_id, "run-12", "no point for it, nor for the replay after it");
   assert.equal(bill.booked_usd, 9.35, "the replay is booked");
   assert.equal(bill.break_even, null, "$9.35 booked is over the agent for all of it at the last point ($9.00)");
   assert.equal(bill.gap_usd, 0.35);
   // Booked spend with no point before it is carried to the next point that has one.
-  const carried = billOf([...tail, row(15, "workflow", 16, 0.1)], PROMOTED);
+  const carried = billOf([...tail, row(15, "workflow", 16, 0.1)]);
   assert.deepEqual(carried.points.at(-1), { n: 11, run_id: "run-15", actual_usd: 9.45, agent_usd: 10 });
   assert.deepEqual(carried.break_even, { n: 6, run_id: "run-08" }, "carried, it never put a point over the line");
   assert.equal(carried.gap_usd, null);
@@ -184,7 +184,7 @@ test("billOf: booked spend after a withheld last job joins no point but is in th
 
 test("billOf: replay spend with no job to join is still booked: an owner who archived every job run keeps the replays' dollars", () => {
   const replays = [{ ...row(1, "replay", 1, 0.3), run_id: "replay-1" }, { ...row(2, "replay", 2, 0.3), run_id: "replay-2" }];
-  const bill = billOf(replays, null);
+  const bill = billOf(replays);
   assert.deepEqual(bill.points, [], "no job, no point");
   assert.equal(bill.booked_usd, 0.6, "both replays booked");
   assert.deepEqual([bill.break_even, bill.gap_usd, bill.withheld], [null, null, 0]);

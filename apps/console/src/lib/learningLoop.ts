@@ -26,13 +26,14 @@ export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promot
 /** A promotion record's kind of marker: a replay that started, a new revision; else its decision. */
 export const kindOf = (record: Promotion): MarkerKind => (record.decided === "replaying" ? "revision" : record.decided);
 
-/** Each promotion record on the run axis, which numbers the runs that do a job (a replay is never a marker's run): at the
- *  first job (of `runs`, in order) that started at or after it, the run it first bore on. A promotion is written as the
- *  run it serves first is claimed, after that run started: it stands on the first run its revision served from the
- *  newest job started by then (the cost summary's takeover and the bill's promoted, one run), and on the next job when
- *  none has served since. One newer than the last job is left out (no run of the axis is its), and so is one older than
- *  the first run read. Every record keeps its own marker, even two of one kind on one run (two workflows held between two
- *  runs): the chart stacks their flags in rows. */
+/** Each promotion record on the run axis, which numbers the runs that do a job (a replay is never a marker's run). A
+ *  promotion stands on the run the server says its revision took over at (`took_over`: the first run it served, the cost
+ *  summary's takeover and the bill's promoted for the first), never one found by time: it is written as a run is
+ *  claimed, after the runs queued before it started. One whose run is not in the read (older than its first run, or still
+ *  at work) is left out. Any other record stands on the first job (of `runs`, in order) that started at or after it; one
+ *  newer than the last job is left out (no run of the axis is its), and so is one older than the first run read. Every
+ *  record keeps its own marker, even two of one kind on one run (two workflows held between two runs): the chart stacks
+ *  their flags in rows. */
 export function markersOf(runs: readonly CostRun[], records: readonly Promotion[]): Marker[] {
   const jobs = runs.filter((r): r is CostRun & { n: number } => r.path !== "replay" && r.n !== null);
   if (!runs.length || !jobs.length) return [];
@@ -41,14 +42,9 @@ export function markersOf(runs: readonly CostRun[], records: readonly Promotion[
   const out: Marker[] = [];
   for (const record of records) {
     const t = Date.parse(record.at);
-    if (!Number.isFinite(t) || t < first - 1) continue;
-    const next = starts.findIndex((s) => s >= t);
-    let i = next;
-    if (record.decided === "promote") {
-      const from = Math.max(0, (next < 0 ? starts.length : next) - 1);
-      const served = jobs.findIndex((r, j) => j >= from && (r.path === "workflow" || r.path === "handed_back") && r.digest === record.digest && (r.workflow ?? record.workflow) === record.workflow);
-      if (served >= 0) i = served;
-    }
+    const i = record.decided === "promote"
+      ? jobs.findIndex((r) => r.took_over && r.digest === record.digest && (r.workflow ?? record.workflow) === record.workflow)
+      : !Number.isFinite(t) || t < first - 1 ? -1 : starts.findIndex((s) => s >= t);
     if (i < 0) continue;
     out.push({ kind: kindOf(record), n: jobs[i]!.n, at: record.at, workflow: record.workflow, digest: record.digest, reason: record.reason, record });
   }

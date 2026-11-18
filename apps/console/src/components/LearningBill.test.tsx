@@ -25,7 +25,7 @@ function draw(element: ReturnType<typeof createElement>) {
 }
 
 const DIGEST = "d".repeat(16);
-const RUNS: CostRun[] = Array.from({ length: 9 }, (_, i) => ({ n: i + 1, run_id: `run-${i + 1}`, started_at: hour(i + 1), path: i < 3 ? "agent" : "workflow", workflow: i < 3 ? null : "answer", digest: i < 3 ? null : DIGEST, audited: false, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
+const RUNS: CostRun[] = Array.from({ length: 9 }, (_, i) => ({ n: i + 1, run_id: `run-${i + 1}`, started_at: hour(i + 1), path: i < 3 ? "agent" : "workflow", workflow: i < 3 ? null : "answer", digest: i < 3 ? null : DIGEST, took_over: i === 3, audited: false, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
 const CHECK = { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1 as const, n: 10, agreed: 9, alone: 9 };
 /** The champion as the promotions read gives it (`champion`): its nodes with their tiers and checks, and its check. */
 const CHAMPION: NonNullable<Serving["champion"]> = { digest: DIGEST, commit: "c".repeat(40), check: CHECK, nodes: [
@@ -126,7 +126,7 @@ describe("the audit line", () => {
   });
   it("agrees with the runs a shadow was charged to: an audited run the ledger has no row of yet is said as not scored yet", () => {
     // 16 audited served runs; the ledger has 15 rows: the newest is scored at a later run's start.
-    const runs: CostRun[] = Array.from({ length: 16 }, (_, i) => ({ ...RUNS[3]!, n: i + 4, run_id: `run-${i}`, audited: true }));
+    const runs: CostRun[] = Array.from({ length: 16 }, (_, i) => ({ ...RUNS[3]!, n: i + 4, run_id: `run-${i}`, took_over: i === 0, audited: true }));
     const host = draw(createElement(AuditLine, { serving: SERVING, audits: AUDITS, bill: BILL, runs }));
     expect(host.textContent).toContain("All time: 13 of 15 agreed · 1 not scored yet");
     act(() => root?.unmount()); document.body.innerHTML = "";
