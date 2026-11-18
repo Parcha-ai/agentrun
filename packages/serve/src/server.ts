@@ -2664,7 +2664,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
    *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one.
    *  With `agent_id` (an agent this template made, templateAgentOf), the same checks, then a new revision of that agent in
-   *  place of a new one (its runs and learned notes stay), and its triggers reconciled by name (below); a refused trigger
+   *  place of a new one (its runs and its learning stay), and its triggers reconciled by name (below); a refused trigger
    *  removes the ones this apply made, and the agent is not archived. A fresh apply warns of a live agent the same
    *  package and parameters made (the keyed digest of the parameters kept on its revision: never the parameters).
    *

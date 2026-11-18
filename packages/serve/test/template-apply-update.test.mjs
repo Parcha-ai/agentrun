@@ -1,5 +1,5 @@
 // A template applied again onto the agent it made: POST /templates/{name}/apply with `agent_id` writes a new revision of
-// that agent (same id, its runs and its learned notes kept), its parameters and grants checked as a fresh apply checks
+// that agent (same id, its runs and its learning kept), its parameters and grants checked as a fresh apply checks
 // them (the same code: the same 422 fields), and its triggers reconciled by name: one of the same name is changed in place
 // (a feed trigger keeps its seen items), one the package dropped is removed, a new one is made. The agent must have been
 // made from that template: one made otherwise, or from another template, is refused under `agent_id`, and an unknown id
@@ -217,15 +217,15 @@ test("an update reconciles triggers by name: the same name changed in place (a f
   assert.equal(shown[0].status, "started", JSON.stringify(shown));
 });
 
-test("an update keeps the agent's learned notes", { timeout: 60_000 }, async (t) => {
+test("an update keeps the agent's learned corrections", { timeout: 60_000 }, async (t) => {
   const { api } = await served(t);
   const first = await applied(api, "digest", { parameters: { topic: "cats" } });
-  const text = "---\nname: Kept\ndescription: Kept\ntype: reference\n---\nThe owner likes short pieces.\n";
-  const put = await api("PUT", `/agents/${first.agent_id}/learning/files/kept.md`, { text }, { "if-none-match": "*" });
-  assert.equal(put.status, 201, JSON.stringify(put.body));
-  await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update keeps the agent, and so its learned notes");
-  const notes = (await api("GET", `/agents/${first.agent_id}/learning`)).body.notes.items.map((item) => item.file);
-  assert.deepEqual(notes, ["kept.md"], "the learned note is kept");
+  const text = "- The owner likes short pieces.\n";
+  const read = await api("GET", `/agents/${first.agent_id}/learning/corrections`);
+  const put = await api("PUT", `/agents/${first.agent_id}/learning/corrections`, { text }, { "if-match": read.body.etag });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  await updated(api, "digest", { parameters: { topic: "dogs" }, agent_id: first.agent_id }, "an update keeps the agent, and so its corrections");
+  assert.equal((await api("GET", `/agents/${first.agent_id}/learning/corrections`)).body.text, text, "the owner's corrections are kept");
 });
 
 test("a fresh apply of a template whose same parameters already made a live agent still makes one, with a warning naming the agent there", { timeout: 60_000 }, async (t) => {
