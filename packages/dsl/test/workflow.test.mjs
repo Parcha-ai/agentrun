@@ -446,7 +446,7 @@ test("extract node: decide-only keys (samples/voteField) are rejected as unknown
   const workflow = wf({ node: "extract", label: "subject", instructions: "t", out: "Finding", as: "final", samples: 3, voteField: "verdict" });
   const validated = validateWorkflow(workflow, { inputKeys: ["question"] });
   assert.ok(!validated.ok);
-  assert.ok(validated.errors.some((e) => /unknown key\(s\) for a extract node: samples, voteField/.test(e)), validated.errors.join("; "));
+  assert.ok(validated.errors.some((e) => /unknown key\(s\) for an extract node: samples, voteField/.test(e)), validated.errors.join("; "));
 });
 
 test("extract node: unreachable requires is rejected at author time", () => {

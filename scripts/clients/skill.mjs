@@ -195,6 +195,8 @@ export function skillText(commands) {
 }
 
 const cell = (text) => (text ?? '').replace(/\s+/g, ' ').trim();
+// The wildcard media type `*/*` in code: bare, its asterisks are Markdown emphasis and vanish.
+const wildcard = (text) => text.replace(/(^|[\s,(])\*\/\*(?=$|[\s,;)])/g, '$1`*/*`');
 
 /** references/commands.md: one entry per command, its usage, summary, flags and route. */
 export function referenceText(commands) {
@@ -211,7 +213,7 @@ export function referenceText(commands) {
     lines.push('', `### \`${usage(entry)}\``, '', `${cell(entry.summary)}.`.replace(/\.\.$/, '.'), '', `Route: ${entry.route ? `\`${entry.route}\`` : 'none, it runs on this machine'}.${entry.raw ? ' It prints the answer\'s bytes as they are.' : ''}${entry.multiSegment?.length ? ` ${entry.multiSegment.map((name) => name.toUpperCase()).join(', ')} keeps its slashes.` : ''}`);
     if (entry.flags.length) {
       lines.push('');
-      for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${f.type}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${cell(f.description)}` : ''}`);
+      for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${wildcard(f.type)}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${wildcard(cell(f.description))}` : ''}`);
     }
     if (entry.bodyFill) lines.push('', `Built from flags alone, the body also has: ${Object.entries(entry.bodyFill).map(([name, value]) => `\`${name}\` \`${JSON.stringify(value)}\``).join(', ')}.`);
   }
