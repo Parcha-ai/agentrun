@@ -4,7 +4,7 @@
 
 ## 0.1.0-beta.44 (2026-11-17)
 
-- A Codex run under a small spend cap no longer stops as early on a hold that overstated its next request.
+- A Codex run under a small spend cap no longer stops as early on a hold that overstated its next request. <!-- changes/codex-cap-hold-billed-after.md -->
 
   A request that only adds items to the session's last billed request is now held at that bill plus the bytes of the items it adds, with the local count's margin. The bill is all of that request's `input_tokens`, cached tokens included. Any other difference falls back to the local count, as before: changed instructions, tools, reasoning or model, or an earlier item edited, removed or moved.
 
