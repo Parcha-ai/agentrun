@@ -39,6 +39,13 @@ Details: [Signing in with OAuth](../packages/serve/README.md#signing-in-with-oau
 
 ### 2. GitHub, through the built-in GitHub App
 
+This needs an address GitHub can reach. Start AgentRun with `AGENTRUN_PUBLIC_URL` set to that address, then open the
+console at that address. Without both, creating the App is refused before GitHub opens.
+
+With no public address, use the **GitHub (token)** preset in **Settings → MCP servers** instead: a fine-grained personal
+access token for the repositories it may use. AgentRun keeps that token, as it keeps any MCP server's credential, and it
+never enters the box.
+
 1. Open **Settings → GitHub** and create the App. GitHub asks you to confirm it and to pick the repositories it may use.
 2. Open **Settings → MCP servers**, add a server, and choose **GitHub App**. The address fills in as GitHub's hosted
    MCP server.
