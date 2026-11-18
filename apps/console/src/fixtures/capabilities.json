@@ -307,7 +307,6 @@
       ]
     },
     "learning": {
-      "grade_model": null,
       "pending": true,
       "approve": false,
       "approve_needs": "password"

@@ -17,7 +17,7 @@ const batch = { sequence: 1, events: [{ type: "tool", id: "one", name: "lookup",
 
 async function fixture(t, runtime, learning = false) {
   const server = await serve(t, { runner: false }), { api, store } = server;
-  const definition = { id: "sdk-inbox", name: "SDK inbox", instructions: "Use application policy.", sdk: { runtime }, learning: learning ? "notes" : false, tools: [] };
+  const definition = { id: "sdk-inbox", name: "SDK inbox", instructions: "Use application policy.", sdk: { runtime }, learning, tools: [] };
   assert.equal((await api("POST", "/agents", { definition })).status, 201);
   const started = await api("POST", "/agents/sdk-inbox/sdk-runs", { runtime, input: "A paid application task.", instructions: "Keep the whole application policy." }, { "Idempotency-Key": "inbox" });
   assert.equal(started.status, 201, JSON.stringify(started.body));

@@ -49,29 +49,28 @@ test("a job.yaml out of shape is refused, naming each problem", (t) => {
 /** A step as the runner records it, with its graders' verdicts. */
 const step = (id, kind, graders, extra = {}) => ({
   id, kind, status: "completed", pass: graders.every(([, pass]) => pass), graders: graders.map(([grader, pass]) => ({ grader, type: "regex", pass, reason: "" })),
-  cost_usd: 0.002, work_cost_usd: 0.001, reflect_cost_usd: 0.001, grade_cost_usd: 0.0005, grade_cost_unpriced: false, eval_grader_cost_usd: null,
-  tokens: { input: 900, cache_read: 0, cache_write: 0, output: 100, requests: 2, unmetered: 0 }, learning: { state: "merged" }, learned: { notes: [], skills: [], workflows: [] }, workflow_proposed: false, learned_workflow_calls: 0, approvals: [], active_after: { notes: {}, skills: {}, workflows: {} },
+  cost_usd: 0.002, work_cost_usd: 0.001, reflect_cost_usd: 0.001, eval_grader_cost_usd: null,
+  tokens: { input: 900, cache_read: 0, cache_write: 0, output: 100, requests: 2, unmetered: 0 }, learning: { state: "merged" }, learned: { corrections: 0, workflows: [] }, workflow_proposed: false, learned_workflow_calls: 0, approvals: [], active_after: { corrections: {}, correction_lines: 0, workflows: {} },
   ...extra,
 });
 
 test("the metrics: follow on repeat steps, the work cost's trend, workflow reuse, staleness and wrong keeps", () => {
   const steps = [
-    step("01", "teach", [["a.md", true]], { work_cost_usd: 0.004, workflow_proposed: true, learned: { notes: [], skills: ["s"], workflows: ["w"] }, active_after: { notes: {}, skills: { s: "1" }, workflows: { w: "1" } } }),
-    step("02", "repeat", [["a.md", true]], { work_cost_usd: 0.003, learned_workflow_calls: 1, active_after: { notes: {}, skills: { s: "1" }, workflows: { w: "1" } } }),
-    step("03", "change", [["a.md", true]], { work_cost_usd: 0.002, active_after: { notes: {}, skills: { s: "2" }, workflows: { w: "1" } } }),
-    step("04", "plant", [["a.md", false], ["change-new.md", true]], { work_cost_usd: 0.002, learned_workflow_calls: 1, active_after: { notes: {}, skills: { s: "2" }, workflows: { w: "1" } } }),
-    step("05", "repeat", [["a.md", true], ["change-new.md", false], ["plant-not-kept.md", false]], { work_cost_usd: 0.001, grade_cost_usd: null, grade_cost_unpriced: true, active_after: { notes: {}, skills: { s: "2" }, workflows: { w: "1" } } }),
+    step("01", "teach", [["a.md", true]], { work_cost_usd: 0.004, workflow_proposed: true, learned: { corrections: 1, workflows: ["w"] }, active_after: { corrections: { "corrections.md": "1" }, correction_lines: 1, workflows: { w: "1" } } }),
+    step("02", "repeat", [["a.md", true]], { work_cost_usd: 0.003, learned_workflow_calls: 1, active_after: { corrections: { "corrections.md": "1" }, correction_lines: 1, workflows: { w: "1" } } }),
+    step("03", "change", [["a.md", true]], { work_cost_usd: 0.002, active_after: { corrections: { "corrections.md": "2" }, correction_lines: 2, workflows: { w: "1" } } }),
+    step("04", "plant", [["a.md", false], ["change-new.md", true]], { work_cost_usd: 0.002, learned_workflow_calls: 1, active_after: { corrections: { "corrections.md": "2" }, correction_lines: 2, workflows: { w: "1" } } }),
+    step("05", "repeat", [["a.md", true], ["change-new.md", false], ["plant-not-kept.md", false]], { work_cost_usd: 0.001, active_after: { corrections: { "corrections.md": "2" }, correction_lines: 2, workflows: { w: "1" } } }),
   ];
   const m = metricsOf(steps, true);
   assert.equal(m.follow_rate, 0.5, "02 passed, 05 did not");
   assert.ok(m.cost_trend_usd_per_run < 0, "the work got cheaper");
   assert.equal(m.workflow_proposal_rate, 1);
   assert.equal(m.reuse_rate, 0.5, "of 02-05 after the workflow kept at 01: 02 and 04 called it");
-  assert.deepEqual(m.staleness.map((s) => [s.change_step, s.skill_updated, s.workflow_updated, s.change_graders_pass_rate]), [["03", true, false, 0.5]]);
+  assert.deepEqual(m.staleness.map((s) => [s.change_step, s.corrections_updated, s.workflow_updated, s.change_graders_pass_rate]), [["03", true, false, 0.5]]);
   assert.equal(m.staleness[0].workflow_follows, true, "the one step after the change that called the workflow (04) passed its change grader");
   assert.deepEqual([m.wrong_keeps, m.plant_graders], [1, 1]);
-  assert.equal(m.grade_cost_unknown_steps, 1);
-  assert.ok(m.learning_overhead_usd_per_run > 0, "a lower bound with one grade unknown");
+  assert.equal(m.learning_overhead_usd_per_run, 0.001, "the end-of-run turn's spend a run");
   assert.deepEqual([m.follow_k, m.follow_n, m.pass_k, m.pass_n], [1, 2, 3, 5], "the counts beside the rates");
   assert.deepEqual([m.tokens_per_run, m.tokens_per_pass, m.tokens_known_steps], [1000, Math.round(5000 / 3), 5], "input + output per run, and per passing step");
   assert.equal(metricsOf(steps.map((x) => ({ ...x, tokens: null })), true).tokens_per_pass, null, "unknown when no run booked its tokens");
@@ -83,13 +82,13 @@ test("the summary: one table row per series, and a refused series said as stoppe
   const stopped = { job: "j", harness: "claude-agent", arm: "on", steps: [], error: "starting the run: 409 not runnable" };
   stopped.metrics = metricsOf([], true);
   const text = render({ schema: SCHEMA, bench: { sha: "0123456789abc" }, hard_stop: null, series: [ok, stopped] });
-  assert.match(text, /^Learning bench \(learning-bench\/2\), build 0123456789/);
+  assert.match(text, /^Learning bench \(learning-bench\/3\), build 0123456789/);
   assert.equal(text.split("\n").filter((line) => line.startsWith("| j |")).length, 2);
   assert.match(text, /SERIES STOPPED: starting the run: 409/);
 });
 
 // The review's four: the bench's deadline caps every wait and starts no grader past it; a known $0 stays $0 and only a
-// run that booked no request reads unknown; the active and pending items follow the notes' pages.
+// run that booked no request reads unknown; the active and pending items are read from the agent's learning view.
 const bench = await import("../scripts/learn-bench.mjs");
 
 test("a wait ends at the earlier of the run's timeout and the bench's deadline", () => {
@@ -114,16 +113,28 @@ test("a known $0 stays $0; only a completed run that booked no request reads unk
   assert.deepEqual(bench.runCost(view(0.002), { usd: 0.002, requests: 1 }, { requests: 1 }), { total: 0.002, unpriced: false });
 });
 
-test("the active and pending items follow the notes' pages", async () => {
-  const note = (i, status) => ({ file: `n${i}.md`, status, text: `note ${i}` });
+test("the active and pending items: corrections.md's lines, the active workflows by name, the pending ones by file", async () => {
+  const flow = (name, status) => ({ name, status, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md` });
   const api = async (method, path) => {
-    if (path.endsWith("/learning")) return { status: 200, body: { notes: { items: [note(1, "active")], next_cursor: "c2" }, skills: [], workflows: [] }, headers: new Headers() };
-    if (path.includes("/learning/notes?cursor=c2")) return { status: 200, body: { items: [note(2, "pending"), note(3, "active")], next_cursor: null }, headers: new Headers() };
+    if (path.endsWith("/learning")) return { status: 200, body: { corrections: "- One.\n- Two.\n", workflows: [flow("sort", "active"), flow("file", "pending")] }, headers: new Headers() };
+    if (path.includes("/learning/files/")) return { status: 200, body: "{}", headers: new Headers() };
     return { status: 404, body: null, headers: new Headers() };
   };
   const got = await bench.activeOf(api, "a");
-  assert.deepEqual(Object.keys(got.notes).sort(), ["n1.md", "n3.md"]);
-  assert.deepEqual(got.pending, ["n2.md"]);
+  assert.deepEqual([Object.keys(got.corrections), got.correction_lines, Object.keys(got.workflows)], [["corrections.md"], 2, ["sort"]]);
+  assert.deepEqual(got.pending, ["workflows/file/README.md"]);
+});
+
+test("a step's kept texts: corrections.md from its own route (the file route refuses it), the workflow draft by file", async () => {
+  // As the server answers: the file route takes a workflow draft only (learning-routes.ts fileOf), corrections.md has its own.
+  const api = async (method, path) => {
+    if (path.endsWith("/learning/corrections")) return { status: 200, body: { text: "- Say the total.\n", etag: "\"e1\"", cap_bytes: 2048 }, headers: new Headers() };
+    if (path.endsWith(`/learning/files/${encodeURIComponent("workflows/sort/workflow.json")}`)) return { status: 200, body: { steps: [] }, headers: new Headers() };
+    if (path.includes("/learning/files/")) return { status: 400, body: { error: { code: "bad_request" } }, headers: new Headers() };
+    return { status: 404, body: null, headers: new Headers() };
+  };
+  const got = await bench.keptTexts(api, "a", { corrections: 1, workflows: [{ name: "sort", file: "workflows/sort/workflow.json" }] });
+  assert.deepEqual(got, { "corrections.md": "- Say the total.\n", "workflows/sort/workflow.json": JSON.stringify({ steps: [] }) });
 });
 
 test("a run with unmetered requests is left out of the tokens metrics, and counted apart", () => {
@@ -155,7 +166,7 @@ test("a finished run whose learning has not settled by the deadline is not cance
   const posts = [];
   const api = async (method, path) => {
     if (method === "POST") return (posts.push(path), { status: 202, body: {}, headers: new Headers() });
-    return { status: 200, body: { status: "completed", learning: { state: "proposed" } }, headers: new Headers() };
+    return { status: 200, body: { status: "completed", learning: { state: "reflecting" } }, headers: new Headers() };
   };
   const got = await bench.settled(api, "run-1", true, Date.now() - 1);
   assert.deepEqual([got.timedOut, got.learningUnsettled, posts], [false, true, []], "the finished run stands; its learning is the open part");
@@ -225,7 +236,7 @@ test("a grader that could not grade says so: ungraded, from a run that did not f
 // and each series where a workflow was kept says how its later steps used it.
 test("a job that measures workflow reuse runs at least 3 steps after the step a workflow is compiled by; expense is one", () => {
   const reuse = jobs.map((name) => readJob(join(jobsDir, name))).filter((job) => job.reuse);
-  assert.ok(reuse.some((job) => job.name === "expense"), "expense teaches a skill: it measures reuse");
+  assert.ok(reuse.some((job) => job.name === "expense"), "expense repeats one job: it measures reuse");
   assert.equal(bench.COMPILE_AFTER, 5);
   for (const job of reuse) {
     const teach = job.steps.findIndex((s) => s.kind === "teach");
@@ -235,7 +246,7 @@ test("a job that measures workflow reuse runs at least 3 steps after the step a 
   assert.equal(bench.REUSE_STEPS, 3);
 });
 
-/** A series of ten: the skill taught at 01, a workflow kept at 05; 06, 07 and 09 call it (06 and 09 pass), 08 and 10 do not. */
+/** A series of ten: a correction taught at 01, a workflow kept at 05; 06, 07 and 09 call it (06 and 09 pass), 08 and 10 do not. */
 const reuseSeries = () => {
   const io = (input, output) => ({ input, cache_read: 0, cache_write: 0, output, requests: 2, unmetered: 0 });
   const ids = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"];
@@ -245,52 +256,47 @@ const reuseSeries = () => {
     return step(id, i === 0 ? "teach" : "repeat", [["a.md", pass]], {
       learned_workflow_calls: calls,
       tokens: calls ? io(500, 100) : io(1500, 300),
-      learned: { notes: [], skills: id === "01" ? ["weekly"] : [], workflows: id === "05" ? ["weekly"] : [] },
+      learned: { corrections: id === "01" ? 1 : 0, workflows: id === "05" ? ["weekly"] : [] },
       workflow_proposed: id === "05",
-      // What was active once the step's learning settled: the skill from 01 on, the workflow from 05 on.
-      active_after: { notes: {}, skills: { weekly: "s1" }, workflows: i >= 4 ? { weekly: "w1" } : {} },
+      // What was active once the step's learning settled: the correction from 01 on, the workflow from 05 on.
+      active_after: { corrections: { "corrections.md": "c1" }, correction_lines: 1, workflows: i >= 4 ? { weekly: "w1" } : {} },
     });
   });
 };
 
-test("reuse: for a series that kept a workflow, its later steps that called learned_workflow, how many passed, and tokens per passing step with the workflow against the skill-only steps", () => {
+test("reuse: for a series that kept a workflow, its later steps that called learned_workflow, how many passed, and tokens per passing step with the workflow against the steps that called none", () => {
   const m = metricsOf(reuseSeries(), true);
   assert.deepEqual(m.reuse, {
     kept_step: "05", steps_after: 5, call_steps: 3, call_passes: 2,
-    // Calling steps 06, 07, 09: 600 tokens each, 2 passes. Skill-only steps (the skill active, no workflow call): 02-05,
-    // 08 and 10, 1,800 tokens each; 03 and 10 failed, so 4 passes.
-    tokens_per_pass_workflow: Math.round((3 * 600) / 2), tokens_per_pass_skill_only: Math.round((6 * 1800) / 4), workflow_steps_known: 3, skill_only_steps_known: 6,
+    // Calling steps 06, 07, 09: 600 tokens each, 2 passes. Steps that called no workflow: 01-05, 08 and 10, 1,800 tokens
+    // each; 03 and 10 failed, so 5 passes.
+    tokens_per_pass_workflow: Math.round((3 * 600) / 2), tokens_per_pass_agent: Math.round((7 * 1800) / 5), workflow_steps_known: 3, agent_steps_known: 7,
   });
   // No workflow kept, or learning off: no reuse to say.
-  assert.equal(metricsOf(reuseSeries().map((x) => ({ ...x, learned: { notes: [], skills: x.learned.skills, workflows: [] }, active_after: { ...x.active_after, workflows: {} } })), true).reuse, null);
+  assert.equal(metricsOf(reuseSeries().map((x) => ({ ...x, learned: { ...x.learned, workflows: [] }, active_after: { ...x.active_after, workflows: {} } })), true).reuse, null);
   assert.equal(metricsOf(reuseSeries(), false).reuse, null);
   // A harness whose tokens are unknown: the counts stand, the token figures are unknown.
   const blind = metricsOf(reuseSeries().map((x) => ({ ...x, tokens: null })), true).reuse;
-  assert.deepEqual([blind.call_steps, blind.call_passes, blind.tokens_per_pass_workflow, blind.tokens_per_pass_skill_only], [3, 2, null, null]);
+  assert.deepEqual([blind.call_steps, blind.call_passes, blind.tokens_per_pass_workflow, blind.tokens_per_pass_agent], [3, 2, null, null]);
 });
 
-test("reuse reads what was active, never what was only kept: a workflow kept waiting for the owner's OK (--no-approve) is no reuse, and a step had the skill only once it was active", () => {
+test("reuse reads what was active, never what was only kept: a workflow kept waiting for the owner's OK (--no-approve) is no reuse", () => {
   // The workflow kept at 05 but pending: listed as learned, never active, so no run could call it.
   const pending = reuseSeries().map((x) => ({ ...x, active_after: { ...x.active_after, workflows: {} } }));
   const m = metricsOf(pending, true);
   assert.equal(m.reuse, null, "no active workflow: no reuse");
   assert.equal(m.reuse_rate, null, "and no reuse rate");
-  // The skill kept at 01 but pending until 03 was approved: the skill-only steps are those after it was active.
-  const late = reuseSeries().map((x, i) => ({ ...x, active_after: { ...x.active_after, skills: i >= 2 ? { weekly: "s1" } : {} } }));
-  const r = metricsOf(late, true).reuse;
-  // Skill-only steps now 04, 05, 08 and 10 (02 and 03 had no active skill): 1,800 tokens each, 04, 05 and 08 passed.
-  assert.deepEqual([r.skill_only_steps_known, r.tokens_per_pass_skill_only], [4, Math.round((4 * 1800) / 3)]);
 });
 
 test("the summary says each series' reuse: where the workflow was kept, how many later steps called it and passed, and the two token figures", () => {
   const steps = reuseSeries();
   const text = render({ schema: SCHEMA, bench: { sha: "abc" }, hard_stop: null, series: [{ job: "expense", harness: "pi", arm: "on", steps, metrics: metricsOf(steps, true) }] });
-  assert.match(text, /expense \/ pi \/ on reuse: workflow kept at 05; 3 of the 5 steps after called it, 2 passed; tokens per passing step 900 with it, 2700 skill-only/);
+  assert.match(text, /expense \/ pi \/ on reuse: workflow kept at 05; 3 of the 5 steps after called it, 2 passed; tokens per passing step 900 with it, 2520 without/);
 });
 
 test("the results schema holds the reuse block", () => {
   const schema = JSON.parse(readFileSync(join(jobsDir, "results.schema.json"), "utf8"));
   const reuse = schema.properties.series.items.properties.metrics.properties.reuse;
   assert.ok(reuse, "metrics.reuse");
-  assert.deepEqual(Object.keys(reuse.anyOf?.[0]?.properties ?? reuse.properties ?? {}).sort(), ["call_passes", "call_steps", "kept_step", "skill_only_steps_known", "steps_after", "tokens_per_pass_skill_only", "tokens_per_pass_workflow", "workflow_steps_known"]);
+  assert.deepEqual(Object.keys(reuse.anyOf?.[0]?.properties ?? reuse.properties ?? {}).sort(), ["agent_steps_known", "call_passes", "call_steps", "kept_step", "steps_after", "tokens_per_pass_agent", "tokens_per_pass_workflow", "workflow_steps_known"]);
 });

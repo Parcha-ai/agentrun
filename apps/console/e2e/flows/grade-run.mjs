@@ -1,9 +1,9 @@
 // Grade a run wrong from its page, with words: an agent that learns answers on the faux learning model
 // (packages/serve/test/fixtures/faux-learn.mjs), its run ends, and its page's Grade control takes Wrong, the reviewer's
-// words and the correct answer. The server answers the grade with a look-back round (`feedback: look_back`); the control
-// says the agent is looking back, then that it looked back once the run has ended again; the Timeline shows the grade's
-// words as "Your grade" and the round's learning row, which kept the reviewer's note (faux-learn keeps a "Review: "
-// message as reviewed.md). Reading the page again shows the grade read back with the round it opened, so the round's
+// words and the correct answer. The server answers the grade with a correction round (`feedback: correction`); the
+// control says the words are being added to the agent's corrections, then that they were once the run has ended again;
+// the Timeline shows the grade's words as "Your grade", and the run's learning says its merge added one line to
+// corrections.md. Reading the page again shows the grade read back with the round it opened, so the round's
 // outcome is still said, with Grade again. E2E_SHOTS=<dir> saves the
 // control and the Timeline at two widths.
 import { mkdirSync } from "node:fs";
@@ -34,7 +34,7 @@ export default {
 
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: 1400 });
-      // An agent of its own each width: what one round kept, the next agent's look-back would find already known.
+      // An agent of its own each width: each round's correction is the first line of its own corrections.md.
       const made = await api("POST", "/agents", { definition: { version: 1, name: `Invoice sorter ${width}`, instructions: "Answer with the ledger account.", skills: [], tools: [], learning: true } });
       check(made.status === 201, `creating the agent answered ${made.status}: ${JSON.stringify(made.body)}`);
       const started = await api("POST", `/agents/${encodeURIComponent(made.body.agent_id)}/runs`, { input: { content: "Invoice 17 from Northwind Freight, $240." } });
@@ -63,7 +63,7 @@ export default {
       const answered = await put;
       check(answered.ok(), `the grade answered ${answered.status()}: ${await answered.text()}`);
       const body = await answered.json();
-      check(body.correct === false && body.feedback === "look_back", `${width}px: the grade's answer is ${JSON.stringify(body)}`);
+      check(body.correct === false && body.feedback === "correction", `${width}px: the grade's answer is ${JSON.stringify(body)}`);
       const sent = JSON.parse(answered.request().postData() ?? "{}");
       check(sent.label === WORDS && sent.expected?.account === "6400" && sent.correct === false, `${width}px: the grade sent ${JSON.stringify(sent)}`);
       await grade.getByRole("status").waitFor();
@@ -92,12 +92,12 @@ export default {
       const row = words.locator("xpath=ancestor::li[1]");
       check(/Your grade/.test((await row.textContent()) ?? ""), `${width}px: the grade's row reads ${await row.textContent()}`);
       const learning = (await api("GET", `/runs/${encodeURIComponent(runId)}/learning`)).body;
-      check(learning.graded?.correct === false && learning.learned?.some((n) => n.file === "reviewed.md"), `${width}px: the run's learning after the round: ${JSON.stringify(learning)}`);
+      check(learning.graded?.correct === false && learning.corrections === 1, `${width}px: the run's learning after the round: ${JSON.stringify(learning)}`);
       await shoot(page.locator("main"), `grade-timeline-${width}.png`);
 
       // Read again: the grade read back with the round it opened (`graded.feedback`) and that it ended
       // (`graded.feedback_status`), so the round's outcome is still said (role="status"), with Grade again.
-      check(learning.graded?.feedback === "look_back" && learning.graded?.feedback_status === "ended", `${width}px: the learning read's grade: ${JSON.stringify(learning.graded)}`);
+      check(learning.graded?.feedback === "correction" &&learning.graded?.feedback_status === "ended", `${width}px: the learning read's grade: ${JSON.stringify(learning.graded)}`);
       await page.reload();
       const again = page.getByRole("region", { name: "Grade" });
       await again.getByRole("status").waitFor({ timeout: 15_000 });

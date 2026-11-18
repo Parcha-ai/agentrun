@@ -32,8 +32,8 @@ export interface Lister {
   /** The server's keys or settings changed: every failed run's listing (its error words) is marked behind before this
    *  resolves, so the next list builds it again. */
   keysChanged(): Promise<void>;
-  /** A person changed agent `agentId`'s learning folder (a note written, approved, retired or restored): each of its runs
-   *  whose listing read a note held for the owner's OK is marked behind before this resolves, so the next list says what
+  /** A person changed agent `agentId`'s learning folder (a workflow approved, retired or restored): each of its runs
+   *  whose listing read a workflow held for the owner's OK is marked behind before this resolves, so the next list says what
    *  the folder says now. A change made outside the server is read by the next pass. */
   learningChanged(agentId: string): Promise<void>;
   /** Stops after the pass under way. */

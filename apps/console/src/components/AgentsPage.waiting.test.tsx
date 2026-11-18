@@ -26,13 +26,13 @@ async function open(agents: Agent[]) {
   return { went, asked, card, count };
 }
 
-describe("AgentsList, learned items waiting for the owner's OK", () => {
+describe("AgentsList, learned workflows waiting for the owner's OK", () => {
   it("counts them on the agent's card, in the list's own read, and the count opens its Learning tab", async () => {
     const p = await open([agent("qa-learn", "QA learn", { pending: 2 }), agent("calc", "Calc", { pending: 1 })]);
     expect(p.asked).toEqual(["agents"]);
-    expect(p.count("QA learn")?.getAttribute("aria-label")).toBe("2 learned items wait for your OK");
+    expect(p.count("QA learn")?.getAttribute("aria-label")).toBe("2 learned workflows wait for your OK");
     expect(p.count("QA learn")?.textContent).toContain("2");
-    expect(p.count("Calc")?.getAttribute("aria-label")).toBe("1 learned item waits for your OK");
+    expect(p.count("Calc")?.getAttribute("aria-label")).toBe("1 learned workflow waits for your OK");
     await act(async () => { p.count("QA learn")!.click(); });
     expect(p.went).toEqual(["#/agents/qa-learn/learning"]);
   });

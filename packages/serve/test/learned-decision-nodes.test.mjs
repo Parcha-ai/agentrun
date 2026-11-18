@@ -133,18 +133,17 @@ test("a learned workflow with a decision node, on a run handed no decisions (its
   assert.ok(denied.text.includes("This workflow's decision node asks jev, which is set to deny for this agent."), denied.text);
 });
 
-test("a proposal's workflow draft with a judge node passes the proposal checks (checkProposal) given the host's decision providers, is refused without them, and in the gate's words when its provider is denied", async (t) => {
-  const { checkProposal } = await import("../dist/learn/index.js");
+test("a compiled workflow draft with a judge node passes the draft checks (checkDraft) given the host's decision providers, is refused without them, and in the gate's words when its provider is denied", async (t) => {
+  const { checkDraft } = await import("../dist/learn/index.js");
   const { registry } = await providers(t);
   const json = JSON.stringify(judgeFlow());
   const readme = "---\nname: check\ndescription: Checks whether a claim is right\n---\n";
   const changes = [{ path: "workflows/check/workflow.json", text: json }, { path: "workflows/check/README.md", text: readme }].map(({ path, text }) => ({ path, status: "added", mode: "100644", bytes: Buffer.from(text) }));
-  const base = { files: ["MEMORY.md"], active: [] };
-  const check = (decisions) => checkProposal({ base, changes, refuseValues: [], outcome: "completed", tools: [], dsl, ...(decisions ? { decisions } : {}) });
+  const check = (decisions) => checkDraft({ changes, refuseValues: [], tools: [], dsl, ...(decisions ? { decisions } : {}) });
   const decisions = { providers: registry.providers, default: registry.default };
-  assert.deepEqual(check(decisions).problems, [], "proposed");
-  assert.match(check().problems.map((p) => p.detail).join("; "), /judge node "check" requires runJudge/, "no providers: refused");
-  assert.match(check({ ...decisions, gated: { jev: "deny" }, deniedBy: { jev: "server" } }).problems.map((p) => p.detail).join("; "), /This workflow's decision node asks jev, which is set to deny on this server\./);
+  assert.deepEqual(check(decisions), [], "passes");
+  assert.match(check().map((p) => p.detail).join("; "), /judge node "check" requires runJudge/, "no providers: refused");
+  assert.match(check({ ...decisions, gated: { jev: "deny" }, deniedBy: { jev: "server" } }).map((p) => p.detail).join("; "), /This workflow's decision node asks jev, which is set to deny on this server\./);
 });
 
 test("a decision provider is a settings key of its own (jev, parallel, openrouter), allow by default and allow or deny: a run's gate answers allow for it until an owner sets deny", async () => {
@@ -178,7 +177,7 @@ test("a decision node's provider is refused only on deny: one the gate answers a
 });
 
 test("a draft with a judge node dry-runs: its decision's answer is synthesized like any node's, nothing sent", async (t) => {
-  const { draftDryRun } = await import("../dist/learn/skills.js");
+  const { draftDryRun } = await import("../dist/learn/workflow-draft.js");
   const { sent } = await providers(t);
   assert.deepEqual(await draftDryRun(dsl, JSON.stringify(judgeFlow()), JSON.stringify({ claim: "Six times seven is 42." })), { status: "passed" });
   assert.equal(sent(), 0, "the dry run asks no provider");

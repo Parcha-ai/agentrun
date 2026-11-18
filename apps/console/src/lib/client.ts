@@ -3,11 +3,11 @@ import type { NativeBinding, NativeRuntime, NativeSelector, NativeTarget } from 
 import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnector } from "./connectors";
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
-import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLearningResultData, NoteProblem, NoteText, Page } from "./learning";
+import type { AgentLearning, Corrections, LearningChange, LearningDiff, LearningFile, LearningProblem, RunLearningResultData, Page } from "./learning";
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -21,8 +21,8 @@ export class ClientError extends Error {
   retryAfterMs?: number;
   /** What the server says beyond the message (`error.details`): a 409 `agent_not_runnable` names the box it lacks. */
   details?: Record<string, unknown>;
-  /** A note the server's checks refused (400): each check it fails, printable. */
-  problems?: NoteProblem[];
+  /** A learning write the server's checks refused (400): each check it fails, printable. */
+  problems?: LearningProblem[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -96,7 +96,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     });
     if (!res.ok) {
       if (res.status === 401 && !SIGNING_IN.has(path)) onSignedOut?.();
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: NoteProblem[] } } | null)?.error;
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number; problems?: LearningProblem[] } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
       if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
@@ -116,10 +116,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   // none): they are kept here and put on a read of that same revision, until the next save or make-current of the agent,
   // after which they may be stale (the host can be set up since), so they go.
   const created = new Map<string, { revision: string; warnings: SaveWarning[] }>();
-  const note = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
-  // A note is text (text/markdown) both ways round, with its version as the ETag; a refusal is still JSON.
-  const asNote = (r: { body: string; etag: string | null }): NoteText => ({ note: r.body, etag: r.etag });
-  const noteAccept = { accept: "text/markdown, application/json" };
+  const learningFile = (id: string, file: string) => `${agent(id)}/learning/files/${encodeURIComponent(file)}`;
+  // A learning file reads as text (text/markdown), with its version as the ETag; a refusal is still JSON.
+  const asFile = (r: { body: string; etag: string | null }): LearningFile => ({ text: r.body, etag: r.etag });
+  const fileAccept = { accept: "text/markdown, application/json" };
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
@@ -191,18 +191,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     setCurrent: async (id: string, revision: string) => { const r = await call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }); created.delete(id); return r; },
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
-    /** What an agent learned: its notes' first page, the index its next run reads, the changes, and how its runs did. */
+    /** What an agent learned: its corrections.md, its workflow drafts, the changes, and how its runs did. */
     agentLearning: (id: string) => call<AgentLearning>("GET", `${agent(id)}/learning`),
+    /** corrections.md whole, its version (the If-Match of a write) and its cap. */
+    corrections: async (id: string) => (await callTagged<Corrections>("GET", `${agent(id)}/learning/corrections`)).body,
+    /** Replaces corrections.md whole, on the version `etag` (412 when it changed since: a run's correction, or another
+     *  edit). The text goes as JSON, the one write the server takes under the page's session. The answer is the file as it
+     *  now is, and its new version. */
+    writeCorrections: (id: string, text: string, etag: string) => call<Corrections>("PUT", `${agent(id)}/learning/corrections`, { body: { text }, headers: { "if-match": etag } }),
     /** An agent's cost per run, run after run: its latest `limit` runs (the server's default when absent) and what the
      *  whole series shows. */
     learningCost: (id: string, limit?: number) => call<LearningCost>("GET", `${agent(id)}/learning/cost${limit ? `?limit=${limit}` : ""}`),
-    /** Learn from rows: the agent runs on each in order with learning on, the server keeping the progress. The batches, latest
-     *  first (their headers), one batch's progress, a new batch, a cancel. */
-    learningBatches: (id: string) => call<{ batches: LearningBatchHead[] }>("GET", `${agent(id)}/learning/batches`),
-    learningBatch: (id: string, batch: string) => call<LearningBatch>("GET", `${agent(id)}/learning/batches/${encodeURIComponent(batch)}`),
-    startLearningBatch: (id: string, body: LearningBatchStart) => call<LearningBatch>("POST", `${agent(id)}/learning/batches`, { body }),
-    cancelLearningBatch: (id: string, batch: string) => call<LearningBatch>("POST", `${agent(id)}/learning/batches/${encodeURIComponent(batch)}/cancel`, { body: {} }),
-    learningEvals: (id: string) => call<LearningEvals>("GET", `${agent(id)}/learning/evals`),
     learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
     learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
     /** The audit ledger of the agent's serving learned workflows: one row per finished audit, oldest first. */
@@ -213,40 +212,28 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     startLearnedWorkflowReplay: (id: string, name: string, digest: string) => call<ReplayStarted>("POST", `${replays(id, name, digest)}`, { body: {} }),
     /** A replay as it stands, and decided once its runs ended (GET .../replays/{replay_id}). */
     learnedWorkflowReplay: (id: string, name: string, digest: string, replay: string) => call<ReplayRead>("GET", `${replays(id, name, digest)}/${encodeURIComponent(replay)}`),
-    learningNotes: (id: string, cursor: string) => call<Page<LearningNote>>("GET", `${agent(id)}/learning/notes?cursor=${encodeURIComponent(cursor)}`),
     learningLog: (id: string, cursor: string) => call<Page<LearningChange>>("GET", `${agent(id)}/learning/log?cursor=${encodeURIComponent(cursor)}`),
-    /** A note's whole text and its version, for the If-Match of an edit or a retire. */
-    readNote: async (id: string, file: string) => asNote(await callTagged<string>("GET", note(id, file), { headers: noteAccept, text: true })),
-    /** Edits a note (`etag`: the version the edit was made on; 412 when it changed since) or creates one (`create`: 412
-     *  when the name is taken). The text goes as JSON, the one write the server takes under the page's session. The
-     *  answer is the note as it now is, and its new version. */
-    writeNote: async (id: string, file: string, text: string, on: { etag: string } | { create: true }) =>
-      asNote(await callTagged<string>("PUT", note(id, file), { body: { text }, headers: { ...noteAccept, ...("etag" in on ? { "if-match": on.etag } : { "if-none-match": "*" }) }, text: true })),
-    /** Retires a note: out of every later run's instructions, its record kept. 412 when it changed since `etag`. */
-    retireNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/retire`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
-    /** Approves a note that waits for the owner's OK, so later runs read it; 412 when it changed since `etag`. */
-    approveNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/approve`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
-    /** A retired note, skill (its SKILL.md) or draft (its README.md) made active again, on version `etag`: the owner's
-     *  session only, and checked again as a new one is (POST …/learning/files/{file}/restore). */
-    restoreNote: async (id: string, file: string, etag: string) => asNote(await callTagged<string>("POST", `${note(id, file)}/restore`, { body: {}, headers: { ...noteAccept, "if-match": etag }, text: true })),
+    /** A workflow draft's file (its workflow.json, or its README) whole, and its version. */
+    readLearningFile: async (id: string, file: string) => asFile(await callTagged<string>("GET", learningFile(id, file), { headers: fileAccept, text: true })),
+    /** Retires a workflow draft, by its README: no later run is given it, its record kept. 412 when it changed since `etag`. */
+    retireWorkflow: async (id: string, readme: string, etag: string) => asFile(await callTagged<string>("POST", `${learningFile(id, readme)}/retire`, { body: {}, headers: { ...fileAccept, "if-match": etag }, text: true })),
+    /** Approves a workflow draft that waits for the owner's OK, by its README, so later runs are given it; 412 when it
+     *  changed since `etag`. */
+    approveWorkflow: async (id: string, readme: string, etag: string) => asFile(await callTagged<string>("POST", `${learningFile(id, readme)}/approve`, { body: {}, headers: { ...fileAccept, "if-match": etag }, text: true })),
+    /** A retired workflow draft made active again, by its README, on version `etag`: the owner's session only, and checked
+     *  again as a new one is (POST …/learning/files/{file}/restore). */
+    restoreWorkflow: async (id: string, readme: string, etag: string) => asFile(await callTagged<string>("POST", `${learningFile(id, readme)}/restore`, { body: {}, headers: { ...fileAccept, "if-match": etag }, text: true })),
     /** Forgets one of an agent's saved browser sign-ins (DELETE /agents/{id}/sign-ins/{key}): every vendor's under the key. */
     forgetSignIn: (id: string, key: string) => call<SignInForgotten>("DELETE", `${agent(id)}/sign-ins/${encodeURIComponent(key)}`),
-    /** A learned workflow (`name`, its folder's) made into a workflow agent of its own, which runs with no agent loop: an
-     *  active one alone (409 learned_not_active otherwise), checked again as a restore checks it. The owner's session only.
-     *  The answer is the new agent; the learned workflow stays where it is. Under `idempotencyKey`, so a retry after a lost
-     *  answer gets the agent the first one made, never a second. */
-    promoteWorkflow: async (id: string, name: string, idempotencyKey: string) => {
-      const made = await call<Agent>("POST", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/promote`, { body: {}, headers: { "idempotency-key": idempotencyKey } });
-      if (made.warnings?.length) created.set(made.agent_id, { revision: made.revision, warnings: made.warnings });
-      return made;
-    },
     getRun: (id: string) => call<Run>("GET", run(id)),
-    /** The run's recorded learning outcome, grader decisions and usage; null when it did not learn. */
+    /** The run's recorded learning outcome: what its merge kept, what the checks refused, and its commits; null when it
+     *  did not learn. */
     runLearningResult: (id: string) => call<RunLearningResultData | null>("GET", `${run(id)}/learning`),
-    /** What the run's learning changed in its agent's notes, file by file (each with its patch, or why it is withheld). */
+    /** What the run's learning changed in its agent's learning folder, file by file (each with its patch, or why it is
+     *  withheld). */
     runLearningDiff: (id: string) => call<LearningDiff>("GET", `${run(id)}/learning/diff`),
-    /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned skills it was offered and read, and the
-     *  learned workflows it called. Null for a run that does not learn. */
+    /** The run's learning (GET /v2/runs/{id}/learning): with `used`, the learned workflows it called. Null for a run that
+     *  does not learn. */
     runLearning: (id: string) => call<RunLearningRead>("GET", `${run(id)}/learning`),
     /** The run's computer, every kind with a screen: off, none or live with its viewer, and who drives (GET /v2/runs/{id}/computer). */
     runComputer: (id: string) => call<RunComputer>("GET", `${run(id)}/computer`),
@@ -285,6 +272,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
     /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals. */
     getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
+    /** A run's trace: each model request and tool call as a span, with its time, tokens and cost. */
+    runTrace: (id: string, signal?: AbortSignal) => call<RunTrace>("GET", `${run(id)}/trace`, { signal }),
     /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
     pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
     resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),

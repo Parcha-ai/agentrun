@@ -12,7 +12,7 @@ trigger and posts comment-only reviews. It needs a box (Docker, on by default) f
 
 - `docs/CODEREVIEW.md`: what matters, what to never flag. Every reviewer reads it.
 - `.agents/skills/code-review-knowledge/SKILL.md`: rules by path, like "anything under `billing/` must...".
-- `"learning": true`: it keeps notes from every review.
+- `"learning": true`: every review's words become one line of its `corrections.md`, given whole to every later run.
 
 That alone gets you most of the way.
 

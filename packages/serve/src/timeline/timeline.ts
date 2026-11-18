@@ -10,7 +10,7 @@ export type TimelineKind =
   | "user_message" | "waiting" | "usage"
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
   | "decision"
-  /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
+  /** Where a run's learning ended: merged or dropped (serve's learning row). */
   | "learning"
   /** A tool call that waited for a person's approval, after its result's row (serve's tool gate). */
   | "tool_approval_requested";
@@ -1508,4 +1508,20 @@ export function timelineReducer(options: TimelineOptions = {}) {
      *  conversation no longer holds it. */
     isLive: (id: string) => liveIds.has(id),
   };
+}
+
+/** The run's model requests that an answer of pi's carries, in log order: each `pi.assistant` entry the usage row counts
+ *  as a request (createMeter's "answer"). A request the cap or the proxy refused before it left, a continuation of the
+ *  answer before it and a call the loop's record kept (`recordedCall`) are none. An entry seen twice counts once. */
+export function answeredRequests(entries: readonly EntryLike[]): EntryLike[] {
+  const meter = createMeter();
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (entry.id !== undefined) {
+      const key = `${entry.conversationId ?? 0}:${entry.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+    }
+    return meter.push(entry) === "answer";
+  });
 }

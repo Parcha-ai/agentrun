@@ -182,10 +182,10 @@ class Rules(unittest.TestCase):
             error = self.thrown(call)
             self.assertIsInstance(error, AgentRunUsage, repr(error))
         self.assertEqual(server.requests, [], "nothing was sent")
-        client.learning.read("a", "skills/find-policies/SKILL.md")
+        client.learning.read("a", "workflows/find-policies/README.md")
         client.home.read("a", "notes/a b.md")
         client.runs.get("a b/c?d#e")
-        self.assertEqual([r.url for r in server.requests], ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", "/".join(["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"]), "/v2/runs/a%20b%2Fc%3Fd%23e"])
+        self.assertEqual([r.url for r in server.requests], ["/v2/agents/a/learning/files/workflows%2Ffind-policies%2FREADME.md","/".join(["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"]), "/v2/runs/a%20b%2Fc%3Fd%23e"])
 
     def test_a_secret_bodys_values_are_cut_from_the_answer_as_json_values_its_structure_and_public_fields_kept_and_a_refusal_keeps_only_its_code(self) -> None:
         secret = f's3cr"et/{secrets.token_hex(8)} x'
@@ -677,11 +677,14 @@ class Rules(unittest.TestCase):
         client = AgentRun(base_url=server.base, api_key=KEY)
         client.runs.list(limit=10, archived=True, status="completed", agent="a b")
         client.files.upload("f1", b"\x89PNG", body_type="image/png")
-        client.learning.write("notes", "policies.md", "# Policies\n", if_none_match="*", body_type="text/markdown")
-        first, upload, note = server.requests
+        client.learning.write_corrections("notes", "- Look in policies/ first.\n", if_match='"v1"', body_type="text/markdown")
+        first, upload, corrections = server.requests
         self.assertEqual(urlsplit(first.url).query, "limit=10&agent=a+b&status=completed&archived=true")
         self.assertEqual((upload.method, upload.headers["content-type"], upload.body), ("PUT", "image/png", b"\x89PNG"))
-        self.assertEqual((note.headers["content-type"], note.headers["if-none-match"], note.body), ("text/markdown", "*", b"# Policies\n"))
+        self.assertEqual(
+            (corrections.method, urlsplit(corrections.url).path, corrections.headers["content-type"], corrections.headers["if-match"], corrections.body),
+            ("PUT", "/v2/agents/notes/learning/corrections", "text/markdown", '"v1"', b"- Look in policies/ first.\n"),
+        )
 
     def test_a_server_that_echoes_the_key_in_what_it_answers_puts_it_in_no_error_no_frame_and_no_chained_exception(self) -> None:
         # Every echo is cut or not JSON: a 200 that is not JSON, a 4xx that is not JSON, an event that is not JSON, a JSON
