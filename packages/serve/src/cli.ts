@@ -401,6 +401,8 @@ try {
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
     ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
+    // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
+    ...(values["no-runner"] ? { runnerApart: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);

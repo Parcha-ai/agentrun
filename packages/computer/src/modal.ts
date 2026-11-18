@@ -14,7 +14,8 @@ import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { AGENTRUN_DIAL, PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
-import { connectOf, execDesktopRefusal, isWhole } from "./hosted/values.js";
+import { connectOf } from "./descriptor.js";
+import { execDesktopRefusal, isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
@@ -416,7 +417,7 @@ export class ModalProvider extends HostedProvider {
 		].filter(([, fn]) => typeof fn !== "function");
 		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
 		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
-		const via = connectOf(connect, "Modal");
+		const via = connectOf(MODAL, { connect });
 		if (rest.kind === "desktop" && via === "exec") throw new Error(execDesktopRefusal("Modal", "the box image"));
 		super(new ModalHost(sdk as SdkClient, app, via), { ...rest, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}

@@ -127,8 +127,8 @@ class FlyHost implements MachineHost {
 		// The box image has xfwm4 (box/install.sh's desktop step): a desktop's apps are framed and focused.
 		windowManager: true,
 		// The machine dials the server: Fly's exec answers once the command ends (docs.machines.dev, Machines_exec), so
-		// there is no exec and no upload here.
-		connect: "dial",
+		// there is no exec and no upload here. Its descriptor's (connectOf).
+		connect: FLY.connect,
 	};
 	readonly #client: Rest;
 	readonly #app: string;

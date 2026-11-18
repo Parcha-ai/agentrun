@@ -92,7 +92,8 @@ class CloudflareHost implements MachineHost {
 		vendorAgentPorts: [],
 		// The relay's image is FROM the box image (relays/cloudflare/Dockerfile), which has xfwm4 (box/install.sh's desktop step).
 		windowManager: true,
-		connect: "dial",
+		// Its descriptor's (connectOf): the container dials the server.
+		connect: CLOUDFLARE.connect,
 	};
 	readonly relayUrl: string;
 	readonly #client: Rest;
