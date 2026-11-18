@@ -612,6 +612,16 @@ test("the setup skill installs with the installer and runs the command it instal
   assert.ok(commands.length >= 10, `${commands.length} commands`);
   assert.deepEqual([...new Set(commands)], ["~/.agentrun/bin/agentrun"], "every command is the installed one, by its full path");
 });
+// QA (GRE-4614): on an SSH box, the setup agent tried to add a route to the machine's shared Traefik config, with sudo
+// as its fallback. The skill names the one way to the console from a remote machine, the person's own port forward, and
+// rules out every change to the machine.
+test("the setup skill opens a remote machine's console through the person's port forward, never through the machine's proxy or sudo", () => {
+  const open = skillSection(setupSkill(), "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("Open the setup page\n")) ?? "";
+  assert.match(open, /`ssh -L 7340:127\.0\.0\.1:<port> <user>@<host>`/);
+  assert.match(open, /no change to the machine's web server or reverse proxy \(Traefik, nginx,\s+Caddy/);
+  assert.match(open, /no new route, DNS name or firewall rule, and no `sudo`/);
+});
+
 test("the setup skill's Railway step is the published template's button, with the token from its Variables tab", () => {
   const skill = setupSkill();
   const hosted = skillSection(skill, "3. Start it where they chose");
