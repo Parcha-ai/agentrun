@@ -152,6 +152,7 @@ function storeHost(store, crashAt) {
       learning.push({ refusing: (await given.agents.get(agentId))?.archivedAt != null, going: going.length });
     },
     refuse: async (agentId) => void (await store.agents.archive(agentId, true)),
+    stopLearningBatches: async () => {},
     cancel: async (runId) => {
       await store.command(runId, { kind: "cancel", body: {} });
       await end(store, runId, { state: "stopped", outcome: "cancelled" });

@@ -82,3 +82,31 @@ test("deleteLearning refuses while a run of the agent is not ended (its compile,
   await deleteLearning(store, "agent-1", learningFolderOf(data, "agent-1"));
   assert.deepEqual(await held(store, data, "agent-1"), { entries: [], settings: [], promotions: 0, grades: 0, audits: 0 });
 });
+
+/** A learning batch's records as learning-batch.ts keeps them (the agent's index, each row, the header), `status` its state;
+ *  `header` false for a create stopped before its header. */
+async function batch(store, agentId, id, status, { header = true } = {}) {
+  await store.settings.put(`learning_batches/${agentId}`, [...((await store.settings.get(`learning_batches/${agentId}`)) ?? []), id]);
+  await store.settings.put(`learning_batch/${id}/row/1`, { n: 1, state: status === "running" ? "pending" : "done", input: { q: "Q" }, reference: "42" });
+  if (header) await store.settings.put(`learning_batch/${id}`, { id, agent_id: agentId, status, total: 1 });
+}
+const batchKeys = async (store) => (await store.settings.all({ prefix: "learning_batch" })).map((row) => row.key).sort();
+
+test("deleteLearning removes the agent's learning batches (each one's rows and header, its index last), one whose create stopped before its header too, and nothing of another agent's; it refuses while one still runs, removing nothing", async (t) => {
+  const { data, store } = await learned(t);
+  await batch(store, "agent-1", "lb_0000000000000001", "completed");
+  await batch(store, "agent-1", "lb_0000000000000002", "running");
+  await batch(store, "agent-1", "lb_0000000000000003", "running", { header: false });
+  await batch(store, "agent-10", "lb_0000000000000010", "completed");
+  const before = await batchKeys(store);
+
+  await assert.rejects(deleteLearning(store, "agent-1", learningFolderOf(data, "agent-1")), (error) => error instanceof LearningInFlight && JSON.stringify(error.runs) === JSON.stringify(["lb_0000000000000002"]));
+  assert.deepEqual(await batchKeys(store), before, "nothing removed while one runs");
+  assert.equal((await held(store, data, "agent-1")).settings.length, 3);
+
+  await store.settings.put("learning_batch/lb_0000000000000002", { id: "lb_0000000000000002", agent_id: "agent-1", status: "cancelled", total: 1 });
+  const done = await deleteLearning(store, "agent-1", learningFolderOf(data, "agent-1"));
+  assert.equal(done.records, 3 + 3 + 2 + 1, "its 3 records, 3 rows, 2 headers and its index");
+  assert.deepEqual(await batchKeys(store), ["learning_batch/lb_0000000000000010", "learning_batch/lb_0000000000000010/row/1", "learning_batches/agent-10"], "another agent's batch stays");
+  assert.deepEqual(await deleteLearning(store, "agent-1", learningFolderOf(data, "agent-1")), { files: 0, records: 0 }, "a second call finds nothing");
+});

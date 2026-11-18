@@ -6,10 +6,12 @@
 //      delete writes on an agent another system owns (its archive route is refused), set by the trigger engine with its
 //      triggers off in the same commit. From that commit a person's run, an inline run, a trigger's firing, an SDK run and
 //      a follow-up that would open one of its runs again are refused (store AgentDeleting / AgentArchived, each read in
-//      the transaction that would start the run). Then each of its runs not yet final, its learning runs included, is
-//      cancelled through the cancel path, and waited for until it is final.
-//   2. Its learning, by the learning module's deleteLearning (idempotent; it refuses while learning work is in flight,
-//      which answers 409 learning_busy with the agent left refusing runs).
+//      the transaction that would start the run). Then each of its learning batches still running is cancelled (a batch
+//      starts its rows' runs), and each of its runs not yet final, its learning runs included, is cancelled through the
+//      cancel path, and waited for until it is final.
+//   2. Its learning, by the learning module's deleteLearning (learn/delete.ts: its learning folder's files, then its
+//      promotions, grades, evals and learning batches; idempotent; it refuses with LearningInFlight while learning work
+//      is in flight, which answers 409 learning_busy with the agent left refusing runs).
 //   3. Its things: its triggers through the trigger engine (each one's registration upstream first, then its adapter
 //      settings, then its row), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each
 //      run's folders (on a disk its launch named, the caller's, too: the run's own folder there, never the disk), settings
@@ -25,11 +27,12 @@
 // learning (the server's, in the delete's turn); a trigger that reached it anyway keeps its row (store TriggersLeft): the
 // same 503, and the next DELETE removes that trigger as it removes the others.
 import { ApiError } from "./errors.js";
+import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type RunState, type Store, TriggersLeft } from "./store/index.js";
 
-/** The learning module's delete of an agent's learning: idempotent, and refuses (throws) while learning work of the agent
- *  is in flight. Given to the server as its `deleteLearning` option. */
-export type DeleteLearning = (store: Store, agentId: string) => Promise<void>;
+/** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
+ *  folder (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. */
+export type DeleteLearning = (store: Store, agentId: string) => Promise<unknown>;
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at): after step 1, after step 2, in step 3 between a
  *  trigger's removal upstream and its settings', between its settings' and its row's, and in step 3 once its triggers
@@ -42,6 +45,9 @@ export interface AgentDeleteHost {
   readonly deleteLearning: DeleteLearning;
   /** Step 1's mark: the agent archived, its triggers off in the same commit (the trigger engine's agentArchived). */
   refuse(agentId: string): Promise<void>;
+  /** Each learning batch of the agent still running ended cancelled, its live row's run stopped, and waited for
+   *  (learning-batch.ts stopAll): a batch would start its next row's run, and write its records after its learning went. */
+  stopLearningBatches(agentId: string): Promise<void>;
   /** The cancel path, for one run that is not final: true once a cancel stands for it (written now, or the run is ending
    *  already), false when this server cannot end it (an SDK run, which only its application ends; an imported run). */
   cancel(runId: string): Promise<boolean>;
@@ -81,17 +87,19 @@ const isFinal = (state: RunState) => (FINAL_STATES as readonly RunState[]).inclu
 export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
   // 1. No new run, then none in flight.
   await host.refuse(agentId);
+  await host.stopLearningBatches(agentId);
   await stopRuns(host, agentId);
   await host.at?.("after_step_1", agentId);
 
-  // 2. Its learning.
+  // 2. Its learning. Its refusal while learning work is in flight is learning_busy; any other failure is the server's own.
   try {
     await host.deleteLearning(host.store, agentId);
   } catch (error) {
+    if (!(error instanceof LearningInFlight)) throw error;
     throw new ApiError(
       "learning_busy",
-      `The agent ${agentId}'s learning could not be deleted yet (${(error as Error)?.message ?? String(error)}). The agent starts no run meanwhile: send the DELETE again later to finish it.`,
-      { retry_after_ms: 5_000 },
+      `The agent ${agentId}'s learning could not be deleted yet (${error.message}). The agent starts no run meanwhile: send the DELETE again later to finish it.`,
+      { details: { runs: [...error.runs] }, retry_after_ms: 5_000 },
     );
   }
   await host.at?.("after_step_2", agentId);

@@ -98,6 +98,7 @@ import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
+import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -407,8 +408,8 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
-  /** The learning module's delete of an agent's learning, step 2 of DELETE /agents/{id} (agent-delete.ts): injected until
-   *  the learning module exports it. With none, that route answers 501 unsupported_here and touches nothing. */
+  /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
+   *  the agent's learning folder (learn/delete.ts), the server's own. */
   deleteLearning?: DeleteLearning;
   /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
    *  there stops the delete as a crash would. */
@@ -2266,10 +2267,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
   };
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
-  const agentDeleteHost = (deleteLearning: DeleteLearning): AgentDeleteHost => ({
+  /** Step 2 of DELETE /agents/{id}: the learning module's delete over the agent's learning folder on this server's disk,
+   *  as the learning routes open it (learningFolderOf), which deleteLearning ends in its finally. A learning folder on
+   *  the agent's Archil disk goes with that disk in step 3. */
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId) => deleteLearning(given, agentId, learningFolderOf(data, agentId)));
+  const agentDeleteHost: AgentDeleteHost = {
     store,
-    deleteLearning,
+    deleteLearning: learningDelete,
     refuse: async (agentId) => void (await triggers.agentArchived(agentId)),
+    stopLearningBatches: (agentId) => batches.stopAll(agentId),
     cancel: async (runId) => {
       const moment = await momentOverStore(store, runId, viewDepsFor(ownOriginOf()));
       if (!moment) return true;
@@ -2328,7 +2334,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
     ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
-  });
+  };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
   async function needRun(id: string): Promise<RunMoment> {
@@ -3824,12 +3830,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteAgent": {
         // Another system's agent, deleted whole (agent-delete.ts); one delete of an agent at a time, the agent read in its
         // turn, so a DELETE after one that finished is 404.
-        const deleteLearning = options.deleteLearning;
-        if (!deleteLearning) throw unsupported("agents.delete", "This server deletes no agent: it has no learning delete to call. Archive the agent instead (POST /v2/agents/{agent_id}/archive).");
         await deleteInTurn(id, async () => {
           const entry = await needAgent(id);
           if (entry.agent.externalRef === null) throw new ApiError("agent_not_external", `The agent ${id} was made here, not by another system's inline run, and is not deleted: archive it instead (POST /v2/agents/${id}/archive), which keeps its runs and stops new ones.`);
-          await deleteExternalAgent(agentDeleteHost(deleteLearning), id);
+          await deleteExternalAgent(agentDeleteHost, id);
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();

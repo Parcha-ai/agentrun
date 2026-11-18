@@ -3002,10 +3002,12 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    is refused) and its triggers are turned off in the same write, so the refusal outlives a restart. From then a run of
    it, an inline run of its reference, a trigger's firing, an SDK run and a message that would open one of its finished
    runs again are `409 agent_not_runnable`, saying it is being deleted; so is a new trigger of it (off too), a trigger
-   moved to it or one of its turned on, and a write to its home or its learning. Each of its runs still going, its learning runs
-   included, is cancelled as `POST /runs/{id}/cancel` cancels it, and the delete waits until every one has ended.
-2. Its learning is deleted by the learning module, which refuses while learning work of the agent is in flight: `409
-   learning_busy`.
+   moved to it or one of its turned on, and a write to its home or its learning. Each of its learning batches still
+   running is cancelled, and each of its runs still going, its learning runs included, is cancelled as
+   `POST /runs/{id}/cancel` cancels it, and the delete waits until every one has ended.
+2. Its learning is deleted by the learning module: every file of its learning folder, then its promotions, grades,
+   evals and learning batches. It refuses while learning work of the agent is in flight: `409 learning_busy`, naming
+   that work in `details.runs`.
 3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
    its own computer, its Archil disk, each run with everything kept of it (its journal, launch record, messages, origin,
    live view, channel posts, kept learning, files and scratch folders, and the answers kept under its idempotency keys),
@@ -3025,10 +3027,7 @@ its Archil disk (Archil failed or was not reached, a run of another agent is on 
 with a disk still stored on the agent: turn Archil on again first), or a run's folder on a disk its launch named
 (Archil failed, a computer still holds the folder, or Archil is off), or a trigger that reached the agent after the
 delete removed its triggers (the next `DELETE` removes it, its registration upstream first). A delete stopped
-part way (a crash) is finished the same way: every step is safe to do again. A server started without the learning
-module's delete answers `501 unsupported_here` and touches nothing. The learning module's delete is not in this release,
-so every deploy (`agentrun-serve`, the image, `compose.yaml` and `render.yaml`) answers `501` for now; no setting turns
-it on, and the spec names the route all the same.
+part way (a crash) is finished the same way: every step is safe to do again.
 
 ## The console
 
