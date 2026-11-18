@@ -94,6 +94,12 @@ only when they already named a place or an AgentRun server (then check its `/v2/
 On **Check**, run the step 4 scan now, while AgentRun installs; it looks at this computer wherever AgentRun runs. On
 **I'll tell you**, ask for the job and its folder (free text, one plain message), and bring it in at step 5.
 
+On **This computer** or **My always-on machine**, before the start, ask once with the
+question tool, header `Local reach`: "Do only you use that machine, and should its agents reach tools or a webhook
+receiver on it?" Recommendation: Not now because it is the safer default and a restart adds it later.
+- Not now (Recommended): runs and the webhook reach nothing local to it.
+- Yes, only me: start the server with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` and `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` set.
+
 ### This computer
 
 First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records

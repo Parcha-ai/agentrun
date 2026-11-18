@@ -658,7 +658,7 @@ test("the setup skill asks every choice with the host's question tool, recommend
   assert.match(how, /Never answer a question for the person, and never pass a flag that answers one\./);
   assert.doesNotMatch(skill, /\bbatch/i, "nothing tells the model to batch its questions into one message");
   const questions = setupQuestions(skill);
-  assert.deepEqual(questions.map((q) => q.header), ["Run where", "Scan", "Host", "Agent", "First run", "Model", "First run"], "every choice point, in order");
+  assert.deepEqual(questions.map((q) => q.header), ["Run where", "Scan", "Host", "Local reach", "Agent", "First run", "Model", "First run"], "every choice point, in order");
   for (const q of questions) {
     assert.ok(q.header.length <= 12, `${q.header}: a header of 12 characters or less`);
     assert.match(q.question, /\?/, `${q.header} asks a question`);
@@ -672,6 +672,7 @@ test("the setup skill asks every choice with the host's question tool, recommend
   assert.deepEqual(options["Run where"], ["This computer", "My always-on machine", "A hosted service"]);
   assert.deepEqual(options.Scan, ["Check", "I'll tell you", "No, start fresh"]);
   assert.deepEqual(options.Host, ["Railway", "Render", "AgentRun Cloud"]);
+  assert.deepEqual(options["Local reach"], ["Not now", "Yes, only me"], "the start-time switches stay off unless the person says only they use the machine");
   assert.deepEqual(options.Model, ["Continue with ChatGPT", "OpenRouter key", "Local model"], "ChatGPT, then a capped key, then a local model");
   assert.match(questions.find((q) => q.header === "Agent").paragraph, /then \*\*Start\s+fresh\*\*/, "a found agent or a fresh start");
   assert.deepEqual(proseChoices(skill), [], "no choice is written as prose");

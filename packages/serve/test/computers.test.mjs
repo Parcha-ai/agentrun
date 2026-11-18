@@ -104,7 +104,7 @@ test("under AGENTRUN_BOX_ALLOW=none a computer that needs a network is not ready
   for (const [kind, id, label] of [["phone", "phone-harness", "Phone harness"], ["browser", "browserbase", "Browserbase"], ["browser", "kernel", "Kernel"]]) {
     const provider = providerOf(none, kind, id);
     assert.equal(provider.ready, false, `${id} is never usable on a server with no network`);
-    assert.equal(provider.why, `${label} needs a network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network, or set AGENTRUN_BOX_ALLOW to a host list`);
+    assert.equal(provider.why, `${label} needs a network, and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network, or restart the server with AGENTRUN_BOX_ALLOW set to a host list`);
     assert.equal(provider.network, "needs a network, which this server refuses: its AGENTRUN_BOX_ALLOW is none");
   }
   for (const kind of ["phone", "browser"]) {

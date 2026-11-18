@@ -29,6 +29,7 @@ import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
 import { fencedStore, finalSyncWords, type FolderStore, pullFolder, pushFolder, recordMeta, recordWords, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
+import { restartWith } from "../start-switches.js";
 
 /** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
  *  provider of the kind registry: the computer module's own types. Where a run's shell is: the kernel registry's. */
@@ -238,7 +239,7 @@ export const aLabel = (label: string, start = false): string => `${start ? "A" :
 /** Why a computer that needs a network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the
  *  fix: the operator said no network at all, and the computer can't run without one. */
 export const noNetworkRefusal = (label: string, kind: string): string =>
-  `This agent's computer is ${aLabel(label)} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list.`;
+  `This agent's computer is ${aLabel(label)} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or ${restartWith("AGENTRUN_BOX_ALLOW set to a host list")}.`;
 
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words

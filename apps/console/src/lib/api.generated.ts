@@ -250,6 +250,11 @@ export interface components {
       limit: string;
     };
     run_isolation?: "uid" | "process";
+    switches: Record<string, {
+      on: boolean;
+      value: string | null;
+      allows: string;
+    }>;
   };
   CommitSha: string;
   Cost: {

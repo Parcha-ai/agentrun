@@ -362,6 +362,21 @@ timeline and, once, to the model as an "AgentRun server note"), and the agent's 
 when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
 `agentrun-serve runner --data DIR --name N`.
 
+## Start-time switches
+
+Some of what the server reaches is set only by its operator, in its environment when it starts. No route and no console
+page sets these, so no caller of the API can widen what the server reaches; each takes a restart. A refusal one of them
+causes names the variable, the value that allows it and the restart (`restart the server with
+AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`), with its usual error code.
+`GET /v2/capabilities` lists them under `switches`, each with `on`, the `value` the server read and what it `allows`.
+
+| Variable | What it allows | Default | Why at the start only |
+| --- | --- | --- | --- |
+| `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | An MCP server on this machine's loopback ([MCP servers](#mcp-servers)) | off | Loopback is this machine's other services too: set it only on a machine you alone use |
+| `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` | The outbound webhook to a private network or this machine ([Webhooks](#webhooks)) | off | Whoever may set the webhook could make the server POST inside its network: only on a machine you alone use |
+| `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
+| `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
+
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
@@ -458,7 +473,7 @@ go through `work/` by path.
   `AGENTRUN_BOX_ALLOW` replaces it with a comma list of host names, such as
   `pypi.org,files.pythonhosted.org,registry.npmjs.org,registry.yarnpkg.com,github.com,codeload.github.com,deb.debian.org`
   to add one (`*.example.com` names the hosts below `example.com`); `AGENTRUN_BOX_ALLOW=none` is the box offline, as it
-  was: no proxy, no network at all. `*`, an address or a CIDR refuses the start.
+  was: no proxy, no network at all ([start-time switches](#start-time-switches)). `*`, an address or a CIDR refuses the start.
   - How: the run's process starts the proxy with the list on a Unix socket in a directory of its own under
     `/tmp/agentrun-egress-<uid>/`, bound into the box read-only at `/run/agentrun/egress/`. A `socat` in the box relays
     `127.0.0.1:3128` to it, and `HTTP_PROXY` and `HTTPS_PROXY` (and their lowercase twins) name that port, with
@@ -533,7 +548,7 @@ go through `work/` by path.
   It may use 2 CPUs' time, 4 GiB of memory, swap included, and 1,024 processes and threads (`--cpu-period 100000
   --cpu-quota 200000 --memory 4096m --memory-swap 4096m --pids-limit 1024`), so a runaway build or a fork bomb stops in
   the box. `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY` and `AGENTRUN_BOX_PIDS` change them, for Docker computers only
-  ([a Docker computer's size](#computers)). `AGENTRUN_BOX_CPUS` caps CPU
+  ([a Docker computer's size](#computers); [start-time switches](#start-time-switches)). `AGENTRUN_BOX_CPUS` caps CPU
   time, as a CFS quota (the cap `--cpus` sets), so it holds whatever CPU count Docker's VM has, and where the kernel
   gives Docker no CPU controller (a rootless Docker without one delegated), Docker ignores it with a warning.
 - `bash` takes pi's `{command, timeout?}`, `timeout` in seconds, 300 when the call names none; a timeout kills the
@@ -2069,7 +2084,7 @@ and `X-Forwarded-Proto: https`: without them a start reads as another address (o
 and every start answers `409 wrong_origin`. For an MCP server whose URL is not loopback, every endpoint its authorization server names (and
 every request to one) must be `https` and resolve to no private, loopback or link-local address, or the sign-in or
 refresh is refused with words and nothing is sent. A loopback MCP server (a `127.0.0.1` or `localhost` URL) is taken only
-by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, which says this is a local install: set it only on a machine you
+by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` ([start-time switches](#start-time-switches)), which says this is a local install: set it only on a machine you
 alone use, since loopback is this machine's other services too. Without it such a URL is refused at the save, the preview
 and the sign-in, in words naming the variable, and a runner never reaches one. The runner beside such a server reaches
 one, never at that server's own ports (where it listens, and its public address when that is on loopback), which the
@@ -2235,7 +2250,7 @@ save's `422` says, under a harness id when that harness's own MCP client would d
 
 One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
 or `https` address, with no user or password in it, on a public host: a loopback or private-network address is refused
-unless the operator allows it (`AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`, below). Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
+unless the operator allows it (`AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`, below; [start-time switches](#start-time-switches)). Two kinds of message are POSTed to it about runs: `run.needs_input` when a run comes to
 need its person (`input_required`: a question, a call held for approval, a pause at its cap, an ask for its person in
 its browser, desktop or phone, or a stopped turn) and `run.ended` when it ends
 (completed, failed or cancelled, once the run's end is written). A [schedule](#schedules) whose firing fails sends a third,
@@ -2281,7 +2296,8 @@ it is still cut. A `PUT` that changes the URL makes a new secret and shows it on
 URL keeps it. `GET` and the log show the URL's origin and its last four characters, never the whole URL (a chat
 service's incoming-hook URL is a credential itself). The URL is refused when it is on a private network or this machine,
 by address or by any address its name resolves to, and each try resolves the name again and dials the address it
-checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` where the server starts. A `DIR/webhook.json` an earlier build left is not read: the
+checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` where the server starts
+and restarts it, which the refusal says, at the `PUT` and in a try's log entry. A `DIR/webhook.json` an earlier build left is not read: the
 server says so at its start (`condition=webhook_left_over`), and a `PUT` sets the webhook again. A new secret for the
 same URL is `POST /v2/settings/webhook/secret` (Settings → Webhook → Rotate secret in the console), from the owner's
 signed-in session alone, as every secret write is: it answers the new secret once, as `signing_secret`, and retires the

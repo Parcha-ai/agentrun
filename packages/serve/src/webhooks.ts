@@ -22,6 +22,7 @@ import { signatureOf } from "./standard-webhooks.js";
 import type { ChannelAttemptRow, ChannelPostRow, Store } from "./store/index.js";
 import { webhookSecretMeta } from "./trigger-secrets-shown.js";
 import type { TriggerFailed } from "./triggers.js";
+import { restartToAllow, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import { isObject, unknownFields } from "./validate.js";
 
 /** A run's two notices, which the server's run-change follower tells. */
@@ -57,8 +58,12 @@ export const WEBHOOK_SECRET_SPEC = { scope: "server" as const, fields: { [SECRET
 const CLAIM_MS = 60_000;
 /** Names that are this machine or its own network, whatever they resolve to. */
 const LOCAL_NAME = /^(localhost|.*\.localhost|.*\.local|.*\.internal)$/i;
-/** The words a URL on a private network or this machine is refused in. */
-const PRIVATE_WORDS = "url is on a private network or this machine, which this server does not send to";
+/** How a refusal of a private network or this machine is lifted: the operator's switch, at a restart (start-switches.ts). */
+const RESTART_WORDS = restartToAllow(WEBHOOK_PRIVATE_TARGETS_ENV);
+/** The words a URL on a private network or this machine is refused in, at its PUT. */
+const PRIVATE_WORDS = `url is on a private network or this machine, which this server does not send to; ${RESTART_WORDS}`;
+/** The words a try refuses `host` in, when it or an address its name resolves to now is not public. */
+const notPublic = (host: string) => `refused: ${host} is not a public host; ${RESTART_WORDS}`;
 
 /** The webhook's URL as the server shows it (GET, its log): its origin and the last four characters of its path, never
  *  the whole URL, which can be a credential itself (a chat service's incoming-hook URL). */
@@ -520,7 +525,7 @@ export class Webhooks {
   private async dialled(url: URL, signal: AbortSignal): Promise<{ dispatcher?: Agent } | { refused: string }> {
     if (this.privateTargets) return {};
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    if (LOCAL_NAME.test(host)) return { refused: `refused: ${host} is not a public host` };
+    if (LOCAL_NAME.test(host)) return { refused: notPublic(host) };
     const { isPrivateAddress, pinnedLookup } = await import("@parcha/pi-browser");
     let addresses: string[];
     try {
@@ -530,7 +535,9 @@ export class Webhooks {
       if (signal.aborted) return { refused: (signal.reason as Error | undefined)?.name === "TimeoutError" ? `no answer in ${this.timeoutMs / 1000} s` : "not reached: the server is stopping" };
       return { refused: `not reached: ${(error as { code?: string }).code ?? "its name does not resolve"}` };
     }
-    if (!addresses.length || addresses.some(isPrivateAddress)) return { refused: `refused: ${host} is not a public host` };
+    // A name that resolves to nothing is no switch's refusal: the operator's switch would not reach it either.
+    if (!addresses.length) return { refused: `refused: ${host} is not a public host` };
+    if (addresses.some(isPrivateAddress)) return { refused: notPublic(host) };
     return { dispatcher: new Agent({ connect: { lookup: pinnedLookup(addresses[0]!) } }) };
   }
 

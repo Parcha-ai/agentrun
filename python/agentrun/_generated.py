@@ -54,6 +54,7 @@ __all__ = [
     "CapabilitiesPlacesDefaultPlace2",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
+    "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
     "CapabilitiesToolsItemResolves",
     "CapabilitiesToolsItemWhy",
@@ -5749,6 +5750,7 @@ class _CapabilitiesRequired(TypedDict):
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
     tools: list[CapabilitiesToolsItem]
+    switches: dict[str, CapabilitiesSwitchesValue]
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
@@ -6098,6 +6100,12 @@ class CapabilitiesSecrets(TypedDict):
     handoff: Literal["pipe"]
     condition: str
     limit: str
+
+
+class CapabilitiesSwitchesValue(TypedDict):
+    on: bool
+    value: str | None
+    allows: str
 
 
 class GetHealthResponse(TypedDict):
