@@ -4977,6 +4977,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
+    // A stop asked for and not yet taken reads stopped (store-view's stopAsked) before its row ends: it is told once the
+    // runner's end commit ends the row (a change the feed brings), under the one marker that end gives it.
+    if (card === "stopped" && row.endedAt === null) return true;
     // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last. A stop's is when
     // its stop ended the row: rows its stopped turn still streams in (a late result, a charge) never move it.
     const marker = card === "stopped" && row.endedAt !== null ? `stopped:${new Date(row.endedAt).toISOString()}` : waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);

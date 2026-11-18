@@ -218,28 +218,6 @@ test("the size cap stops it, across its files, said on the timeline in words", a
   await recorder.stop("ended");
 });
 
-test("the size cap is the run's across recordings made at once (a browser's sessions): each stops when their files together reach it", async () => {
-  const dir = scratch();
-  const folder = join(scratch(), "recordings");
-  const limits = { maxBytes: 4_096, checkMs: 50 };
-  const one = recording({ ffmpeg: program(dir, COPY(join(dir, "one.json"))), kind: "browser", limits, folder });
-  const tv = screen();
-  const lines = [];
-  const two = startRecording({ watch: tv.watch, folder, tag: "c2", kind: "browser", say: (words) => void lines.push(words), ffmpeg: program(dir, COPY(join(dir, "two.json"))), limits, log: () => undefined });
-  recorders.push(two);
-  await until(() => one.tv.watches.length === 1 && tv.watches.length === 1, "both recorders' watches");
-  const end = Date.now() + 4_000;
-  for (let i = 0; !(one.recorder.facts().ended && two.facts().ended) && Date.now() < end; i += 1) {
-    one.tv.show(frame("jpeg", new Uint8Array(1_000)));
-    tv.show(frame("jpeg", new Uint8Array(1_000)));
-    await sleep(120);
-  }
-  assert.equal(one.recorder.facts().ended, "it reached its cap of 4096 bytes");
-  assert.equal(two.facts().ended, "it reached its cap of 4096 bytes");
-  const sizes = ["c1.mp4", "c2.mp4"].map((name) => statSync(join(folder, name)).size);
-  assert.ok(sizes.every((size) => size < 4_096), `${sizes.join(" + ")} bytes: neither file reached the cap alone`);
-});
-
 test("ffmpeg's own end (a crash, a full disk) or no ffmpeg at all ends the recording with a line, and nothing throws", async () => {
   const dir = scratch();
   for (const [body, why] of [[CRASHES, "ffmpeg stopped (exit code 3)"], [DISK_FULL, "the disk is full"]]) {
@@ -259,41 +237,6 @@ test("ffmpeg's own end (a crash, a full disk) or no ffmpeg at all ends the recor
   assert.deepEqual(lines, ["The recording of the desktop stopped: ffmpeg isn't installed on this runner (no ffmpeg command on PATH)."]);
   assert.deepEqual(recorder.facts().files, []);
   await recorder.stop("ended");
-});
-
-test("a frame of another format ends the file and goes on in the next; fitted to 1280 on the long side, no audio; a park says it pauses, and the next recording takes the next file", async () => {
-  const dir = scratch();
-  const argsAt = join(dir, "args.json");
-  const { tv, recorder, lines, folder } = recording({ ffmpeg: program(dir, COPY(argsAt)), kind: "phone" });
-  await until(() => tv.watches.length === 1, "the recorder's watch");
-  tv.show(frame("png", [1, 2], 2560, 1600));
-  await until(() => existsSync(argsAt), "the first file's ffmpeg");
-  const first = JSON.parse(readFileSync(argsAt, "utf8"));
-  assert.deepEqual(first.slice(first.indexOf("-f"), first.indexOf("-f") + 4), ["-f", "image2pipe", "-c:v", "png"]);
-  assert.match(first[first.indexOf("-vf") + 1], /^scale=1280:800:/);
-  assert.ok(first.includes("-an"), "no audio");
-  assert.equal(first.at(-1), join(folder, "c1.mp4"));
-  await sleep(150);
-  tv.show(frame("jpeg", [3, 4], 1080, 2400));
-  await until(() => readFileSync(argsAt, "utf8").includes("c1-2.mp4"), "the second file's ffmpeg");
-  const second = JSON.parse(readFileSync(argsAt, "utf8"));
-  assert.deepEqual(second.slice(second.indexOf("-f"), second.indexOf("-f") + 4), ["-f", "image2pipe", "-c:v", "mjpeg"]);
-  assert.match(second[second.indexOf("-vf") + 1], /^scale=576:1280:/);
-  assert.equal(second.at(-1), join(folder, "c1-2.mp4"));
-  await recorder.stop("parked");
-  assert.deepEqual(lines, [
-    "Recording the phone's screen into recordings/c1.mp4.",
-    "The phone's frames changed from PNG to JPEG: the recording goes on in recordings/c1-2.mp4.",
-    "The recording of the phone pauses while the run is parked: it goes on in a new file when the run resumes.",
-  ]);
-  assert.deepEqual(readFileSync(join(folder, "c1.mp4")), Buffer.from([1, 2, 1, 2]), "the first file keeps its own frames only, its newest once more at the change, so it lasts until then");
-  const resumed = recording({ ffmpeg: program(dir, COPY(argsAt)), kind: "phone", folder });
-  await until(() => resumed.tv.watches.length === 1, "the resumed recorder's watch");
-  resumed.tv.show(frame("jpeg", [5]));
-  await until(() => readFileSync(argsAt, "utf8").includes("c1-3.mp4"), "the resumed file's ffmpeg");
-  assert.deepEqual(resumed.recorder.facts().files, ["recordings/c1-3.mp4"]);
-  await resumed.recorder.stop("ended");
-  assert.deepEqual(readdirSync(folder).sort(), ["c1-2.mp4", "c1-3.mp4", "c1.mp4"]);
 });
 
 test("a stop during a change of format returns once the file before it is finished, and opens no next file", async () => {

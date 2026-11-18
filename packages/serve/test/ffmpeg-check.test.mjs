@@ -26,11 +26,12 @@ const running = (pid) => {
 };
 
 /** Runs the check with an `ffmpeg` first on PATH that waits `delay` s before it starts the real one, and exits 1 when asked
- *  to read JPEG frames if `refuseJpeg`; `args` go to the check. However it ends, no ffmpeg it started is left running. */
+ *  to read JPEG frames if `refuseJpeg` (at once, or after that many seconds: its input takes frames meanwhile, and it never
+ *  makes the file); `args` go to the check. However it ends, no ffmpeg it started is left running. */
 async function check(t, { delay = 0, refuseJpeg = false, args = [] } = {}) {
   const dir = await scratch(t);
   const pids = join(dir, "pids");
-  const refuse = refuseJpeg ? `for a in "$@"; do [ "$a" = mjpeg ] && exit 1; done\n` : "";
+  const refuse = refuseJpeg === false ? "" : `for a in "$@"; do [ "$a" = mjpeg ] && { sleep ${refuseJpeg === true ? 0 : refuseJpeg}; exit 1; }; done\n`;
   writeFileSync(join(dir, "ffmpeg"), `#!/bin/sh\necho $$ >> '${pids}'\n${refuse}sleep ${delay}\nexec '${real}' "$@"\n`);
   chmodSync(join(dir, "ffmpeg"), 0o755);
   const run = spawnSync(process.execPath, [CHECK, ...args], { encoding: "utf8", timeout: 90_000, env: { ...process.env, PATH: `${dir}${delimiter}${process.env.PATH}`, TMPDIR: dir } });
@@ -57,4 +58,11 @@ test("an ffmpeg that refuses JPEG frames fails the check by name, before its dea
   assert.equal(status, 1);
   assert.match(err, /^ffmpeg check: the recording ended by itself: ffmpeg stopped \(exit code 1\)/);
   assert.ok(Date.now() - started < 30_000, `${Date.now() - started} ms`);
+});
+
+test("an ffmpeg that takes JPEG frames into its input and exits with no file made fails the check by name, never as a read of a file that is not there", { skip, timeout: 120_000 }, async (t) => {
+  // Its input (a pipe) takes the frames while it waits, so the recorder counts them written before ffmpeg made any file.
+  const { status, err } = await check(t, { refuseJpeg: 2 });
+  assert.equal(status, 1);
+  assert.match(err, /^ffmpeg check: the recording ended by itself: ffmpeg stopped \(exit code 1\)/, err);
 });
