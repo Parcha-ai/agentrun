@@ -117,10 +117,16 @@ AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its an
 decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
-more on a transport failure alone. A reply that is not the verdict, a request that failed twice and a cap refusal
-differ, never agree by default, in words ("the comparison could not be read: ...", "the cap held the comparison"). The
-verdict is a root journal entry (`agentrun.learning.compared`) that the run's metrics keep (`replay.compared`); the
-check reads it through compareAnswers, the one comparison the audit makes too. The record keeps `check.grader` (the
+more on a transport failure alone. Its wait is raced, as the end-of-run turn's is, against the run's stop or cancel, a
+lost claim, the session closing and a 60 s deadline (GRADER_DEADLINE_MS): each one aborts the request at once, and it is
+asked no more; what it spent before is booked as any cut request is, and a stopped run keeps no verdict. A reply that is
+not the verdict, a request that failed twice, one cut by its deadline, and a cap refusal differ, never agree by default,
+in words ("the comparison could not be read: ...", "the cap held the comparison"). The verdict is a root journal entry
+(`agentrun.learning.compared`) that the run's metrics keep (`replay.compared`), naming the two answers it read (`pair`,
+a digest of both); the check reads it through compareAnswers, the one comparison the audit makes too. A verdict whose
+pair is not the two answers read at the check (the agent's run answered again after its replay was compared: a
+follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
+does: no claim asks the grader again. The record keeps `check.grader` (the
 model) and each disagreement's `differs_on` (cut to CHECK_TEXT_MAX), its reason says "compared by the fast model
 (<model>)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
 <differs_on>)". With no fast model the whole answer decides, and a hold that answered some inputs alone and agreed on

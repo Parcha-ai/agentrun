@@ -6,6 +6,7 @@
 // back on is not an answer alone. This module is the arithmetic and the two records the store keeps (the agent's grades,
 // its workflows' promotion records), over the settings table; the orchestration is runner/promotion.ts. Grades are what
 // a person or an eval said of a run (PUT /runs/{id}/grade).
+import { createHash } from "node:crypto";
 import type { RunPath } from "../learning-cost.js";
 import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
@@ -487,19 +488,32 @@ export const graderUserText = (input: string, agent: string, draft: string): str
   [`The job input:\n<<<\n${input}\n>>>`, `The agent's answer:\n<<<\n${agent}\n>>>`, `The workflow's answer:\n<<<\n${draft}\n>>>`].join("\n\n");
 
 /** How a pair of answers compared: `same`, the grader's model when it was asked (`grader`; none when they were equal,
- *  compared on agree_on, or compared whole), and what they differ on when they do (`differs_on`: the grader's words, or
- *  why its verdict could not be had). */
-export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string };
+ *  compared on agree_on, or compared whole), what they differ on when they do (`differs_on`: the grader's words, or
+ *  why its verdict could not be had), and the two answers the grader read (`pair`, answersPair): its verdict is of that
+ *  pair alone. */
+export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string; readonly pair?: string };
 
-/** Why a pair counts as differing when no verdict could be read: the reply was not the verdict asked for, or the
- *  request failed. Never "same" by default. */
+/** The two answers a grader's verdict is of, as one digest: the sha256 of each answer's sha256, the two in order, so
+ *  the pair reads the same whichever side is named first and no two answers run together. */
+export const answersPair = (a: string, b: string): string => {
+  const one = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+  return createHash("sha256").update([one(a), one(b)].sort().join(":")).digest("hex");
+};
+
+/** Why a pair counts as differing when no verdict could be read: the reply was not the verdict asked for, the request
+ *  failed, or it was stopped or timed out. Never "same" by default. */
 export const COMPARE_UNREAD = "the comparison could not be read";
 /** Why a pair counts as differing when the run's cap refused the grader's request: nothing was sent or booked. */
 export const COMPARE_CAP_HELD = "the cap held the comparison";
+/** Why a pair counts as differing when the grader's verdict is of other answers: one of the two runs answered again
+ *  after it was compared (a follow-up on the agent's run, say). Never re-asked at a claim: the check and the audit ask no
+ *  model of their own, and a pair with no verdict differs. */
+export const COMPARE_STALE = "the comparison read an earlier answer: a run answered again after it was compared";
 
-/** One grader request's end: the model's reply, the run's cap refused it (`refused`: unsent, unbooked), or it failed on
- *  its way (`failed`: a transport error, asked once more). */
-export type GraderReply = { readonly text: string } | { readonly refused: string } | { readonly failed: string };
+/** One grader request's end: the model's reply, the run's cap refused it (`refused`: unsent, unbooked), it failed on
+ *  its way (`failed`: a transport error, asked once more), or the run's stop or the request's deadline cut it (`cut`:
+ *  never asked again). */
+export type GraderReply = { readonly text: string } | { readonly refused: string } | { readonly failed: string } | { readonly cut: string };
 /** The grader: its model's name, and one request to it. */
 export type Grader = { readonly model: string; ask(request: { readonly system: string; readonly user: string }): Promise<GraderReply> };
 
@@ -523,14 +537,15 @@ export function graderVerdictOf(text: string): { same: boolean; differs_on: stri
 }
 
 /** Asks `grader` whether `agent` and `draft`, two answers to `input`, reach the same decision: one request, asked once more
- *  on a transport error alone. A refusal of the run's cap, a failed request or a reply that is not the verdict differs,
- *  in words saying so; never "same" by default. */
+ *  on a transport error alone. A refusal of the run's cap, a failed request, one the run's stop or its deadline cut, or a
+ *  reply that is not the verdict differs, in words saying so; never "same" by default. The verdict names its pair. */
 export async function gradeAnswers(input: string, agent: string, draft: string, grader: Grader): Promise<Compared> {
   const request = { system: GRADER_PROMPT, user: graderUserText(input, agent, draft) };
   const first = await grader.ask(request);
   const reply = "failed" in first ? await grader.ask(request) : first;
-  const by = { grader: grader.model };
+  const by = { grader: grader.model, pair: answersPair(agent, draft) };
   if ("refused" in reply) return { same: false, ...by, differs_on: COMPARE_CAP_HELD };
+  if ("cut" in reply) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: ${reply.cut}` };
   if ("failed" in reply) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: its request failed twice` };
   const verdict = graderVerdictOf(reply.text);
   if (!verdict) return { same: false, ...by, differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for` };
@@ -540,18 +555,20 @@ export async function gradeAnswers(input: string, agent: string, draft: string, 
 /** The one comparison a check and an audit make of two answers (`a`, `b`; either null: they differ). With agree_on
  *  (`on`) named: sameAnswer on those paths, no model. Else two answers equal byte for byte or as JSON values agree with
  *  no model, and two that differ take the grader's verdict on that pair when it was asked (`compared`, kept on the run
- *  that asked it); with none (no fast model) they differ, compared whole. */
+ *  that asked it); with none (no fast model) they differ, compared whole. A verdict whose `pair` is not these two
+ *  answers' (one answered again since it was read) is stale: they differ, in its words (COMPARE_STALE), as with none. */
 export function compareAnswers(a: string | null, b: string | null, on: readonly string[] | undefined, compared?: Compared): Compared {
   if (a === null || b === null) return { same: false };
   if (on?.length) return { same: sameAnswer(a, b, on) };
   if (sameAnswer(a, b)) return { same: true };
-  return compared?.grader !== undefined ? compared : { same: false };
+  if (compared?.grader === undefined) return { same: false };
+  return compared.pair === answersPair(a, b) ? compared : { same: false, grader: compared.grader, differs_on: COMPARE_STALE };
 }
 
 /** A `compared` as a run's record keeps it (metrics `compared`), else undefined. */
 export function comparedOf(value: unknown): Compared | undefined {
   if (!isObject(value) || typeof value.same !== "boolean") return undefined;
-  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}) };
+  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}) };
 }
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */

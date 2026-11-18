@@ -3655,8 +3655,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     // Every request from here is learning's, between the step's asks too, until the claim ends (reflecting).
     reflecting = true;
+    // The step's signal, as its contract says (loop-contract.ts EndOfRunTurn): aborted by what cuts askEndOfRun's turn, a
+    // person's stop or cancel (stopAbort), a lost claim or a shutdown (deps.signal) and the session closing, so a request
+    // the step sends of its own (a replay's grader, compare-end.ts) is cut with the run, never waited on.
+    const closed = new AbortController();
+    void harness?.closed.then(() => closed.abort(new Error("the Session closed")), () => closed.abort(new Error("the Session closed")));
+    const signal = AbortSignal.any([deps.signal, stopAbort.signal, closed.signal]);
     try {
-      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: await keptOf(claim) });
+      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: await keptOf(claim) });
       // A replay's or a shadow's grader verdict (runner/compare-end.ts), on its root before its end: its metrics carry it
       // (workflow-first.ts pathMetrics), where the check and the audit read it.
       const on = harness;

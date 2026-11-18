@@ -78,25 +78,58 @@ export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfR
   };
 }
 
+/** How long one grader request may take before it is cut: a verdict is a few words, so a request this late is stuck. */
+export const GRADER_DEADLINE_MS = 60_000;
+
 /** One request to the grader's model over `models` (the run's port on the grader's route): its reply's text, the run's
  *  cap refusing it (`refused`: the proxy sent nothing and booked nothing), or a failure on its way (`failed`). pi-ai
- *  retries nothing of its own: the one retry is gradeAnswers'. */
-export async function graderAsk(models: PortModels, request: { readonly system: string; readonly user: string }, signal?: AbortSignal): Promise<GraderReply> {
+ *  retries nothing of its own: the one retry is gradeAnswers'. Raced, as the loop's end-of-run turn is (adapter-loop.ts
+ *  askEndOfRun), against `signal` (the run's stop, its lost claim, its session closing) and `deadlineMs`: either one
+ *  aborts the request and answers `cut` at once, never waiting on it, and gradeAnswers asks it no more. Whatever it spent
+ *  before it was cut is booked as any cut request is (the run's cap at its worst case). */
+export async function graderAsk(models: PortModels, request: { readonly system: string; readonly user: string }, given: { readonly signal?: AbortSignal; readonly deadlineMs?: number } = {}): Promise<GraderReply> {
   const failure = (words: string): GraderReply => (/spend_cap_reached/.test(words) ? { refused: words } : { failed: words });
+  const deadlineMs = given.deadlineMs ?? GRADER_DEADLINE_MS;
+  const stoppedWords = { cut: "its request was stopped with the run" } as const;
+  if (given.signal?.aborted) return stoppedWords;
+  const abort = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  let onStop: (() => void) | undefined;
   try {
     const model = models.getModels()[0] as Model<Api> | undefined;
     if (!model) return { failed: "the grader's route is not up" };
-    const message = await models.completeSimple(model, { systemPrompt: request.system, messages: [{ role: "user", content: request.user, timestamp: Date.now() }] }, { maxTokens: GRADER_MAX_TOKENS, maxRetries: 0, ...(signal ? { signal } : {}) });
-    if (message.stopReason === "error" || message.stopReason === "aborted") return failure(message.errorMessage ?? message.stopReason);
-    return { text: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") };
+    const asked = (async (): Promise<GraderReply> => {
+      try {
+        const message = await models.completeSimple(model, { systemPrompt: request.system, messages: [{ role: "user", content: request.user, timestamp: Date.now() }] }, { maxTokens: GRADER_MAX_TOKENS, maxRetries: 0, signal: given.signal ? AbortSignal.any([given.signal, abort.signal]) : abort.signal });
+        if (message.stopReason === "error" || message.stopReason === "aborted") return failure(message.errorMessage ?? message.stopReason);
+        return { text: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") };
+      } catch (error) {
+        return failure((error as Error)?.message ?? String(error));
+      }
+    })();
+    const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), deadlineMs)));
+    const stopped = new Promise<"stop">((resolve) => {
+      onStop = () => resolve("stop");
+      given.signal?.addEventListener("abort", onStop, { once: true });
+    });
+    const end = await Promise.race([asked, timeout, stopped]);
+    if (end === "stop" || end === "timeout") {
+      abort.abort(new Error(end === "stop" ? "the run was stopped" : "the grader's deadline passed"));
+      return end === "stop" ? stoppedWords : { cut: `its request gave no answer within ${deadlineMs / 1000} s` };
+    }
+    return end;
   } catch (error) {
     return failure((error as Error)?.message ?? String(error));
+  } finally {
+    clearTimeout(timer);
+    if (onStop) given.signal?.removeEventListener("abort", onStop);
   }
 }
 
 /** `step` with the run's grader handed in: its fast model's name and one request to it, over `models` (the run's port on
- *  GRADER_ROUTE). No grader: no step at all, so the run ends as it did before there was one. */
+ *  GRADER_ROUTE), cut by the step's `signal` (the loop aborts it on a person's stop or cancel, a lost claim or the session
+ *  closing) or at GRADER_DEADLINE_MS. No grader: no step at all, so the run ends as it did before there was one. */
 export function withGrader(step: EndOfRunTurn | undefined, grader: { readonly model: string; readonly models: () => Promise<PortModels> } | undefined): EndOfRunTurn | undefined {
   if (!step || !grader) return undefined;
-  return (input) => step({ ...input, grader: grader.model, grade: async (request) => graderAsk(await grader.models(), request, input.signal) });
+  return (input) => step({ ...input, grader: grader.model, grade: async (request) => graderAsk(await grader.models(), request, { signal: input.signal }) });
 }
