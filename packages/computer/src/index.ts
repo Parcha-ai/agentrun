@@ -7,6 +7,8 @@ export * from "./mount.js";
 export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
+export { type FolderMeta, FolderSync, folderPathProblem, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncCounts, type SyncSink } from "./sync-folder.js";
+export { type TarEntry, TarReader, tarEntry, tarOf, tarStream, untar, untarStream } from "./tar.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
 export {
 	type ActionMapper,
@@ -51,7 +53,6 @@ export {
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
 export {
 	ARCHIL_HELPER,
-	ARCHIL_MOUNT_LABEL,
 	ARCHIL_SYNC_SOCKET,
 	ARCHIL_TOOL_UID,
 	ARCHIL_TOOL_USER,
@@ -67,14 +68,18 @@ export {
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	archilSync,
 	claimEpoch,
 	helperSha256,
+	MOUNT_LABEL,
 	mountDrift,
 	mountWords,
-	type RecordedArchil,
-	readArchilMount,
-	recordedArchil,
+	type RecordedFolder,
+	type RecordedSource,
+	readMount,
+	recordedFolder,
 	recordedMount,
+	SYNC_LABELS,
 	syncingClient,
 } from "./mount-archil.js";
 export {
@@ -116,7 +121,7 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export { connectOf, type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,

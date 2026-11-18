@@ -52,7 +52,8 @@ A computer's spec (`ComputerSpec`):
 - `network`: `none`, `open` or an allowlist;
 - `cpus`, `memoryMb`, `pids`, `labels`, `workdir`;
 - `user`: a uid, or `uid:gid`; unset is a non-root default, and root only when asked;
-- `mount`: the run's folder, mounted at `/workspace`, of a kind the provider declares;
+- `mount`: the run's folder at `/workspace`, of a kind the provider declares: `{ kind: "bind", path }`,
+  `{ kind: "archil", disk, region, folder, token }` or `{ kind: "sync" }`;
 - `gpu`, `browser`: GPUs and browser features, of what the provider declares;
 - `owner`: `{ agent, server?, idleTtlMs? }`, the agent a computer that keeps its state belongs to, so a later run of
   that agent finds it again and no other agent does.
@@ -105,7 +106,7 @@ it and expects the same id refused `exists`. Both are Full.
 | `isolation` | `container`, `gvisor`, `microvm`, `vm`, `machine` or `host` (processes of the provider's own machine, such as the local browser's). |
 | `release` | `delete`, and `stop` where a stopped computer is kept; `stopDeletes` where a stop ends in deletion. |
 | `user` | What `spec.user` may ask for beyond the non-root default: `root`, another `uid`. |
-| `mount` | The kinds of folder a computer can mount at `/workspace`. |
+| `mount` | The kinds of folder a computer can have at `/workspace`: `bind`, `archil`, and `sync` wherever the configuration has `files` and `exec` (the [synced folder](#the-synced-folder)). |
 | `vendorAgentPorts` | The TCP ports the vendor's own agent listens on inside the computer. A `child` daemon must declare them: `[]` where none listens on TCP (the agent is on a unix socket or a virtio device, or not in the computer). |
 | `gpu`, `browser` | The GPUs `spec.gpu` may ask for; a browser's features beyond the protocol. |
 | `persistence` | `{ keepsState, resume }`: whether a computer keeps its disk and state past a run, and whether a kept computer comes back running or boots again from its disk. Absent means neither: each computer lives for one run. A provider on the shared machine-host adapter never declares it today: delete is its only release. |
@@ -131,8 +132,8 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `keys` | The keys Settings takes for it: each a `name` (what Settings stores and shows, such as `DAYTONA_API_KEY`; never a value), the `create()` `option` it fills, and whether it is `required`. `[]` for none. |
 | `settings?` | Values that are not keys but fill a `create()` option (Modal's app): `name`, `option`, and a `default` used when the server names none. Settings has no field for one, so a value with no default that works for everyone (a server URL, a team, project or workspace id) is a key with `required: true`, secret or not. |
 | `metered` | The vendor bills by time. Prices are the vendor's page, not ours. |
-| `mounts` | The mount kinds its computers take (`bind`, `archil`), as its providers' `capabilities().mount` declare; `[]` for none. |
-| `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its hosted cloud). |
+| `mounts` | The mount kinds its computers take beside the synced folder (`bind`, `archil`); `[]` for none. `sync` is never listed: it is derived, for each configuration with `files` and `exec` on a provider that lists no `bind` and has no `unmounted.sync`, and `capabilities().mount` and `mountsOf` declare it. |
+| `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its hosted cloud; Orgo's `sync`). |
 | `mountsWith?` | Mount kinds its computers take only where the operator sets one of its keys, keyed by kind, each the name of an optional key; each kind is in `unmounted` too. A provider made with that key declares the kind in `capabilities().mount`; one made without it refuses it in the `unmounted` words. `mountsOf(descriptor, set)` gives the mounts for the keys set, which a server reads without loading the provider (Daytona's `archil`, with `DAYTONA_ARCHIL_EGRESS`: a self-hosted target's Archil egress relay). |
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
@@ -156,6 +157,34 @@ The conformance case `health.declared` holds `capabilities()` to the declaration
 
 **Status.** Next, the contract types move to a zero-dependency package, `@parcha/agentrun-computer-protocol`
 (**draft**), and this spec is generated from there.
+
+## The synced folder
+
+A `{ kind: "sync" }` mount is a plain `/workspace`, owned by the computer's user with mode 0700, with nothing mounted
+there. A child-daemon host's install makes it as root before init starts. On a machine that dials, the box image's
+`agentrun-dial` makes it. The computer takes no disk, region or token. The runner holds the run's folder, puts it in
+before the agent's tools run, and reads what changed back after each call that may change it. Every byte goes through
+the computer's own `files` and `exec` calls, so no FUSE is needed and a GPU host takes one too.
+
+- The read-back is `{ kind: "sync", epoch }`, from the computer's `agentrun.epoch` label. The label
+  `agentrun.mount = {"kind":"sync"}` (`SYNC_LABELS`) lets a kept computer be reattached as one. `list` reports the
+  label's record. `attach` and `create` read `/workspace` from inside (`readMount`): if something is mounted there,
+  it isn't a directory, or its owner isn't `/work`'s, the create fails in words and the machine is deleted.
+- `FolderSync` (`packages/computer/src/sync-folder.ts`) takes the delta against a `SyncSink` (put, mkdir, remove,
+  meta). It reads one paged `files.list` of the folder and compares it with the last listing's manifest. A new tree
+  comes in one `tar.pull`. A changed file of up to 512 KiB comes through `files.read`, and a larger one through
+  `tar.pull`; 8 pulls and 8 puts run at once. Deletes run only when every put landed, deepest first. While a directory the computer's user can't read hides
+  what the sink holds under it, a sync writes nothing and fails in words. A path whose old entry the sink did not
+  remove gets nothing new until a later sync removes it. Modes and links
+  come from the listing alone, never as bytes; a link is kept by its target as written, never followed. A path that is
+  no plain relative path (absolute, a `.` or `..` segment, a backslash, a NUL) fails the sync in words.
+- A file whose mtime is within 1 s of the newest in its listing is read again at the first sync 1 s later (git's
+  racy rule). Bytes that equal the ones last put are not put again. A write that leaves both the size and the mtime as
+  they were is not seen.
+- Over `SYNC_MAX_ENTRIES` (20,000) entries or `SYNC_MAX_BYTES` (2 GiB), a sync fails with code `limit`. The entry cap
+  is checked as each page arrives, so no listing past it is held. The byte cap holds for what a sync reads too: each
+  body takes its size (a tar entry's at its header) before it is held, so a file grown since the listing fails the
+  sync with `limit` and is never read whole.
 
 ## prepareImage
 
@@ -241,23 +270,33 @@ refuses to start, so the adapter doesn't fit.
 
 A host whose facts say `connect: "dial"` has no `exec` and no `upload`: descriptor, facts, `create`, `get`, `list`
 and `delete`, with `errorCode`, `extend` and `check` optional. The constructor refuses one with `exec` or `upload`,
-or for kind `desktop` (the machine's init has no display), in words.
+in words.
 `HostedProvider` takes `dial: { url, tokens, hub }`: the server's public address (`AGENTRUN_PUBLIC_URL`), its
 `MachineTokens` and its `AttachHub`. Then:
 
 - `create` refuses `refused`, before the vendor is called, each in its own words: with no `dial` (the process has
   no attach hub), when the url is missing or not `https` (`http` only on `127.0.0.1`), and for an Archil mount. A
   host that doesn't dial ignores `dial`, so a server may pass it to every hosted provider. It mints the machine's token, expiring at `backstopAt`, and calls the
-  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names the five) and `egress`
+  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names them: five, and `DISPLAY`
+  for a desktop) and `egress`
   true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
   machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
   dial at once. Then it waits up to `createMs` for the machine's socket in the hub; one that
-  never dials is deleted, its token revoked, and create fails `timeout`, naming the address.
+  never dials is deleted, its token revoked, and create fails `timeout`, naming the address. One whose dial the server
+  refused in words (`MachineTokens.refused`: a relay to a runner in a process of its own it could not make) is deleted
+  as that read answers, and create fails `refused` in those words. The read is bounded by `requestMs`, the time left
+  and the caller's signal, and holds no look in the hub back: a token store that stalls costs no machine that dials
+  meanwhile, and the hub is read once more before a timeout.
 - Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
-  holds by the daemon's SHA-256, which the machine checks before it runs it.
-- `connect` goes over the machine's socket, by the attach binding's rules: a drop fails `gone`. `release` with
+  holds by the daemon's SHA-256, which the machine checks before it runs it. A desktop's X server and window manager
+  start over the machine's socket, through `process.start`, as on a host with exec.
+- `connect` goes over the machine's socket, by the attach binding's rules, with a fresh `hello` (a desktop's display
+  answers after it dialed): a drop fails `gone`. A desktop whose `hello` says `linux` is a linux computer until one
+  says `desktop`: its connection's `screen.*`, `input.*`, `apps.*` and `ui.*` calls, and `watch`, are refused
+  `unsupported` ("its display isn't up yet"), never sent. `release` with
   `delete` revokes the token and closes the socket before the vendor's delete.
-- The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400`, and
+- The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400` (a
+  desktop's token takes `linux`, its hello before its display answers), and
   after delete or past `backstopAt` it is refused. A run of a dial host passes `ConformanceOptions.dial`, the server's
   side for the case (through the CLI, its conformance module's `dialKit()`); a host with exec passes the case, observed.
 

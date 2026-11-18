@@ -37,14 +37,14 @@ import { holdsSecret, LEARNING_LABEL, secretsShown } from "../learning.js";
 import type { RunPath } from "../learning-cost.js";
 import { said, STOPPED } from "../learning-words.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
-import { costOf, type SignInReader } from "../run-view.js";
+import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
 import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
-import { runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
+import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
-import { bookedCapSpend, bookedSpend } from "./metrics.js";
+import { bookedCapSpend, cliModelWorked, runCostOf } from "./metrics.js";
 import { fits, workflowDigest } from "./workflow-first.js";
 import { pendingFeedbackOf } from "./feedback-round.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
@@ -52,6 +52,7 @@ import { type Committed, createReflectHook, type DraftCommit } from "./reflect-h
 import { sdkDraftTools, type SdkWorkflowTool } from "../sdk/workflows.js";
 import { runnerSecrets } from "./redact.js";
 import { mcpNameOf } from "../tool-names.js";
+import { held, heldEndOfRun } from "./held.js";
 
 /** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
  *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a draft or
@@ -87,6 +88,9 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   const start = learningStartOf(launch);
   // A run that only uses what its agent learned (`learning: "use"`) is asked nothing and keeps nothing, at every end.
   if (!start || start.use) return undefined;
+  // In a run's own process the step is its runner's (held.ts): what the run must never learn is every secret the runner
+  // holds, and a run's process is given none but its own keys.
+  if (held()) return heldEndOfRun();
   const env = deps.env ?? process.env;
   const hookFor = (seed: string, round: number) => createReflectHook({
     round,
@@ -97,19 +101,16 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // unknown once one request's is. Either unknown: the spend is unknown, never read as the whole cap. A person's stop
     // comes to the hook as its `cut`.
     facts: async (runId) => {
-      const [rows, entries] = await Promise.all([
-        runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }),
-        runEntries(deps.store, runId, BACKGROUND_CONTEXT),
-      ]);
-      // A pi retry's Timeline carries the answered requests alone. Its earlier cut request is still an unknown charge
-      // in the booking: keep it unknown in the task snapshot too, as the run's end does, never just the retry's subtotal.
-      // A request a crash cut booked at its hold (`bounded`) is an upper bound, not a spend: the job's and the compile's
-      // figures say no "at most", so they stay unknown, as the run's stored cost reads once it ends.
-      const unknown = (["model", "paid", "decisions"] as const).some((kind) => {
-        const spend = bookedSpend(entries, kind);
-        return spend.usd === null || spend.bounded > 0;
-      });
-      const costUsd = unknown ? null : costOf(rows);
+      const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
+      // The run's spend so far by the one rule its end stores its cost by (metrics.ts runCostOf, as the store view reads
+      // an ended run's): its booking, so the job's cost kept here is the figure the end stores when no turn follows it, and
+      // what a turn after it spent is that figure less the job's. Never the Timeline's usage row: it reads pi's answers,
+      // and pi answers a compaction's summary with no answer of its own (its cost rides on the next answer), so each one
+      // read there as a request cut with no answer, unknown. A cut request still unknown in the booking (a pi retry's
+      // earlier one) keeps it unknown; one a crash cut booked at its hold is an upper bound, not a spend: the job's and the
+      // compile's figures say no "at most", so they stay unknown, as the run's stored cost reads once it ends.
+      const booked = runCostOf(entries, { unbooked: isCliRecord(entries) && cliModelWorked(entries) });
+      const costUsd = booked.atMost > 0 ? null : booked.usd;
       if (launch.maxCostUsd === undefined) return { learns: true, costUsd };
       const capUsd = capNowOf(launch.maxCostUsd, entries)!;
       const spentUsd = await capSpendOf(deps.store, runId, entries);

@@ -9,6 +9,7 @@ import { TEMPLATES } from "@/lib/templates";
 import type { Agent } from "@/lib/agentForm";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { workflowStarter } from "@/lib/workflowStarter";
+import { pick, picker, valueOf } from "@/test/picker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const origin = "https://console.example.test";
@@ -323,7 +324,7 @@ describe("AgentRequest, local definition requests", () => {
 
   it("lets an edit return to the server default model", async () => {
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, (call) => call.method === "GET" ? json(existing, 200, '"rev-three"') : json(existing, 200, '"rev-six"'));
-    type(control("Model"), "");
+    await pick(picker(host, "Model")!, "");
     expect(button("Send request").disabled).toBe(false);
     await send();
     const definition = (writes()[0].body as { definition: Agent["definition"] }).definition;
@@ -336,11 +337,11 @@ describe("AgentRequest, local definition requests", () => {
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, (call) => call.method === "GET" ? json(existing, 200, '\"rev-three\"')
       : json({ ...existing, definition: (call.body as { definition: Agent["definition"] }).definition, revision: "rev-six", revisions: 6 }, 200, '\"rev-six\"'));
     type(control("Instructions"), "Use the reviewed policy.");
-    type(control("Model"), "");
+    await pick(picker(host, "Model")!, "");
     await act(async () => button("JSON").click());
     expect(JSON.parse(control("Request JSON").value).definition.model).toBe("");
     await act(async () => button("Form").click());
-    expect(control("Model").value).toBe("");
+    expect(valueOf(picker(host, "Model")!)).toBe("");
     // Another round trip and an actual save must preserve the reset, not just the empty-looking field.
     await act(async () => button("JSON").click());
     await act(async () => button("Form").click());

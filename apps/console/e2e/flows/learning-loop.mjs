@@ -14,9 +14,9 @@ import { check, markExample } from "../harness.mjs";
 const SAMPLE = JSON.parse(readFileSync(new URL("../../src/components/CostPerRun.sample.json", import.meta.url), "utf8"));
 export const WIDTHS = [1440, 820, 390];
 const WF = "sort-invoice";
-/** The story's cheaper headline: the sample's 7.7 (its served runs only), and the serving check it passed (the sample's
- *  replay: 38 of 40 agreed, the bar 80%), never "at the same accuracy". */
-const CHEAPER = "About 8x cheaper";
+/** The story's cheaper headline: the sample's 7.7 (its served runs only), as the chart's headline says it, and the
+ *  serving check it passed (the sample's replay: 38 of 40 agreed, the bar 80%), never "at the same accuracy". */
+const CHEAPER = "7.7x cheaper";
 const PASSED = "Passed the agreement check: 38 of 40 agreed (bar 80%) · served 59 runs, handed back 3";
 const D0 = "c0ffee00c0ffee00", D1 = "a12596c0a12596c0";
 const runAt = (n) => SAMPLE.runs.find((r) => r.n === n);

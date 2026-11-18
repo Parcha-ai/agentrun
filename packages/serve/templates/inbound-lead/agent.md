@@ -34,7 +34,8 @@ parameters:
   slack_channel: { type: string, required: false, pattern: "^[CG][A-Z0-9]{8,12}$", description: "a Slack channel ID like C0123ABCD (the channel's details in Slack show it), never its name: where the brief is posted when post_to is slack" }
   competitors: { type: string, required: false, description: "your competitors' names or domains, comma-separated; a lead from one is flagged, never scored as a customer" }
 budget: { per_run_usd: 5.00 }
-learning: true
+# Learning on, its check and audit comparing two answers on the next step's action alone (never the brief's prose).
+learning: { agree_on: [next_step.action] }
 # Runs unattended (its job runs on triggers): no tool asks; deny and the pins above still hold.
 approvals: never
 triggers:

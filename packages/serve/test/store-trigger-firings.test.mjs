@@ -24,7 +24,7 @@ test("a trigger made, read, changed and removed: its fields as the API keeps the
   const { store, trigger } = await withTrigger(t, { maxActiveRuns: 2 });
   assert.deepEqual(
     { ...trigger },
-    { id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: T0 + 60_000, lastRunId: null, catchupWindowS: 3600, failuresInARow: 0, disabled: null, maxActiveRuns: 2, createdAt: T0, updatedAt: T0 },
+    { id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: T0 + 60_000, lastRunId: null, catchupWindowS: 3600, failuresInARow: 0, disabled: null, maxActiveRuns: 2, createdAt: T0, updatedAt: T0, templateId: null },
   );
   const changed = await store.triggers.update("trg-1", { name: "daily", enabled: false, nextAt: null, disabled: { at: "x", reason: "auto_paused" } });
   assert.deepEqual([changed.name, changed.enabled, changed.nextAt, changed.disabled], ["daily", false, null, { at: "x", reason: "auto_paused" }]);

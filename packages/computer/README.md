@@ -203,6 +203,13 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
+- `computerd pair <server URL> [--name <name>]`, `computerd attach` and `computerd unpair` make a Linux box of your own
+  a paired computer: pair reads the console's code from stdin and keeps the token in a file only its user can read,
+  attach dials with it, unpair deletes it ([attach.md, A Linux box](../../spec/computer/attach.md#a-linux-box)). A box
+  with a display pairs as a desktop; one with none (a `linux` hello) pairs as a sandbox that holds a run's folder as a
+  synced folder in its `/workspace`, a directory of init's user's own, mode 0700, never a link, made once as root with
+  a tmpfiles.d line. A run's shell can read and write everything that user can, so make it a user of its own
+  (`useradd --system --create-home agentrun`, no lingering, no crontab), never a person's login user.
 - Init is a child subreaper (PID 1 in Docker is one anyway) and reaps every orphan. It also sweeps, on each SIGCHLD and
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by
@@ -681,6 +688,11 @@ setting:
   constructions run one at a time: none sees another's server.
 - **E2B, `E2B_SANDBOX_URL`** (`ambientProblem` in `src/e2b.ts`). The SDK sends every sandbox call to it when it is set,
   and no option clears it, so the provider refuses to start while it is set. It only reads.
+
+A proxy isn't read from the environment either. E2B's SDK and Morph's SSH gateway, the two clients Node's own proxy
+doesn't reach, follow the one the process installed into Node (`--use-env-proxy`, `NODE_USE_ENV_PROXY` or
+`http.setGlobalProxyFromEnv`, which serve calls at start), as `fetch` does: `src/env-proxy.ts` reads it from Node's
+`https.globalAgent`. A process that installed none has them go direct.
 
 `scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/`, those
 in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted,
@@ -1392,6 +1404,13 @@ conformance module's `dialKit()` refuses, as E2B's does: the Core run happens in
 run image with `COMPUTER_MODAL_CONNECT=dial` is the box image, the one that holds `agentrun-dial` (debian:bookworm-slim
 on exec, as before).
 
+A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server and xfwm4, started over the socket it
+dialed, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
+constructor refuses `kind: "desktop"` in words. The descriptor's desktop configuration selects `connect: "dial"` itself,
+so a server whose `modalConnect` is exec still makes its desktop over dial (it needs the dial's public address). In
+serve's Mode 2 the run's folder is an Archil mount, which a dial machine takes none of yet, so a Modal desktop there is
+refused at `check()` in those words. **Unverified**: Xvfb and the window manager on Modal (no live run yet).
+
 ## Daytona
 
 ```ts
@@ -1661,7 +1680,11 @@ default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md
 no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
-no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. What each part rests on:
+no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
+(`kind: "desktop"`): the box snapshot's X server and xfwm4, started over the socket it dialed, with the snapshot's 2 CPUs
+and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words. The
+descriptor's desktop configuration selects `connect: "dial"` itself, so a server whose `daytonaConnect` is exec still
+makes its desktop over dial. **Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
@@ -2037,9 +2060,12 @@ provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 ### E2B on dial
 
 With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
-([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): kind linux alone (its default on dial; a desktop named
-there is refused), no Archil mount, and the host has no
-exec and no upload. E2B runs a template's start command once, at the template's build, and snapshots it running, so
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): a desktop by default, as on exec, since the box template has
+the desktop (`box/install.sh`'s `desktop` step), or kind linux; no Archil mount, and the host has no
+exec and no upload. A desktop's launch adds `DISPLAY` to the boot env, and its X server and xfwm4 start over the
+socket the sandbox dialed, through `process.start`. A dial desktop whose X server has gone is not refused at `connect()`
+as on exec: it reads back kind `linux`, and its screen, input, apps and ui calls are refused in words, never sent, until
+its hello says `desktop` again. E2B runs a template's start command once, at the template's build, and snapshots it running, so
 it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
 So create starts the box template's `agentrun-dial` itself, once, right after `Sandbox.create`: one envd process as
 root with the boot env as that process's env alone (never the sandbox's `envs`, which envd gives every process), after
@@ -3144,9 +3170,13 @@ fills, and whether it is required), `settings` (a setting that is no key but fil
 `metered`, `mounts`, `network` (the network forms its computers make, at least one of none, open and allow),
 `capabilities` (the kind and groups of each configuration), `defaultImage` (by setting kind),
 `prepareImage` (a provider whose `prepareImage()` answers its image before a run: it builds, pulls or names it), `imageEnv` (the server's environment variable
-that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `local`
+that, when set, names the image of every computer of the provider, as Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`), `connect`
+(whether its machines dial the server: `dial` always, as Fly Machines' and Cloudflare's; `either`, as its `connect`
+option says, which one of its settings fills, as E2B's, Daytona's and Modal's; absent, never), `local`
 (a computer on this host), and
-`ledger` (the option a provider's ledger fills). `providerFor(id, options)` builds a provider by id from its options and
+`ledger` (the option a provider's ledger fills). `connectOf(descriptor, options)` answers `dial` or `exec` for a provider
+made with those options, without building it; its built host's `facts.connect` is the same answer, and a server reads
+it to say where its runs can't take a dial (a runner in a process of its own). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a
 `ProviderModule` is:
 

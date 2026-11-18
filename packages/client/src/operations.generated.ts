@@ -261,6 +261,7 @@ export type DefinitionInput = {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
+    agree_on?: Array<string>;
     audit_every?: number;
     audit_every_later?: number;
     audit_later_after?: number;
@@ -458,6 +459,14 @@ export type RunSummary = {
     id: string;
     firing_key: string;
   } | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -747,6 +756,14 @@ export type Run = {
   } | null;
   audit_of?: string | null;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunResult = {
@@ -1043,6 +1060,7 @@ export type Capabilities = {
     condition: string;
     limit: string;
   };
+  run_isolation?: "uid" | "process";
 };
 
 export type Features = {
@@ -1476,6 +1494,8 @@ export type ListLearningPromotionsResponse = {
       agree_min: number;
       alone_min: number;
       attempt: 1 | 2;
+      agree_on?: Array<string>;
+      grader?: string;
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1500,6 +1520,7 @@ export type ListLearningPromotionsResponse = {
         draft?: string;
         escalated?: string;
         failed?: true;
+        differs_on?: string;
       }>;
       stopped?: true;
     };
@@ -1559,6 +1580,8 @@ export type ListLearningPromotionsResponse = {
         agree_min: number;
         alone_min: number;
         attempt: 1 | 2;
+        agree_on?: Array<string>;
+        grader?: string;
         n?: number;
         agreed?: number;
         alone?: number;
@@ -1583,6 +1606,7 @@ export type ListLearningPromotionsResponse = {
           draft?: string;
           escalated?: string;
           failed?: true;
+          differs_on?: string;
         }>;
         stopped?: true;
       } | null;
@@ -1927,12 +1951,14 @@ export interface GetLearningCostParams {
 export type GetLearningCostResponse = {
   agent: string;
   runs: Array<{
-    n: number;
+    n: number | null;
     run_id: string;
     started_at: string;
     path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
-    learned_revision: string | null;
+    digest: string | null;
+    took_over: boolean;
+    audited: boolean;
     cost_usd: number | null;
     cost_upper_bound: boolean;
     learning_usd: number | null;
@@ -1998,6 +2024,7 @@ export type GetLearningCostResponse = {
       run_id: string;
       at: string;
     } | null;
+    learning_usd: number;
     points: Array<{
       n: number;
       run_id: string;
@@ -2044,7 +2071,7 @@ export type GetAgentLearningResponse = {
     file: string;
     readme: string;
     description: string;
-    status: "active" | "pending" | "retired";
+    status: "serving" | "checking" | "held" | "stopped" | "pending" | "retired";
     run: string | null;
     bytes: number;
     etag: string;
@@ -2085,16 +2112,10 @@ export type GetAgentLearningResponse = {
     before: {
       runs: number;
       median_duration_s: number;
-      median_cost_usd: number | null;
-      cost_runs: number;
-      median_learning_usd: number | null;
     };
     after: {
       runs: number;
       median_duration_s: number;
-      median_cost_usd: number | null;
-      cost_runs: number;
-      median_learning_usd: number | null;
     };
   } | null;
 };
@@ -2206,6 +2227,7 @@ export type CreatePairingResponse = {
   id: string;
   code: string;
   expires_at: string;
+  runs_refused: string | null;
 };
 
 /** Forget this server's calendar (DELETE /settings/calendar). */
@@ -2415,6 +2437,7 @@ export type ListComputersResponse = {
     kind: string;
     serves: Array<"none" | "sandbox" | "desktop" | "phone" | "browser">;
     unserved: string | null;
+    runs_refused: string | null;
     os: string;
     os_version: string | null;
     device: {
@@ -2456,6 +2479,7 @@ export type ListComputersResponse = {
       }>;
       required: Array<string>;
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: Array<string>;
       why?: string;
@@ -2646,6 +2670,7 @@ export type SaveComputerKeysResponse = {
   }>;
   required: Array<string>;
   ready: boolean;
+  runs_refused: string | null;
   shell: "computer" | "local" | "none";
   host_tools: Array<string>;
   why?: string;
@@ -3765,6 +3790,7 @@ export type ApplyTemplateBody = {
   parameters?: Record<string, unknown>;
   servers?: Record<string, string>;
   grants?: Array<string>;
+  agent_id?: string;
   overrides?: {
     model?: string;
     choice?: string;
@@ -3875,7 +3901,7 @@ export type ImportTemplateResponse = {
     budget: {
       per_run_usd: number;
     } | null;
-    learning: boolean;
+    learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
     triggers: Array<Record<string, unknown>>;
     skills: Array<string>;
@@ -3967,7 +3993,7 @@ export type ListTemplatesResponse = {
     budget: {
       per_run_usd: number;
     } | null;
-    learning: boolean;
+    learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
     triggers: Array<Record<string, unknown>>;
     skills: Array<string>;
@@ -3984,7 +4010,7 @@ export type ListToolKeysResponse = {
     kind: "tool" | "model";
     label: string;
     unlocks: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     fields: Array<{
       name: string;
       set: boolean;

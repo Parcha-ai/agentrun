@@ -5,20 +5,21 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isVersionHeading, pythonVersionOf } from './changes.mjs';
+import { isVersionHeading, pythonVersionOf, withoutMarkers } from './changes.mjs';
 import { isMain } from './is-main.mjs';
 
 // GitHub refuses a release body over 125,000 characters; the notes stay under it with room to spare.
 export const MAX_BODY = 120_000;
 
-/** The lines of `version`'s section of a changelog's text, its heading left out and blank lines trimmed. Throws when it has none or it is empty. */
+/** The lines of `version`'s section of a changelog's text, its heading left out, the fold's fragment markers taken out (`withoutMarkers`)
+ *  and blank lines trimmed: what the release notes show. Throws when it has none or it is empty. */
 export function changelogSection(text, version) {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const at = lines.findIndex(line => isVersionHeading(line, version));
   if (at < 0) throw new Error(`CHANGELOG.md has no section for ${version}`);
   let end = lines.findIndex((line, index) => index > at && /^## /.test(line));
   if (end < 0) end = lines.length;
-  const section = lines.slice(at + 1, end).join('\n').trim();
+  const section = withoutMarkers(lines.slice(at + 1, end).join('\n')).trim();
   if (!section) throw new Error(`CHANGELOG.md's section for ${version} is empty`);
   return section;
 }
@@ -54,26 +55,6 @@ export function releaseNotes({ section, install, tag, repository }) {
   const rest = `\n\nThe rest of this release's changes are in [its fragments in changes/ at ${tag}](https://github.com/${repository}/tree/${tag}/changes).\n\n${install}\n`;
   const kept = section.slice(0, MAX_BODY - rest.length);
   return `${kept.slice(0, kept.lastIndexOf('\n'))}${rest}`;
-}
-
-const label = /^\*\*([^*]+?):?\*\*:?\s*$/;
-const cut = (line, most) => (line.length <= most ? line : `${line.slice(0, most - 1).trimEnd()}…`);
-
-/**
- * The first lines of a section, for a post: `{ label, lines, more }`. From its upgrading or highlights block when it has one
- * ("**Upgrading and going back:**"), else from the section; the first line of each of its first `count` top-level bullets, each
- * cut at 300 characters, and how many bullets that leaves out.
- */
-export function highlights(section, count = 3) {
-  const lines = section.split('\n');
-  const start = lines.findIndex(line => /^(?:Upgrading|Highlights)\b/i.test(label.exec(line)?.[1] ?? ''));
-  let block = lines;
-  if (start >= 0) {
-    const end = lines.findIndex((line, index) => index > start && label.test(line));
-    block = lines.slice(start + 1, end < 0 ? lines.length : end);
-  }
-  const bullets = block.filter(line => line.startsWith('- ')).map(line => cut(line.slice(2).trim(), 300));
-  return { label: start >= 0 ? label.exec(lines[start])[1] : null, lines: bullets.slice(0, count), more: Math.max(0, bullets.length - count) };
 }
 
 if (isMain(import.meta)) {

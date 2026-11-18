@@ -1,11 +1,15 @@
 // FlyProvider's host on a fake Machines API (the REST shapes of docs.fly.io/machines/api/machines-resource, as a fetch):
 // create's body (the boot env, the labels as metadata, restart "no" and auto_destroy), get and list with their states,
 // the metadata filter, a forced delete, extend's one metadata key, and the error codes in Fly's words. The adapter's dial
-// lifecycle is tested once over the fake dial host (hosted-dial.test.mjs); Fly's own is proven live, from
+// lifecycle is tested once over the fake dial host (hosted-dial.test.mjs), and Fly's desktop once through it to its X
+// server, on a Machines API that keeps what it makes (bootDial); Fly's own is proven live, from
 // packages/serve/scripts/dial-conformance.mjs.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 
@@ -151,19 +155,70 @@ test("Fly's errors are codes in Fly's words, never the token; a 429 create is se
 	assert.equal(tries, 1, "a create that got no answer may have made a machine: never sent again");
 });
 
-test("the provider dials: kind linux, no exec or upload, no mount, the box image; a server with no public address calls Fly for nothing", async () => {
+test("the provider dials: kind linux, no exec or upload, a synced folder alone, the box image; a server with no public address calls Fly for nothing", async () => {
 	const fly = fakeFly(() => undefined);
 	const flyProvider = provider(fly, { dial: { tokens: new MemoryMachineTokens(), hub: new AttachHub() } });
 	assert.equal(flyProvider.host.facts.connect, "dial");
 	assert.equal(flyProvider.host.exec, undefined);
 	assert.equal(flyProvider.host.upload, undefined);
 	const caps = flyProvider.capabilities();
-	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network], ["linux", "microvm", [], ["none", "open", "allow"]]);
+	assert.deepEqual([caps.kind, caps.isolation, caps.mount, caps.network], ["linux", "microvm", ["sync"], ["none", "open", "allow"]]);
 	assert.match((await flyProvider.prepareImage()).value, /^ghcr\.io\/parcha-ai\/agentrun-box:[0-9a-f]{12}$/);
 	const refused = await flyProvider.create({ image: "img", lifetimeMs: 600_000, network: "none" }, { requestId: "fly-no-address" });
 	assert.equal(refused.error?.code, "refused");
 	assert.match(refused.error.message, /^Fly Machines machines dial this server, and it has no public https address/);
 	assert.deepEqual(fly.calls, []);
+});
+
+test("kind desktop: the desktop's groups and the window manager, and DISPLAY beside the boot env Fly posts as config.env, for init; kind linux, the default, posts none", async () => {
+	for (const kind of ["desktop", "linux", undefined]) {
+		// Fly refuses the machine: what it was asked is all this reads. The daemon is any file (its sha256 goes in the env).
+		const fly = fakeFly((method, url) => (method === "POST" && url.href === BASE ? { status: 422, json: { error: "refused in a test" } } : method === "GET" ? { json: [] } : undefined));
+		const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub() };
+		const made = provider(fly, { ...(kind === undefined ? {} : { kind }), dial, daemonPath: fileURLToPath(import.meta.url) });
+		const caps = made.capabilities();
+		assert.equal(caps.kind, kind ?? "linux");
+		assert.deepEqual(caps.groups, kind === "desktop" ? ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"] : ["exec", "files", "processes"]);
+		assert.equal(made.host.facts.windowManager, true, "the box image has xfwm4");
+		const result = await made.create({ image: "ghcr.io/parcha-ai/agentrun-box:0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId: `fly-${kind}` });
+		assert.equal(result.error?.code, "invalid", JSON.stringify(result));
+		const { env, guest } = fly.calls.find(({ method }) => method === "POST").body.config;
+		assert.deepEqual(Object.keys(env).sort(), [...["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"], ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), String(kind));
+		assert.equal(env.DISPLAY, kind === "desktop" ? ":0" : undefined);
+		assert.deepEqual(guest, { cpu_kind: "shared", cpus: 2, memory_mb: 4096 }, "a desktop's size is the sandbox's");
+	}
+});
+
+test("Fly's desktop configuration, as serve builds it, makes a desktop over dial: the machine boots from config.env, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const machines = new Map();
+	let booted;
+	// A Machines API that keeps what it makes: the machine boots from the config.env it was posted (bootDial).
+	const fly = fakeFly((method, url, body) => {
+		const id = url.pathname.split("/")[5];
+		if (method === "POST" && url.href === BASE) {
+			const machine = flyMachine(`m${machines.size + 1}`, "started", body.config.metadata, { name: body.name, config: body.config });
+			machines.set(machine.id, machine);
+			booted = bootDial(body.config.env, dial, { daemon: readFileSync(daemonPath) });
+			return { json: machine };
+		}
+		if (method === "GET" && id === undefined) {
+			const wanted = [...url.searchParams].map(([key, value]) => [key.replace(/^metadata\./, ""), value]);
+			return { json: [...machines.values()].filter(({ config }) => wanted.every(([key, value]) => config.metadata[key] === value)) };
+		}
+		if (method === "GET" && machines.has(id)) return { json: machines.get(id) };
+		if (method === "DELETE" && machines.has(id)) {
+			machines.get(id).state = "destroyed";
+			return { json: { ok: true } };
+		}
+		return undefined;
+	});
+	const { options } = registry.descriptorOf("fly").capabilities.find(({ kind }) => kind === "desktop");
+	const made = provider(fly, { ...options, dial, daemonPath });
+	assert.equal(made.capabilities().kind, "desktop");
+	await desktopOverDial(made, dial, () => booted, { image: "ghcr.io/parcha-ai/agentrun-box:0123456789ab", lifetimeMs: 600_000, network: "none" });
+	assert.equal([...machines.values()][0].state, "destroyed");
 });
 
 test("check holds a size to Fly's shared CPUs and their memory, and an image to a registry path", () => {

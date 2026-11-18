@@ -62,7 +62,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `run-active`, `run-error-surface` | `text-run-active`, `bg-run-error` | A working run; a failed run's panel. |
 | `wf-jev`, `wf-parallel`, `wf-openrouter`, `wf-tool`, `wf-exit` | `text-wf-jev` | The workflow graph: who does a step's work. |
 | `chart-agent`, `chart-handed-back`, `chart-workflow` | `fill-chart-agent` | A chart's series, in this order: the path a run took. Marks only; words stay `text-foreground`. |
-| `trace-model`, `trace-tool` | `bg-trace-model` | A run's trace: a model request's bar and a tool call's. Marks only; a word beside each says which, and a failed span is `destructive`. |
+| `trace-model`, `trace-tool` | `bg-trace-model` | A run's trace: a model request's bar and a tool call's. Marks only; a word beside each says which, and a failed span is `destructive`. A mark is never told by its hue alone: one that failed is striped (`trace-hatch`), one that waits is hollow, and a light part has an edge. Every mark carries `trace-mark`, an edge that shows only under forced colours, where a fill is not drawn. |
 
 **A tone is a pair.** The bare name fills, borders and dots. The `-text` name writes words. `text-success` on a
 white page fails contrast; `text-success-text` passes. The same holds for orange: `text-primary` is for a mark on a

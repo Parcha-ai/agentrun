@@ -9,16 +9,21 @@ import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { boxE2bTemplate } from "./box-image.js";
 import { E2B } from "./descriptors/e2b.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
+import { installedProxy, type ProxyEnv, proxyForDomain } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { AGENTRUN_DIAL, hostedCommands, shellLine } from "./hosted/scripts.js";
-import { connectOf, dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
+import { connectOf } from "./descriptor.js";
+import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /**
- * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
+ * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152);
+ * and the proxy the process installed into Node (env-proxy.ts): the SDK's fetch is its own undici Agent, which the
+ * process-wide proxy doesn't reach, and it sends every call, the API's and each sandbox's envd's, through the one `proxy`
+ * it is given. So it is given that one unless its NO_PROXY exempts the whole domain (proxyForDomain).
  * The SDK's types below are `import type`: erased at build, so nothing loads the SDK from here and the published types
  * name none of it (the package declares no dependency on e2b).
  */
@@ -27,6 +32,7 @@ export interface E2BConnectionOptions {
 	domain: string;
 	apiUrl: string;
 	debug: false;
+	proxy?: string;
 	requestTimeoutMs?: number;
 	signal?: AbortSignal;
 }
@@ -62,7 +68,7 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	Sandbox: E2BSandboxClass;
 	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
 	domain?: string;
-	/** desktop (default; linux on connect "dial"): a template with an X server, started through the daemon; linux: no screen. */
+	/** desktop (default): a template with an X server, started through the daemon; linux: no screen. */
 	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
 	maxLifetimeMs?: number;
@@ -70,7 +76,7 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	/**
 	 * exec (default): the daemon goes in through envd's file API and each connection is a bridge through envd's process
 	 * stream. dial: create starts the box template's agentrun-dial once, and the machine dials the server (options.dial),
-	 * which every connection goes over; kind linux alone.
+	 * which every connection goes over.
 	 */
 	connect?: "exec" | "dial";
 }
@@ -89,8 +95,9 @@ const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
-export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }): E2BConnectionOptions {
-	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false };
+export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }, env: ProxyEnv = installedProxy()): E2BConnectionOptions {
+	const proxy = proxyForDomain(domain, env);
+	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false, ...(proxy ? { proxy: proxy.href } : {}) };
 }
 
 /**
@@ -481,11 +488,8 @@ export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
-		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind: named, maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
-		const via = connectOf(connect, "E2B");
-		// A server names connect alone (its e2bConnect setting): on dial the kind is linux unless named, since agentrun-dial
-		// starts init with no display; a desktop named on dial is the adapter's refusal.
-		const kind = named ?? (via === "dial" ? "linux" : "desktop");
+		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
+		const via = connectOf(E2B, { connect });
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);

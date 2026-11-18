@@ -101,8 +101,8 @@ test("a hello that serves no kind is said in words naming what its driver lacks,
   const browserSays = "a paired computer can't serve browser sessions yet, so pair a desktop or phone driver";
   assert.equal(servesNoKind("ada-chrome", { ...HELLO, os: "linux", kind: "browser", groups: ["cdp"] }), `ada-chrome's driver is a browser: ${browserSays}`);
   assert.equal(servesNoKind("ada-chrome", { ...HELLO, os: "macos", kind: "browser", groups: ["cdp"] }), `ada-chrome's driver is a browser: ${browserSays}`);
-  // A sandbox needs the run's folder mounted and a paired computer has no mount, so a linux shell driver is refused at pairing.
-  assert.equal(servesNoKind("lab", { ...HELLO, os: "linux", kind: "linux", groups: ["exec", "files", "processes"] }), "lab's driver is a sandbox: a paired computer can't mount a run's folder yet, so no agent could run a sandbox on it: pair a desktop or phone driver");
+  // A Linux box's computerd with no display is a sandbox (paired-sandbox.test.mjs): one without exec serves none.
+  assert.equal(servesNoKind("lab", { ...HELLO, os: "linux", kind: "linux", groups: ["files", "processes"] }), "lab's driver serves no kind: it says linux but declares no exec: update the driver on lab");
   assert.equal(servesNoKind("box", { ...HELLO, kind: "toaster" }), "box's driver serves no kind: it says toaster, which no kind of computer is: update the driver on box");
 
   // Paired before its driver lost a group: its run is refused saying why, then the providers to pick instead.
@@ -123,7 +123,7 @@ test("a paired Mac never runs a run's shell or holds its folder, granted exec an
       assert.deepEqual({ refused: desktop.refused, mounts: desktop.mounts, ports: desktop.ports }, { refused: undefined, mounts: false, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
     }
     const { refused } = await resolveComputer({ kind: "sandbox", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [row]), keys);
-    assert.match(refused, /^vesper-mac is a computer of your own, and a paired computer can't be a sandbox computer yet: give this agent vesper-mac as a desktop computer, or pick one of /);
+    assert.match(refused, /^vesper-mac is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer: give this agent vesper-mac as a desktop computer, or pick one of /);
   }
 });
 
@@ -136,7 +136,7 @@ test("a paired computer is listed as its hello says, the live one's while attach
   const liveSince = new Date(7000);
   const hub = (attached, holder) => ({ online: () => attached, since: () => (attached ? liveSince : undefined), hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
-    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
+    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
     driver: "0.2.0", online: false, held_by_run: null, held_until: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);

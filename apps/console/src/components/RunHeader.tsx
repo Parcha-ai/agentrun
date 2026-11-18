@@ -2,6 +2,7 @@ import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } fro
 import { useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
+import { RunKind } from "@/components/RunKind";
 import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -78,7 +79,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
-            <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
+            <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
             {sdk && <span className="font-mono">{backendSdkLabel(sdk.runtime)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's

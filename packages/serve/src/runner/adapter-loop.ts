@@ -2548,14 +2548,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // (a new claim's, or a restart's after a fault: closeSession let the last one go) is not the one an open hold held,
         // nor has what the owner set up on it: the run ends in those words.
         heldNow = undefined;
+        // This pass's hold began waiting for the start: an owner's row may move it on (start, release) as soon as the pass
+        // opens, before the wait below begins, so a release there still ends the run before its agent runs.
+        let heldBeforeStart = false;
         if (spec.held) {
           const [journalOf, rootOf] = [harness, root];
           heldNow = journalHeld(spec.held, (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context), now);
-          if ((await heldNow.up(await entriesOf(gate.journal, root.id, context))) === "lost") {
-            return await writeEnd(harness, root, gate, { state: "failed", summary: heldWords.lost }, []);
-          }
+          const up = await heldNow.up(await entriesOf(gate.journal, root.id, context));
+          if (up === "lost") return await writeEnd(harness, root, gate, { state: "failed", summary: heldWords.lost }, []);
+          heldBeforeStart = up === "held";
         }
         // The cap a raise left the run at, before any request of this claim, through the one reader the run view and its
         // budget card read too (capNowOf: the newest raise entry, else the launch's cap): a claim that takes over a raised
@@ -2625,7 +2628,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A held computer waits for its owner's start before the agent's first input; the owner's calls set the task up
         // meanwhile. A release, or no call for the hold's minutes, ends the run before its agent ever ran. A stop ends it
         // stopped, and a lost claim leaves it for the next claim.
-        if (heldNow?.state() === "waiting") {
+        if (heldNow && (heldNow.state() === "waiting" || (heldBeforeStart && heldNow.state() === "released"))) {
           const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
           const waited = await heldNow.untilStarted(Promise.race([stopping, aborted, harness.closed]));
           // Set by stop() during the wait: read past the narrowing TypeScript did before it.
@@ -3652,8 +3655,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (!spec.agentId) throw new Error("the run's spec names no agent, so its end-of-run step cannot be asked");
     // Every request from here is learning's, between the step's asks too, until the claim ends (reflecting).
     reflecting = true;
+    // The step's signal, as its contract says (loop-contract.ts EndOfRunTurn): aborted by what cuts askEndOfRun's turn, a
+    // person's stop or cancel (stopAbort), a lost claim or a shutdown (deps.signal) and the session closing, so a request
+    // the step sends of its own (a replay's grader, compare-end.ts) is cut with the run, never waited on.
+    const closed = new AbortController();
+    void harness?.closed.then(() => closed.abort(new Error("the Session closed")), () => closed.abort(new Error("the Session closed")));
+    const signal = AbortSignal.any([deps.signal, stopAbort.signal, closed.signal]);
     try {
-      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: await keptOf(claim) });
+      const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: await keptOf(claim) });
+      // A replay's or a shadow's grader verdict (runner/compare-end.ts), on its root before its end: its metrics carry it
+      // (workflow-first.ts pathMetrics), where the check and the audit read it.
+      const on = harness;
+      if (rows?.compared && !cut() && on) await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.compared, data: rows.compared as unknown as JsonValue }), context);
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });

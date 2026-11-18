@@ -147,6 +147,15 @@ export function ensureSealKey(given: string | undefined, { dataDir }: { dataDir:
   return { ...made, generated };
 }
 
+/** The label the key of a template apply's parameters digest is drawn from the seal key by: that key is no other's. */
+const PARAMETERS_DIGEST_LABEL = "agentrun template parameters digest v1";
+/** The digest a template apply keeps of its parameters (`text`: their stable JSON), in place of the parameters: an
+ *  HMAC-SHA256 of it under a key drawn from the seal key `key` by a label of its own, so the store holds neither a
+ *  parameter (one may be a credential) nor a hash a guess could be checked against without the seal key. The same
+ *  parameters under the same seal key give the same digest. */
+export const parametersDigest = (key: Buffer, text: string): string =>
+  createHmac("sha256", createHmac("sha256", key).update(PARAMETERS_DIGEST_LABEL).digest()).update(text).digest("base64url");
+
 /** The fingerprint the store records of `key`: an HMAC of a fixed label under it. Neither the key nor a hash of it alone. */
 export const sealKeyFingerprint = (key: Buffer): string => createHmac("sha256", key).update(FINGERPRINT_LABEL).digest("base64url");
 

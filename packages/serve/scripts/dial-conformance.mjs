@@ -89,9 +89,11 @@ function memoryMintedTokens(now = Date.now) {
 		for (const [machine, row] of rows) if (row.expiresAt <= now()) rows.delete(machine);
 	};
 	return {
-		async mint({ machine, tokenSha256, kind, os, arch, expiresAt }) {
+		// The row the store contract keeps: a runner, its incarnation and a run only where the mint names them, else null
+		// (this process minted it: the attach route takes the machine here, and relays none).
+		async mint({ machine, tokenSha256, kind, os, arch, expiresAt, runner, incarnation, run }) {
 			prune();
-			rows.set(machine, { machine, tokenSha256, kind, os, arch, expiresAt, revokedAt: null, createdAt: now() });
+			rows.set(machine, { machine, tokenSha256, kind, os, arch, expiresAt, revokedAt: null, createdAt: now(), runner: runner ?? null, incarnation: incarnation ?? null, run: run ?? null, refused: null });
 		},
 		async byToken(tokenSha256) {
 			const row = [...rows.values()].find((one) => one.tokenSha256 === tokenSha256 && one.revokedAt === null && one.expiresAt > now());
@@ -106,6 +108,10 @@ function memoryMintedTokens(now = Date.now) {
 			if (row === undefined || row.revokedAt !== null || row.expiresAt <= now()) return false;
 			row.revokedAt = now();
 			return true;
+		},
+		async refuse(tokenSha256, words) {
+			const row = [...rows.values()].find((one) => one.tokenSha256 === tokenSha256);
+			if (row !== undefined) row.refused = words;
 		},
 		check(token, at) {
 			const sha = sha256Hex(token);
@@ -260,6 +266,7 @@ async function main({ provider: name, only, exit }, env, state) {
 			return token;
 		},
 		revoke: (machine) => attach.machineTokens.revoke(machine),
+		refused: (machine) => attach.machineTokens.refused(machine),
 	});
 	const machineOf = async (authorization) => {
 		const bearer = /^Bearer (\S+)$/.exec(String(authorization ?? ""))?.[1];

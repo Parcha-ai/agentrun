@@ -249,6 +249,7 @@ export interface components {
       condition: string;
       limit: string;
     };
+    run_isolation?: "uid" | "process";
   };
   CommitSha: string;
   Cost: {
@@ -449,6 +450,7 @@ export interface components {
       compile_after?: number;
       agree_min?: number;
       alone_min?: number;
+      agree_on?: string[];
       audit_every?: number;
       audit_every_later?: number;
       audit_later_after?: number;
@@ -929,6 +931,14 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1134,6 +1144,14 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   SecretMeta: {
     name: string;
@@ -1303,6 +1321,7 @@ export interface operations {
       parameters?: Record<string, unknown>;
       servers?: Record<string, string>;
       grants?: string[];
+      agent_id?: string;
       overrides?: {
         model?: string;
         choice?: string;
@@ -1482,6 +1501,7 @@ export interface operations {
       id: string;
       code: string;
       expires_at: string;
+      runs_refused: string | null;
     };
   };
   createQuote: {
@@ -2070,7 +2090,7 @@ export interface operations {
         file: string;
         readme: string;
         description: string;
-        status: "active" | "pending" | "retired";
+        status: "serving" | "checking" | "held" | "stopped" | "pending" | "retired";
         run: string | null;
         bytes: number;
         etag: string;
@@ -2111,16 +2131,10 @@ export interface operations {
         before: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
-          median_learning_usd: number | null;
         };
         after: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
-          median_learning_usd: number | null;
         };
       } | null;
     };
@@ -2266,12 +2280,14 @@ export interface operations {
     answer: {
       agent: string;
       runs: {
-        n: number;
+        n: number | null;
         run_id: string;
         started_at: string;
         path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
-        learned_revision: string | null;
+        digest: string | null;
+        took_over: boolean;
+        audited: boolean;
         cost_usd: number | null;
         cost_upper_bound: boolean;
         learning_usd: number | null;
@@ -2337,6 +2353,7 @@ export interface operations {
           run_id: string;
           at: string;
         } | null;
+        learning_usd: number;
         points: {
           n: number;
           run_id: string;
@@ -3362,7 +3379,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];
@@ -3458,6 +3475,7 @@ export interface operations {
         kind: string;
         serves: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
         unserved: string | null;
+        runs_refused: string | null;
         os: string;
         os_version: string | null;
         device: {
@@ -3499,6 +3517,7 @@ export interface operations {
           }[];
           required: string[];
           ready: boolean;
+          runs_refused: string | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -3634,6 +3653,8 @@ export interface operations {
           agree_min: number;
           alone_min: number;
           attempt: 1 | 2;
+          agree_on?: string[];
+          grader?: string;
           n?: number;
           agreed?: number;
           alone?: number;
@@ -3658,6 +3679,7 @@ export interface operations {
             draft?: string;
             escalated?: string;
             failed?: true;
+            differs_on?: string;
           }[];
           stopped?: true;
         };
@@ -3717,6 +3739,8 @@ export interface operations {
             agree_min: number;
             alone_min: number;
             attempt: 1 | 2;
+            agree_on?: string[];
+            grader?: string;
             n?: number;
             agreed?: number;
             alone?: number;
@@ -3741,6 +3765,7 @@ export interface operations {
               draft?: string;
               escalated?: string;
               failed?: true;
+              differs_on?: string;
             }[];
             stopped?: true;
           } | null;
@@ -3927,7 +3952,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];
@@ -3943,7 +3968,7 @@ export interface operations {
         kind: "tool" | "model";
         label: string;
         unlocks: string[];
-        harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+        harnesses: string[];
         fields: {
           name: string;
           set: boolean;
@@ -4215,6 +4240,7 @@ export interface operations {
     answer: {
       computer: string;
       token: string;
+      runs_refused: string | null;
     };
   };
   pauseRun: {
@@ -4840,6 +4866,7 @@ export interface operations {
       }[];
       required: string[];
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;

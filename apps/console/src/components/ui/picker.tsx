@@ -1,8 +1,17 @@
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from "@headlessui/react";
 import { Check, ChevronDown } from "lucide-react";
+import { type ButtonHTMLAttributes, forwardRef } from "react";
 import { Chip } from "@/components/ui/chip";
 import { useFieldWiring } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
+
+/** The picker's field, a button. Headless UI's ListboxButton writes its own aria-describedby (from its Description, which
+ *  the console doesn't use) over one given to it, unset or not, so a Field's note and error come in as `describedBy`,
+ *  which it passes through, and are put on here. */
+const PickerButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { describedBy?: string }>(({ describedBy, ...props }, ref) => (
+  <button ref={ref} {...props} aria-describedby={props["aria-describedby"] ?? describedBy} />
+));
+PickerButton.displayName = "PickerButton";
 
 /** One choice: its value, its words, and, where it can't be picked here, `disabled` with why (`title`). `tag`: a fact
  *  about it ("Free · 1M context"), a chip after its words in the list. */
@@ -27,7 +36,7 @@ export function Picker({ value, onChange, options, label, id, className, disable
   const wiring = useFieldWiring();
   return (
     <Listbox value={value} onChange={onChange} disabled={disabled} name={name}>
-      <ListboxButton id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} aria-describedby={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
+      <ListboxButton as={PickerButton} id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} describedBy={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
         className={cn("flex min-w-0 items-center justify-between gap-2 border border-input bg-background text-left font-mono hover:border-foreground/60 focus-visible:outline-offset-0 disabled:opacity-60 data-[open]:border-foreground",
           small ? "h-control-sm px-2 text-small" : "h-control-md px-3 text-body", className)}>
         {steady

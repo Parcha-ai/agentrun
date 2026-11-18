@@ -78,7 +78,7 @@ test("a retired draft is read whole and restored by its owner by its README.md: 
   assert.equal(git(repo, ["rev-list", "--count", `${before}..main`]).trim(), "1", "one commit");
   assert.match(git(repo, ["log", "-1", "--format=%s%n%b", "main"]), new RegExp(`^learning: restored by a person: ${README.replace(/[./]/g, "\\$&")}[\\s\\S]*Changed-By: user`));
   const again = await flowOf("price-report");
-  assert.deepEqual([again.status, again.retired, again.last_change?.kind, again.last_change?.by], ["active", undefined, "restored", "person"], JSON.stringify(again));
+  assert.deepEqual([again.status, again.retired, again.last_change?.kind, again.last_change?.by], ["checking", undefined, "restored", "person"], JSON.stringify(again));
   // An active draft is not retired: 400, nothing written.
   const active = await restore(README, { ...json, cookie, origin });
   assert.equal(active.status, 400, active.text);
@@ -169,7 +169,7 @@ test("a retired workflow draft with a judge node is restored when the server has
   const restored = await restore("workflows/claim-check/README.md", { ...json, cookie, origin });
   assert.equal(restored.status, 200, restored.text);
   const flow = await flowOf("claim-check");
-  assert.equal(flow?.status, "active", JSON.stringify(flow));
+  assert.equal(flow?.status, "checking", JSON.stringify(flow));
 });
 
 /** The fake MCP server saved as `fake`, no auth (its tool `add` among those it lists), closed when the test ends. */

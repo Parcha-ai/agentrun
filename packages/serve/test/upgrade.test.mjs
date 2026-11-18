@@ -101,10 +101,12 @@ const startOnStoreAt = async (t, version) => {
   return { err, code };
 };
 
+// The two versions before this one are the ones a server upgrades in place (store-listing-upgrade.test.mjs,
+// store-relay-upgrade.test.mjs); three before is refused.
 test("the bin on a store an earlier release set up says what to do, once, with no stack, and exits 1", { timeout: 20_000 }, async (t) => {
-  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION - 1);
+  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION - 3);
   assert.equal(code, 1, err);
-  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION - 1}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
+  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION - 3}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
   assert.match(err, /--data <new folder>/);
   assert.match(err, /--data \/data\/<new folder> --listen 0\.0\.0\.0 --port 7340 --drain-timeout 6s/);
   assert.match(err, /\(docker run or compose arguments: --data/);

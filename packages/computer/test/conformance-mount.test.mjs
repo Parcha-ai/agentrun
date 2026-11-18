@@ -1,12 +1,17 @@
 // The mount group of the conformance suite against the fake provider (test/fake-computer.mjs): "mounts the run's folder"
-// for each mount kind a provider declares, and the refusal of each kind it does not. No Docker, no daemon binary.
+// for each mount kind a provider declares, and the refusal of each kind it does not. No Docker. The synced folder's cases
+// run the fake's computers on a real computerd in a user namespace of its own, skipped in words where the host has no
+// daemon build or refuses the namespace.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { after } from "node:test";
+import { after, before, describe, it } from "node:test";
 import test from "node:test";
-import { conformanceCases, formatReport, runConformance } from "../dist/index.js";
+import { conformanceCases, DaemonClient, formatReport, runConformance } from "../dist/index.js";
 import { main } from "../dist/conformance/cli.js";
 import { fakeComputers, fakeRunFolders } from "./fake-computer.mjs";
 
@@ -36,6 +41,10 @@ test("the mount group: one case per mount kind, the Archil contract's four, and 
 			["mount.archil-token", "full", ["mount:archil", "exec"]],
 			["mount.archil-isolated-durable", "full", ["mount:archil", "exec", "files"]],
 			["mount.archil-loop-tool-edit", "full", ["mount:archil", "exec", "files"]],
+			["mount.sync-durable", "full", ["mount:sync", "exec", "files"]],
+			["mount.sync-push", "full", ["mount:sync", "exec", "files"]],
+			["mount.sync-delete", "full", ["mount:sync", "exec", "files"]],
+			["mount.sync-cap", "full", ["mount:sync", "exec", "files"]],
 			["mount.undeclared-kind", "full", []],
 		],
 	);
@@ -146,9 +155,9 @@ test("a provider that declares no mount kind skips both run-folder cases in word
 });
 
 test("a provider that declares every kind has nothing for mount.undeclared-kind to refuse: it skips in words", async () => {
-	const report = await run({ mount: ["bind", "archil"] });
+	const report = await run({ mount: ["bind", "archil", "sync"] });
 	assert.deepEqual(statuses(report), { "mount.run-folder-bind": "pass", "mount.run-folder-archil": "pass", "mount.undeclared-kind": "skip" }, JSON.stringify(reasons(report)));
-	assert.equal(reasons(report)["mount.undeclared-kind"], "the provider declares every mount kind (bind, archil)");
+	assert.equal(reasons(report)["mount.undeclared-kind"], "the provider declares every mount kind (bind, archil, sync)");
 });
 
 test("a run given no run folders skips the run-folder case in words: the provider's conformance module supplies mountFor", async () => {
@@ -220,8 +229,97 @@ test("the CLI passes a provider module's mountFor to the run: --only mount runs 
 	const report = JSON.parse(text);
 	assert.deepEqual(
 		statuses(report),
-		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.archil-isolated-durable": "skip", "mount.archil-loop-tool-edit": "skip", "mount.undeclared-kind": "pass" },
+		{ "mount.run-folder-bind": "pass", "mount.run-folder-archil": "skip", "mount.archil-durable": "skip", "mount.archil-takeover": "skip", "mount.archil-token": "skip", "mount.archil-isolated-durable": "skip", "mount.archil-loop-tool-edit": "skip", "mount.sync-durable": "skip", "mount.sync-push": "skip", "mount.sync-delete": "skip", "mount.sync-cap": "skip", "mount.undeclared-kind": "pass" },
 		JSON.stringify(reasons(report)),
 	);
 	assert.equal(code, 3, "a run of the mount group alone leaves Core out: partial");
+});
+
+const SYNC_CASES = ["mount.sync-durable", "mount.sync-push", "mount.sync-delete", "mount.sync-cap"];
+const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
+const DAEMON = fileURLToPath(new URL(`../dist/computerd-linux-${ARCH}`, import.meta.url));
+const userns = spawnSync("unshare", ["-Ur", "unshare", "-n", "true"]).status === 0;
+const skip = !existsSync(DAEMON) ? `needs ${DAEMON}: npm run build:daemon` : !userns ? "needs a user namespace with its capabilities (unshare -Ur), which this host refuses" : false;
+
+/** `client` (computerd's, on this host) as a computer whose /workspace is host folder `root`: every path in and every
+ *  listed path out moved between the two. `listed` changes each listed entry (a broken computer). */
+function at(client, root, listed = (entry) => entry) {
+	const inside = (path) => (path === "/workspace" ? root : path.startsWith("/workspace/") ? `${root}${path.slice("/workspace".length)}` : path);
+	const outside = (path) => (path === root ? "/workspace" : path.startsWith(`${root}/`) ? `/workspace${path.slice(root.length)}` : path);
+	return {
+		async call(method, params, options) {
+			const given = { ...params };
+			if (typeof given.path === "string") given.path = inside(given.path);
+			if (typeof given.cwd === "string") given.cwd = inside(given.cwd);
+			const result = await client.call(method, given, options);
+			if (method === "files.list" && result.ok) return { ok: true, value: { ...result.value, entries: result.value.entries.map((entry) => listed({ ...entry, path: outside(entry.path) })) } };
+			return result;
+		},
+		close: () => client.close(),
+	};
+}
+
+describe("the synced folder's cases, on the fake's computers run by computerd in a user namespace", { skip }, () => {
+	const dir = mkdtempSync(join(tmpdir(), "computer-conformance-sync-"));
+	const socket = join(dir, "computerd.sock");
+	let init;
+	let stderr = "";
+
+	before(async () => {
+		const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
+		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
+		init.stderr.on("data", (chunk) => (stderr += chunk));
+		for (let tries = 0; !existsSync(socket); tries++) {
+			assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+	});
+
+	after(async () => {
+		if (init && init.exitCode === null) {
+			const ended = new Promise((resolve) => init.once("exit", resolve));
+			init.kill("SIGTERM");
+			await ended;
+		}
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** The fake provider declaring the synced folder, each of its computers' /workspace a folder of its own on computerd. */
+	function syncProvider(listed) {
+		const { provider } = fakeComputers({ mount: ["sync"] });
+		const fake = provider.connect.bind(provider);
+		provider.connect = async (ref) => {
+			const got = await fake(ref);
+			if (!got.ok) return got;
+			const root = join(dir, "computers", ref.name);
+			mkdirSync(root, { recursive: true });
+			const stream = connect(socket);
+			await new Promise((resolve, reject) => stream.once("connect", resolve).once("error", reject));
+			const daemon = new DaemonClient({ readable: stream, writable: stream });
+			const close = async () => {
+				daemon.close();
+				stream.destroy();
+				await got.value.close();
+			};
+			return { ok: true, value: { client: at(daemon, root, listed), hello: got.value.hello, close } };
+		};
+		return provider;
+	}
+
+	it("each passes a provider whose computers hold /workspace as computerd gives it", async () => {
+		const report = await runConformance(syncProvider(), { image: IMAGE, cases: conformanceCases.filter((c) => SYNC_CASES.includes(c.id)) });
+		assert.deepEqual(statuses(report), Object.fromEntries(SYNC_CASES.map((id) => [id, "pass"])), JSON.stringify(reasons(report)));
+		assert.deepEqual(report.cleanup.left, []);
+	});
+
+	it("mount.sync-push fails a computer that lists every file 644: the push's modes are not there", async () => {
+		const report = await runConformance(syncProvider((entry) => (entry.type === "file" ? { ...entry, mode: (entry.mode & ~0o7777) | 0o644 } : entry)), { image: IMAGE, cases: conformanceCases.filter((c) => c.id === "mount.sync-push") });
+		assert.equal(statuses(report)["mount.sync-push"], "fail");
+		assert.match(reasons(report)["mount.sync-push"], /^run\.sh: its mode, as pushed: expected "755", got "644"$/);
+	});
+});
+
+test("a provider that does not declare the synced folder skips each of its cases in words", async () => {
+	const report = await run({ mount: ["bind"] }, { ids: SYNC_CASES });
+	assert.deepEqual(reasons(report), Object.fromEntries(SYNC_CASES.map((id) => [id, "the provider does not declare mount:sync"])));
 });

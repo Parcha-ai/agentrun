@@ -8,13 +8,22 @@ export const pickable = (kind: ComputerKindView): boolean => kind.offered && (ki
 export const whyNot = (kind: ComputerKindView): string | undefined => kind.why ?? kind.providers.find((p) => !p.ready)?.why;
 
 /** The computer a pick of `kind` makes: none needs no provider; another keeps `current`'s provider when that one serves
- *  it ready, else takes its first ready provider. */
+ *  it ready, else takes its first ready provider. A recorded computer stays recorded on a kind that records. */
 export function pickKind(kind: ComputerKindView, current: Computer | undefined): Computer {
   if (kind.kind === "none") return { kind: "none" };
   const kept = current?.kind === kind.kind && kind.providers.some((p) => p.ready && p.id === current.provider) ? current.provider : undefined;
   const provider = kept ?? kind.providers.find((p) => p.ready)?.id;
-  return provider ? { kind: kind.kind, provider } : { kind: kind.kind };
+  return recorded(provider ? { kind: kind.kind, provider } : { kind: kind.kind }, current?.record === true);
 }
+
+/** `computer` recorded (`record: true`) when `on` and its kind records, else without `record` (absent is off). */
+export function recorded(computer: Computer, on: boolean): Computer {
+  const { record: _record, ...rest } = computer;
+  return on && RECORDS.has(computer.kind) ? { ...rest, record: true } : rest;
+}
+
+/** The kinds a run's video records (`computer.record`), as serve's computer-setting.ts `record.kinds` has them. */
+export const RECORDS: ReadonlySet<string> = new Set(["desktop", "phone", "browser"]);
 
 /** The place a computer is, as the server keeps place as its view: a sandbox is that provider's box; any other computer
  *  leaves the run's folder on the runner. */

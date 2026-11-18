@@ -75,6 +75,10 @@ export interface TemplatePackage {
   readonly id: string;
   readonly version: string;
   readonly sha: string | null;
+  /** A keyed digest of the parameters the apply was given, as it checked them (seal-key.ts parametersDigest), never the
+   *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
+   *  digest warns of this agent. Absent on a revision applied before it was kept. */
+  readonly parameters_digest?: string;
 }
 
 export interface NewRevision {
@@ -125,9 +129,57 @@ export interface RevisionRow {
  *  failed run says so in its state. */
 export type RunOutcome = "completed" | "escalated" | "stopped" | "cancelled";
 
+/** A runs list's filter (Runs.listed). */
+export interface ListedFilter {
+  readonly agentId?: string;
+  readonly revisionId?: string;
+  readonly labels?: RunLabels;
+  readonly archived: boolean;
+  readonly status?: string;
+  /** Only runs still going (no settled status on the row) whose listing is behind. */
+  readonly going?: boolean;
+  /** Only rows after this one in the list's order (started earlier, or at the same time with a smaller id): a scan's
+   *  place, which rows that leave the set between its reads (a listing built meanwhile) never shift, as they shift an
+   *  offset. */
+  readonly after?: { readonly startedAt: number; readonly id: string };
+  readonly limit: number;
+  readonly offset?: number;
+}
+/** A run as a list reads it (Runs.listed): its row, its agent's archive time, and its listing as kept (null: none built). */
+export interface ListedRun {
+  readonly row: RunRow;
+  readonly agentArchivedAt: number | null;
+  readonly listing: KeptListing | null;
+  readonly listStatus: string | null;
+  /** The run's list_mark now: the mark a listing built from here is written at. */
+  readonly listMark: number;
+  /** The listing is behind now (Runs.behind's three ways): a list builds it before it shows it. */
+  readonly behind: boolean;
+}
+/** A run's listing as its row keeps it (Runs.putListing's item, cut and format): `format` is whatever the server that
+ *  wrote it stamped, nothing on a row written before listings carried one, so a list compares it, never trusts it. */
+export interface KeptListing {
+  readonly item: Record<string, unknown>;
+  readonly cut: string;
+  readonly format?: unknown;
+}
 /** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
  *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
  *  are over for good. */
+/** A run's listing as the server writes it (Runs.putListing): its list item (`item`), its status, whether a runner held the
+ *  run when it was built, when it goes stale by the clock alone (null: never), and what outside the run it read (flags). */
+export interface RunListing {
+  readonly item: Record<string, unknown>;
+  /** The digest of the server's secrets the item was cut of. */
+  readonly cut: string;
+  /** The listing format its item was built under (store-view.ts LISTING_FORMAT). */
+  readonly format: number;
+  readonly status: string;
+  readonly live: boolean;
+  readonly until: number | null;
+  readonly flags: number;
+}
+
 export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
   return run.state === "stopped" && run.outcome === "stopped" && kind === "agentic" && run.importedFrom === null;
 }
@@ -483,6 +535,10 @@ export interface TriggerRow {
   readonly maxActiveRuns: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** Its package mark: the id of the template package whose apply made it or last kept it in place, which a later update
+   *  of that package may remove once the package no longer lists it; null for one a person made, one a PATCH moved to
+   *  another agent, and one made before the mark was kept. Written by the apply alone, never from an API body. */
+  readonly templateId: string | null;
 }
 /** A trigger's firing that starts a run. */
 export interface Firing {
@@ -543,6 +599,8 @@ export interface NewTrigger {
   readonly nextAt: number | null;
   readonly catchupWindowS: number;
   readonly maxActiveRuns?: number | null;
+  /** The package mark (TriggerRow.templateId) a template apply makes it with; none for a person's. */
+  readonly templateId?: string | null;
 }
 /** A trigger's fields changed; the ones absent stay. */
 /** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
@@ -550,8 +608,9 @@ export interface NewTrigger {
  *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
  *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
  *  write that must never land over another source write (a seal, an edit) gives both. */
-export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown };
-export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
+/** `ifAgent`: it is still that agent's (a PATCH may move it to another meanwhile). */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string };
+export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns" | "templateId">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {
   readonly status?: FiringStatus;
@@ -675,8 +734,9 @@ export interface Triggers {
    *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written; one that turns it
    *  on, or moves it at all, to an agent being deleted, too (AgentDeleting). */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[], options?: TriggerUpdateOptions): Promise<TriggerRow | undefined>;
-  /** The trigger, its scope rows and its firings gone. */
-  remove(id: string): Promise<void>;
+  /** The trigger, its scope rows and its firings gone: whether there was one to remove. With `ifAgent`, only while it is
+   *  still that agent's, compared in the same statement: one moved to another agent is left, and the answer is false. */
+  remove(id: string, options?: { readonly ifAgent?: string }): Promise<boolean>;
   /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */
@@ -750,6 +810,33 @@ export interface Runs {
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
+  /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
+   *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
+   *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
+   *  neither); `status` on the row's status (`list_status`: a settled run's from its row, in the write that settled it;
+   *  another's from its listing); `going` keeps only runs still going whose listing is behind. A built-in learning run and
+   *  an audit's shadow run are never listed. */
+  listed(filter: ListedFilter): Promise<{ readonly rows: readonly ListedRun[]; readonly more: boolean }>;
+  /** Agent `agentId`'s runs counted in one read (an agent's view): every run it has (`count`), and those still going
+   *  (`live`: queued, running or parked, or an agentic run a person stopped, which a message continues). A built-in learning
+   *  run and an audit's shadow run are none of them. */
+  counts(agentId: string): Promise<{ readonly count: number; readonly live: number }>;
+  /** Up to `limit` runs whose listing is behind, the runs no runner holds first, then newest first: built never, or before
+   *  the latest write that moved what the run's view shows (listing_mark < list_mark), or built while a runner held it and
+   *  that claim has run out on the store's clock, or past the time it goes stale by the clock (listing_until). `mark`:
+   *  the run's list_mark now, the mark its listing is built at. `held`: a runner holds its claim now. `offset`: that many
+   *  of them passed over first (those the caller chose not to build yet). */
+  behind(options: { limit: number; offset?: number }): Promise<{ readonly id: string; readonly mark: number; readonly held: boolean }[]>;
+  /** Writes run `runId`'s listing as built at `mark` (behind's or listed's, read before the build read the view): only
+   *  while the row's list_mark is still `mark`. A write that moved the mark meanwhile (a run settled, its list_status set
+   *  by that write) keeps the row as that write left it, behind, so the next build writes what the run shows now. True
+   *  when it was written. */
+  putListing(runId: string, mark: number, listing: RunListing): Promise<boolean>;
+  /** Run `runId`'s list_mark now (the mark a build of its listing starts from), or undefined when there is no such run. */
+  listMark(runId: string): Promise<number | undefined>;
+  /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
+   *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
+  relist(options: { flags: number; agentId?: string }): Promise<number>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
@@ -1143,18 +1230,59 @@ export interface MintedTokenRow {
   /** When it was revoked (the machine's delete); null while it is good. */
   readonly revokedAt: number | null;
   readonly createdAt: number;
+  /** The runner in a process of its own that minted it, whose attach listener takes the machine's socket (dial-relay.ts),
+   *  and that runner's incarnation then; both null for a token the server's own process minted. */
+  readonly runner: string | null;
+  readonly incarnation: string | null;
+  /** The run the machine works for, as its create named it: what the words about its dial say. Null for a machine of
+   *  no run. */
+  readonly run: string | null;
+  /** Why the server refused to relay this token's dial to the runner that minted it (computer-attach.ts relayDial), in
+   *  the words its 503 said, which name the run and the machine and never the token; null while none was refused. The
+   *  runner's create reads it (MachineTokens.refused) and ends its wait in these words. */
+  readonly refused: string | null;
 }
 
 /** The tokens minted for hosted machines that dial this server (a dial provider's create, spec/computer/attach.md). */
 export interface MintedTokens {
-  /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write. */
-  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string }): Promise<void>;
-  /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
+  /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write.
+   *  `runner` and `incarnation`: a runner in a process of its own minting it (dial-relay.ts); `run`: the run its machine
+   *  works for. */
+  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string; readonly runner?: string; readonly incarnation?: string; readonly run?: string }): Promise<void>;  /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
   byToken(tokenSha256: string): Promise<MintedTokenRow | undefined>;
   /** The machine's row, good or not; undefined when it has none (never minted, or gone past its end). */
   get(machine: string): Promise<MintedTokenRow | undefined>;
   /** Revokes the machine's token. False when it had none good. */
   revoke(machine: string): Promise<boolean>;
+  /** Keeps `words` as why the dial of the token with this SHA-256 was refused (its row's `refused`); a mint again for
+   *  its machine clears it. Nothing when no row has that token. */
+  refuse(tokenSha256: string, words: string): Promise<void>;
+}
+
+/** Where a runner in a process of its own takes the dials relayed to it (store schema `runner_relays`, dial-relay.ts): its
+ *  attach listener's host and port, under the runner's name and its incarnation (its process since its start), and when
+ *  it last said it was there. */
+export interface RunnerRelayRow {
+  readonly runner: string;
+  readonly incarnation: string;
+  /** The host the server reaches it at: loopback, or the runner's live host (live-reach.ts). */
+  readonly host: string;
+  readonly port: number;
+  readonly seenAt: number;
+}
+
+/** The runners' attach listeners (dial-relay.ts). */
+export interface RunnerRelays {
+  /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now. */
+  put(row: Omit<RunnerRelayRow, "seenAt">): Promise<void>;
+  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not. */
+  seen(runner: string, incarnation: string): Promise<boolean>;
+  /** The runner's row, whichever incarnation's, or undefined. */
+  get(runner: string): Promise<RunnerRelayRow | undefined>;
+  /** Every runner's row. */
+  list(): Promise<RunnerRelayRow[]>;
+  /** The runner's row gone, while it is still this incarnation's. */
+  remove(runner: string, incarnation: string): Promise<void>;
 }
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
@@ -1376,6 +1504,8 @@ export interface Store {
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
   readonly mintedTokens: MintedTokens;
+  /** Where each runner in a process of its own takes the dials relayed to it. */
+  readonly runnerRelays: RunnerRelays;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */

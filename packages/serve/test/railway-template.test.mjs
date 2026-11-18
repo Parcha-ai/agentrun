@@ -42,8 +42,9 @@ test("the start command is the image's own entrypoint and command, as the image'
   const mount = Object.values(service.volumeMounts)[0].mountPath;
   // Railway's volume is a disk with a lost+found (root's, mode 700): it is given to the server's user too, so an image
   // whose server can't look into it (released before the store's scan let it be) starts. `-h`: the server's user owns
-  // the volume and could make lost+found a link to /etc, which root must not then follow.
-  assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && { [ ! -d ${mount}/lost+found ] || chown -h 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
+  // the volume and could make lost+found a link to /etc, which root must not then follow. 711, as the image's /data: a
+  // run's process, a uid of its own, crosses it to its own folders without listing it.
+  assert.equal(script, `chown 1000:1000 ${mount} && chmod 711 ${mount} &&{ [ ! -d ${mount}/lost+found ] || chown -h 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
   // Railway mounts a volume as root: the container starts as root (RAILWAY_RUN_UID=0) only for the chown above.
   assert.equal(renderValue(service.variables.RAILWAY_RUN_UID.defaultValue, { domain: "x" }), "0");
   assert.ok(cmd.includes(mount) && cmd[cmd.indexOf("--data") + 1] === mount, "the server's data directory is the volume");
@@ -77,7 +78,7 @@ test("each deploy generates a token and a seal key this server takes, with 256 b
     assert.equal(tokenProblem(env.AGENTRUN_TOKEN), undefined);
     assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, env.AGENTRUN_SEAL_KEY.length);
     assert.equal(env.AGENTRUN_PUBLIC_URL, "https://agentrun-production-ab12.up.railway.app");
-    assert.deepEqual([env.PORT, env.RAILWAY_RUN_UID], ["7340", "0"]);
+    assert.deepEqual([env.PORT, env.RAILWAY_RUN_UID, env.AGENTRUN_RUN_USER], ["7340", "0", "same"]);
   }
   const bits = (v) => {
     const [, n, alphabet] = /secret\((\d+), "([^"]+)"\)/.exec(v.defaultValue);

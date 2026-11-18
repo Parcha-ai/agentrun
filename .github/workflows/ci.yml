@@ -212,13 +212,35 @@ jobs:
           POSTGRES_DB: agentrun
         ports:
           - 5432:5432
+        # The database test/pg/compose.yaml runs locally: its data on tmpfs, no fsync (the settings step below). Each test
+        # opens its own schema, so a checkpoint here syncs 80k-150k files; on the runner's disk that took 90-180 s, and a
+        # commit waiting behind it went unanswered past the store's 10 s deadline.
         options: >-
+          --tmpfs /var/lib/postgresql/data
           --health-cmd "pg_isready -U agentrun -d agentrun"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 30
     steps:
       - uses: actions/checkout@v4
+      # A service takes no command, so the settings compose.yaml passes as flags are set here and reloaded: no fsync and
+      # no full-page writes (a throwaway database), and a lock wait past 1 s logged with the holder's pid and statement, so
+      # a stall that is a lock says whose.
+      - name: The test database's settings
+        env:
+          PGHOST: 127.0.0.1 # key-gate: loopback-rule the Postgres service container of this job, published on the runner loopback
+        run: |
+          for setting in "fsync = off" "full_page_writes = off" "log_lock_waits = on" "deadlock_timeout = '1s'"; do
+            psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET ${setting}"
+          done
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT pg_reload_conf()"
+          # The reload reaches new connections once the server has read it: wait for it, and fail if it never does.
+          for try in $(seq 1 20); do
+            [ "$(psql -tAc "SHOW fsync")" = off ] && break
+            [ "$try" = 20 ] && { echo "::error::the test database's settings were not applied"; exit 1; }
+            sleep 0.5
+          done
+          psql -tAc "SELECT name || '=' || setting FROM pg_settings WHERE name IN ('fsync', 'full_page_writes', 'log_lock_waits', 'deadlock_timeout') ORDER BY name"
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
@@ -354,6 +376,68 @@ jobs:
         run: node deploy/railway/local-walk.mjs
         env:
           AGENTRUN_IMAGE: agentrun-walk:local
+
+  image-custody:
+    # A run of the image holds its own model's key and nothing else, runs as a uid of its own, and reaches neither the data
+    # directory nor the server's memory, nor anything of another live run (packages/serve/docker/image-custody.sh), after
+    # the run helper's own Go tests (packages/serve/runas): the image built once from this checkout,
+    # then read in both shapes, the server with its runner in one process, and the two processes on a Postgres store whose
+    # URL is a canary. It runs when a change reaches the server, its runner, its launcher, its image or this file. Outside
+    # the verify matrix: it needs a Docker daemon, not both Node versions.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge commit and its first parent, the base branch's tip: their diff is what a pull request changes.
+          fetch-depth: 2
+      - name: Does this change reach the server, its runner, its launcher or its image?
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) base=HEAD^1 ;;
+            merge_group) base="$GROUP_BASE" ;;
+            *) base="$PUSH_BASE" ;;
+          esac
+          # A base this clone cannot reach (a new branch, a force push) checks the image.
+          if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: checked"; exit 0
+          fi
+          changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/serve/ .github/workflows/ci.yml)
+          echo "${changed:-no server, runner, launcher or image path changed}"
+          if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        if: steps.paths.outputs.run == 'true'
+        with:
+          go-version-file: packages/serve/runas/go.mod
+          cache: false
+      - name: The run helper's vet and tests (packages/serve/runas)
+        if: steps.paths.outputs.run == 'true'
+        working-directory: packages/serve/runas
+        env:
+          CGO_ENABLED: '0'
+        run: go vet ./... && go test ./...
+      - name: The image, built once
+        id: image
+        if: steps.paths.outputs.run == 'true'
+        run: docker build -f packages/serve/docker/Dockerfile -t agentrun-custody:ci .
+      - name: Postgres for the two-process shape
+        if: steps.paths.outputs.run == 'true'
+        run: docker pull postgres:17-alpine
+      - name: One process, the server with its runner beside it
+        if: steps.paths.outputs.run == 'true'
+        run: sh packages/serve/docker/image-custody.sh agentrun-custody:ci
+      - name: One process, with the seal key the server keeps in its data directory
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: sh packages/serve/docker/image-custody.sh --seal-file agentrun-custody:ci
+      - name: Two processes, the server and its runner, on a Postgres store
+        # Read whatever the one-process shape found: each shape's lines are their own.
+        if: ${{ !cancelled() && steps.image.outcome == 'success' }}
+        run: sh packages/serve/docker/image-custody.sh --two agentrun-custody:ci
 
   real-chrome:
     # @parcha/pi-browser's suites that drive a real local Chrome (the local Chrome provider, the cdp provider, Stagehand's

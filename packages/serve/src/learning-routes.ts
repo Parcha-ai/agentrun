@@ -22,6 +22,7 @@ import { readmeProblems, type DraftDecisions } from "./learn/workflow-draft.js";
 import { putCorrections, readCorrections } from "./learn/commit.js";
 import { blobOid, type FolderChange, FolderBusy, FolderRefused, FolderTooLarge, FolderUnreadable, type PersonKind, readLearning, PATCH_CAP, readRunDiff, readSnapshot, runDiffKey, type SnapChange, type SnapHistory, type SnapLearned, type Snapshot, textsAt, writeLearning } from "./learn/folder.js";
 import { ApiError, invalid } from "./errors.js";
+import type { ServingState } from "./learn/promote.js";
 import { type ItemStatus, detailShown, filesView, type Learning, learningFolderOf, reasonShown, type Shown, withAgentRepo } from "./learning.js";
 import type { Impact } from "./learning-run.js";
 import { isObject } from "./validate.js";
@@ -102,13 +103,16 @@ const retiredOf = (history: SnapHistory, from: "active" | "pending" | undefined,
 
 /** A workflow draft as the view lists it: its folder's name, its workflow.json with its `readme`, its description, its
  *  status, the run whose merge last changed it, its size in bytes, and the ETag of its README.md (the file that says
- *  whether it waits, which an approval names); cut of the host's secrets (a name or a file holding one reads [redacted]). */
-type WorkflowView = { name: string; file: string; readme: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: SnapHistory["last"] };
-function workflowView(item: SnapLearned, shown: Shown, unread = false): WorkflowView {
+ *  whether it waits, which an approval names); cut of the host's secrets (a name or a file holding one reads [redacted]).
+ *  `status` is one word: its README.md's `pending` or `retired`, else where it stands as the promotions read says it
+ *  (`stateOf`, learn/promote.ts servingStateOf): `serving`, `checking`, `held` or `stopped`. */
+type WorkflowView = { name: string; file: string; readme: string; description: string; status: "pending" | "retired" | ServingState; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: SnapHistory["last"] };
+function workflowView(item: SnapLearned, shown: Shown, stateOf: (workflow: string) => ServingState, unread = false): WorkflowView {
   const file = `${WORKFLOWS_DIR}/${item.name}/workflow.json`;
   const bytes = item.files.find(({ path }) => path === file)?.bytes ?? item.bytes;
+  const status = item.status === "active" ? stateOf(item.name) : item.status;
   return {
-    name: shown.name(item.name), file: shown.name(file), readme: shown.name(item.file), description: shown.text(item.description), status: item.status, run: item.run, bytes, etag: etagOf(item.oid),
+    name: shown.name(item.name), file: shown.name(file), readme: shown.name(item.file), description: shown.text(item.description), status, run: item.run, bytes, etag: etagOf(item.oid),
     ...(item.history.last ? { last_change: item.history.last } : {}),
     ...(item.status === "retired" ? { retired: retiredOf(item.history, item.retired_from, unread) } : {}),
   };
@@ -179,15 +183,16 @@ export async function pendingCount(data: string, agentId: string): Promise<numbe
 
 /** GET /agents/{id}/learning: main, its corrections.md, its workflow drafts and the first page of its log, and how the
  *  agent's runs fared and what learning changed for them (`counts`, `impact`); an agent with no folder (its learning
- *  never on) has an empty one. */
+ *  never on) has an empty one. `stateOf`: where each workflow neither pending nor retired stands, by its folder name (the
+ *  promotions read's own word: learn/promote.ts servingStateOf over the agent's records). */
 type AgentView = { agent: string; main: string | null; corrections: string; workflows: WorkflowView[]; log: Page<Change>; counts: Counts; impact: Impact };
-export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact): Promise<AgentView> {
+export async function agentLearning(data: string, agentId: string, shown: Shown, counts: Counts, impact: Impact, stateOf: (workflow: string) => ServingState): Promise<AgentView> {
   return reading<AgentView>(data, agentId, async ({ snapshot, body }) => {
     const corrections = (await readCorrections(snapshot, body)).text;
     // A retired draft whose README.md can't be read is said so (unclearFront), read from its file now, as the snapshot's
     // status was: a few retired items, one read each.
     const unread = async (item: SnapLearned) => item.status === "retired" && unclearFront(await body(item.file, item.oid));
-    return { agent: agentId, main: snapshot.main, corrections: shown.text(corrections), workflows: await Promise.all(snapshot.workflows.map(async (item) => workflowView(item, shown, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
+    return { agent: agentId, main: snapshot.main, corrections: shown.text(corrections), workflows: await Promise.all(snapshot.workflows.map(async (item) => workflowView(item, shown, stateOf, await unread(item)))), log: logPage(snapshot, 0, LOG_PAGE, shown), counts, impact };
   }, () => ({ agent: agentId, main: null, corrections: "", workflows: [], log: EMPTY, counts, impact }));
 }
 

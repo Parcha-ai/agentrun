@@ -106,7 +106,39 @@ them). A first compile's earns the one recompile, as a check's hold does; a reco
 A new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first run that
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
 workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
-own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of the inputs it ran on, `alone` is the share
+own recorded answer to it (`sameAnswer`): no grade and no teacher is read. The two answers are compared on the fields
+that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
+paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
+path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and
+a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
+Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
+grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
+AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the agent's reach the same
+decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
+through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
+booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
+more on a transport failure alone. Its wait is raced, as the end-of-run turn's is, against the run's stop or cancel, a
+lost claim, the session closing and a 60 s deadline (GRADER_DEADLINE_MS): each one aborts the request at once, and it is
+asked no more; what it spent before is booked as any cut request is, and a stopped run keeps no verdict. A reply that is
+not the verdict, a request that failed twice, one cut by its deadline, and a cap refusal differ, never agree by default,
+in words ("the comparison could not be read: ...", "the cap held the comparison"). The verdict is a root journal entry
+(`agentrun.learning.compared`) that the run's metrics keep (`replay.compared`), naming the two answers it read (`pair`,
+a digest of both); the check reads it through compareAnswers, the one comparison the audit makes too. A verdict whose
+pair is not the two answers read at the check (the agent's run answered again after its replay was compared: a
+follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
+does: no claim asks the grader again. The record keeps `check.grader` (the
+model) and each disagreement's `differs_on` (cut to CHECK_TEXT_MAX), its reason says "compared by the fast model
+(<model>)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
+<differs_on>)". With no fast model the whole answer decides, and a hold that answered some inputs alone and agreed on
+none says "its answers never matched the agent's word for word, and no fast model compared their decisions (...); name
+the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
+`risk_appetite`) while the decision sits deeper (`verdict.decision`), and a default that promotes on the wrong field is
+worse than one that never promotes. A shipped template whose answer carries a decision declares it (kyb, inbound-lead),
+each path a required property of its output schema at every level (`templates.ts` readPackage refuses one an answer may
+leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader, or the whole answer
+with no fast model. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
+said on mcc and riskTier": agree_on asks no model, free and exact where the definition can name the fields. Of the
+inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no
 answer alone), and `agreement` the share of those that say what the agent said. A newer revision that comes while a
 check runs waits and records nothing; the claim after the running check is decided starts the newest. It is promoted
@@ -153,8 +185,10 @@ served run's own spend). While the shadow is queued or running the served run's 
 (`store-reads/learning.ts` shadowSpendOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
-digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by `sameAnswer` of the
-shadow's answer and the served run's answer row `turn`, read from the run by that id (null when either answer is
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by compareAnswers of the
+shadow's answer and the served run's answer row `turn`, compared as its check compares (its revision's
+`learning.agree_on`; else the grader's verdict, which the shadow asked at its own end on its own cap, so its request is
+the served run's learning cost, kept in its metrics as `audit.compared`; else whole), read from the run by that id (null when either answer is
 missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
 hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
 grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the

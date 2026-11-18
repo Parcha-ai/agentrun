@@ -105,7 +105,8 @@ const START = Date.now();
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
- *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
+ *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised, and
+ *    workspace, the stat of a synced folder's directory: { path, type, owner "uid:gid", mode }, else install's);
  *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
  *    "manager dies" (it ends at once);
  *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
@@ -259,6 +260,13 @@ export function fakeHost({
 		if (method === "files.stat") {
 			if (params.path === "/proc/self/cwd") return result({ path: params.path, type: "symlink", target: m.box.cwd });
 			if (params.path === "/proc/self/exe") return result({ path: params.path, type: "symlink", target: m.box.exe });
+			const dir = (type, owner, mode) => {
+				const [uid, gid] = owner.split(":").map(Number);
+				return result({ type, size: 4096, mode, mtimeMs: 0, uid, gid });
+			};
+			if (params.path === "/work") return dir("dir", `${m.box.uid}:${m.box.gid}`, 0o755);
+			const workspace = m.box.workspace;
+			if (workspace !== undefined && params.path === workspace.path) return dir(workspace.type, workspace.owner, workspace.mode);
 			return error("not_found", `${params.path}: no such file`);
 		}
 		if (method === "exec.run") {
@@ -428,7 +436,7 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "install") {
-			const [staging, daemon, , , atomic, sha256, nonce] = script.args;
+			const [staging, daemon, , , atomic, sha256, nonce, workspace, owner] = script.args;
 			queueMicrotask(() => {
 				const bytes = m.files.get(staging);
 				if (install !== 0 || bytes === undefined) {
@@ -436,6 +444,8 @@ export function fakeHost({
 					return proc.exit(install || 5);
 				}
 				m.files.delete(staging);
+				// A synced folder's directory, made the computer user's before init (box.workspace stands for another).
+				if (workspace) m.box.workspace ??= { path: workspace, type: "dir", owner, mode: 0o700 };
 				m.daemon = { path: daemon, bytes, atomic: atomic === "1", sha256, ...(nonce ? { marker: nonce } : {}) };
 				proc.out.push(`installer 0 root\nsha256 ${sha === "lie" ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex")}\n`);
 				if (m.pid1) maybeEntry(m);
@@ -565,12 +575,13 @@ export function fakeHost({
 				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
 				if (req.boot) {
-					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, then the dial itself, the caller's (onBoot).
+					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, with the boot env's DISPLAY, then the dial
+					// itself, the caller's (onBoot).
 					m.boot = { ...req.boot.env };
 					const args = m.boot.AGENTRUN_INIT_ARGS.split(" ");
 					const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
 					m.daemon = { path: DAEMON, sha256: m.boot.AGENTRUN_DAEMON_SHA256 };
-					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), max: flag("--max-deadline"), network: flag("--network") });
+					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.boot.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network") });
 					queueMicrotask(() => onBoot(m));
 				}
 				if (req.command) {

@@ -89,7 +89,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     assert.ok(verifies(secret, ended), "and so does the spec's algorithm, written out");
     const message = JSON.parse(ended.body);
     assert.deepEqual(Object.keys(message).sort(), ["data", "timestamp", "type"]);
-    assert.deepEqual(message.data, { run_id: done.run_id, agent_id: "answers", status: "completed", title: "hi", url: `${url}/#/runs/${done.run_id}` });
+    assert.deepEqual(message.data, { run_id: done.run_id, agent_id: "answers", agent_name: "answers", status: "completed", title: "hi", url: `${url}/#/runs/${done.run_id}` });
     assert.match(ended.headers["webhook-id"], /^msg_[0-9a-f]{32}$/);
     assert.equal(ended.method, "POST");
     assert.equal(ended.headers["content-type"], "application/json");
@@ -128,7 +128,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     const asks = await startRun(api, "asks", "Pick a region.", { tools: ["ask_person"] });
     await follow(api, asks.run_id, ["input_required"]);
     const [waiting] = ofType(await hook.when((got) => ofType(got, "run.needs_input").length, `the run.needs_input of run ${asks.run_id} (the outbound notice of its wait)`), "run.needs_input");
-    assert.deepEqual(library.verify(waiting.body, waiting.headers).data, { run_id: asks.run_id, agent_id: "asks", status: "input_required", title: "Pick a region.", url: `${url}/#/runs/${asks.run_id}`, pending: { kind: "question" } });
+    assert.deepEqual(library.verify(waiting.body, waiting.headers).data, { run_id: asks.run_id, agent_id: "asks", agent_name: "asks", status: "input_required", title: "Pick a region.", url: `${url}/#/runs/${asks.run_id}`, pending: { kind: "question" } });
     assert.ok(!waiting.body.includes("Which region"), "no question text: the API reads it");
     assert.equal((await api("POST", `/runs/${asks.run_id}/messages`, { content: "eu" })).status, 202);
     await follow(api, asks.run_id, ["completed"]);
@@ -157,7 +157,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     await parkedOnQuestion(writer, "asker", "run-asks", "What is your budget?");
     await hook.when(() => waitsOf("run-asks").length === 1, "the run.needs_input of run run-asks, parked on its question", data);
     const [wait] = waitsOf("run-asks");
-    assert.deepEqual(JSON.parse(wait.body).data, { run_id: "run-asks", agent_id: "asker", status: "input_required", title: "Asks run-asks", url: `${server.url}/#/runs/run-asks`, pending: { kind: "question" } });
+    assert.deepEqual(JSON.parse(wait.body).data, { run_id: "run-asks", agent_id: "asker", agent_name: "asker", status: "input_required", title: "Asks run-asks", url: `${server.url}/#/runs/run-asks`, pending: { kind: "question" } });
     await settled(data);
     assert.equal(noticed(data, "run-asks")?.waits?.length, 1, "the ledger holds its wait");
     // Read again under a new claim (a new epoch), its wait as it was: the ledger tells it no second time. Two runs parked
@@ -440,7 +440,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     const first = await on.open();
     await first.save({ url: hook.url });
     const ended = new Date().toISOString();
-    const run = { run_id: "run_1", agent_id: "a", status: "completed", title: "t" };
+    const run = { run_id: "run_1", agent_id: "a", agent_name: "a", status: "completed", title: "t" };
     assert.equal(await first.emit("run.needs_input", { ...run, status: "input_required", pending: { kind: "question" } }, "row_7"), "queued");
     assert.equal(await first.emit("run.ended", run, ended), "queued");
     assert.deepEqual(Object.keys(outboxOf(dir).notices), ["run_1"]);
@@ -476,7 +476,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     await on.runs("run_1");
     const first = await on.open();
     await first.save({ url: hook.url });
-    const waiting = (kind) => ({ run_id: "run_1", agent_id: "a", status: "input_required", title: "t", pending: { kind } });
+    const waiting = (kind) => ({ run_id: "run_1", agent_id: "a", agent_name: "a", status: "input_required", title: "t", pending: { kind } });
     assert.equal(await first.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued");
     assert.equal(await first.emit("run.needs_input", waiting("question"), "row_3:waiting"), "queued", "the same wait again: already queued");
     assert.equal(await first.emit("run.needs_input", waiting("approval"), "approval:call_8"), "queued");
@@ -503,7 +503,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     await on.runs("run_1");
     const first = await on.open();
     await first.save({ url: hook.url });
-    const waiting = { run_id: "run_1", agent_id: "a", status: "input_required", title: "t", pending: { kind: "question" } };
+    const waiting = { run_id: "run_1", agent_id: "a", agent_name: "a", status: "input_required", title: "t", pending: { kind: "question" } };
     const marks = Array.from({ length: 21 }, (_, i) => `row_${i + 1}:waiting`);
     for (const mark of marks) assert.equal(await first.emit("run.needs_input", waiting, mark), "queued");
     await hook.when(21);

@@ -12,8 +12,10 @@
 //     shadow) of an agent every tool of which only reads (learn/audit.ts auditWriterOf, the replay's readOnlyHint rule): a
 //     shadow never writes again.
 //   settleAudits: each open started line (no result row yet) whose two runs, read by id, ended writes its row (agreed:
-//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts sameAnswer; a follow-up's answer
-//     since is never read), oldest served run first; then, rows added or not, the hold rule reads the serving revisions'
+//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts compareAnswers, the check's one
+//     comparison: on the served run's revision's agree_on, learning-setting.ts agreeOnOf, else the grader's verdict the
+//     shadow kept at its end, runner/compare-end.ts; a follow-up's answer since is never
+//     read), oldest served run first; then, rows added or not, the hold rule reads the serving revisions'
 //     rows: a hold is a function of the ledger alone.
 //   applyHold: at least hold_disagree disagreements in the newest hold_window rows of the digest's current promotion
 //     hold the workflow (a promotion hold carrying `audit`, with those rows, each text cut of the host's secrets before
@@ -24,7 +26,7 @@
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
-import { auditLoopOf, type AuditLoop } from "../learning-setting.js";
+import { agreeOnOf, auditLoopOf, type AuditLoop } from "../learning-setting.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
@@ -34,13 +36,14 @@ import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf } from "../learn/compile.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, sameAnswer, servingOf } from "../learn/promote.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { answerOf, answerRowOf } from "./promotion.js";
 import { servedOf, type WorkflowFirst } from "./workflow-first.js";
+import { held, heldEndOfRun } from "./held.js";
 
 /** The least cap a run can take a step under (cap.ts: the next step needs at least a cent): a shadow with less left
  *  is never started. */
@@ -89,6 +92,20 @@ export async function auditLoopOfRevision(store: Pick<Store, "agents">, revision
   }
 }
 
+/** The answer paths an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
+ *  agreeOnOf: its agree_on); undefined, the whole answer. A read that fails throws: settleAudits leaves the row to a
+ *  later claim, never comparing on the whole answer an agent that named its fields (#3182 review). */
+export async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
+  return agreeOnOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
+}
+
+/** The served answer shadow run `shadowRun` audits: its open line's `turn`'s answer, read from the served run by that row's
+ *  id (what settleAudits compares the shadow's answer with); null when no open line names it, or it names no turn. */
+export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" | "folder">, shadowRun: string): Promise<string | null> {
+  const open = openAudits(await readLedger(deps)).find((line) => line.shadow_run === shadowRun);
+  return open ? auditedAnswer(deps, open) : null;
+}
+
 /** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, the newest `n` of them (lastRunsOf: the
  *  shadows and the agent's own runs among them never push one out of the read). */
 const servedRuns = (store: Pick<Store, "runs">, agentId: string, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) =>
@@ -112,6 +129,9 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
 export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
+  // In a run's own process the whole step is its runner's (held.ts endOfRun), the audit's start with it: it reads the
+  // run's journal and writes the ledger and a run, which no run's process may.
+  if (held()) return heldEndOfRun();
   return async (input) => {
     const rows = step ? await step(input) : undefined;
     if (input.cut === undefined) await auditAtEnd(deps, input.runId);
@@ -214,7 +234,8 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
 
 /** The per_run MCP credentials run `from` was handed, sealed for shadow run `id` alone (as a replay run's are). */
 async function handedTo(deps: Pick<AuditDeps, "store" | "sealKey">, from: string, id: string): Promise<Uint8Array | undefined> {
-  if (!deps.sealKey) return undefined;
+  // A run's own process holds no seal key: its runner seals them again, from its own run alone (held.ts handOn).
+  if (!deps.sealKey) return held()?.handOn(from, id);
   const sealed = await deps.store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
   const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, from, sealed);
   return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
@@ -244,10 +265,14 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
     rows.sort((a, b) => a.at - b.at || (a.row.run < b.row.run ? -1 : a.row.run > b.row.run ? 1 : 0));
     const { all, added } = rows.length ? await addLines(deps, rows.map(({ row }) => row), async (row) => {
       const shadow = await store.runs.get(row.shadow_run!);
-      if (shadow?.state !== "ended" || !(await store.runs.get(row.run))) return null;
+      const served = await store.runs.get(row.run);
+      if (shadow?.state !== "ended" || !served) return null;
       // The audited answer (the row's turn), never the run's newest: a follow-up since may have answered again.
       const [a, b] = [await auditedAnswer(deps, row), await answerOf(store, row.shadow_run!, deps.context)];
-      return a === null || b === null ? null : sameAnswer(a, b);
+      // The check's one comparison (compareAnswers): on the fields the served run's revision says carry the decision, else
+      // equal, else the grader's verdict its shadow kept at its end (runner/compare-end.ts), else the whole answer.
+      const verdict = comparedOf(isObject(shadow.metrics as Json) ? (shadow.metrics as { audit?: { compared?: unknown } }).audit?.compared : undefined);
+      return a === null || b === null ? null : compareAnswers(a, b, await agreeOnOfRevision(store, served.revisionId), verdict).same;
     }) : { all: lines, added: [] };
     const written = rowsOf(added);
     if (written.length) log(`workflow-first: ${written.length} audit row${written.length === 1 ? "" : "s"} written (${written.filter((row) => row.agreed === false).length} disagreeing)`);

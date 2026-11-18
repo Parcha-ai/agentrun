@@ -8,8 +8,9 @@ import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
 /** `learning`: whether the agent's runs learn (an agentic revision's; absent is off): true, its owner's corrections and a
- *  learned workflow; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min). */
-export type LearningSetting = boolean | { compile_after?: number; agree_min?: number; alone_min?: number };
+ *  learned workflow; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min) and the answer
+ *  fields its check and audit compare on (agree_on). */
+export type LearningSetting = boolean | { compile_after?: number; agree_min?: number; alone_min?: number; agree_on?: string[] };
 /** Whether a definition's `learning` is on: true or an object of the loop's numbers. */
 export const learningOn = (learning: unknown): boolean => learning === true || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
@@ -22,7 +23,7 @@ export type SaveWarning = { field: string; reason: string; message: string };
  *  the agent's page that opens after it (client.ts). */
 /** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
  *  carries (a list's agents and a write's answer have none). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins" | "template">>;
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
@@ -276,8 +277,9 @@ export function learningWriteError(e: ClientError): LearningWriteProblem {
   return { kind: "other", message: e.fields?.[0]?.message ?? e.message, code: e.code };
 }
 
-/** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */
-export function warningsFor(warnings: SaveWarning[] | undefined, field: string): SaveWarning[] {
+/** The warnings (or a refusal's issues) that name `field` of the definition, or a part of it (`tools` takes
+ *  `definition.tools[2]`). */
+export function warningsFor<T extends { field: string }>(warnings: readonly T[] | undefined, field: string): T[] {
   const at = `definition.${field}`;
   return (warnings ?? []).filter((w) => w.field === at || w.field.startsWith(`${at}[`) || w.field.startsWith(`${at}.`) || w.field.startsWith(`${at}/`));
 }

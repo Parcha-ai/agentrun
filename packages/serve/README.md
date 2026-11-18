@@ -231,8 +231,29 @@ From a checkout, the same command in its root, with `--build` to build the image
 (trixie), with git 2.47 for an agent's learning folder and the Docker client. Everything it keeps is under `/data`: the agent store,
 the runs and the token.
 
-The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
-(`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
+The image's default command, `server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`, starts
+two processes in the container: the server with `--no-runner`, and one runner on the same `/data` once the server answers
+`GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
+stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
+`runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
+its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+
+A computer provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`,
+which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) works under a runner apart that knows the
+server's public address, `AGENTRUN_PUBLIC_URL` (the image gives both processes the same environment). The machine dials
+the server, and the server relays its socket to the runner that made it: the runner keeps its own attach hub on a
+private listener (loopback; across hosts, its `AGENTRUN_RUNNER_LIVE_HOST`, which the server's `AGENTRUN_RUNNER_HOSTS`
+must list), and the server reaches it only with a proof under the seal key for that machine's token, that runner and a
+time within 10 seconds, taken once. A dial it cannot relay (its runner gone, not answering, or restarted since) is
+answered 503 in words that name the run, `a dial for run <run> (machine <machine>)`, and never the machine's token. The
+runner's create, waiting for that machine, ends at once in the same words and deletes it; the run makes a new machine at
+its next claim. A runner apart with no public address refuses such a create, naming the fix above,
+and the server says it sooner: in `GET /v2/computers`, each dial provider's row carries `runs_refused` with that fix,
+and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
+null.
+
+The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
+6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
@@ -836,7 +857,10 @@ passes the binding's conformance cases (below) needs no change here.
 - **One process.** A computer's connection lands on one server process, and only a run in that process can use it:
   run `agentrun-serve start` with its runner beside the server (the default). A runner started apart
   (`agentrun-serve runner`, beside a server started with `--no-runner`) refuses a paired computer at the claim, saying
-  so. A second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
+  so. Such a server says it sooner: its pairing code, the pair answer and each paired computer carry `runs_refused`,
+  which the console shows with the code and on the computer's row. The image's default command starts its runner apart; give the image the server's options alone
+  (`--data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`) to keep the runner in the server's process. A
+  second server on one store is already refused by the store's owner lock, on SQLite and Postgres alike.
 - **Conformance.** `node dist/attach-conformance-cli.js [--port 7392] [--listen 127.0.0.1]` runs the binding's cases
   against whatever driver pairs with the code it prints: pair, a wrong or used code, ping, a quiet minute, a redial
   after each close it must redial after (4408, 1000, 1001, 4409) and after a drop, a binary frame (1003), a frame over
@@ -1203,9 +1227,11 @@ even a pre-admission 429 is not retried automatically. This changes request retr
 admission, dispatch, journal fencing, restart or cancellation behavior; the recovery models do not change.
 
 Offline regressions cover streamed native tools, continuation, reasoning, cache accounting, missing usage, cancellation,
-errors, credential scoping and actual Pi conversation retries. **Live validation remains outstanding.** A maintainer
-must supply a key and explicitly authorize a bounded spend before testing real tool continuation, cache-hit behavior,
-cancellation and billing. The protocol fixtures are not evidence of live compatibility or cache savings.
+errors, credential scoping and actual Pi conversation retries. A live pass against Particle's API (2026-11-18, twelve
+checks) saved a key, then completed a plain run, tool calls continued after the model's reasoning, a follow-up, a
+cancel, a capped run and a workflow's model nodes. Replies reported cached input tokens and no cache writes, and each
+priced run's cost equaled its tokens at list price. Not yet seen live: a rate limit or server error from Particle,
+and the estimate against Particle's own bill. The protocol fixtures alone are not evidence of live compatibility.
 
 ### On a ChatGPT plan
 
@@ -1280,7 +1306,9 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
 switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys.
+sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
+user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
+login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
@@ -2215,12 +2243,13 @@ the webhook was set is never sent.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
-  "data": { "run_id": "…", "agent_id": "triage", "status": "input_required", "title": "…",
+  "data": { "run_id": "…", "agent_id": "triage", "agent_name": "Triage", "status": "input_required", "title": "…",
             "url": "https://agents.example.com/#/runs/…", "pending": { "kind": "question" } } }
 ```
 
-A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). The title is the run's own, as the store holds it: a trigger's
+A message is thin: ids, the agent's name, the status, the title and a link to the run on the page; never a tool's
+arguments, an output or an input, which the API reads (`GET /v2/runs/{id}`). `agent_name` is the agent's name as the
+message is built (a rename after it is not sent again), or its id when it has none. The title is the run's own, as the store holds it: a trigger's
 run is titled from its trigger, `<Source> <name>` and the event when its source names one ("Webhook reviews:
 pull_request opened"), never from its input; a workflow run's from its agent's name and its input; any other run's
 from its input. `pending.kind` is `question` (an `ask_person`),
@@ -2290,8 +2319,10 @@ one `missed` firing with their count, and the schedule goes on from now; the lat
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
 because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
-gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
-`webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
+gets a `trigger.failed` message for it (`data: {trigger_id, name, agent_id, agent_name, firing_key, nominal_at, error,
+auto_paused}`, its `webhook-id` made from the firing's key, so a restart never sends it twice). `agent_id` is the agent
+the trigger runs as, which every trigger has: a `start_run` target's agent, or the agent of the run a `message_run`
+target names; `agent_name` is that agent's name as the message is built, or its id when it has none. Five failed firings in a row turn the
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
@@ -2772,6 +2803,10 @@ serves these routes alone:
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;
+- the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
+  key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
+  on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
+  are the console's, refused here;
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
@@ -3197,7 +3232,12 @@ at once; a new one past that is held by the server's budget only, and no address
 Behind a proxy every visitor would be the proxy's address, so one guesser would hold the owner too: set
 `AGENTRUN_TRUSTED_PROXIES` to the proxy's addresses or ranges (comma-separated, or `loopback`, `linklocal`,
 `uniquelocal`), and a request from one of them counts under the client its `X-Forwarded-For` names (the nearest address
-that is not itself a trusted proxy). Unset, that header is never read. The owner's first sign-in of a start (the
+that is not itself a trusted proxy). Unset, that header is never read. A trusted proxy only changes which address a
+sign-in try counts against, never who the request is: `X-Forwarded-For` signs no one in, and the whole server's 100
+wrong passwords still hold. So with a wide setting such as `uniquelocal` (10/8, 172.16/12, 192.168/16 and fc00::/7; the
+VPS installer's tailnet mode sets it, since `tailscale serve` reaches the server through Docker's private bridge),
+anything on those ranges that fakes the header, an agent's Docker box among them, can only spread its tries over more
+addresses. The owner's first sign-in of a start (the
 right password) that comes with `X-Forwarded-For` from an address the server doesn't trust is logged once, with that
 address (`event=forwarded_untrusted peer=<address>`; a server from a release after 0.1.0-beta.32). Only the right
 password logs it, so the address is the one that carried the owner's own request: behind a proxy, the proxy's.
@@ -3468,13 +3508,15 @@ A person reads and changes an agent's learning through this server's own routes 
 with the token, an archived agent's too:
 
 - `GET /agents/{agent_id}/learning`: `main`'s head, `corrections.md` as `corrections`, the learned workflows (each its
-  name, files, description, status and `etag`), the first 20 changes on `main` (newest first, each `by: {run}` from its
+  name, files, description, status and `etag`; `status` is one word: `pending` or `retired` as its `README.md` says,
+  else where it stands as `.../learning/promotions` says it: `serving`, `checking`, `held` or `stopped`, a champion
+  the cost rule stopped included), the first 20 changes on `main` (newest first, each `by: {run}` from its
   `Run-Id` trailer or `{user: true}`, with its commit, time, reason and files), how the agent's runs that tried to learn
   fared (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them, and `impact`, what
   learning changed: the agent's completed runs that started from at least one learned item (a correction, or a learned
   workflow) against those that started before its first, each side's `runs`; `median_duration_s`, the time to the
-  answer (the run's start to its job's end, before its end-of-run step); `median_cost_usd`, the job's own cost, over
-  the `cost_runs` whose cost is known; and `median_learning_usd`, what learning itself cost a run (its compile turn).
+  answer (the run's start to its job's end, before its end-of-run step). What a run costs, learning included, and what
+  learning itself cost are `.../learning/cost`'s (`summary.before`/`after`, the bill's `learning_usd`).
   Null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty lists and `impact: null`.
   `GET .../learning/log?cursor=&limit=` pages on, up to 200 at a time; a cursor reads the same commit its first page
   did.
@@ -3942,8 +3984,48 @@ carries no cost at all, as from a provider that does not price the model. The te
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
   included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token,
   `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is the
-  Workspace's confinement inside the runner's process, not an operating-system boundary: the runner and the server
-  share a user (one uid in the container), so the confinement holds only because the run has no shell on this machine.
+  Workspace's confinement inside the run's process; in the image the operating system holds the same line (below).
+- Each run is a process of its own, started by its runner at the claim. It is handed its own keys on a pipe (read and
+  closed as it loads) and a channel to its runner, over which it reads and writes what its loop needs: its journal,
+  under the runner's fence, and the store's rows of its own run and agent, each call checked against its claim (another
+  run's journal or row, another agent's revision, and any call off the list are refused). What the seal key opens for
+  the run, the runner opens and hands over; the seal key, the API token and the store's URL stay in the runner. A frame
+  on the channel past 32 MiB, or one that is no message of it, fails the run. The runner keeps the claim and its end: at
+  the end, or on a stop the run does not take in its grace, the run's process group is killed (in the image, every
+  process of its uid).
+- In the image, each run's process also runs as a user of its own: slot `s` of its runner is uid and gid `1001 + s`
+  (256 slots), started through `agentrun-runas`, a helper installed root:node `0750` with the file capabilities
+  `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
+  the run's uid, gid and groups (its slot's group alone: not node's, not the Docker socket's group compose gives the
+  server), empties every capability set, sets `no_new_privs` and keeps only the run's two descriptors open. So one run
+  reads neither another live run's folder nor its process's memory, environment or descriptors, and none reads the data
+  directory (`0711`: crossed to its own folders, never listed), the store's files (`0600`), the seal key or the
+  server's memory. A run's folders are its slot group's (`2770`), which the server's user is in. At the run's end every
+  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`,
+  `/run/lock` (`/var/lock`) and `/dev/mqueue` are removed, and its folders go back to the server's group, which the
+  slot's next run cannot enter. SysV IPC objects (`ipcs`) a run leaves are not removed.
+  `GET /v2/capabilities` says `run_isolation: "uid"`.
+- A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
+  `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
+  switch, or unable to start (a spawn `EPERM`): the runner then refuses to claim, saying so and naming the setting, and
+  stays up claiming nothing, with no heartbeat (`runner --check` says it is not alive), until it is stopped, so the
+  container keeps running. The server still serves its console and API (`GET /v2/health` reads the store and the disk,
+  not a runner, and `GET /v2/capabilities` says `run_isolation: "process"`), and its runs wait queued until the setting
+  is fixed and the server restarts. `AGENTRUN_RUN_USER=same` runs every run as
+  the runner's own user instead, still each in a process of its own, said on the runner's log at its start. Runners in
+  containers of their own on one `/data` volume each take slots from an `AGENTRUN_RUN_SLOT_FIRST` of their own
+  (`deploy/compose.yaml`: 0 and 128). A runner told to hold more runs (`--loops`, `AGENTRUN_MAX_RUNS`) than the slots
+  from its first to the last (255) refuses to start, in words; with no number told, it holds those slots. Each run's
+  slot is also locked on the volume (`/data/run-slots`, util-linux `flock`) from before its run starts until after its
+  reap, so runners whose ranges overlap never run two runs as one user: a slot another runner holds is skipped, and a
+  run that finds every free slot held is handed back unstarted, said on the runner's log.
+- A local install (`npx`, `node dist/cli.js`) has no helper: each run is a process of its own as the user who started
+  the server, and `run_isolation` is `"process"`. Its runs, and a program one starts, can read what that user reads,
+  another run's folder and the data directory included, as before; keep a local server to agents you trust as you trust
+  that user.
+- A host that starts the server as root could run each run's process as a user of its own with no file capability: a
+  small spawner, kept as root, that starts the server as an unprivileged user and each run as its slot's uid. The image
+  does not ship one: it never runs anything as root, so it needs the helper's capabilities or `AGENTRUN_RUN_USER=same`.
 - No path offers a shell on this machine. On the runner `bash` is not bound: a definition that names it is not saved
   here (`422`), one saved before that check is not runnable (`409`), and a model that calls it anyway, as an agent or as
   a workflow's model node, is answered that the tool is not available and runs nothing. In a [sandbox](#sandbox) it runs

@@ -19,6 +19,7 @@ import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
 import { harnessModulesOf } from "./harness-table.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
+import { installEnvProxy } from "./env-proxy.js";
 import { startTelemetry } from "./telemetry.js";
 // The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
 // on a slow disk that load is most of a start. Nothing above loads more than a few files.
@@ -27,10 +28,14 @@ import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.j
 // A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
 // command, the server and the runner alike.
 surviveClosedPipes();
+// Every outbound call through the proxy HTTPS_PROXY or HTTP_PROXY names, NO_PROXY's hosts and loopback direct
+// (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
+installEnvProxy();
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
+       agentrun-serve install-harness goose [--data DIR]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
@@ -155,6 +160,42 @@ if (process.argv[2] === "reset-password") {
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
+}
+
+// A harness its owner installs (harness-goose.ts: Goose, the one there is), never a run: its pinned archive downloaded,
+// checked and unpacked into DIR/harnesses/<name> (harness-archive.ts). 0 once it is there (now or already), 1 when the
+// install failed (its code and the command to try again), 2 for a name it does not install. No provider key is read.
+if (process.argv[2] === "install-harness") {
+  const usage = (message: string): never => (console.error(`agentrun-serve install-harness: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values, positionals } = read();
+  const { GOOSE_ID, installGoose } = await import("./harness-goose.js");
+  if (positionals.length !== 1) usage(`it takes one harness: ${GOOSE_ID}.`);
+  if (positionals[0] !== GOOSE_ID) usage(`it installs ${GOOSE_ID}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
+  const [{ ArchiveInstallFailed }, { acpPackage, ACP_PACKAGE }] = await Promise.all([import("./harness-archive.js"), import("./acp-package.js")]);
+  if (!acpPackage()) {
+    console.error(`Goose's adapter (${ACP_PACKAGE}) is not installed beside this server, so it has no pinned release to install.`);
+    process.exit(1);
+  }
+  const data = resolve(values.data ?? defaultData());
+  try {
+    const said = { downloaded: "the archive is downloaded and its sha256 matches the pin", unpacked: "unpacked", verified: "the binary's sha256 matches the pin" } as const;
+    const { version, installed, binary } = await installGoose(data, { onStep: (step) => console.error(`Goose: ${said[step]}`) });
+    console.log(installed === "already"
+      ? `Goose ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded).`
+      : `Goose ${version} is installed in ${dirname(binary)} (now). Restart AgentRun to pick it up.`);
+    process.exit(0);
+  } catch (error) {
+    if (!(error instanceof ArchiveInstallFailed)) throw error;
+    console.error(error.message);
+    process.exit(1);
+  }
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
@@ -397,6 +438,8 @@ try {
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
     ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
+    // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
+    ...(values["no-runner"] ? { runnerApart: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -411,7 +454,7 @@ let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 // Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
 // under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
-const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
+const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {
   try {
@@ -424,11 +467,19 @@ if (!values["no-runner"] && askedAt === undefined) {
     // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
+    // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
   } catch (error) {
-    console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
-    await serve.close();
-    process.exit(1);
+    // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
+    // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped
+    // container would otherwise loop on it.
+    const { RunIsolationRefused } = await import("./runner/run-child-host.js");
+    if (!(error instanceof RunIsolationRefused)) {
+      console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+      await serve.close();
+      process.exit(1);
+    }
+    console.error(`agentrun-serve: ${error.message}`);
   }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.

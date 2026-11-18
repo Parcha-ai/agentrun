@@ -78,11 +78,3 @@ test("pemOf turns a PKCS#8 key, which ssh2 does not read, into the same key in a
 	assert.equal(pemOf(x25519), undefined, "a PKCS#8 key of a type SSH has no use for is no key");
 	assert.equal(pemOf(armor("PRIVATE KEY", "AAAA")), undefined, "a body node:crypto can't read is no key");
 });
-
-test("pemOf hands a key ssh2 reads back as it is, its body wrapped at 70 characters", () => {
-	const openssh = ssh2.utils.generateKeyPairSync("ed25519").private;
-	assert.ok(pemOf(openssh.replace(/\n/g, " ")) === pemOf(openssh), "one line or many, the same key");
-	assert.equal(ssh2.utils.parseKey(pemOf(openssh)).type, "ssh-ed25519");
-	const pkcs1 = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" });
-	assert.ok(pemOf(pkcs1)?.replace(/\n/g, "") === pkcs1.replace(/\n/g, ""), "PKCS#1 is not converted");
-});

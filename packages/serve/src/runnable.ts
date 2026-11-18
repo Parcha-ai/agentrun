@@ -101,7 +101,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
   const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);
-  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
+  // One the table hides (HarnessEntry.hidden: Goose before its owner installs it) has no offer: its entry says why.
+  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? harnessOf(env, harness)?.hidden?.(env) ?? `This server does not run ${harness}.`, host: true, harness });
   const { place } = revision;
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
   // edit that leaves the place out keeps the agent's (agents-store.ts), so removing the field would change nothing.

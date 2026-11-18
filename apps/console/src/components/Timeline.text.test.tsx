@@ -53,6 +53,26 @@ describe("Timeline, a step's words", () => {
   });
 });
 
+// A collapsed answer's line is its first line, and an answer's first line often carries a link. The row is itself the
+// button that opens the answer, so the line reads a link as its words (no anchor inside the button); open, the answer
+// shows it as a link.
+describe("Timeline, a link on an answer's line", () => {
+  const line = (h: string) => /<span class="mt-0\.5 block[^"]*">([\s\S]*?)<\/span><\/span><span class="caps/.exec(h)?.[1];
+
+  it("reads a Markdown link as its text, with no link inside the row's button", () => {
+    const h = html([row({ kind: "final_answer", summary: "Hi, visit [example.com](https://example.com) or [**the docs**](https://example.com/a_(b)).", text: "Hi, visit [example.com](https://example.com) or [**the docs**](https://example.com/a_(b)).\n\nMore below.", tool_status: null })]);
+    expect(line(h)).toBe("Hi, visit example.com or <strong class=\"font-semibold\">the docs</strong>.…");
+    expect(h).not.toContain("<a");
+  });
+
+  it("reads an autolink as its address, leaves a bracket with no address as typed, and lets no HTML through", () => {
+    const h = html([row({ kind: "final_answer", summary: "See <https://example.com/x>, [note] and [<b>x</b>](javascript:alert(1)) or `[a](b)`", text: "See it.", tool_status: null })]);
+    expect(line(h)).toBe("See https://example.com/x, [note] and &lt;b&gt;x&lt;/b&gt; or <code class=\"font-mono\">[a](b)</code>");
+    expect(h).not.toContain("<b>");
+    expect(h).not.toContain("javascript:");
+  });
+});
+
 // A tool step's label is a word a person reads, from either of the server's shapes (one row per action, or a call and
 // its result); the tool's own id stays in what the step opens to.
 describe("Timeline, a tool step's label", () => {

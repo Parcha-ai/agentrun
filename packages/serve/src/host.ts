@@ -58,7 +58,8 @@ const listed = (names: string[]): string => (names.length > 1 ? `${names.slice(0
  *  owner's table says what each run weighs (runMibOf), and which harnesses the words list. */
 export function neverFits(harness: string, memory: number, env: NodeJS.ProcessEnv = {}): string | undefined {
   if (runsThatFit(harness, memory, env) > 0) return undefined;
-  const fit = Object.keys(ownerTable(env)).filter((id) => runsThatFit(id, memory, env) > 0);
+  // Those the server lists (an entry it hides, Goose before it is installed, is never named: harness-table.ts hidden).
+  const fit = Object.entries(ownerTable(env)).filter(([id, entry]) => entry.hidden?.(env) === undefined && runsThatFit(id, memory, env) > 0).map(([id]) => id);
   return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness, env))} more, so it can't start here. ${listed(fit)} runs fit.`;
 }
 

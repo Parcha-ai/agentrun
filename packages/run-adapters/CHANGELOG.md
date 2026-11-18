@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.45 (2026-11-18)
+
+- Goose 1.59.2 runs as an AgentRun harness on the ACP adapter: `gooseAdapter({ binary, model, provider, price })` checks the binary's sha256 against its pin, starts `goose acp` from the shipped recipe (`recipes/goose.json`, loaded by `recipeFile` and `gooseRecipe`), and points each Goose process at a model proxy of its own (`gooseProxy`) on the session's booking, so the run's cap and books hold as they do for Claude Code. <!-- changes/acp-goose-harness.md -->
+  - The recipe turns every bundled Goose extension off, blocks Goose's model catalog download with a dead egress proxy, mirrors its sessions so another runner's Goose loads them, and leaves the model our MCP tools (`agentrun__<name>`) and Goose's `load_skill`.
+  - Goose's proxy forwards only `POST /v1/messages`, with the API's version and the one `anthropic-beta` value the pinned Goose sends (`GOOSE_BETAS`), never Goose's `agent-session-id`. It answers `GET /v1/models` itself with the run's model, and refuses any other model, tool, hosted tool or beta before the provider is asked.
+  - `GOOSE_PIN` records the release as the ACP registry listed it, with where and when it was read. `verifyPinnedBinary` refuses a binary whose sha256 differs (`ACP_BINARY_MISMATCH`), reading it and never running it. `gooseAdapter` checks it when the adapter is made and again before every Goose process starts (the adapter's new `beforeStart` option), so a binary replaced in between never runs unchecked. `verifyFirstSeen` records the first verified digest of an agent the registry lists without one, and refuses later drift (`ACP_BINARY_DRIFT`).
+  - The adapter's `proxy` option is now called with the session's booking, its tools' names and a halt of its drive (`AcpProxySession`).
+  - The kernel's model proxy can answer a local route with a fixed JSON body (`ProxyRoute.localJson`), only to the session's key or a side key.
+- The runner now writes a warn line when a paid model request bills more input than the bound its spend-cap hold was priced on: the one way a cap can be passed, a hold that was too small. <!-- changes/cap-bound-warn.md -->
+
+  The line is `event=cap_hold_short`, in the same logfmt shape as the server's other log lines, written to stderr once for each such request as its answer is booked: by an agent's run, by a workflow run's model nodes (harness `workflow`), and for a request that answered after its run's claim was lost, by the booking that writes it later. It carries the run id, the request's session and turn, the harness, the model, the bound and the billed input in tokens (input, cache reads and cache writes together), and in USD what was held, what the answer billed and the shortfall (billed less held) when the answer was priced.
+
+  No line is written for a request billed at or under its bound, for one whose answer reported no usage, for one billed to a ChatGPT plan or on a free model (held at $0 whatever its input), or for one with no hold (no cap). The line carries ids and figures only: never any prompt or answer text, header, key or token. Billing, holds and refusals are unchanged.
+
+## 0.1.0-beta.44 (2026-11-17)
+
+- A Codex run under a small spend cap no longer stops as early on a hold that overstated its next request. <!-- changes/codex-cap-hold-billed-after.md -->
+
+  A request that only adds items to the session's last billed request is now held at that bill plus the bytes of the items it adds, with the local count's margin. The bill is all of that request's `input_tokens`, cached tokens included. Any other difference falls back to the local count, as before: changed instructions, tools, reasoning or model, or an earlier item edited, removed or moved.
+
+  Once the run has seen its model reason, a request's least output is 1,024 tokens plus twice the most reasoning one answer reported, within its effort's allowance. Before that it is the whole allowance, as before.
+
+  The request is still sent with all the output the cap fits, and the hold is still its worst case, so the cap is never passed. When the provider cuts an answer at the output the cap limited it to, the turn says so. A final answer cut that way ends the run with "the run's $0.50 cap stopped the model at N tokens before it finished its answer: raise the cap to at least $X to let it finish", where $X is the cap that sends that request whole with the run's wrap-up reserve still kept beside it.
+
+  An image in a custom tool call's output (Codex code mode's exec) is now counted at its billed tokens, as one in a function call's output already was.
+
 ## 0.1.0-beta.41 (2026-11-16)
 
 - A message sent to a working `claude-agent` run now steers it mid-turn. Before, it waited for the turn's end, and a run whose whole job is one turn read it only after the work was done. The model now reads it at its next step, after the tool calls in flight finish, in the same turn. `POST /v2/runs/{id}/messages` answers mode `steer` for a working claude-agent run (it answered `follow_up`), and `GET /v2/capabilities` lists `claude-agent` with `steer: true`.

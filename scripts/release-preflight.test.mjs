@@ -427,7 +427,7 @@ test('the preflight passes on a tree the fold produced, for that tag', () => fix
   await assert.rejects(preflight(root), /Unfolded changelog fragments remain/);
   await fold(root, version, '2026-01-02');
   const log = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
-  assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Held bullet\.\n- A new change\.\n/);
+  assert.match(log, /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Held bullet\.\n- A new change\. <!-- changes\/new\.md -->\n/);
   assert.equal((await preflight(root)).status, 'passed');
 }));
 
@@ -455,8 +455,8 @@ test('the release tree is the tag plus the fold: the fragments the tag carries a
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold of v0\.1\.0-beta\.1's fragments into 0\.1\.0-beta\.1/, 'unfolded');
   await fold(root, version, '2026-01-02');
   assert.deepEqual(await checkReleaseTree(root, `v${version}`, version), ['late-browser.md', 'late-root.md']);
-  assert.match(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Folded by the release pull request\.\n- Merged after the fold\.\n/);
-  assert.match(await readFile(join(root, 'packages/pi-browser/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- A browser change merged after the fold\.\n/);
+  assert.match(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), /## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Folded by the release pull request\.\n- Merged after the fold\. <!-- changes\/late-root\.md -->\n/);
+  assert.match(await readFile(join(root, 'packages/pi-browser/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- A browser change merged after the fold\. <!-- changes\/late-browser\.md -->\n/);
   // Anything besides the fold stops the release: an edited manifest, a new file, a changelog bullet taken out.
   await putJson(join(root, 'packages/pi-browser/package.json'), { name: '@parcha/pi-browser', version, edited: true });
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /must be the tagged commit plus the changelog fold/);
@@ -465,10 +465,14 @@ test('the release tree is the tag plus the fold: the fragments the tag carries a
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /must be the tagged commit plus the changelog fold/);
   await rm(join(root, 'stray.txt'));
   const folded = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
-  await writeFile(join(root, 'CHANGELOG.md'), folded.replace('- Merged after the fold.\n', ''));
+  const late = '- Merged after the fold. <!-- changes/late-root.md -->\n';
+  assert.ok(folded.includes(late));
+  await writeFile(join(root, 'CHANGELOG.md'), folded.replace(late, ''));
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold of v0\.1\.0-beta\.1's fragments into 0\.1\.0-beta\.1; run node scripts\/changes\.mjs --fold/);
-  await writeFile(join(root, 'CHANGELOG.md'), folded.replace('- Merged after the fold.\n', '- Merged after the fold.\n- And a line written at release time.\n'));
+  await writeFile(join(root, 'CHANGELOG.md'), folded.replace(late, `${late}- And a line written at release time.\n`));
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold/, 'the fold plus a hand edit is not the fold');
+  await writeFile(join(root, 'CHANGELOG.md'), folded.replace(late, '- Merged after the fold.\n'));
+  await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold/, 'the fold\'s words without its marker are not the fold');
   await writeFile(join(root, 'CHANGELOG.md'), folded);
   assert.deepEqual(await checkReleaseTree(root, `v${version}`, version), ['late-browser.md', 'late-root.md']);
 }));
@@ -520,7 +524,7 @@ test("a release folded with a held package's fragment passes the preflight, and 
   await writeFile(join(root, 'changes/held.md'), '---\npackages: @parcha/agentrun-client\nkind: feature\n---\nA held change.\n');
   await fold(root, version, '2026-01-02');
   const held = await readFile(join(root, 'packages/client/CHANGELOG.md'), 'utf8');
-  assert.equal(held, '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n- A held change.\n', 'the held changelog is not dated');
+  assert.equal(held, '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n- A held change. <!-- changes/held.md -->\n', 'the held changelog is not dated');
   assert.match(await readFile(join(root, 'packages/pi-browser/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Published entry\./, 'a published one is');
   assert.equal((await preflight(root)).status, 'passed', 'entries left under a held package\'s Unreleased do not block the release');
 }));

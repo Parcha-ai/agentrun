@@ -9,6 +9,7 @@
 // file) or "Reflect once <file> exists." (the compile turn holds until the test makes that file, or until it is aborted).
 import { access } from "node:fs/promises";
 import { askedForCompile } from "../../dist/learn/compile.js";
+import { graderAnswerOfContext } from "./faux-grader.mjs";
 
 /** A small price, so a run's costs are known and above zero: $1 per million tokens each way. */
 export const cost = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 };
@@ -48,7 +49,10 @@ export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map((m) => textOf(m.content));
   const last = users.at(-1) ?? "";
   const system = systemOf(context);
-  const done = context.messages.slice(context.messages.findLastIndex((m) => m.role === "user")).filter((m) => m.role === "toolResult").length;
+  // The grader's request (learn/promote.ts GRADER_PROMPT): its verdict (fixtures/faux-grader.mjs).
+  const verdict = graderAnswerOfContext(context);
+  if (verdict !== undefined) return faux.message(verdict);
+  const done =context.messages.slice(context.messages.findLastIndex((m) => m.role === "user")).filter((m) => m.role === "toolResult").length;
   // The compile turn, and the checks' re-ask of it.
   if (askedForCompile(last)) {
     const gate = /Reflect once (\S+) exists\./.exec(system)?.[1];

@@ -528,9 +528,9 @@ test("a sandbox's GPUs go into the spec its provider makes the computer with; GP
   assert.deepEqual(record.created[0].gpu, { type: "H100", count: 1 });
   assert.equal(record.created[0].mount?.kind !== undefined, true, "with the run's folder mounted beside them");
   await answer.release();
-  // The registry's Modal GPU computer takes no mount yet: in Mode 2 it is refused before anything is made, saying why and what to use.
-  assert.equal(await refusal({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS }), "A Modal GPU computer can't mount this run's folder yet: Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279). Use a GPU computer from the library, or this sandbox without a GPU.");
-  // A Daytona sandbox takes no Archil mount at all, with GPUs or without: refused in Mode 2, saying why.
-  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "A Daytona sandbox can't mount the run's folder from Archil (Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS): pick another sandbox for this agent's computer in Settings → Computers.");
+  // The registry's Modal GPU computer and a Daytona sandbox take no Archil mount: in Mode 2 each holds a synced folder,
+  // which a runner keeping no store for it (a folder of this machine, localWorkspace) refuses before anything is made.
+  assert.equal(await refusal({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: MODAL_KEYS }), "Modal could not start a sandbox computer: this run's folder can't be synced into a computer here");
+  assert.equal(await refusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, { mode: 2, keys: { DAYTONA_API_KEY: "dk" } }), "Daytona could not start a sandbox computer: this run's folder can't be synced into a computer here");
   assert.match(await refusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^A Docker sandbox can't have this agent's GPUs: this provider offers no GPU/);
 });

@@ -44,8 +44,9 @@ let handed: { fd: number; closed: boolean } | undefined;
 const SIGN_IN_PAIR = "AGENTRUN_SIGN_IN";
 let signIn: string | undefined;
 
-/** NAME=VALUE pairs, each ended by a NUL. */
-const encode = (pairs: Iterable<readonly [string, string]>): Buffer => Buffer.concat([...pairs].map(([name, value]) => Buffer.from(`${name}=${value}\0`)));
+/** NAME=VALUE pairs, each ended by a NUL: what a pipe of secrets carries. A runner writes a run's own process its pairs
+ *  with it (run-child-host.ts), as a launcher writes its server's. */
+export const encode = (pairs: Iterable<readonly [string, string]>): Buffer => Buffer.concat([...pairs].map(([name, value]) => Buffer.from(`${name}=${value}\0`)));
 function decode(bytes: Buffer): void {
   for (const pair of bytes.toString("utf8").split("\0")) {
     const at = pair.indexOf("=");
@@ -58,8 +59,18 @@ function decode(bytes: Buffer): void {
  *  gone short, and refused. */
 function readExactly(fd: number, length: number): Buffer {
   const bytes = Buffer.alloc(length);
+  // A run's process gets its pipe from Node's spawn as a socket that does not block: a read before the runner's write
+  // lands is EAGAIN, waited out here for as long as a slow start may take, never past it.
+  const until = Date.now() + 60_000;
   for (let read = 0; read < length; ) {
-    const got = readSync(fd, bytes, read, length - read, null);
+    let got: number;
+    try {
+      got = readSync(fd, bytes, read, length - read, null);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EAGAIN" || Date.now() > until) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      continue;
+    }
     if (got === 0) throw new Error(`the secrets' pipe ended after ${read} of ${length} bytes`);
     read += got;
   }

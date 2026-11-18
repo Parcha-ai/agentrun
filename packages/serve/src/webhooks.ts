@@ -40,6 +40,7 @@ export const WEBHOOK_CHANNEL = "webhook-out";
 export const WEBHOOK_SETTING = "webhook-out";
 /** The waits before each try again, after the first at once: the Standard Webhooks schedule, cut at about a day. */
 export const RETRY_MS: readonly number[] = [5_000, 300_000, 1_800_000, 7_200_000, 18_000_000, 36_000_000];
+/** The bound on one try, its name's lookup included (WebhooksOptions.timeoutMs changes it). */
 const TIMEOUT_MS = 15_000;
 /** How far back an end's run.ended is still queued: past the retries (RETRY_MS, about a day), a notice would not be sent
  *  any more. */
@@ -51,7 +52,8 @@ const MAX_URL = 2048;
 const SECRET_FIELD = "secret";
 /** Where its secret is kept in trigger_settings (adapter WEBHOOK_CHANNEL): the server's one scope, one minted field. */
 export const WEBHOOK_SECRET_SPEC = { scope: "server" as const, fields: { [SECRET_FIELD]: { mint: true as const } } };
-/** How long a try's claim on its message holds (Store.channels.claim): past the try's own TIMEOUT_MS. */
+/** How long a try's claim on its message holds (Store.channels.claim): past the try's own bound (TIMEOUT_MS, or the
+ *  option's, which the constructor holds under this). */
 const CLAIM_MS = 60_000;
 /** Names that are this machine or its own network, whatever they resolve to. */
 const LOCAL_NAME = /^(localhost|.*\.localhost|.*\.local|.*\.internal)$/i;
@@ -70,8 +72,9 @@ export function shownUrl(url: string): string {
 /** What the webhook takes beside its store: `retryMs`, the waits between tries; `privateTargets`, whether it may send to a
  *  private network or this machine (the operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS, never the API's); `lookup`, every
  *  address a name resolves to (the system resolver by default); `storeRetryMs`, the wait before a try the store failed is
- *  tried again (STORE_RETRY_MS by default). */
-export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]>; storeRetryMs?: number };
+ *  tried again (STORE_RETRY_MS by default); `timeoutMs`, the bound on one try (TIMEOUT_MS by default), under the claim a
+ *  try holds its message by (CLAIM_MS), so no try outlives its claim. */
+export type WebhooksOptions = { retryMs?: readonly number[]; privateTargets?: boolean; lookup?: (host: string) => Promise<string[]>; storeRetryMs?: number; timeoutMs?: number };
 /** How soon a try the store failed (its read or its claim threw) is tried again. */
 const STORE_RETRY_MS = 5_000;
 /** The least wait before a queued message whose claim was refused is tried again. */
@@ -88,8 +91,9 @@ const WAITS_KEPT = 20;
  *  refused the write, so the caller tells it again; `off`, no webhook set, or one a 410 turned off, so nothing is to be
  *  sent; `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
-/** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API. */
-export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" | "computer" } };
+/** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API.
+ *  `agent_name`: its agent's name as the notice is built (server.ts agentNameOf), its id when the agent has no name. */
+export type RunNotice = { run_id: string; agent_id: string; agent_name: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" | "computer" } };
 /** The webhook as the store keeps it, but its secret: `secret_at`, when the secret was made (the same URL keeps it);
  *  `secret_scope`, the scope its secret is sealed under in trigger_settings, one of its own for each secret made, so the
  *  setting names the one secret that signs for its URL, and the two go live in the setting's one write. */
@@ -184,6 +188,7 @@ export class Webhooks {
   private readonly privateTargets: boolean;
   private readonly lookup: (host: string) => Promise<string[]>;
   private readonly storeRetryMs: number;
+  private readonly timeoutMs: number;
 
   /** `key` is the server's seal key; `say` takes a log line's fields. */
   constructor(
@@ -192,6 +197,9 @@ export class Webhooks {
     private readonly say: (fields: Record<string, string | number>) => void,
     options: WebhooksOptions = {},
   ) {
+    this.timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+    // Whole milliseconds: AbortSignal.timeout takes no other, and would throw at every send, after its claim.
+    if (!(Number.isInteger(this.timeoutMs) && this.timeoutMs > 0 && this.timeoutMs < CLAIM_MS)) throw new RangeError(`a webhook try's bound is whole milliseconds between 0 and ${CLAIM_MS} (its claim), not ${this.timeoutMs}`);
     this.secrets = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, say);
     this.retryMs = options.retryMs ?? RETRY_MS;
     this.storeRetryMs = options.storeRetryMs ?? STORE_RETRY_MS;
@@ -341,7 +349,7 @@ export class Webhooks {
     }
     if (ends && !this.due(marker, config)) return "queued";
     const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
-    const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
+    const data = { run_id: run.run_id, agent_id: run.agent_id, agent_name: run.agent_name, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
     // A new wait goes beside the run's earlier waits and replaces its end (one after an end is a continued run's, past that
     // end); an end replaces the run's last end and keeps its waits.
     const told = ends ? { runId: run.run_id, marker: `${ENDED}${marker}`, replacing: ENDED } : { runId: run.run_id, marker: `${WAIT}${marker}`, replacing: ENDED };
@@ -491,7 +499,7 @@ export class Webhooks {
       addresses = net.isIP(host) ? [host] : await abortable(this.lookup(host), signal);
     } catch (error) {
       // The try's own bound, cut or the server stopping: the lookup is given up on, never waited out.
-      if (signal.aborted) return { refused: (signal.reason as Error | undefined)?.name === "TimeoutError" ? `no answer in ${TIMEOUT_MS / 1000} s` : "not reached: the server is stopping" };
+      if (signal.aborted) return { refused: (signal.reason as Error | undefined)?.name === "TimeoutError" ? `no answer in ${this.timeoutMs / 1000} s` : "not reached: the server is stopping" };
       return { refused: `not reached: ${(error as { code?: string }).code ?? "its name does not resolve"}` };
     }
     if (!addresses.length || addresses.some(isPrivateAddress)) return { refused: `refused: ${host} is not a public host` };
@@ -610,7 +618,7 @@ export class Webhooks {
       const started = performance.now();
       const target = new URL(config.url);
       // One bound for the whole try, its name's lookup included, and the server's stop cuts it all (close()).
-      const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), this.stop.signal]);
+      const signal = AbortSignal.any([AbortSignal.timeout(this.timeoutMs), this.stop.signal]);
       const dial = await this.dialled(target, signal);
       if ("refused" in dial) failure = dial.refused;
       else {
@@ -625,7 +633,7 @@ export class Webhooks {
           attempt.status_code = res.status;
           if (res.status < 200 || res.status > 299) failure = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
         } catch (error) {
-          failure = (error as Error).name === "TimeoutError" ? `no answer in ${TIMEOUT_MS / 1000} s` : `not reached: ${(error as { cause?: { code?: string } }).cause?.code ?? (error as Error).message}`;
+          failure = (error as Error).name === "TimeoutError" ? `no answer in ${this.timeoutMs / 1000} s` : `not reached: ${(error as { cause?: { code?: string } }).cause?.code ?? (error as Error).message}`;
         } finally {
           await dial.dispatcher?.close().catch(() => undefined);
         }

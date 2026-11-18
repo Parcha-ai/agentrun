@@ -2,7 +2,7 @@
 // the operator gives an Archil egress relay (a self-hosted Daytona target), never on Daytona's hosted cloud.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
-import { SANDBOX } from "./shared.js";
+import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
 /** The key that turns on a Daytona computer's Archil mount: the operator's Archil egress relay (archilEgress). */
 export const DAYTONA_ARCHIL_EGRESS = "DAYTONA_ARCHIL_EGRESS";
@@ -37,8 +37,8 @@ export const DAYTONA_GPU_SNAPSHOT_GPU: Readonly<DaytonaSnapshotGpu> = Object.fre
  * daytona-gpu, alone (another type needs a snapshot of its own), with its limits on a GPU sandbox: its stop deletes it
  * (no pause, no snapshot: nothing is kept), it runs in region earth, it has the snapshot's 16 vCPUs, 100 GiB of memory
  * and 400 GiB of disk, it may be preempted (daytona.io/pricing lists its GPUs as "Preemptible GPU prices", 11-10), and
- * it takes no mount: Daytona's GPU host gives no /dev/fuse, even to root (live 11-11), and the archil client mounts
- * through FUSE, so an Archil mount is refused in words.
+ * it takes a synced folder alone: Daytona's GPU host gives no /dev/fuse, even to root (live 11-11), and the archil client
+ * mounts through FUSE, so an Archil mount is refused in words.
  */
 export const DAYTONA_GPU: Readonly<GpuCapability> = Object.freeze({
 	types: [DAYTONA_GPU_SNAPSHOT_GPU.type],
@@ -47,7 +47,7 @@ export const DAYTONA_GPU: Readonly<GpuCapability> = Object.freeze({
 	stopDeletes: true,
 	region: DAYTONA_GPU_REGION,
 	perGpu: { cpus: 16, memoryMb: 100 * 1024, diskMb: 400 * 1024 },
-	mounts: [],
+	mounts: ["sync" as const],
 	unmounted: Object.freeze({ why: "Daytona's GPU runtime gives it no /dev/fuse", yet: false }),
 });
 
@@ -78,10 +78,10 @@ export function daytonaGpuSnapshot(gpuSnapshot?: string): DaytonaGpuSnapshot {
 	return { snapshot: gpuSnapshot, type, count: 1 };
 }
 
-/** The GPUs a provider declares for its GPU snapshot (DAYTONA_GPU's limits and no mount, the snapshot's GPU): a copy. */
+/** The GPUs a provider declares for its GPU snapshot (DAYTONA_GPU's limits and synced folder, the snapshot's GPU): a copy. */
 export function daytonaGpu(gpuSnapshot?: string): GpuCapability {
 	const { type, count } = daytonaGpuSnapshot(gpuSnapshot);
-	return { ...DAYTONA_GPU, types: [type], max: count, perGpu: { ...(DAYTONA_GPU.perGpu as NonNullable<GpuCapability["perGpu"]>) }, mounts: [] };
+	return { ...DAYTONA_GPU, types: [type], max: count, perGpu: { ...(DAYTONA_GPU.perGpu as NonNullable<GpuCapability["perGpu"]>) }, mounts: ["sync"] };
 }
 
 export const DAYTONA = defineProvider({
@@ -96,6 +96,7 @@ export const DAYTONA = defineProvider({
 	// How the server reaches its machines: exec (the provider's default, when the server's settings name none), a session
 	// command through the toolbox per connection, or dial, the machine dials the server (a snapshot of box/Dockerfile).
 	settings: [{ name: "daytonaConnect", option: "connect" }],
+	connect: "either",
 	metered: true,
 	// No mount by default: on Daytona's hosted cloud, Archil's client (0.10.1) mounts on its container sandboxes, but
 	// nothing reads its /dev/fuse after, so the first statx of the folder hangs, on every kernel and mount shape tried
@@ -110,8 +111,11 @@ export const DAYTONA = defineProvider({
 	// its programs' one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts
 	// alone (hosted/network.ts).
 	network: ["none", "open", "allow"],
-	// A linux computer, with GPUs when asked.
-	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
+	// A linux computer, with GPUs when asked; or, on connect dial alone, a desktop with none: a snapshot of box/Dockerfile's
+	// X server and xfwm4, started through computerd over the socket the sandbox dialed, at the snapshot's 2 CPUs and 4 GiB
+	// (box/build-daytona.py). The desktop's configuration selects dial itself, whatever daytonaConnect says: a provider on
+	// connect exec refuses kind desktop when it is made.
+	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop", connect: "dial" } }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset. A
 	// computer with an Archil mount needs a snapshot of box/Dockerfile (box/build-daytona.py prints its name).

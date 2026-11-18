@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
-import { blocksOf, blockSizeOf, level, nearest, niceTop, pct, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { blocksOf, blockSizeOf, level, nearest, niceAxis, niceTop, pct, placed, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { EMPTY_BILL } from "@/lib/learningBill.fixture";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
@@ -31,7 +31,9 @@ function draw(data: LearningCost, on = true, width = 900, promotions: Promotion[
   return host;
 }
 const text = (host: HTMLElement) => host.textContent ?? "";
-const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", learned_revision: "a".repeat(40), cost_usd: total, cost_upper_bound: false, learning_usd: total === null ? null : 0, total_usd: total });
+const run = (n: number, path: CostRun["path"], total: number | null): CostRun => ({ n, run_id: `run_${n}`, started_at: new Date(Date.UTC(2026, 9, 1, n)).toISOString(), path, workflow: path === "agent" ? null : "sort", digest: path === "agent" ? null : "d".repeat(16), took_over: false, audited: false, cost_usd: total, cost_upper_bound: false, learning_usd: total === null ? null : 0, total_usd: total });
+/** A replay run started after job `after` (half an hour on): it does no job, so it has no number. */
+const replayRun = (id: string, after: number, total: number | null): CostRun => ({ ...run(after, "replay", total), n: null, run_id: id, started_at: new Date(Date.UTC(2026, 9, 1, after, 30)).toISOString() });
 const series = (runs: CostRun[], summary: Partial<LearningCost["summary"]> = {}): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: runs.filter((r) => r.total_usd === null).length, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: summary.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...summary }, workflows: [], bill: EMPTY_BILL });
 
 describe("the chart's arithmetic", () => {
@@ -82,24 +84,36 @@ describe("the execution mix's arithmetic", () => {
     const blocks = blocksOf(sample.runs, 5);
     expect(blocks).toHaveLength(16);
     expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3, replay: 0 } });
-    const mixed = blocksOf([run(1, "agent", 0.5), run(2, "replay", 0.1), run(3, "replay", 0.1)], 5);
-    expect(mixed[0]!.counts).toEqual({ agent: 1, handed_back: 0, workflow: 0, replay: 2 });
     const short = blocksOf(sample.runs.slice(0, 7), 5);
     expect(short.map((b) => [b.from, b.to, b.runs])).toEqual([[1, 5, 5], [6, 7, 2]]);
     expect([pct(3, 5), pct(1, 3), pct(0, 0)]).toEqual(["60%", "33%", "0%"]);
   });
-  // Review on #2644: a replay run counts in its block like any other path, never NaN.
-  it("counts a replay run in its block", () => {
-    const runs = sample.runs.slice(0, 3).map((r, i) => ({ ...r, path: i === 1 ? ("replay" as const) : r.path }));
-    const [block] = blocksOf(runs, 3);
-    expect(block!.counts.replay).toBe(1);
-    expect(Object.values(block!.counts).reduce((a, b) => a + b, 0)).toBe(3);
+  // One numbering (tab polish): the mix counts the runs that do a job, as the bill numbers them; a replay is in no block.
+  it("counts only the runs that do a job: a replay is in no block, never NaN", () => {
+    const mixed = blocksOf([run(1, "agent", 0.5), replayRun("p1", 1, 0.1), replayRun("p2", 1, 0.1), run(2, "workflow", 0.1)], 5);
+    expect(mixed.map((b) => [b.from, b.to, b.runs, b.counts])).toEqual([[1, 2, 2, { agent: 1, handed_back: 0, workflow: 1, replay: 0 }]]);
+  });
+  it("spreads the replays between two jobs evenly across the gap (before the first job and after the last, across the half a run the plot shows), never on a number of its own", () => {
+    const runs = [replayRun("p0", 0, 0.1), run(1, "agent", 0.5), replayRun("p1", 1, 0.1), replayRun("p2", 1, 0.1), run(2, "workflow", 0.1), replayRun("p3", 2, 0.1)];
+    expect(placed(runs).map((r) => [r.run_id, r.at])).toEqual([["p0", 0.75], ["run_1", 1], ["p1", 1 + 1 / 3], ["p2", 1 + 2 / 3], ["run_2", 2], ["p3", 2.25]]);
+    const points = plotted(runs);
+    expect(points.map((p) => p.at)).toEqual([0.75, 1, 1 + 1 / 3, 1 + 2 / 3, 2, 2.25]);
+    // Each replay between the same two jobs has a place of its own, so a hover reaches every one (nearest keeps the first on a tie).
+    expect([nearest(points, 1.3), nearest(points, 1.7)].map((i) => points[i]!.run_id)).toEqual(["p1", "p2"]);
   });
   it("steps the cost axis cleanly from 0 to its top: never a quarter of 5", () => {
     expect(yTicksOf(0.005)).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
     expect(yTicksOf(1)).toEqual([0, 0.25, 0.5, 0.75, 1]);
     expect(yTicksOf(0.25)).toEqual([0, 0.05, 0.1, 0.15, 0.2, 0.25]);
     expect(yTicksOf(2)).toEqual([0, 0.5, 1, 1.5, 2]);
+  });
+  it("puts a nice top just above the max, five steps or fewer: $1.18 reads to $1.25, never $2", () => {
+    expect(niceAxis(1.18)).toEqual({ top: 1.25, ticks: [0, 0.25, 0.5, 0.75, 1, 1.25] });
+    expect(niceAxis(0.9).top).toBe(1);
+    expect(niceAxis(5).top).toBe(5);
+    expect(niceAxis(5.01)).toEqual({ top: 6, ticks: [0, 2, 4, 6] });
+    expect(niceAxis(0.0296).top).toBe(0.03);
+    expect(niceAxis(0).top).toBe(1);
   });
 });
 
@@ -108,8 +122,9 @@ describe("CostChart", () => {
     const host = draw(sample);
     expect(text(host)).toContain("$0.890 a run before takeover, $0.116 all-in over 59 served runs after: 7.7x cheaper · 5% handed back since");
     expect(text(host)).toContain("Workflow took over, run 21");
-    expect(text(host)).toContain("Served after takeover (59 served runs) $0.116 · 7.7x cheaper");
-    expect(text(host)).toContain("Before takeover $0.890");
+    expect(text(host)).toContain("Before $0.890");
+    expect(text(host)).toContain("After $0.116");
+    expect(text(host).match(/7\.7x/g), "one ratio, said once").toHaveLength(1);
     expect(text(host)).toContain("Rolling mean of 5 runs");
     expect(text(host)).toContain("1 run costs more than");
     expect(text(host)).not.toContain("cost is not known");
@@ -127,10 +142,18 @@ describe("CostChart", () => {
     expect(mix.textContent).toContain("Last run: 100% handed back");
     expect(mix.textContent).not.toContain("by the learned workflow");
   });
-  it("on a phone the level's words are short enough to clear the line's drop", () => {
-    const host = draw(sample, true, 390);
-    expect(text(host)).toContain("Served $0.116 · 7.7x cheaper");
-    expect(text(host)).not.toContain("Served after takeover");
+  it("labels the levels off the data: in a gutter right of the plot, pushed apart, and none on a phone (the legend and headline say them)", () => {
+    const host = draw(sample);
+    const labels = [...host.querySelectorAll<SVGTextElement>('[data-testid="level-label"]')];
+    expect(labels.map((l) => l.textContent)).toEqual(["Before $0.890", "After $0.116"]);
+    const right = Math.max(...[...host.querySelectorAll("svg[aria-hidden] circle")].map((c) => Number(c.getAttribute("cx"))));
+    for (const l of labels) expect(Number(l.getAttribute("x"))).toBeGreaterThan(right);
+    const [a, b] = labels.map((l) => Number(l.getAttribute("y")));
+    expect(Math.abs(a! - b!)).toBeGreaterThanOrEqual(12);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const phone = draw(sample, true, 390);
+    expect(phone.querySelectorAll('[data-testid="level-label"]')).toHaveLength(0);
+    expect(text(phone)).not.toContain("Served after takeover");
   });
   it("carries the takeover marker down through the mix as one line on the left edge of the takeover's block, never a ring cutting a column", () => {
     const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
@@ -165,8 +188,8 @@ describe("CostChart", () => {
   it("names each path in the legend with its runs, and colours its dots by a chart token", () => {
     const host = draw(sample);
     const legend = host.querySelector("figcaption")!.textContent!;
-    expect(legend).toContain("By the agent 19");
-    expect(legend).toContain("Handed back 5");
+    expect(legend).toContain("By the agent 21");
+    expect(legend).toContain("Handed back 3");
     expect(legend).toContain("Learned workflow 56");
     const dots = [...host.querySelectorAll("svg[aria-hidden] circle")].filter((c) => c.getAttribute("r") === "3");
     expect(dots).toHaveLength(80);
@@ -179,12 +202,21 @@ describe("CostChart", () => {
     act(() => { plot.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
     act(() => { for (let i = 0; i < 20; i++) plot.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
     const live = host.querySelector("[aria-live]")!.textContent!;
-    expect(live).toMatch(/^Run 21, \$0\.\d+ all-in, Learned workflow: sort-invoice, Learned revision [0-9a-f]{7}$/);
+    expect(live).toMatch(/^Run 21, \$0\.\d+ all-in, Learned workflow: sort-invoice, Workflow revision a12596c$/);
     const rows = host.querySelectorAll("details tbody tr");
     expect(rows).toHaveLength(80);
     expect(rows[43]!.textContent).not.toContain("unknown");
     act(() => root?.unmount());
     expect(draw(unknownRun).querySelectorAll("details tbody tr")[43]!.textContent).toContain("unknown");
+  });
+  it("never says no learned workflow ran on a run that took the workflow path with its revision unknown", () => {
+    const host = draw({ ...sample, runs: sample.runs.map((r) => (r.n === 21 ? { ...r, digest: null } : r)) });
+    const plot = host.querySelector<HTMLElement>("[tabindex='0']")!;
+    act(() => { plot.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
+    act(() => { for (let i = 0; i < 20; i++) plot.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    const live = host.querySelector("[aria-live]")!.textContent!;
+    expect(live).toMatch(/^Run 21, \$0\.\d+ all-in, Learned workflow: sort-invoice$/);
+    expect(live).not.toContain("No learned workflow ran");
   });
   it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last block's share said", () => {
     const host = draw(sample);
@@ -192,7 +224,8 @@ describe("CostChart", () => {
     expect(mix.textContent).toContain("Who finished each run, by 5");
     expect(mix.textContent).toContain("Last 5 runs: 100% by the learned workflow");
     const segments = [...mix.querySelectorAll("svg rect")].filter((r) => r.getAttribute("class")?.startsWith("fill-chart-"));
-    expect(segments).toHaveLength(21);
+    // Runs 16 to 20 are all the agent's (the takeover is run 21, the bill's promoted run): one segment there.
+    expect(segments).toHaveLength(20);
     expect(mix.querySelector(".sr-only")!.textContent).toContain("Runs 21 to 25: by the agent 1, handed back 1, learned workflow 3");
     act(() => { mix.querySelectorAll("svg g")[4]!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); });
     expect(mix.querySelector(".shadow-float")!.textContent).toBe("Runs 21 to 25By the agent 1 (20%)Handed back 1 (20%)Learned workflow 3 (60%)");
@@ -215,7 +248,7 @@ describe("CostChart", () => {
   // The after side is served runs only: with a takeover but no served run's cost known, the headline and the note say so
   // in words, never a figure.
   it("with no served run priced, says so in words, never a level after", () => {
-    const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), run(11, "workflow", null), ...Array.from({ length: 30 }, (_, i) => run(i + 12, "replay", 0.3))];
+    const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), run(11, "workflow", null), ...Array.from({ length: 30 }, (_, i) => replayRun(`p${i}`, 11, 0.3))];
     const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: null, after_state: "cost_unknown", hand_backs: { ran: 1, back: 0 }, withheld: { unknown: 1, at_most: 0 } }));
     expect(text(host)).toContain("$1.00 a run before takeover, no served run's cost known yet");
     expect(text(host)).not.toMatch(/Served after takeover|all-in over/);
@@ -263,7 +296,7 @@ describe("CostChart", () => {
   });
   it("keeps the level after the takeover when the takeover is older than the runs read, without its marker", () => {
     const host = draw({ ...sample, runs: sample.runs.slice(40), total_runs: 80 });
-    expect(text(host)).toContain("Served after takeover (59 served runs) $0.116 · 7.7x cheaper");
+    expect(text(host)).toContain("After $0.116");
     expect(text(host)).not.toContain("Workflow took over, run 21");
   });
   it("says a learned workflow that costs more than the agent by hand no longer runs first, with the two levels", () => {
@@ -319,8 +352,21 @@ describe("the loop on the cost chart", () => {
     expect([...host.querySelectorAll('[data-testid^="marker-"]:not([data-testid^="marker-key"]):not([data-testid="marker-table"])')].map((g) => g.getAttribute("data-testid"))).toEqual(["marker-revision", "marker-promote"]);
     expect(host.querySelector('[data-testid="marker-key-promote"]')?.textContent).toBe("PPromoted 1");
     const rows = [...host.querySelectorAll('[data-testid="marker-table"] tbody tr')].map((r) => r.textContent);
-    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cChecked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
+    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cChecked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
     expect(text(host)).toContain("Markers: New revision · run 18");
+  });
+  it("draws the takeover and its promotion as one line: both on the left edge of the takeover run's slot, as the mix does", () => {
+    // The takeover is the bill's promoted run (21 here): its line and the P flag's line are one, never half a run apart.
+    const host = draw(sample, true, 900, promotions);
+    const xOf = (d: string | null | undefined) => Number(/^M([\d.]+),/.exec(d ?? "")?.[1]);
+    const takeover = xOf(host.querySelector('[data-testid="takeover"] path')?.getAttribute("d"));
+    const promote = xOf(host.querySelector('[data-testid="marker-promote"] path')?.getAttribute("d"));
+    expect(Number.isFinite(takeover)).toBe(true);
+    expect(Math.abs(takeover - promote)).toBeLessThan(0.11);
+    // Left of run 21's own dot, never on it.
+    const dots = [...host.querySelectorAll<SVGCircleElement>("svg[aria-hidden] circle[r='3']")].map((c) => Number(c.getAttribute("cx")));
+    const run21 = dots[sample.runs.filter((r) => r.total_usd !== null && r.path !== "replay").findIndex((r) => r.n === 21)]!;
+    expect(takeover).toBeLessThan(run21);
   });
   it("draws no marker lane without records", () => {
     const host = draw(sample);
@@ -328,13 +374,48 @@ describe("the loop on the cost chart", () => {
     expect(host.querySelector('[data-testid="marker-table"]')).toBeNull();
   });
   it("draws a replay run as a hollow ring out of the mean, and counts the unknown runs", () => {
-    const runs = [run(1, "agent", 1), run(2, "agent", 1), run(3, "replay", 9), run(4, "workflow", 0.1), run(5, "agent", null)];
+    const runs = [run(1, "agent", 1), run(2, "agent", 1), replayRun("p1", 2, 9), run(3, "workflow", 0.1), run(4, "agent", null)];
     const host = draw({ ...series(runs), unknown_path_runs: 2 });
     expect(host.querySelectorAll("circle.fill-none.stroke-muted-foreground")).toHaveLength(1);
     expect(text(host)).toContain("replay runs (hollow) left out");
     expect(text(host)).toContain("3 runs unknown");
     const path = host.querySelector("svg path.stroke-foreground[fill='none']")?.getAttribute("d") ?? "";
     expect(path.split(/[ML]/).filter(Boolean)).toHaveLength(3);
+  });
+});
+
+// The tab tells one story (tab polish): one run numbering (the jobs, as the bill counts them), each row's revision the
+// workflow's that served it, an audited row marked, and the captions in the words S3c ships.
+describe("one story on the cost chart", () => {
+  const runs = [run(1, "agent", 1), run(2, "agent", 1), replayRun("p1", 2, 0.3), replayRun("p2", 2, 0.3), run(3, "workflow", 0.1), { ...run(4, "workflow", 0.5), audited: true, learning_usd: 0.4 }, run(5, "handed_back", 0.6)];
+  const data = () => series(runs, { takeover: { n: 3, run_id: "run_3" }, before: { runs: 2, mean_usd: 1 }, after: { runs: 3, mean_usd: 0.4 } });
+  it("numbers the jobs only: a replay's row has no run number, the axis ticks only jobs, and the takeover is the job the bill names", () => {
+    const host = draw(data());
+    const cells = [...host.querySelectorAll("details tbody tr")].map((r) => r.querySelector("td")!.textContent);
+    expect(cells).toEqual(["1", "2", "-", "-", "3", "4", "5"]);
+    expect(text(host)).toContain("Workflow took over, run 3");
+    const ticks = [...host.querySelectorAll("svg[aria-hidden] > text")].map((t) => t.textContent).filter((t) => /^\d+$/.test(t ?? ""));
+    expect(ticks.every((t) => Number(t) >= 1 && Number(t) <= 5)).toBe(true);
+    // Each replay ring sits between job 2 and job 3, on no job's own place.
+    const xs = (sel: string) => [...host.querySelectorAll<SVGCircleElement>(sel)].map((c) => Number(c.getAttribute("cx")));
+    const jobs = xs("svg[aria-hidden] circle[r='3']");
+    for (const x of xs("circle.fill-none.stroke-muted-foreground")) { expect(x).toBeGreaterThan(jobs[1]!); expect(x).toBeLessThan(jobs[2]!); }
+    expect(host.querySelector('[data-testid="execution-mix"] .sr-only')!.textContent).not.toMatch(/replay/);
+  });
+  it("names the workflow revision that served each row, never the learning folder's commit, and marks an audited row", () => {
+    const host = draw(data());
+    const header = [...host.querySelectorAll("details thead th")].map((h) => h.textContent);
+    expect(header).toContain("Revision");
+    const rows = [...host.querySelectorAll("details tbody tr")];
+    expect(rows[4]!.textContent).toContain("ddddddd");
+    expect(rows[0]!.textContent).not.toContain("ddddddd");
+    expect(rows[5]!.querySelector('[data-testid="audited"]')?.textContent).toBe("audited");
+    expect(rows.filter((r) => r.querySelector('[data-testid="audited"]'))).toHaveLength(1);
+  });
+  it("says what learning spent in the words S3c ships: the compile turn and the audit's shadow run, never a look-back or a grade", () => {
+    const host = draw(data());
+    expect(text(host)).toContain("its compile turn and its audit's shadow run");
+    expect(text(host)).not.toMatch(/look-back|the grade/);
   });
 });
 

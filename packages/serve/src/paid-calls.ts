@@ -144,6 +144,26 @@ let paidSeq = 0;
  *  node's tool. A lost sandbox is started again only for one (computer-for-claim.ts lostAware), never for the run's end. */
 export const inToolCall = (): boolean => ledgers.getStore() !== undefined;
 
+/** The ledger of the tool call the current work runs in, as a run's process hands it to its runner with each call it
+ *  makes over its channel (run-channel.ts context): its call's id, the run's one ledger and its pause. None outside one. */
+export const carriedLedger = (): Ledger | undefined => {
+  const ledger = ledgers.getStore();
+  if (!ledger) return undefined;
+  return { call: ledger.call, ...(ledger.paid ? { paid: { admit: (request) => ledger.paid!.admit(request), settle: (id, usd, options) => ledger.paid!.settle(id, usd, options) } } : {}), ...(ledger.pause ? { pause: ledger.pause } : {}) };
+};
+
+/** A runner's side of carriedLedger: `run` inside the ledger a run's process carried with its call (bookedIn), so a
+ *  paid step the runner makes for it (an MCP tool's call, a computer's) books on the run's one ledger and a lost sandbox
+ *  is started again only inside a tool call (inToolCall). What does not read as one runs outside any ledger, where a paid
+ *  request is refused. */
+export const withinCarried = (carried: unknown, run: () => unknown): unknown => {
+  const given = carried as { call?: unknown; paid?: { admit?: unknown; settle?: unknown }; pause?: unknown } | null;
+  if (!given || typeof given !== "object" || typeof given.call !== "string") return run();
+  const paid = given.paid && typeof given.paid.admit === "function" && typeof given.paid.settle === "function" ? (given.paid as PaidBooking) : undefined;
+  const pause = typeof given.pause === "function" ? (given.pause as Ledger["pause"]) : undefined;
+  return ledgers.run({ call: given.call, ...(paid ? { paid } : {}), ...(pause ? { pause } : {}) }, run);
+};
+
 /** The run's one ledger the current call books on (Ledger.paid), when it has one: the runner's. */
 export const paidLedger = (): PaidBooking | undefined => ledgers.getStore()?.paid;
 

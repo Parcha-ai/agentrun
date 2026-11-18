@@ -752,6 +752,7 @@ __all__ = [
     "RunErrorDetails",
     "RunFile",
     "RunFileList",
+    "RunHandedBack",
     "RunImportedFrom",
     "RunLearning",
     "RunLearningWorkflowsItem",
@@ -774,9 +775,11 @@ __all__ = [
     "RunReview",
     "RunSdk",
     "RunSdkUsage",
+    "RunServed",
     "RunState",
     "RunStatus",
     "RunSummary",
+    "RunSummaryHandedBack",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningWorkflowsItem",
@@ -794,6 +797,7 @@ __all__ = [
     "RunSummaryReview",
     "RunSummarySdk",
     "RunSummarySdkUsage",
+    "RunSummaryServed",
     "RunSummaryTrigger",
     "RunTrigger",
     "RunsResource",
@@ -1298,6 +1302,7 @@ class DefinitionLearning(TypedDict, total=False):
     compile_after: int
     agree_min: float
     alone_min: float
+    agree_on: list[str]
     audit_every: int
     audit_every_later: int
     audit_later_after: int
@@ -1772,6 +1777,7 @@ class DefinitionInputLearning(TypedDict, total=False):
     compile_after: int
     agree_min: float
     alone_min: float
+    agree_on: list[str]
     audit_every: int
     audit_every_later: int
     audit_later_after: int
@@ -2211,6 +2217,8 @@ class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
 
 
 class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
+    agree_on: list[str]
+    grader: str
     n: int
     agreed: int
     alone: int
@@ -2246,6 +2254,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     draft: str
     escalated: str
     failed: Literal[True]
+    differs_on: str
 
 
 class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
@@ -2325,6 +2334,8 @@ class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict)
 
 
 class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
+    agree_on: list[str]
+    grader: str
     n: int
     agreed: int
     alone: int
@@ -2360,6 +2371,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
     draft: str
     escalated: str
     failed: Literal[True]
+    differs_on: str
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -2398,6 +2410,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | RunSummaryPending6 | None
     imported_from: RunSummaryImportedFrom | None
     trigger: RunSummaryTrigger | None
+    served: RunSummaryServed
+    handed_back: RunSummaryHandedBack
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -2620,6 +2634,16 @@ class RunSummaryImportedFrom(TypedDict):
 class RunSummaryTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunSummaryServed(TypedDict):
+    workflow: str | None
+    digest: str | None
+
+
+class RunSummaryHandedBack(TypedDict):
+    workflow: str | None
+    digest: str | None
 
 
 UnarchiveAgentResponse: TypeAlias = "dict[str, Any]"
@@ -3061,12 +3085,14 @@ class GetLearningCostResponse(TypedDict):
 
 
 class GetLearningCostResponseRunsItem(TypedDict):
-    n: int
+    n: int | None
     run_id: str
     started_at: str
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
-    learned_revision: str | None
+    digest: str | None
+    took_over: bool
+    audited: bool
     cost_usd: float | None
     cost_upper_bound: bool
     learning_usd: float | None
@@ -3141,6 +3167,7 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
 class GetLearningCostResponseBill(TypedDict):
     baseline: GetLearningCostResponseBillBaseline | None
     promoted: GetLearningCostResponseBillPromoted | None
+    learning_usd: float
     points: list[GetLearningCostResponseBillPointsItem]
     break_even: GetLearningCostResponseBillBreakEven | None
     gap_usd: float | None
@@ -3210,7 +3237,7 @@ class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
     file: str
     readme: str
     description: str
-    status: Literal["active", "pending", "retired"]
+    status: Literal["serving", "checking", "held", "stopped", "pending", "retired"]
     run: str | None
     bytes: int
     etag: str
@@ -3275,17 +3302,11 @@ class GetAgentLearningResponseImpact(TypedDict):
 class GetAgentLearningResponseImpactBefore(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
-    median_learning_usd: float | None
 
 
 class GetAgentLearningResponseImpactAfter(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
-    median_learning_usd: float | None
 
 
 class ListLearningLogResponse(TypedDict):
@@ -3401,6 +3422,7 @@ class CreatePairingResponse(TypedDict):
     id: str
     code: str
     expires_at: str
+    runs_refused: str | None
 
 
 class DeleteComposioSubscriptionResponse(TypedDict):
@@ -3637,6 +3659,7 @@ class ListComputersResponsePairedItem(TypedDict):
     kind: str
     serves: list[Literal["none", "sandbox", "desktop", "phone", "browser"]]
     unserved: str | None
+    runs_refused: str | None
     os: str
     os_version: str | None
     device: ListComputersResponsePairedItemDevice | None
@@ -3690,6 +3713,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     secrets: list[ListComputersResponseKindsItemProvidersItemSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -3950,6 +3974,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     secrets: list[SaveComputerKeysResponseSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -4825,6 +4850,8 @@ class Run(_RunRequired, total=False):
     trigger: RunTrigger | None
     audit_of: str | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
+    served: RunServed
+    handed_back: RunHandedBack
 
 
 class _RunResultRequired(TypedDict):
@@ -5031,6 +5058,16 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunServed(TypedDict):
+    workflow: str | None
+    digest: str | None
+
+
+class RunHandedBack(TypedDict):
+    workflow: str | None
+    digest: str | None
 
 
 ListRunFilesResponse: TypeAlias = "RunFileList"
@@ -5718,6 +5755,7 @@ class Capabilities(_CapabilitiesRequired, total=False):
     links: CapabilitiesLinks
     home: CapabilitiesHome
     secrets: CapabilitiesSecrets
+    run_isolation: Literal["uid", "process"]
 
 
 class _CapabilitiesServerRequired(TypedDict):
@@ -6226,6 +6264,7 @@ class ApplyTemplateBody(TypedDict, total=False):
     parameters: dict[str, Any]
     servers: dict[str, str]
     grants: list[str]
+    agent_id: str
     overrides: ApplyTemplateBodyOverrides
 
 
@@ -6307,7 +6346,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ImportTemplateResponseTemplateBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]
@@ -6428,7 +6467,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ListTemplatesResponseTemplatesItemBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]
@@ -6526,7 +6565,7 @@ class ListToolKeysResponseKeysItem(TypedDict):
     kind: Literal["tool", "model"]
     label: str
     unlocks: list[str]
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     fields: list[ListToolKeysResponseKeysItemFieldsItem]
     secrets: list[SecretMeta]
     check: ListToolKeysResponseKeysItemCheck1 | ListToolKeysResponseKeysItemCheck2 | ListToolKeysResponseKeysItemCheck3 | None
