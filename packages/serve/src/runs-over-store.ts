@@ -31,7 +31,7 @@ import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
@@ -175,7 +175,7 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
  *  which may skip it, in words. */
 export async function message(
-  store: RunsStore,
+  store: RunsStore & Pick<Store, "agents">,
   moment: RunMoment,
   content: string,
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
@@ -184,7 +184,9 @@ export async function message(
   const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
-  // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished).
+  // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). Another
+  // system's agent is archived only by its delete: said so, as every run of it is refused (AgentDeleting).
+  if (moment.archived === "agent" && (await store.agents.get(moment.agentId))?.externalRef != null) throw new AgentDeleting(moment.agentId);
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
@@ -595,6 +597,9 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   if (storedRevision && canonical(storedRevision.body) !== canonical(revision.body)) throw bodyConflict(external);
   const mapped = await store.agents.byExternal(ref);
   const stored = mapped ? await getAgent(store, mapped.id) : null;
+  // Another system's agent is archived only by its delete (its archive route is refused): it starts nothing more, before
+  // anything is prepared. The store refuses it again in the run's own transaction (AgentDeleting), for a delete since.
+  if (stored?.agent.archivedAt) throw new AgentDeleting(stored.agent.id);
   // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
   // so its launch is prepared under them: a workflow run's title names the version it runs. A run of a version already
   // stored keeps the agent's as they are, as a run of any agent's earlier revision does.

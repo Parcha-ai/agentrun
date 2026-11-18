@@ -73,6 +73,12 @@ export const ERROR_STATUS = {
   // A replay its owner asked of a learned workflow's revision that cannot start now (runner/promotion.ts askReplay): one
   // replays already, another revision of it replays, it is promoted, or no graded input fits it.
   replay_conflict: 409,
+  // DELETE /agents/{id} (agent-delete.ts): an agent made here, which is archived instead; an agent whose runs did not end
+  // by the delete's wait (or one only its application ends, an SDK run's); an agent whose learning refused its delete
+  // while learning work was in flight. The last two leave the agent refusing runs, and a DELETE sent again finishes it.
+  agent_not_external: 409,
+  runs_in_flight: 409,
+  learning_busy: 409,
   // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
   // model (run-model-key.ts): nothing to spend, so refused before any model call.
   model_key_required: 422,
@@ -80,7 +86,7 @@ export const ERROR_STATUS = {
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
 
-const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed"]);
+const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed", "runs_in_flight", "learning_busy"]);
 
 /** A field that is missing or wrong. `example`: a value the field accepts, read from the request body's schema (explain.ts). */
 export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string; example?: unknown };

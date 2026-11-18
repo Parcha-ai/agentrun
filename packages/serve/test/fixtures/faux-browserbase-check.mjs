@@ -2,10 +2,12 @@
 // API (the tests' fake). It answers its list of projects for KEY alone, and 401 in Browserbase's words for any other.
 // With AGENTRUN_TEST_FAUX_BROWSERBASE_STALL set, a check is held, its signal ignored as a provider answering late, until
 // release(). With AGENTRUN_TEST_FAUX_BROWSERBASE_CONTEXTS_DOWN set, no context is made (503). It also makes and deletes contexts, as an agent's saved sign-in asks (sign-ins.ts): `contexts` holds
-// those that exist. No network, no real key.
+// those that exist. `deleteFailures.left`: that many context deletes answer 503 first, the context kept, as a vendor down
+// for a while. No network, no real key.
 export const KEY = ["bb", "live", "not-a-secret"].join("_");
 export const calls = [];
 export const contexts = new Set();
+export const deleteFailures = { left: 0 };
 const held = [];
 export const release = () => { for (const go of held.splice(0)) go(); };
 
@@ -24,6 +26,10 @@ export default async function fakeBrowserbase(url, init = {}) {
     return json(201, { id, uploadUrl: "https://upload.example.test/", publicKey: "", cipherAlgorithm: "AES-256-CBC", initializationVectorSize: 16 });
   }
   const context = /^\/v1\/contexts\/([^/]+)$/.exec(pathname)?.[1];
+  if (context && init.method === "DELETE" && deleteFailures.left > 0) {
+    deleteFailures.left -= 1;
+    return json(503, { message: "Service unavailable" });
+  }
   if (context && init.method === "DELETE") return contexts.delete(decodeURIComponent(context)) ? new Response(null, { status: 204 }) : json(404, { message: "Not found" });
   return pathname === "/v1/projects" ? json(200, [{ id: "proj-1", name: "QA" }]) : json(404, { message: "Not found" });
 }

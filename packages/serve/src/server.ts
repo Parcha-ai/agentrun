@@ -90,8 +90,8 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
-import { answerOf, logged } from "./agents.js";
+import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
@@ -99,6 +99,7 @@ import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
+import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -177,17 +178,21 @@ import { createAttachRoutes, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { archilRoute, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
+import { archilRoute, type ArchilRoutesOptions, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
 import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { agentComputerOf, agentComputerView, agentHomeFolder, claimKinds, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
+import { agentComputerHoldKey } from "./workspace/agent-computer.js";
+import { sdkRunKey } from "./sdk/runs.js";
+import { waitEndedKey } from "./browser-wait-ended.js";
+import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -290,9 +295,10 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
-  /** Another Archil control plane than the key's region's, and its fetch: a test's fake, for the server's own Archil calls
-   *  (a launch's disk read, the settings' test, an agent's disk removed). */
-  archilControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** Another Archil control plane than the key's region's, and its fetch, and another maker of a disk's file API: a
+   *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
+   *  a deleted agent's run folder removed from a disk its launch named). */
+  archilControl?: ArchilRoutesOptions["control"];
   /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
   composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -393,6 +399,17 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
+  /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
+   *  the agent's learning folder (learn/delete.ts), the server's own. */
+  deleteLearning?: DeleteLearning;
+  /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
+   *  there stops the delete as a crash would. */
+  agentDeleteAt?: (step: AgentDeleteStep, agentId: string) => void | Promise<void>;
+  /** A test's seam: awaited with a request's path and answer once its work under an Idempotency-Key is done, before the
+   *  answer is kept, so a test can hold a request there while a DELETE /agents/{id} runs. */
+  beforeKeep?: (path: string, answer: unknown) => void | Promise<void>;
+  /** How long DELETE /agents/{id} waits for the agent's cancelled runs to end (default 30 s), then 409 runs_in_flight. */
+  agentDeleteWaitMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
   templates?: string;
   /** A test's seam: the GitHub a template import reads, its API's origin and the one host it may be sent to, in place of
@@ -510,6 +527,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)$/, name: "deleteAgent" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
@@ -2136,6 +2154,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a person's start (createRun) and a replay's (startLearnedWorkflowReplay), asks this before it reserves or writes anything. */
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
+    // Another system's agent is archived only by its delete (its archive route is refused).
+    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -2163,6 +2183,120 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void reconcileAgentComputer(store, agentId, (provider, image) => computersOf().providerFor(provider, image))
       .then((done) => (done ? log?.(logLine("agent_computer", { agent: agentId, ...("deleted" in done ? { deleted: done.deleted } : { failed: done.failed }) })) : undefined))
       .catch((error: unknown) => log?.(logLine("agent_computer", { agent: agentId, failed: error instanceof Error ? error.message : String(error) })));
+  };
+  /** The runs and agents a delete forgot the kept answers of (forgetKept), as "run:<id>" or "agent:<id>", with when: kept
+   *  as long as a request under a key could still be at work (IDEMPOTENCY_TTL_S). */
+  const forgotten = new Map<string, number>();
+  /** Whether a kept answer, by its request's path and its body, names run or agent `id`. */
+  const namesForgotten = (kind: "run" | "agent", id: string, path: string, body: unknown): boolean =>
+    path.startsWith(`/${kind}s/${id}/`) || (isObject(body) && body[kind === "run" ? "run_id" : "agent_id"] === id);
+  /** Whether an answer, by its request's path and its body, names a run or an agent a delete forgot. */
+  const keptForgotten = (path: string, body: unknown): boolean => {
+    const named = /^\/(runs|agents)\/([^/]+)\//.exec(path);
+    if (named && forgotten.has(`${named[1] === "runs" ? "run" : "agent"}:${named[2]}`)) return true;
+    if (!isObject(body)) return false;
+    return (typeof body.run_id === "string" && forgotten.has(`run:${body.run_id}`)) || (typeof body.agent_id === "string" && forgotten.has(`agent:${body.agent_id}`));
+  };
+  /** The answers kept under idempotency keys (the in-memory map and its file) that name run or agent `id`, by the request's
+   *  path and the answer's body, dropped and the file written again: a deleted agent's and its runs' (agent-delete.ts). The
+   *  file is written every time, dropped or not: a save that failed before left the file holding answers memory no longer has,
+   *  so a retry that found nothing to drop still writes it (a restart in between reads them from the file again). A
+   *  failed write throws, and the delete stops before the rows that name them go. The run or agent is noted as forgotten
+   *  first (`forgotten`): a request under a key still at work when this passed keeps no answer naming it (idempotent). */
+  const forgetKept = async (kind: "run" | "agent", id: string): Promise<void> => {
+    forgotten.set(`${kind}:${id}`, Date.now());
+    for (const [slot, one] of idempotency) if (namesForgotten(kind, id, slot.slice(0, slot.indexOf("\n")), one.answer?.body)) idempotency.delete(slot);
+    await keep();
+  };
+  const deleteInTurn = oneAtATime();
+  /** `work`, a write to agent `id`'s home or learning (files a delete removes with the agent's folders, settings it leaves
+   *  to deleteLearning, answers kept under its path), done in the agent's delete turn, the agent read there: a write sent
+   *  while a DELETE runs waits for it, then finds the agent gone (404) or still being deleted (409 agent_not_runnable),
+   *  so nothing is written after the delete passed over it. The request's body is read before, outside the turn. */
+  const agentWrite = <T>(id: string, work: () => Promise<T>): Promise<T> =>
+    deleteInTurn(id, async () => {
+      const entry = await needAgent(id);
+      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      return work();
+    });
+  const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
+  /** `work`, a thing a deleted agent owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted there
+   *  yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again. */
+  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"]): Promise<void> => {
+    try {
+      await work();
+    } catch (error) {
+      if (!(error instanceof ApiError && codes.includes(error.code))) throw error;
+      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${AGAIN}`, { retry_after_ms: 5_000 });
+    }
+  };
+  /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
+  /** Step 2 of DELETE /agents/{id}: the learning module's delete over the agent's learning folder on this server's disk,
+   *  as the learning routes open it (learningFolderOf), which deleteLearning ends in its finally. A learning folder on
+   *  the agent's Archil disk goes with that disk in step 3. */
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId) => deleteLearning(given, agentId, learningFolderOf(data, agentId)));
+  const agentDeleteHost: AgentDeleteHost = {
+    store,
+    deleteLearning: learningDelete,
+    refuse: async (agentId) => void (await triggers.agentArchived(agentId)),
+    cancel: async (runId) => {
+      const moment = await momentOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (!moment) return true;
+      if (moment.importedSource !== undefined) return false;
+      try {
+        await cancel(store, moment);
+        return true;
+      } catch (error) {
+        // An SDK run: only its application ends it (runs-over-store.ts refuseSdkStop).
+        if (error instanceof ApiError && error.code === "not_continuable") return false;
+        throw error;
+      }
+    },
+    removeTriggerThere: (triggerId) => notYetWith(() => triggers.removeThere(triggerId)),
+    removeTriggerSettings: (triggerId) => triggers.removeSettings(triggerId),
+    removeTrigger: (triggerId) => triggers.removeHere(triggerId),
+    forgetSignIns: (agentId) => notYetWith(() => signIns.forgetAll(agentId)),
+    removeOwnComputer: async (agentId) => {
+      // Archived, the agent has no use for its own computer: deleted at its provider now, waited for.
+      await reconcileAgentComputer(store, agentId, (provider, image) => computersOf().providerFor(provider, image));
+      const left = await agentComputerOf(store, agentId);
+      if (left) throw new ApiError("unavailable", `The agent ${agentId}'s own computer ${left.name} is not deleted yet${left.why ? ` (${left.why})` : ""}. It starts no run meanwhile: send the DELETE again to finish it.`, { retry_after_ms: 5_000 });
+      await store.settings.remove(agentComputerHoldKey(agentId));
+    },
+    removeDisk: async (agentId) => {
+      // The disk stored on the agent, read whatever the Archil settings are now: with Archil off the route below removes
+      // nothing, and the agent's row going would leave its disk at Archil with nothing here to reach it.
+      const stored = await agentDiskOf(store, agentId);
+      if (!stored) return;
+      if (!(await archil.agentView(agentId)).on) throw new ApiError("unavailable", `The agent ${agentId}'s Archil disk ${stored.diskId} is not deleted yet: Archil is off on this server, so it can't be deleted there. Turn Archil on again (PUT /v2/workspace/archil). ${AGAIN}`, { retry_after_ms: 5_000 });
+      // Archil's failure (424), a live run of another agent on the disk (412) or no key (503): each is retried by the next DELETE.
+      await notYetWith(() => archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) }), ["upstream_failed", "precondition_failed", "unavailable"]);
+    },
+    forgetRun: async (agentId, runId) => {
+      // Its own folder on a disk its launch named (the caller's disk, which stays): read from its launch record, which goes
+      // with the run's rows after this, so a failure or a stop here leaves the record that names the disk for the next
+      // DELETE. A run on its agent's own disk has none: that disk went whole (removeDisk), its folder with it.
+      const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
+      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"]);
+      // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
+      for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
+      // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
+      // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
+      // the row: removed here, the computer would have nothing left to reach it.
+      await store.settings.remove(sdkRunKey(runId));
+      await store.settings.remove(waitEndedKey(runId));
+      await store.settings.remove(runDiskKey(runId));
+      await forgetKept("run", runId);
+    },
+    forgetAgent: async (agentId) => {
+      // The agent's folder (its runs' folders, its home, its learning folder) and its scratch folder.
+      await rm(agentFolder(data, agentId), { recursive: true, force: true });
+      await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
+      await forgetKept("agent", agentId);
+    },
+    waitMs: options.agentDeleteWaitMs ?? 30_000,
+    pollMs: 200,
+    ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
   };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
@@ -2196,6 +2330,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fingerprint = fingerprintOf(text);
     const now = Date.now();
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
+    for (const [k, at] of forgotten) if (now - at > IDEMPOTENCY_TTL_S * 1000) forgotten.delete(k);
     const known = idempotency.get(slot);
     if (known) {
       if (known.fingerprint !== fingerprint) throw mismatch();
@@ -2210,6 +2345,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     } catch (error) {
       idempotency.delete(slot);
       throw error;
+    }
+    await options.beforeKeep?.(path, answer.body);
+    // A DELETE /agents/{id} that forgot the run or agent this answer names while the work was in flight (forgetKept): the
+    // key keeps no answer, so it never replays a deleted run, even after a restart. The request's own answer is given.
+    // Read and dropped with no wait in between, so no sweep comes between them.
+    if (keptForgotten(path, answer.body)) {
+      idempotency.delete(slot);
+      return answer;
     }
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
     // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
@@ -3613,6 +3756,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
+      case "deleteAgent": {
+        // Another system's agent, deleted whole (agent-delete.ts); one delete of an agent at a time, the agent read in its
+        // turn, so a DELETE after one that finished is 404.
+        await deleteInTurn(id, async () => {
+          const entry = await needAgent(id);
+          if (entry.agent.externalRef === null) throw new ApiError("agent_not_external", `The agent ${id} was made here, not by another system's inline run, and is not deleted: archive it instead (POST /v2/agents/${id}/archive), which keeps its runs and stops new ones.`);
+          await deleteExternalAgent(agentDeleteHost, id);
+        });
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
+      }
       case "archiveAgent":
       case "unarchiveAgent": {
         // An agent another system owns is that system's to keep or drop: archiving it here is refused, as an edit is.
@@ -3754,13 +3908,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
           ...(typeof m.workflow_promotion === "number" ? { promotion: m.workflow_promotion } : {}),
         };
-        // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
-        // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
-        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
-        // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
-        // reads it with the shadows'. A row not written now is logged, never the grade refused.
-        const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
-        await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, body.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+        // The grade and its audit row are written to the agent's learning in its delete turn (agentWrite): a grade whose body
+        // came in while a DELETE ran waits for it and finds the agent gone, so nothing is written after its learning went.
+        const kept = await agentWrite(row.agentId, async () => {
+          // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
+          // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
+          const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
+          // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
+          // reads it with the shadows'. A row not written now is logged, never the grade refused.
+          const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
+          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+          return graded;
+        });
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
         // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).
         const shown = await learningShown(row.agentId).catch(() => undefined);
@@ -3903,9 +4062,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const rel = homePath(second!, id, true);
         const bytes = await bytesOf(req);
         // Each write lands whole (the Workspace's write is atomic); of two at once, the last one wins.
-        const home = await homeWorkspace(id, true);
-        await home!.write(rel, bytes).catch(homeRefusal);
-        const written = await entryAt(home!, rel);
+        const written = await agentWrite(id, async () => {
+          const home = await homeWorkspace(id, true);
+          await home!.write(rel, bytes).catch(homeRefusal);
+          return entryAt(home!, rel);
+        });
         if (written?.kind !== "file") throw new ApiError("not_found", "no such file");
         return send(res, 200, viewOf(rel, written));
       }
@@ -3913,13 +4074,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
         const rel = homePath(second!, id, true);
-        const home = await homeWorkspace(id, false);
-        if (!home) throw new ApiError("not_found", "no such file");
-        // A file alone: a folder is refused by the listing; a link (never listed) by the Workspace's remove (ESCAPE).
-        if ((await entryAt(home, rel))?.kind === "dir") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
-        await home.remove(rel).catch((error: unknown) => {
-          if (isWorkspaceError(error, "NOT_FOUND")) throw new ApiError("not_found", "no such file");
-          homeRefusal(error);
+        // A remove is a write to the agent's home: in its delete turn (agentWrite), as a file's write is.
+        await agentWrite(id, async () => {
+          const home = await homeWorkspace(id, false);
+          if (!home) throw new ApiError("not_found", "no such file");
+          // A file alone: a folder is refused by the listing; a link (never listed) by the Workspace's remove (ESCAPE).
+          if ((await entryAt(home, rel))?.kind === "dir") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+          await home.remove(rel).catch((error: unknown) => {
+            if (isWorkspaceError(error, "NOT_FOUND")) throw new ApiError("not_found", "no such file");
+            homeRefusal(error);
+          });
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -4328,7 +4492,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const text = await textBody(req, MAX_BODY);
         // What it refuses is what the reads cut: the host's secrets and the agent's sign-in pointers.
         const refuse = await learningValues(id);
-        const written = await correctionsWrite(data, id, { text, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse });
+        // A write to the agent's learning: in its delete turn (agentWrite), the body read before, outside it.
+        const written = await agentWrite(id, () => correctionsWrite(data, id, { text, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse }));
         return send(res, 200, written, { etag: written.etag });
       }
       case "listLearnedWorkflowRevisions":
@@ -4343,7 +4508,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         const refuse = await learningValues(id);
         const action = found.name === "approveLearningFile" ? "approve" : found.name === "restoreLearningFile" ? "restore" : "retire";
-        const written = await changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id) });
+        // A change to a workflow is a write to the agent's learning: in its delete turn (agentWrite).
+        const written = await agentWrite(id, () => changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id) }));
         return sendText(res, written.status, { ...written, text: secretsShown(refuse).text(written.text) });
       }
       case "startLearnedWorkflowReplay": {
@@ -4360,7 +4526,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Its replay runs are started by no caller, with no model key: none to spend on a server that holds none.
         const keyless = noServerKeyFor(env, "An owner's replay");
         if (keyless) throw new ApiError("not_continuable", keyless);
-        const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
+        // Reserved in the agent's promotions record, in its delete turn (agentWrite), as every write to its learning is.
+        const started = await agentWrite(id, () => replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number)));
         return send(res, 202, started, { location: `/v2/agents/${encodeURIComponent(id)}/learning/workflows/${encodeURIComponent(name!)}/revisions/${encodeURIComponent(digest!)}/replays/${started.replay}` });
       }
       case "getLearnedWorkflowReplay": {

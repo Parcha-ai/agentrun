@@ -29,7 +29,11 @@ import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { RunState, Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
-import { deleteDisk, listOneDisk } from "./workspace/archil-disks.js";
+import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./workspace/archil-disk.js";
+import { deleteDisk, getDisk, listOneDisk } from "./workspace/archil-disks.js";
+import { archilWorkspace } from "./workspace/archil.js";
+import { agentDirName } from "./workspace/paths.js";
+import { WorkspaceError } from "./workspace/workspace.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
 import { launchDiskProblem } from "./workspace/run-disk.js";
 
@@ -84,8 +88,9 @@ export interface ArchilRoutesOptions {
   readonly store: Pick<Store, "settings" | "sealedKeys">;
   /** The server's seal key: there is always one (seal-key.ts bootSealKey, at the start). */
   readonly sealKey: Buffer;
-  /** Another control plane than the region's, and its fetch: a test's fake. */
-  readonly control?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
+  /** Another control plane than the region's, and its fetch, and another maker of a disk's file API than archilDisk:
+   *  a test's fakes. */
+  readonly control?: { readonly baseUrl?: string; readonly fetch?: typeof fetch; readonly makeDisk?: (options: ArchilDiskOptions) => ArchilDisk };
   /** The server's environment: an ARCHIL_API_KEY variable overrides the saved key, and ARCHIL_SETTINGS_ENV the saved
    *  settings (source "env"). */
   readonly env?: KeyEnv;
@@ -260,7 +265,54 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     if (problem !== undefined) throw invalid([{ field: "archil_disk.disk_id", reason: "not_an_option", message: problem }]);
   }
 
-  return { view, save, off, test, agentView, removeAgentDisk, checkLaunchDisk };
+  /** Run `runId`'s own folder on disk `diskId`, a disk its launch named (the caller's: never made, renamed or removed
+   *  here), deleted over the disk's file API for agent `agentId`, which is being deleted: agents/<agent>/runs/<run> and
+   *  everything under it (its work folder and its exec spill folder, paths.ts runKey and archil.ts spillFolderOf), then
+   *  the agent's runs folder and its own folder there once nothing else is in them, since their names carry the agent's
+   *  id. Nothing outside the agent's own folder is touched. Done again, it does nothing: a folder not there is gone, and
+   *  so is the folder of a disk Archil says is gone, which has nothing left to delete (one the caller deleted, or the
+   *  agent's own disk named in the launch, which the agent's delete removed whole before its runs' folders).
+   *  Archil off, or no account key, is 503 unavailable; a delete Archil refuses (a computer that still holds the folder,
+   *  Archil not reached) is 424 upstream_failed, what was not deleted left for the next call. */
+  async function removeRunFolder(agentId: string, runId: string, diskId: string): Promise<void> {
+    const what = `The run ${runId}'s folder on the Archil disk ${diskId}, which its launch named,`;
+    const settings = await loadArchilSettings(store, env);
+    if (settings === undefined) throw new ApiError("unavailable", `${what} is not deleted yet: Archil is off on this server, so it can't be reached. Turn Archil on again (PUT /v2/workspace/archil)`);
+    const key = await keyOr("unavailable", `${what} can't be deleted`);
+    const disk = (options.control?.makeDisk ?? archilDisk)({ disk: diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => key });
+    const dir = agentDirName(agentId);
+    // A hold another client has on a path (a computer's mount) is waited on this long, not a run's 60 s.
+    const on = (root: string) => archilWorkspace(disk, root, { queueMs: 5_000 });
+    try {
+      await on(`agents/${dir}/runs`).remove(runId, { recursive: true, force: true });
+      for (const [root, name] of [[`agents/${dir}`, "runs"], ["agents", dir]] as const) {
+        try {
+          await on(root).remove(name, { force: true });
+        } catch (error) {
+          // Not empty: another of its runs' folders, or something else of the agent, is still there.
+          if (error instanceof WorkspaceError && error.code === "REFUSED") break;
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (await diskGone(settings, key, diskId)) return;
+      throw new ApiError("upstream_failed", `${what} is not deleted there yet: ${describe(error).split(key).join("[the key]")}`);
+    }
+  }
+
+  /** Whether Archil's control plane says disk `diskId` is gone: its read answers that the account has no such disk (404,
+   *  getDisk's undefined) or reads it as deleted. Only Archil's word counts: a read that fails (not reached, a 5xx, the key
+   *  refused) says nothing, so the disk is taken as still there. */
+  async function diskGone(settings: ArchilSettings, key: string, diskId: string): Promise<boolean> {
+    try {
+      const disk = await getDisk(control(settings, key), diskId);
+      return disk === undefined || disk.status === "deleted";
+    } catch {
+      return false;
+    }
+  }
+
+  return { view, save, off, test, agentView, removeAgentDisk, checkLaunchDisk, removeRunFolder };
 }
 
 export type ArchilRoutes = ReturnType<typeof createArchilRoutes>;

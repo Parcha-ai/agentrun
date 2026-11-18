@@ -58,6 +58,8 @@ export type SdkInbox = {
   closed?: "expired" | "failed" | "cancelled";
 };
 const keyOf = (id: string) => `sdk-run:${id}`;
+/** The settings key an SDK run's record is kept under (the run's delete with its agent's: agent-delete.ts). */
+export const sdkRunKey = keyOf;
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
   TOTAL_LIMIT = 4_000_000;
