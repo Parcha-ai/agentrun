@@ -11,12 +11,12 @@ import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai
 import type { Wire } from "@parcha/agentrun-kernel";
 import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
+import { builtinHarness, HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessIds, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
 import { gatewayBase, modelGatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
-import { adapterFactsOf, EVERY_ADAPTER_FACTS } from "./adapter-facts.js";
+import { ADAPTER_FACTS, adapterFactsOf } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
@@ -72,13 +72,23 @@ export const MODEL_KEYS: readonly { id: string; label: string; field: string; mo
   // Particle's direct API is Chat Completions; the adapter harnesses need Messages or HTTP Responses.
   { id: "particle", label: "Particle", field: "PARTICLE_API_KEY", model: "particle/particle-1", harnesses: [DEFAULT_HARNESS] },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...EVERY_ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
-/** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API (Goose
- *  among them where its package is; a key's row in the API names the built-in ones alone, tool-keys.ts). */
+/** pi, and the built-in adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
 function onVendor(vendor: string): readonly string[] {
-  return [DEFAULT_HARNESS, ...EVERY_ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
+  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
+}
+
+/** The harnesses `row`'s key runs on `env`'s server: its own (`harnesses`), then each harness this server lists only once its
+ *  owner installs it (Goose: harness-table.ts hidden, listed by harnessIds) whose wire runs the row's vendor's models, or
+ *  any, on OpenRouter's. One not installed here is never named. */
+export function keyHarnesses(row: (typeof MODEL_KEYS)[number], env: NodeJS.ProcessEnv): readonly string[] {
+  const installed = harnessIds(env).filter((id) => !row.harnesses.includes(id) && builtinHarness(id)?.hidden !== undefined);
+  return [...row.harnesses, ...installed.filter((id) => {
+    const facts = adapterFactsOf(id);
+    return facts !== undefined && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
+  })];
 }
 
 /** `row`'s default for `harness`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
@@ -128,7 +138,7 @@ export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harnes
   if (PLAN_HARNESSES.includes(harness) && signedIn(env) && !env.AGENT_MODEL_BASE_URL) return `${PLAN_PROVIDER}/${planModel(env)}`;
   // On Claude Code's login on this machine, claude-agent runs Anthropic's model on it by default (provider.ts).
   if (onClaudeLogin(env, harness)) return LOGIN_DEFAULT_MODEL;
-  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
+  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses.includes(harness) || keyHarnesses(row, env).includes(harness)));
   return row ? rowModel(row, harness) : env[DEFAULT_MODEL_ENV] || undefined;
 }
 /** The plan's model a run that names none takes: GPT-6.1 Sol where the plan lists it, else the plan's first. */

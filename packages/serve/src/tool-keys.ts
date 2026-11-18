@@ -49,14 +49,17 @@ export function unlockedBy(candidates: readonly string[], tools: readonly { name
  *  (`offers`, harness.ts' harnessOffers) on the row's key: one whose `keys` (the model keys that run it here, available
  *  now or once one is saved) include the row's (its first field). So OpenRouter's row names all three before any key
  *  is saved, and no row changes when another provider's key is saved; a harness not installed, off its pins or too big
- *  for this host is left out. */
+ *  for this host is left out. A harness the server lists beyond the built-in ones (Goose once its owner installs it: it
+ *  has no offer before) is named, after them, where its own offer's `keys` name the row's. */
 export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harnesses?: readonly string[]; fields?: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean; keys?: readonly string[] }[]) {
   if (row.kind === "tool") return unlockedBy(row.unlocks, tools, providers);
   const key = row.fields?.[0];
   // Where an offer knows which model keys run it (its `keys`), the row's key must be one of them, available now or not;
   // else (no key runs it: pi on any, or one unavailable for another reason) whether it runs here now.
   const runs = (harness: string) => offers.some((offer) => offer.id === harness && (offer.keys ? key !== undefined && offer.keys.includes(key) : offer.available));
-  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness)) };
+  const builtin = HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness));
+  const listed = offers.filter((offer) => !(HARNESSES as readonly string[]).includes(offer.id) && key !== undefined && offer.keys?.includes(key)).map((offer) => offer.id);
+  return { unlocks: [] as string[], harnesses: [...builtin, ...listed] };
 }
 
 /** Whether a key row's `unlock` unlocks the tool `name`: by its name, or `<source>:*` for every tool of a catalog source
