@@ -152,7 +152,8 @@ test("Rule 5: with every key planted, a Mode 1 sandbox's computer, a faux deskto
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-3/work", { region: PLANTED_ARCHIL_SETTINGS.region, mountToken: () => claim.token() });
   const mounted = { created: [], options: [] };
-  const archilKinds = { ...faux.kinds, PROVIDERS: faux.kinds.PROVIDERS.map((one) => (one.id === "faux-sandbox" ? { ...one, mounts: ["archil"] } : one)) };
+  // An Archil mount needs Archil's image in the computer: here the operator names it.
+  const archilKinds = { ...faux.kinds, PROVIDERS: faux.kinds.PROVIDERS.map((one) => (one.id === "faux-sandbox" ? { ...one, mounts: ["archil"], imageNamed: true } : one)) };
   const remote = await computerForClaim({ runId: "run-3", epoch: 1, computer: { kind: "sandbox", provider: "faux-sandbox" } }, store, {
     mode: 2, kinds: archilKinds, keyTable: faux.keyTable, sealKey, spec: SPEC,
     providers: { "faux-sandbox": (options) => (mounted.options.push(options), recordingProvider(join(scratch, "work"), mounted)) },

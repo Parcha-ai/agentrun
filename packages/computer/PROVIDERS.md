@@ -766,9 +766,16 @@ refuses it in those words. A kind they take only where the operator sets one of 
 by that key's name (an optional key): a provider made with that key declares the kind, one made without it refuses it in
 the `unmounted` words, and `mountsOf(descriptor, set)` gives the mounts for the keys set, which a server reads without
 loading your module. On a `MachineHost`, give the host that descriptor (`{ ...DESCRIPTOR, ...mountsOf(DESCRIPTOR, set) }`),
-so `capabilities()` and `check()` read it. Daytona declares no mount, `unmounted: { archil: "Archil mounts don't work on
-Daytona's hosted cloud, ..." }`, and `mountsWith: { archil: "DAYTONA_ARCHIL_EGRESS" }`: a self-hosted Daytona target
+so `capabilities()` and `check()` read it. Daytona declares `unmounted: { archil: "Archil mounts don't work on
+Daytona's hosted cloud, ..." }` and `mountsWith: { archil: "DAYTONA_ARCHIL_EGRESS" }`: a self-hosted Daytona target
 whose sandboxes reach Archil through an Archil egress relay takes the mount.
+
+A provider whose computers run computerd with files and exec takes the synced folder (`sync`) with no work of yours:
+the computer holds a plain /workspace, and the server pushes the run's folder in at the claim and syncs each change
+back before the call that made it answers. In Mode 2 a server gives a run the Archil mount where the provider takes
+one and its image is there, and the synced folder elsewhere (hosted Daytona, a GPU with no FUSE). Your create makes
+/workspace empty and owned by the computer's user, and `attach` and `list` read the mount back as `{ kind: "sync",
+epoch }`; the `mount.sync-*` cases check the push, the sync before each answer, a delete and the entry cap.
 
 If your machines can't run Linux as root, the adapter doesn't fit, and you'd implement `ComputerProvider`
 (`src/provider.ts`) directly, as [the last exec shape](#exec-shapes-that-work) does: the whole lifecycle, claims and
