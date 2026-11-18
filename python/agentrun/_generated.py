@@ -1152,7 +1152,7 @@ JsonObject: TypeAlias = "dict[str, Any]"
 
 
 class DefinitionSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "openclaw", "capy"]
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1629,7 +1629,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
 
 
 class DefinitionInputSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "openclaw", "capy"]
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -2501,7 +2501,7 @@ class CostPlan(TypedDict):
 
 
 class RunSummarySdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "openclaw", "capy"]
     model: str | None
     session_id: str | None
     learning_revision: str | None
@@ -5404,7 +5404,7 @@ class RunResult(_RunResultRequired, total=False):
 
 
 class RunSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "openclaw", "capy"]
     model: str | None
     session_id: str | None
     learning_revision: str | None
@@ -6330,7 +6330,7 @@ class GetSdkRunResponse(_GetSdkRunResponseRequired, total=False):
 
 
 class _StartSdkRunBodyRequired(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "openclaw", "capy"]
     input: str
     instructions: str
 
