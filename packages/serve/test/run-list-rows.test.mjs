@@ -23,6 +23,8 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { listedItem, listingOverStore, summaryOfView, summaryOverStore } = await import("../dist/store-view.js");
 const { startLister } = await import("../dist/run-listing.js");
 const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
+const { folderTestHooks, learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
+const { changeWorkflow } = await import("../dist/learning-routes.js");
 
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
 
@@ -412,6 +414,84 @@ test("an approval that lands between a background build's read of the learning f
   await lister.settled();
   const row = await listedRow(store, "run-1");
   assert.deepEqual(listedItem(row.listing, deps.origin, null, []), read, "the list says what the folder says now: the workflow no longer waits");
+});
+
+test("an approval that lands between a list's own build of a run's listing (its read of the learning folder) and its write is read by the lister's next pass: the next list says what the folder says now", { timeout: 120_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  const name = "file-ticket";
+  const file = `workflows/${name}/workflow.json`;
+  const readme = `workflows/${name}/README.md`;
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  try {
+    await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "File the ticket.", learning: true } });
+    // The run's compile merge, as it landed: its draft held for the owner's OK.
+    const seed = await landWorkflows(data, "agent-1", [{ name, description: "Files a ticket", workflow: JSON.parse(workflow({ name })), status: "pending" }]);
+    await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "File it." }, title: "t", place: { mode: "runner" }, learning: { seed, section: "" } } });
+    const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+    const kept = { state: "merged", merged: seed, detail: "Waiting for your OK: workflow file-ticket.", workflows: [{ file, name, pending: true }] };
+    await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }] });
+  } finally {
+    await store.close();
+  }
+  const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  // The lister's first pass (it marks behind every listing that read outside its run) finds no row to build, so the run's
+  // listing is the list's to build.
+  const all = Connection.prototype.all;
+  let hidden = true;
+  Connection.prototype.all = function (sql, ...params) {
+    return hidden && /AS behind ORDER BY held/.test(sql) ? Promise.resolve([]) : all.call(this, sql, ...params);
+  };
+  t.after(() => (Connection.prototype.all = all));
+  await server.listingSettled();
+  hidden = false;
+  // The approval lands once the list's build has read the agent's learning folder (its read ends), before that build writes
+  // the listing. The run's row then holds no listing, so the agent's held listings the approval marks behind are none.
+  const real = (place) => {
+    const hook = folderTestHooks.workspace;
+    folderTestHooks.workspace = undefined;
+    try {
+      return learningWorkspace(place);
+    } finally {
+      folderTestHooks.workspace = hook;
+    }
+  };
+  let armed = false;
+  let approved = false;
+  folderTestHooks.workspace = (place) => {
+    const folder = real(place);
+    if (!armed) return folder;
+    return {
+      workspace: folder.workspace,
+      end: async () => {
+        await folder.end();
+        if (!armed) return;
+        armed = false;
+        const snapshot = await (async () => {
+          const read = real(place);
+          try {
+            return await readSnapshot(read.workspace);
+          } finally {
+            await read.end();
+          }
+        })();
+        const oid = snapshot.workflows.find((one) => one.name === name).files.find((one) => one.path === readme).oid;
+        assert.equal((await changeWorkflow(data, "agent-1", readme, { action: "approve", ifMatch: `"${oid}"`, refuse: [] })).status, 200);
+        approved = true;
+      },
+    };
+  };
+  t.after(() => void (folderTestHooks.workspace = undefined));
+  armed = true;
+  const built = await everyItem(api, "/runs");
+  assert.ok(approved, "the approval landed during the list's build");
+  assert.match(String(built[0].learning?.detail ?? ""), /Waiting for your OK/, "the list built the run's listing from the folder as it read it");
+  // The lister's pass after it: no write moved the run since.
+  await server.listingSettled();
+  await sameAsViews(api, await everyItem(api, "/runs"), "the list says what the folder says now: the workflow no longer waits");
 });
 
 /** Counts the store calls each GET of a runs list makes, and the rows its reads hand back: every call on a store connection
