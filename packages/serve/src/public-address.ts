@@ -26,13 +26,15 @@ const keptOf = (text: string): Kept | undefined => {
 };
 
 /** What a start finds: `changed` when the folder remembered another address (none counts), and `earlier`, the address the
- *  server had before its current one, kept across starts until the next change. */
-export type PublicAddress = { changed?: { from: string | null; to: string | null }; earlier: string | null };
+ *  server had before its current one, kept across starts until the next change. `keep` remembers the current address; a
+ *  start calls it only once it serves, so a start that fails leaves the folder's address, and its earlier one, as they were. */
+export type PublicAddress = { changed?: { from: string | null; to: string | null }; earlier: string | null; keep: (warn: (said: string) => void) => void };
 
-/** Reads the address `data` remembers, compares it with `publicUrl`, and remembers `publicUrl` (written as the folder's
- *  other files are: whole and synced, mode 600). A folder that remembers none (a first start, or a file that is not one)
- *  has no change to report. A write that fails is told to `warn` and stops nothing: the next start compares again. */
-export function rememberPublicAddress(data: string, publicUrl: string | undefined, warn: (said: string) => void): PublicAddress {
+/** Reads the address `data` remembers and compares it with `publicUrl`. A folder that remembers none (a first start, or a
+ *  file that is not one) has no change to report. `keep` writes it as the folder's other files are written (whole and
+ *  synced, mode 600), and only when it differs; a write that fails is told to `warn` and stops nothing: the next start
+ *  compares again. */
+export function readPublicAddress(data: string, publicUrl: string | undefined): PublicAddress {
   const path = join(data, PUBLIC_ADDRESS_FILE);
   const url = normal(publicUrl);
   let text: string | undefined;
@@ -43,23 +45,26 @@ export function rememberPublicAddress(data: string, publicUrl: string | undefine
   const changed = before !== undefined && before.url !== url;
   const now: Kept = { url, earlier: changed ? (before.url ?? before.earlier) : (before?.earlier ?? null) };
   const written = JSON.stringify(now);
-  if (written !== text) {
+  const keep = (warn: (said: string) => void) => {
+    if (written === text) return;
     try {
       writeDurableSync(path, written);
     } catch (error) {
       warn(`the public address could not be remembered in ${PUBLIC_ADDRESS_FILE}: ${(error as Error).message}`);
     }
-  }
-  return { ...(changed ? { changed: { from: before.url, to: url } } : {}), earlier: now.earlier };
+  };
+  return { ...(changed ? { changed: { from: before.url, to: url } } : {}), earlier: now.earlier, keep };
 }
 
 /** The log line's words for a change. */
 export const publicAddressChanged = "the public address (AGENTRUN_PUBLIC_URL) changed: the owner signs in again at the new address, and links in earlier webhook messages point to the old one";
 
-/** The earlier address's name, when a request under it is sent on to `publicUrl`: the server has a public address now, and
- *  the earlier one's name is none it answers to (`served`: its own names, its --allow-host names and the new address's). */
-export function movedName(earlier: string | null, publicUrl: string | undefined, served: ReadonlySet<string>): string | undefined {
-  if (earlier === null || publicUrl === undefined || !URL.canParse(earlier)) return undefined;
-  const name = hostName(new URL(earlier).host);
-  return name !== undefined && !served.has(name) ? name : undefined;
+/** Where a request under the earlier address is sent on to: `from`, the earlier address's name, and `to`, the address
+ *  people open now (`publicUrl`, parsed, so a name in any script is written as a header carries it, without a trailing
+ *  slash). Set only when the server has a public address now and the earlier one's name is none it answers to (`served`:
+ *  its own names, its --allow-host names and the new address's). */
+export function movedAddress(earlier: string | null, publicUrl: string | undefined, served: ReadonlySet<string>): { from: string; to: string } | undefined {
+  if (earlier === null || publicUrl === undefined || !URL.canParse(earlier) || !URL.canParse(publicUrl)) return undefined;
+  const from = hostName(new URL(earlier).host);
+  return from !== undefined && !served.has(from) ? { from, to: normal(publicUrl)! } : undefined;
 }

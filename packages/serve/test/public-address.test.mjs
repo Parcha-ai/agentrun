@@ -2,6 +2,8 @@
 // in its log, a browser that opens the console at the earlier address is sent on to the new one, and a script that sends
 // a request there is refused in words that name the new one. Any other name is refused as before, never repeated.
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createServer } from "node:net";
 import { test } from "node:test";
 import { call, serve } from "./support.mjs";
 
@@ -97,4 +99,31 @@ test("an earlier address with no public address now is refused as any other name
   const page = await call(server.port, { path: "/", headers: { host: "a.example.com", accept: HTML } });
   assert.equal(page.status, 403);
   assert.match(page.text, /Open AgentRun at localhost/);
+});
+
+test("a public address in another script is sent on to as a Location header carries it, and the server keeps answering", async (t) => {
+  const { server } = await moved(t, A, "https://例え.example");
+  const page = await call(server.port, { path: "/", headers: { host: "a.example.com", accept: HTML } });
+  assert.equal(page.status, 308);
+  assert.equal(page.headers.location, "https://xn--r8jz45g.example/");
+  assert.equal((await call(server.port, { path: "/", headers: { host: "a.example.com", accept: HTML } })).status, 308, "the server still answers");
+});
+
+test("a start that fails remembers nothing: the address before it is still the earlier one, and its change is said once a start serves", async (t) => {
+  const first = await start(t, { publicUrl: A });
+  await first.server.stop();
+  const taken = createServer().listen(0, "127.0.0.1");
+  await once(taken, "listening");
+  t.after(() => taken.close());
+  const lines = [];
+  await assert.rejects(serve(t, { data: first.server.data, publicUrl: B, port: taken.address().port, log: (line) => lines.push(line) }), "the port is taken");
+  assert.deepEqual(lines.filter((line) => line.includes("event=public_url_changed")), [], "a start that fails says no change");
+  const C = "https://c.example.com";
+  const later = await start(t, { data: first.server.data, publicUrl: C });
+  const [line, ...more] = later.changes();
+  assert.deepEqual(more, []);
+  assert.match(line ?? "", new RegExp(`from=${A} to=${C}\\b`), "the change is from the address that served");
+  const page = await call(later.server.port, { path: "/", headers: { host: "a.example.com", accept: HTML } });
+  assert.equal(page.status, 308, "the address that served before is still sent on");
+  assert.equal(page.headers.location, `${C}/`);
 });

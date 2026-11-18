@@ -96,7 +96,8 @@ place: a token from the environment stays out of the logs. `DIR/.token`'s token 
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
 link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
-use it. The server remembers the public address in its data directory (`DIR/.public-url`). A start where it changed,
+use it. The server remembers the public address in its data directory (`DIR/.public-url`) once a start serves; a start
+that fails remembers nothing. A start where it changed,
 including set where there was none or unset where there was one, writes one warning line to the log
 (`event=public_url_changed from=<old> to=<new>`). The owner signs in again at the new address, because the session
 cookie belongs to the old host, and links in earlier webhook messages still name the old address. When the old name

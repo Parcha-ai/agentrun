@@ -63,7 +63,7 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
 import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
-import { movedName, publicAddressChanged, rememberPublicAddress } from "./public-address.js";
+import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
@@ -5004,17 +5004,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   })();
 
   // The public address this server last served at, kept in its data folder (public-address.ts): a change signs the owner
-  // out and leaves earlier webhook messages' links on the old address, so the start says so, in one line.
-  const address = rememberPublicAddress(data, options.publicUrl, (said) => void process.stderr.write(`agentrun-serve: ${said}\n`));
-  if (address.changed) {
-    const line = logLine("public_url_changed", { from: address.changed.from ?? "none", to: address.changed.to ?? "none", warning: publicAddressChanged });
-    if (log) log(line);
-    else process.stderr.write(`agentrun-serve: ${line}\n`);
-  }
-  // The earlier address's name (`movedFrom`), whose console a browser is redirected from to the new address (`movedTo`):
-  // set only when the server has a public address now and the earlier name is none it answers to.
-  const movedFrom = movedName(address.earlier, options.publicUrl, loopbackNames(host, options.allowHosts, options.publicUrl));
-  const movedTo = options.publicUrl?.replace(/\/+$/, "") ?? "";
+  // out and leaves earlier webhook messages' links on the old address, so the start says so, in one line, once it serves
+  // (below), when it also remembers the new address: a start that fails changes neither.
+  const address = readPublicAddress(data, options.publicUrl);
+  // The earlier address's name (`moved.from`), whose console a browser is redirected from to the new address (`moved.to`,
+  // parsed: a Location header carries no raw name in another script): set only when the server has a public address now
+  // and the earlier name is none it answers to.
+  const moved = movedAddress(address.earlier, options.publicUrl, loopbackNames(host, options.allowHosts, options.publicUrl));
 
   let names: Set<string> | undefined;
   // The listener: the CLI's, bound early and answering warming until the takeover below (listen-first.ts), or a new one.
@@ -5053,10 +5049,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address, whatever the listener. No other route is: on loopback, the rest is refused as any other name is, in words
     // that name the new address. That name passes the Host check for this one fixed answer alone, which reads nothing of
     // the request but its path: it is a name this server's operator set before, and a page that rebound it reads no data.
-    if (movedFrom !== undefined && hostName(req.headers.host) === movedFrom) {
+    if (moved !== undefined && hostName(req.headers.host) === moved.from) {
       const browser = /\btext\/html\b/i.test(String(req.headers.accept ?? ""));
-      if (browser && (req.method === "GET" || req.method === "HEAD") && consoleEntry((req.url ?? "/").split("?")[0]!)) return sendMoved(res, movedTo);
-      if (names) return browser ? sendMovedPage(req, res, movedTo) : fail(new ApiError("forbidden", `unexpected Host header: ${movedFix(movedTo)}`));
+      if (browser && (req.method === "GET" || req.method === "HEAD") && consoleEntry((req.url ?? "/").split("?")[0]!)) return sendMoved(res, moved.to);
+      if (names) return browser ? sendMovedPage(req, res, moved.to) : fail(new ApiError("forbidden", `unexpected Host header: ${movedFix(moved.to)}`));
     }
     // On loopback, a Host that is not one of its names (host-check.ts) is a page that rebound a name of its own to this
     // address. A browser is shown a page that says which names work; a script, the same in the error.
@@ -5169,6 +5165,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise<void>((done) => server.close(() => done()));
     throw error;
   });
+  // It serves: the public address it serves at is remembered now, and a change of it said (above).
+  address.keep((said) => void process.stderr.write(`agentrun-serve: ${said}\n`));
+  if (address.changed) {
+    const line = logLine("public_url_changed", { from: address.changed.from ?? "none", to: address.changed.to ?? "none", warning: publicAddressChanged });
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  }
   // The lister's own passes (above), once this server listens and knows its own address (ownOriginOf).
   lister.start();
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
