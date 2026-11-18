@@ -642,15 +642,17 @@ export class Triggers {
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(trigger.id);
   }
 
-  /** Its settings first, then its row: the settings have no link to the row, so a failure or a stop between the two
-   *  leaves the row, which the next remove finds, never settings with no trigger left to name them. */
+  /** The trigger's settings and row removed. Without `onAgent`, its settings first, then its row: the settings have no
+   *  link to the row, so a failure or a stop between the two leaves the row, which the next remove finds, never settings
+   *  with no trigger left to name them. With `onAgent` (a template update's removal), the row first, on its agent's
+   *  condition compared in the delete, then its settings: a trigger moved to another agent meanwhile keeps both. A stop
+   *  between the two there leaves settings no row names (keyed by an id never used again), never a moved trigger
+   *  without its own. */
   private async dropHere(trigger: Trigger, onAgent?: string): Promise<void> {
     if (onAgent === undefined) {
       await this.dropSettings(trigger);
       await this.store.triggers.remove(trigger.id);
     } else {
-      // On its agent's condition, compared in the delete, and the row before its settings: one moved to another agent
-      // meanwhile keeps both. A stop between the two leaves settings no row names, never a moved trigger without its own.
       if (!(await this.store.triggers.remove(trigger.id, { ifAgent: onAgent }))) throw new ApiError("not_found", `no trigger ${trigger.id} on the agent ${onAgent}`);
       await this.dropSettings(trigger);
     }
