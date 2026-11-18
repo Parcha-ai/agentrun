@@ -93,10 +93,13 @@ describe("the execution mix's arithmetic", () => {
     const mixed = blocksOf([run(1, "agent", 0.5), replayRun("p1", 1, 0.1), replayRun("p2", 1, 0.1), run(2, "workflow", 0.1)], 5);
     expect(mixed.map((b) => [b.from, b.to, b.runs, b.counts])).toEqual([[1, 2, 2, { agent: 1, handed_back: 0, workflow: 1, replay: 0 }]]);
   });
-  it("places a replay half a run after the job it followed (before any job, half a run before the first), never on a number of its own", () => {
-    const runs = [replayRun("p0", 0, 0.1), run(1, "agent", 0.5), replayRun("p1", 1, 0.1), replayRun("p2", 1, 0.1), run(2, "workflow", 0.1)];
-    expect(placed(runs).map((r) => [r.run_id, r.at])).toEqual([["p0", 0.5], ["run_1", 1], ["p1", 1.5], ["p2", 1.5], ["run_2", 2]]);
-    expect(plotted(runs).map((p) => p.at)).toEqual([0.5, 1, 1.5, 1.5, 2]);
+  it("spreads the replays between two jobs evenly across the gap (before the first job and after the last, across the half a run the plot shows), never on a number of its own", () => {
+    const runs = [replayRun("p0", 0, 0.1), run(1, "agent", 0.5), replayRun("p1", 1, 0.1), replayRun("p2", 1, 0.1), run(2, "workflow", 0.1), replayRun("p3", 2, 0.1)];
+    expect(placed(runs).map((r) => [r.run_id, r.at])).toEqual([["p0", 0.75], ["run_1", 1], ["p1", 1 + 1 / 3], ["p2", 1 + 2 / 3], ["run_2", 2], ["p3", 2.25]]);
+    const points = plotted(runs);
+    expect(points.map((p) => p.at)).toEqual([0.75, 1, 1 + 1 / 3, 1 + 2 / 3, 2, 2.25]);
+    // Each replay between the same two jobs has a place of its own, so a hover reaches every one (nearest keeps the first on a tie).
+    expect([nearest(points, 1.3), nearest(points, 1.7)].map((i) => points[i]!.run_id)).toEqual(["p1", "p2"]);
   });
   it("steps the cost axis cleanly from 0 to its top: never a quarter of 5", () => {
     expect(yTicksOf(0.005)).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
