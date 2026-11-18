@@ -523,6 +523,7 @@ test("the lines after the Open line go on, one whole line at a time, however the
   }
   assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Set up this server: https://agentrun.example.com/setup#code=AbCdEfGh"]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
+  assert.equal(start.SAID.test("From another machine: http://192.0.2.10:7401/setup#code=AbCdEfGh"), true, "the setup link at this machine's other addresses is said too");
 });
 
 test("with a public URL and no password yet, the server's setup-code line reaches the person (stderr), not stdout", { timeout: 60_000 }, async (t) => {

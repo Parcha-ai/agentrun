@@ -148,8 +148,8 @@ function tailOf(tail) {
 
 /** The server's lines this command says too, as they come: its banner's boxes line (whether new agents get the Docker
  *  box, or why not), and, on a server with a public address and no password yet, the setup link with its code, which
- *  setup at that address asks for. */
-export const SAID = /^(Boxes: |Set up this server: )/;
+ *  setup at that address asks for, with the same link at this machine's addresses for a server on every address. */
+export const SAID = /^(Boxes: |Set up this server: |From another machine: )/;
 
 /** The address a person opens first, as the server says it: the URL of the first "Open " line of its output that names
  *  one (openLineUrl). That line is the server's interface for it (the plain address today, a single-use sign-in link

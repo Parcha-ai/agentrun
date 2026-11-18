@@ -133,3 +133,29 @@ test("GET /v2/health's spec takes the warming answer: status warming, the store 
   assert.ok(schema.properties.status.enum.includes("warming"), JSON.stringify(schema));
   assert.ok(schema.properties.checks.properties.store.enum.includes("opening"), JSON.stringify(schema));
 });
+
+test("a server on every address is reached from another machine at this machine's IPv4 addresses: not loopback, link-local, IPv6 or a container bridge, not in a container, not on one address", async () => {
+  const { elsewhereOf } = await import("../dist/listen-first.js");
+  const interfaces = {
+    lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
+    en0: [{ address: "192.0.2.10", family: "IPv4", internal: false }, { address: "fe80::1", family: "IPv6", internal: false }],
+    en1: [{ address: "169.254.3.4", family: "IPv4", internal: false }, { address: "198.51.100.7", family: "IPv4", internal: false }],
+    docker0: [{ address: "172.17.0.1", family: "IPv4", internal: false }],
+    "br-0a1b2c": [{ address: "172.18.0.1", family: "IPv4", internal: false }],
+  };
+  const here = { interfaces: () => interfaces, container: () => false };
+  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, here), ["http://192.0.2.10:7401", "http://198.51.100.7:7401"]);
+  assert.deepEqual(elsewhereOf("::", 7401, here), ["http://192.0.2.10:7401", "http://198.51.100.7:7401"]);
+  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, { ...here, container: () => true }), [], "a container's addresses are its own network's");
+  assert.deepEqual(elsewhereOf("127.0.0.1", 7401, here), [], "a server on loopback is reached on this machine alone");
+  assert.deepEqual(elsewhereOf("192.0.2.10", 7401, here), [], "a server on one address prints that one");
+});
+
+test("a machine that cannot list its addresses prints none, and its server starts all the same", async () => {
+  const { elsewhereOf } = await import("../dist/listen-first.js");
+  const refused = () => {
+    throw Object.assign(new Error("uv_interface_addresses returned Unknown system error 13"), { code: "ERR_SYSTEM_ERROR" });
+  };
+  for (const host of ["0.0.0.0", "::", "127.0.0.1", "192.0.2.10"]) assert.deepEqual(elsewhereOf(host, 7401, { interfaces: refused, container: () => false }), [], host);
+  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, { interfaces: refused, container: () => true }), []);
+});
