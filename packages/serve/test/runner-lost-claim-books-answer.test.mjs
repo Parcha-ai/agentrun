@@ -94,3 +94,28 @@ test("another runner that takes the run takes nothing the lost runner kept: the 
   assert.equal(turns[0].data.cut, true, `cut, as a dead runner's request is: ${JSON.stringify(turns[0])}`);
   assert.ok(near(sessionSpendOf(records).spentUsd, HOLD), "counted for the cap at its hold, the most it can have cost");
 });
+
+test("a request that answered past the bound its hold was priced on while its claim was lost still gives its one cap_hold_short line on the next claim, beside one that answered within its bound and gives none", async (t) => {
+  const { holdShortLine } = await import("../dist/print.js");
+  const usd = await knownUsd();
+  const { store, clock } = await storeOn(t);
+  await queued(store, "run-short");
+  const first = await store.claim("run-short", "runner-a", { leaseMs: LEASE });
+  const lost = await bookingOn(store, first, []);
+  // Both bill TOKENS' 3,000 input tokens: the first was held on a bound of 1,000, the second on one of 5,000.
+  const past = await lost.booking.models.beforeRequest({ model: MODEL, inputTokensMax: 1_000 });
+  const within = await lost.booking.models.beforeRequest({ model: MODEL, inputTokensMax: 5_000 });
+  clock.now = T0 + LEASE + 1;
+  const again = await store.claim("run-short", "runner-a", { leaseMs: LEASE });
+  assert.equal(again?.epoch, 2, "the run is taken again");
+  for (const ticket of [past, within]) await assert.rejects(lost.booking.models.afterRequest({ ...TOKENS, usd }, ticket, { end: "answered", usd }), SessionFenced, "the lost claim cannot write the request's cost");
+  const events = [];
+  const resumed = await bookingOn(store, again, events);
+  await resumed.booking.bookCut();
+  const ends = events.filter((event) => event.type === "request_end");
+  assert.deepEqual(ends.map((event) => event.turn), [1, 2], "both recovered requests are told");
+  // The line each recovered end gives, as the runner prints it (print.ts holdShortLine over the event's holdShort).
+  const lines = ends.filter((event) => event.holdShort).map((event) => holdShortLine({ run: "run-short", session: event.key, turn: event.turn, harness: "test", ...event.holdShort }));
+  assert.equal(lines.length, 1, `exactly one line, the first request's: ${JSON.stringify(lines)}`);
+  assert.match(lines[0], / turn=1 harness=test model=claude-opus-5-5 bound_tokens=1000 billed_tokens=3000 held_usd=0\.5 /, lines[0]);
+});

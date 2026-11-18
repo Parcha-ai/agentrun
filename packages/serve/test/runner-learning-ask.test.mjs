@@ -214,3 +214,36 @@ test("a grade on a gateway's Responses stream that stays open after its answer i
   assert.equal(eight(learning.cost_usd.grade), eight((USED.input * 3 + USED.output * 15) / 1e6), `the grade's dollars: ${JSON.stringify(learning.cost_usd)}`);
   assert.equal(eight(await spendInRecords(store, "learn-1")), eight(learning.cost_usd.grade), "the grade's figure is the booking's");
 });
+
+/** The grader's provider answering KEEP with `input` tokens of input billed: past any bound its short prompt is held at. */
+const billedOrigin = (input) => (sent) => async (_url, init = {}) => {
+  const body = JSON.parse(String(init.body ?? "{}"));
+  sent.push(body);
+  return sse([
+    { type: "message_start", message: { id: "msg_grade", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: input, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: KEEP } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: USED.output } },
+    { type: "message_stop" },
+  ]);
+};
+
+test("a capped grade billed past the bound its hold was priced on writes one cap_hold_short warn line, as the run's own requests do: the learning run, the grade, its figures, and no content", async (t) => {
+  const written = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    written.push(String(chunk));
+    return write.call(process.stderr, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  const { end, sent } = await learnedUnder(t, 5, { origin: billedOrigin(200_000) });
+  assert.deepEqual(end, { state: "ended" });
+  assert.equal(sent.length, 1, "one grade request reached the provider");
+  const lines = written.join("").split("\n").filter((line) => line.includes("event=cap_hold_short"));
+  assert.equal(lines.length, 1, `one line: ${JSON.stringify(lines)}`);
+  const fields = Object.fromEntries(lines[0].trim().split(/\s+/).map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+  assert.deepEqual([fields.run, fields.harness, fields.turn, fields.model, fields.billed_tokens], ["learn-1", "grade", "1", MODEL, "200000"], lines[0]);
+  assert.ok(Number(fields.bound_tokens) < 200_000, `its bound: ${fields.bound_tokens}`);
+  for (const content of ["Retries", "Retry a flaky fetch", "not-a-secret", "Worth keeping"]) assert.ok(!lines[0].includes(content), `no ${JSON.stringify(content)} in ${lines[0]}`);
+});

@@ -173,3 +173,33 @@ test("a request whose usage gives no input count to compare writes no line: an a
   ]);
   assert.deepEqual(lines.map((line) => fieldsOf(line).turn), ["3"], `only the third request's: ${JSON.stringify(lines)}`);
 });
+
+test("a capped workflow run's model node billed past the bound its hold was priced on writes one cap_hold_short warn line, as an agentic run's request does", { timeout: 120_000 }, async (t) => {
+  const { flowAgent, follow, serve, serverLog, withEnv } = await import("./support.mjs");
+  withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]);
+  const log = serverLog(t);
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-workflow-over-bound.mjs", import.meta.url).pathname });
+  const flow = {
+    v: 2, name: "once",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Answer", path: "answer" },
+    root: { node: "extract", label: "only", instructions: "Answer the question.", out: "Answer", as: "answer" },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("once", flow))).status, 201);
+  const started = await api("POST", "/agents/once/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["completed", "failed", "cancelled", "input_required"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "completed", JSON.stringify(run.error ?? run.pending));
+  const lines = log.text().split("\n").filter((line) => line.includes("event=cap_hold_short"));
+  assert.equal(lines.length, 1, `one line: ${JSON.stringify(lines)}`);
+  const fields = fieldsOf(lines[0]);
+  assert.deepEqual([fields.run, fields.harness, fields.turn, fields.billed_tokens], [runId, "workflow", "1", "1000000"], lines[0]);
+  assert.ok(Number(fields.bound_tokens) < 1_000_000, `its bound: ${fields.bound_tokens}`);
+  assert.ok(!lines[0].includes("six times seven") && !lines[0].includes("Answer the question"), `no content: ${lines[0]}`);
+});
