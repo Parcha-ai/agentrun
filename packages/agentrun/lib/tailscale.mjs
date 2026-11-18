@@ -10,7 +10,7 @@
 //   node tailscale.mjs serve PORT AGAIN URL [LOG]  serves the loopback PORT at URL, the address printed, and says where;
 //                                                  LOG is where the setup code's line is (default ~/.agentrun's log)
 //   node tailscale.mjs off                         removes the entry it added
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -149,6 +149,52 @@ export function tailnetOf({ platform = process.platform, root = join(homedir(), 
     },
   };
 }
+
+/** How long a start waits for `tailscale status --json` before it says nothing about Tailscale. */
+export const HINT_TIMEOUT_MS = 2_000;
+
+/** This machine's name on its tailnet (`Self.DNSName`, without its last dot), read with `tailscale status --json`, the
+ *  one Tailscale command a start runs: it changes nothing. Undefined when Tailscale is not on PATH, is not running or
+ *  signed in (BackendState other than Running), names no machine, or does not answer within `timeoutMs`. Never throws. */
+export function tailnetNameOf({ env = process.env, timeoutMs = HINT_TIMEOUT_MS } = {}) {
+  return new Promise((done) => {
+    let child;
+    const timer = setTimeout(() => {
+      child?.kill("SIGKILL");
+      done(undefined);
+    }, timeoutMs);
+    timer.unref();
+    const end = (name) => {
+      clearTimeout(timer);
+      done(name);
+    };
+    try {
+      child = execFile("tailscale", ["status", "--json"], { env, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout) => {
+        if (error) return end(undefined);
+        try {
+          const status = JSON.parse(stdout);
+          const name = String(status?.Self?.DNSName ?? "").replace(/\.$/, "").toLowerCase();
+          end(status?.BackendState === "Running" && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(name) ? name : undefined);
+        } catch {
+          end(undefined);
+        }
+      });
+      child.on("error", () => end(undefined));
+      child.unref();
+    } catch {
+      end(undefined);
+    }
+  });
+}
+
+/** What a start on loopback with no public address says when Tailscale runs here: the tailnet address it could have, and
+ *  the two steps to it. `tailscale serve` keeps it on the tailnet; Funnel, which would put it on the internet, is never
+ *  named. The restart names the port, so the serve entry and the server agree after it. */
+export const tailnetHint = (name, port) => [
+  `Tailscale is running here: AgentRun could be at https://${name}/ for your devices on your tailnet, and no one else. To serve it there:`,
+  `  1. tailscale serve --bg ${port}`,
+  `  2. Stop AgentRun and start it again with --port ${port} --public-url https://${name}/ added to its command`,
+].join("\n");
 
 /** The installer's step for an AgentRun in the background or under --vps. Exit 1 on a refusal, said on stderr. */
 function script([verb, port, again, url, log]) {
