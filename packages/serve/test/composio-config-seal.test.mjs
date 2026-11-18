@@ -1356,3 +1356,31 @@ test("a template's composio trigger the package drops, whose instance Composio f
   assert.equal((await second.server.api("GET", `/triggers/${old}`)).status, 404, "the next update removed it");
   assert.deepEqual(instancesOf(first.composio), [], "and its instance at Composio");
 });
+
+test("a template update's removal of a Composio trigger and the owner's move of it to another agent take turns: the move started while Composio deletes the instance waits, then finds the trigger gone (404), never a moved trigger standing on a deleted instance", async (t) => {
+  const key = fakeKey();
+  const first = await dealsServer(t);
+  const applied = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [old] = applied.body.trigger_ids;
+  const [{ id: instance }] = instancesOf(first.composio);
+  await first.server.stop();
+  const second = await dealsServer(t, { dropped: true, data: first.server.data, composio: first.composio });
+  const elsewhere = await second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.equal(elsewhere.status, 201, JSON.stringify(elsewhere.body));
+  const { target } = (await second.server.api("GET", `/triggers/${old}`)).body;
+  // The update's removal of the dropped deal-stage holds at Composio's delete of its instance (done there, answer held).
+  const deleting = first.composio.hold(`/trigger_instances/manage/${instance}`, "DELETE");
+  const update = second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: applied.body.agent_id });
+  await deleting.reached;
+  const move = second.server.api("PATCH", `/triggers/${old}`, { target: { ...target, agent_id: elsewhere.body.agent_id } });
+  // The move's answer, if it comes while the delete is held (it does not once they take turns), then the delete let go.
+  await Promise.race([move, new Promise((resolve) => setTimeout(resolve, 500))]);
+  deleting.release();
+  assert.equal((await update).status, 200);
+  const moved = await move;
+  const now = await second.server.api("GET", `/triggers/${old}`);
+  assert.deepEqual({ move: moved.status, trigger: now.status, agent: now.body?.target?.agent_id ?? null, deleted: first.composio.to(`/api/v3/trigger_instances/manage/${instance}`, "DELETE").length },
+    { move: 404, trigger: 404, agent: null, deleted: 1 },
+    "the move waited for the removal and found the trigger gone; no trigger was left on another agent with its instance deleted");
+});
