@@ -701,6 +701,23 @@ async function refusing(t, baseUrl, refuses) {
   return `http://127.0.0.1:${proxy.address().port}/v2`; // key-gate: loopback-rule the test's proxy listens on loopback
 }
 
+test("the test proxy answers 502 when the server it passes on to is gone, never an unhandled rejection", { timeout: 30_000 }, async (t) => {
+  // A server that listened and closed: its port answers nothing, as the eval's server does once its hook has run.
+  const gone = createServer();
+  await new Promise((resolve) => gone.listen(0, "127.0.0.1", resolve));
+  const { port } = gone.address();
+  await new Promise((resolve) => gone.close(resolve));
+  const closed = new URL("http://127.0.0.1/v2"); // key-gate: loopback-rule a closed loopback port the proxy cannot reach
+  closed.port = String(port);
+  const proxy = await refusing(t, closed.href, () => false);
+  // A bound on the request, so a proxy that never answers fails here, not at the test's timeout.
+  const answer = await fetch(`${proxy}/agents`, { signal: AbortSignal.timeout(10_000) });
+  assert.equal(answer.status, 502);
+  const { error } = await answer.json();
+  assert.equal(error.code, "bad_gateway");
+  assert.match(error.message, /^the test proxy's pass-on failed: /);
+});
+
 test("a run whose wait fails keeps its result and is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
   // The held case's run never answers on its own: only a cancel ends it.
   process.env.AGENTRUN_TEST_EVAL_HOLD = join(await scratch(t), "holding");
