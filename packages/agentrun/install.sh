@@ -525,8 +525,8 @@ vps_install() {
   [ "$(uname -s)" = Linux ] || fail "--vps sets up a Linux server; this is $(uname -s)"
   [ "$(id -u)" = 0 ] || fail "--vps installs Docker and writes $vps_dir, so it runs as root: curl -fsSL https://agentrun.ai/install | sudo sh -s -- --vps${vps_public:+ --public}"
   need curl
-  mkdir -p -m 700 "$vps_dir" "$vps_dir/tailscale"
-  chmod 700 "$vps_dir"
+  mkdir -p "$vps_dir/tailscale"
+  chmod 700 "$vps_dir" "$vps_dir/tailscale"
   work=$(mktemp -d "$vps_dir/.install.XXXXXX")
   trap 'rm -rf "$work"' EXIT
   trap 'exit 130' INT
