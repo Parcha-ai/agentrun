@@ -551,3 +551,53 @@ test("a store an earlier build made, with no triggers.template_id: the server ad
   assert.equal(now["new-pr"].id, before["new-pr"].id, "new-pr kept in place by name");
   assert.equal(await markOf(second, now["new-pr"].id), made.template, "and marked from now");
 });
+
+// ---- a same-name trigger that is not the package's ---------------------------------------------------------------------
+
+test("an owner's trigger with the name of a package trigger of another kind is not the package's to make again: the update is 409 under triggers.<i>, naming it, with the revision and the owner's trigger as they were", { timeout: 90_000 }, async (t) => {
+  const { api } = await served(t);
+  const made = await applied(api, "digest", { parameters: { topic: "cats" } });
+  const { "new-pr": pr } = await triggersOf(api, made.agent_id);
+  assert.ok((await api("DELETE", `/triggers/${pr.id}`)).status < 300, "the owner removes the package's new-pr");
+  const mine = await api("POST", "/triggers", ownerTrigger("new-pr", made.agent_id));
+  assert.equal(mine.status, 201, JSON.stringify(mine.body));
+  const before = (await api("GET", `/agents/${made.agent_id}`)).body.revision;
+  const refused = await api("POST", "/templates/digest/apply", { parameters: { topic: "dogs" }, agent_id: made.agent_id });
+  assert.equal(refused.status, 409, `the owner's new-pr, a schedule, is not the package's feed to make again: ${refused.status} ${JSON.stringify(refused.body)}`);
+  assert.deepEqual(refused.body.error.fields?.map((f) => f.field), ["triggers.0.name"], "under the package's trigger");
+  assert.match(refused.body.error.message, /new-pr/, "naming the trigger");
+  assert.match(refused.body.error.message, /rename or delete/i, "saying what to do");
+  assert.equal((await api("GET", `/agents/${made.agent_id}`)).body.revision, before, "no revision written");
+  const kept = await api("GET", `/triggers/${mine.body.id}`);
+  assert.deepEqual([kept.status, kept.body.source.kind, kept.body.target.input.content], [200, "schedule", "The owner's own note."], "the owner's trigger as it was");
+  assert.equal((await triggersOf(api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "and no other trigger changed");
+});
+
+test("an unmarked trigger of the agent's with a package trigger's name and kind (an apply before the mark was kept) is adopted in place: the same id, the package's change, marked from then on", { timeout: 90_000 }, async (t) => {
+  const server = await served(t);
+  const made = await applied(server.api, "digest", { parameters: { topic: "cats" } });
+  const { daily } = await triggersOf(server.api, made.agent_id);
+  // As an apply before the mark was kept left it: no mark.
+  await server.store.triggers.update(daily.id, { templateId: null });
+  assert.equal(await markOf(server, daily.id), null);
+  await updated(server.api, "digest", { parameters: { topic: "dogs" }, agent_id: made.agent_id }, "the same package, another topic");
+  const now = (await triggersOf(server.api, made.agent_id)).daily;
+  assert.equal(now.id, daily.id, "the same trigger, patched in place");
+  assert.equal(now.target.input.content, "Today's note on dogs.", "with the package's change");
+  assert.equal(await markOf(server, daily.id), made.template, "and marked as the package's");
+});
+
+test("a trigger of the agent's marked with another package, with a package trigger's name, is not this package's: the update is 409 under triggers.<i>, with nothing changed", { timeout: 90_000 }, async (t) => {
+  const server = await served(t);
+  const made = await applied(server.api, "digest", { parameters: { topic: "cats" } });
+  const { daily } = await triggersOf(server.api, made.agent_id);
+  await server.store.triggers.update(daily.id, { templateId: "other" });
+  const before = (await server.api("GET", `/agents/${made.agent_id}`)).body.revision;
+  const refused = await server.api("POST", "/templates/digest/apply", { parameters: { topic: "dogs" }, agent_id: made.agent_id });
+  assert.equal(refused.status, 409, `daily is the other package's: ${refused.status} ${JSON.stringify(refused.body)}`);
+  assert.deepEqual(refused.body.error.fields?.map((f) => f.field), ["triggers.1.name"], "under the package's trigger");
+  assert.match(refused.body.error.message, /daily/);
+  assert.equal((await server.api("GET", `/agents/${made.agent_id}`)).body.revision, before, "no revision written");
+  assert.equal((await triggersOf(server.api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "daily as it was");
+  assert.equal(await markOf(server, daily.id), "other", "still the other package's");
+});

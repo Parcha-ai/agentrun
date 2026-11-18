@@ -556,6 +556,27 @@ test("a template's composio trigger applied again with agent_id and the same key
   assert.equal(composio.instances.size, 1, "nothing new made on Composio");
 });
 
+test("an owner's composio trigger with the name of the package's and another key is not the package's to make again: 409, and it, its sealed key and its instance stay", async (t) => {
+  const { server, composio } = await dealsServer(t);
+  const key = fakeKey();
+  const mine = fakeKey();
+  const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.ok((await server.api("DELETE", `/triggers/${first.body.trigger_ids[0]}`)).status < 300, "the owner removes the package's deal-stage");
+  const own = await server.api("POST", "/triggers", { name: "deal-stage", source: { kind: "composio", server: "work-hubspot", event: DEAL_STAGE.slug, config: { app_id: "4242", developer_api_key: mine } }, target: { kind: "start_run", agent_id: first.body.agent_id, input: { content: "The owner's own note." } } });
+  assert.equal(own.status, 201, blanked(JSON.stringify(own.body), [key, mine]));
+  const from = composio.calls.length;
+  const refused = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: first.body.agent_id });
+  assert.equal(refused.status, 409, `the owner's deal-stage, another key, is not the package's to make again: ${refused.status} ${blanked(JSON.stringify(refused.body), [key, mine])}`);
+  assert.deepEqual(refused.body.error.fields?.map((f) => f.field), ["triggers.0.name"]);
+  assert.ok(![key, mine].some((one) => JSON.stringify(refused.body).includes(one)), "the refusal holds no key");
+  const kept = await server.api("GET", `/triggers/${own.body.id}`);
+  assert.deepEqual([kept.status, kept.body.source.config.developer_api_key, kept.body.target.input.content], [200, MASK, "The owner's own note."], "the owner's trigger as it was");
+  assert.equal((await sealedRowsOf(server.store, own.body.id)).length, 1, "its sealed key kept");
+  assert.deepEqual(composio.calls.slice(from).filter((call) => call.method === "DELETE" || (call.method === "POST" && call.path.endsWith("/upsert"))), [], "nothing removed or made at Composio");
+  assert.deepEqual(instancesOf(composio).map((one) => one.config), [{ app_id: "4242", developer_api_key: mine }], "its instance watches as it did");
+});
+
 /** Trigger `id`'s ordinary life before the upgrade: other triggers made after it share its page, then a pause, a resume
  *  and renames each a little longer, as a firing's last_run_id and its counts change a row's size. Each rewrites the
  *  whole row, the key with it, and a row grown past the space it had leaves its old copy in the page's free space. */
