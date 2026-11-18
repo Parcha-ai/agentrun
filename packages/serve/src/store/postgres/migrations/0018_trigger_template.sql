@@ -3,4 +3,4 @@
 -- reads as no package's. A template update removes only triggers marked with its own package. Applied once, after the
 -- migration before it, inside the transaction migrate.ts opens. Never edit this file once applied: a change is a new file.
 ALTER TABLE triggers ADD COLUMN IF NOT EXISTS template_id TEXT COLLATE "C";
-UPDATE store_meta SET schema_version = 17 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 18 WHERE singleton = 1;
