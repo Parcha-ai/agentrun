@@ -59,7 +59,7 @@ When something doesn't work, `agentrun doctor` (or `npx @parcha/agentrun doctor`
 prints, for each problem, what to change and where it is documented: the Node.js it runs on, whether a server answers
 for the data directory (`--data`, default `~/.agentrun`) and its version, the service (installed, running, lingering on
 Linux), whether a browser elsewhere can open the server's address from this session (an SSH tunnel, `tailscale serve`
-on your tailnet, `AGENTRUN_PUBLIC_URL` or `--allow-host`), whether the console's password is set (when it is not, the fix
+on your tailnet, `--public-url` or `--allow-host`), whether the console's password is set (when it is not, the fix
 is `agentrun open`), whether a model and which harnesses are ready, the server's start-time switches, and Docker for the
 boxes. It only reads: it changes no file, starts and stops nothing, and makes only GET requests. It reads the server
 record `DIR/.server.json` as every command does: one that is not a private file of yours, or whose address is not a plain

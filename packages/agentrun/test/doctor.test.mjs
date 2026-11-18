@@ -262,7 +262,7 @@ test("Address: loopback from a remote session warns with a tunnel and the tailne
   assert.equal(address.status, "warn");
   assert.match(address.summary, /loopback only .*this session looks remote \(SSH\)/);
   assert.ok(address.fix.some((f) => f.includes("ssh -L 7340:localhost:7340")));
-  assert.ok(address.fix.some((f) => f.includes("tailscale serve --bg 7340") && f.includes("AGENTRUN_PUBLIC_URL=https://box.tailnet.example.test")));
+  assert.ok(address.fix.some((f) => f.includes("tailscale serve --bg 7340") && f.includes("agentrun service install --public-url https://box.tailnet.example.test")));
   assert.ok(address.fix.some((f) => f.includes("--allow-host")));
   assert.ok(!address.fix.some((f) => /tailscale funnel/.test(f)));
   assert.match(remote.text, /Docs: https:\/\/github\.com\/Parcha-ai\/agentrun\/blob\/main\/packages\/serve\/README\.md#quick-start/);
@@ -281,6 +281,12 @@ test("Address: loopback from a remote session warns with a tunnel and the tailne
   const named = homeOf({ env: { AGENTRUN_PUBLIC_URL: "https://agentrun.example.test" } });
   const byUnit = await doctor({ ...named, env: {}, readToken: () => undefined });
   assert.equal(byUnit.check("address").status, "ok");
+
+  // agentrun service install --public-url keeps the address on the service's command line.
+  const flagged = homeOf({ args: ["--public-url", "https://agentrun.example.test"] });
+  const byFlag = await doctor({ ...flagged, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, readToken: () => undefined });
+  assert.equal(byFlag.check("address").status, "ok", byFlag.check("address").summary);
+  assert.match(byFlag.check("address").summary, /served at a name of its own \(its public URL\)/);
 
   // On macOS the service is a launchd plist, which holds the public URL as a key and a string, not a line.
   const mac = homeOf({ service: false });

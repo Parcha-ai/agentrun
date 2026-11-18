@@ -218,8 +218,9 @@ export async function doctorOf({
     // runs) or the tailnet entry, when it forwards to this server's port. --allow-host is not one: it only names the Host
     // names the server accepts, and forwards nothing. A stopped service's settings say nothing of a server started
     // another way.
-    // The setting as the service's own file holds it: a systemd Environment= line or a launchd plist's key and string.
-    const named = serviceState?.active === true && Boolean(manager.env(unitText).AGENTRUN_PUBLIC_URL);
+    // The setting as the service's own file holds it: the launcher's --public-url on its command line (agentrun service
+    // install --public-url), or AGENTRUN_PUBLIC_URL as a systemd Environment= line or a launchd plist's key and string.
+    const named = serviceState?.active === true && (Boolean(manager.env(unitText).AGENTRUN_PUBLIC_URL) || (unitArgs.includes("--public-url") && Boolean(unitArgs[unitArgs.indexOf("--public-url") + 1])));
     let tailnet;
     try {
       // The tailnet entry the launcher added ({url, proxy}) is the service's; it counts when its proxy is this port.
@@ -230,9 +231,11 @@ export async function doctorOf({
     const reachable = caps?.features?.triggers?.public_url === true || named || tailnet !== undefined;
     const remote = Boolean(env.SSH_CONNECTION || env.SSH_TTY) || (platform === "linux" && !env.DISPLAY && !env.WAYLAND_DISPLAY);
     if (!LOOPBACK.test(at.hostname)) add("address", "Address", "ok", `It listens at ${at.host}, which other machines that reach this one can open; the token and the password are its only lock, so put TLS in front of it.`);
-    else if (reachable) add("address", "Address", "ok", `It listens on loopback (${at.host}) and is served at a name of its own${typeof tailnet?.url === "string" ? ` (${tailnet.url}, on your tailnet)` : " (AGENTRUN_PUBLIC_URL)"}.`);
+    else if (reachable) add("address", "Address", "ok", `It listens on loopback (${at.host}) and is served at a name of its own${typeof tailnet?.url === "string" ? ` (${tailnet.url}, on your tailnet)` : " (its public URL)"}.`);
     else if (!remote) add("address", "Address", "ok", `It listens on loopback (${at.host}): a browser on this machine opens it.`);
     else {
+      // The launcher's --public-url: kept on the service's command line, or given where AgentRun starts in a terminal.
+      const publicUrl = (url) => (installed ? `agentrun service install --public-url ${url}` : `start AgentRun with --public-url ${url}${dataFlag}`);
       const fix = [`From your own computer, a tunnel: ssh -L ${port}:localhost:${port} <this machine>, then open http://localhost:${port}/`];
       const status = exec("tailscale", ["status", "--json"]);
       let ts;
@@ -241,11 +244,11 @@ export async function doctorOf({
       } catch {}
       const host = String(ts?.Self?.DNSName ?? "").replace(/\.$/, "");
       if (ts?.BackendState === "Running" && host) {
-        fix.push(`On your tailnet only (never Funnel): tailscale serve --bg ${port}, then restart AgentRun with AGENTRUN_PUBLIC_URL=https://${host} so it answers at that name`);
+        fix.push(`On your tailnet only (never Funnel): tailscale serve --bg ${port}, then ${publicUrl(`https://${host}`)} so it answers at that name`);
         // The launcher's own --tailscale serves the default data directory's AgentRun.
         if (data === root) fix.push(installed || existsSync(program) ? "Or let AgentRun do both, as a service: agentrun service install --tailscale" : `Or let the installer do both: ${INSTALL_COMMAND} -s -- --tailscale`);
       }
-      fix.push("Behind a proxy or another name: restart it with AGENTRUN_PUBLIC_URL=https://<name> (or --allow-host <name>); it refuses any other Host name");
+      fix.push(`Behind a proxy or another name: ${publicUrl("https://<name>")} (or --allow-host <name>); it refuses any other Host name`);
       add("address", "Address", "warn", `It listens on loopback only (${at.host}), and this session looks remote${env.SSH_CONNECTION || env.SSH_TTY ? " (SSH)" : " (no display)"}: a browser on another computer cannot open it.`, { fix, docs: DOCS.address });
     }
   }
