@@ -65,6 +65,7 @@ import { resolveRunnerLoop } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
 import type { Held, HeldComputerAsk } from "./held.js";
+import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
@@ -759,6 +760,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     runZone: () => runZone(store, launch.inputOrigin),
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
+    // The claim's own run, whatever the process names: its view on this runner hears the change.
+    computerHold: async (change) => heardComputerHold(claim.runId, change, cut),
     handOn: async (from, id) => {
       if (from !== claim.runId || typeof id !== "string") return undefined;
       const sealed = await store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
