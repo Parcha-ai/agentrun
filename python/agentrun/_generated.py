@@ -3061,12 +3061,14 @@ class GetLearningCostResponse(TypedDict):
 
 
 class GetLearningCostResponseRunsItem(TypedDict):
-    n: int
+    n: int | None
     run_id: str
     started_at: str
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
-    learned_revision: str | None
+    digest: str | None
+    took_over: bool
+    audited: bool
     cost_usd: float | None
     cost_upper_bound: bool
     learning_usd: float | None
@@ -3141,6 +3143,7 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
 class GetLearningCostResponseBill(TypedDict):
     baseline: GetLearningCostResponseBillBaseline | None
     promoted: GetLearningCostResponseBillPromoted | None
+    learning_usd: float
     points: list[GetLearningCostResponseBillPointsItem]
     break_even: GetLearningCostResponseBillBreakEven | None
     gap_usd: float | None
@@ -3275,17 +3278,11 @@ class GetAgentLearningResponseImpact(TypedDict):
 class GetAgentLearningResponseImpactBefore(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
-    median_learning_usd: float | None
 
 
 class GetAgentLearningResponseImpactAfter(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
-    median_learning_usd: float | None
 
 
 class ListLearningLogResponse(TypedDict):
