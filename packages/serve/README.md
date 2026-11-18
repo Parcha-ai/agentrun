@@ -96,7 +96,15 @@ place: a token from the environment stays out of the logs. `DIR/.token`'s token 
 it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
 link carries a launch code this start made at random (`?launch=<code>`), never the token. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
-use it. `AGENTRUN_FREE_MODEL_REQUESTS` (default 60) is the most requests on free models a run makes
+use it. The server remembers the public address in its data directory (`DIR/.public-url`). A start where it changed,
+including set where there was none or unset where there was one, writes one warning line to the log
+(`event=public_url_changed from=<old> to=<new>`). The owner signs in again at the new address, because the session
+cookie belongs to the old host, and links in earlier webhook messages still name the old address. When the old name
+still reaches this server and it has a new public address, a browser that opens the console at the old name gets a 308
+redirect to the new address. The browser keeps the link's `#/runs/<id>` part across the redirect, and the redirect is
+`no-store`, so a browser does not keep it if the address changes back. On a loopback listener, everything else under
+the old name stays refused: the API and webhooks get a 403 `forbidden` that names the new address, and another browser
+page gets a page that links to it. Every other name is refused as before. `AGENTRUN_FREE_MODEL_REQUESTS` (default 60) is the most requests on free models a run makes
 ([a limit on free requests](#a-limit-on-free-requests)).
 
 `AGENTRUN_TOKENS`, when set, is a list of more tokens, each with an id: `id:secret` entries separated by commas or
