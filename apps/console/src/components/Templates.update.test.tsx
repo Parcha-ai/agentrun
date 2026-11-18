@@ -23,7 +23,7 @@ const agentOf = (id: string, name: string, template: string | null) => ({ agent_
 const applyTemplate = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", trigger_ids: [], warnings: [] }));
 const go = vi.fn();
 const client = (agents: ReturnType<typeof agentOf>[]) =>
-  ({ listTemplates: async () => ({ templates: [base] }), listMcpServers: async () => ({ servers: [] }), listAgents: async () => ({ agents, next_cursor: null }), applyTemplate });
+  ({ listTemplates: async () => ({ templates: [base] }), listMcpServers: async () => ({ servers: [] }), listAgents: async (_q?: { cursor?: string | null }) => ({ agents, next_cursor: null as string | null }), applyTemplate });
 async function mount(v2: ReturnType<typeof client>) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);

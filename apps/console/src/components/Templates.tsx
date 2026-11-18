@@ -12,7 +12,7 @@ import { formColumnsClass, Input } from "@/components/ui/field";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
-import { type Client, ClientError, type FieldIssue } from "@/lib/client";
+import { allPages, type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { cn } from "@/lib/utils";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
@@ -269,17 +269,10 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   const [mine, setMine] = useState<{ id: string; name: string }[]>([]);
   useEffect(() => {
     let live = true;
-    (async () => {
-      const found: { id: string; name: string }[] = [];
-      let cursor: string | null = null;
-      for (let page = 0; page < 20; page++) {
-        const r = await v2.listAgents({ cursor });
-        found.push(...r.agents.filter((a) => a.template?.id === t.id).map((a) => ({ id: a.agent_id, name: a.definition?.name || a.agent_id })));
-        cursor = r.next_cursor;
-        if (!cursor) break;
-      }
-      return found;
-    })().then((found) => { if (live) setMine(found); }, () => {});
+    // Every page, to the list's end: an agent it made far down the list is offered too.
+    allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents, Number.POSITIVE_INFINITY)
+      .then((agents) => agents.filter((a) => a.template?.id === t.id).map((a) => ({ id: a.agent_id, name: a.definition?.name || a.agent_id })))
+      .then((found) => { if (live) setMine(found); }, () => {});
     return () => { live = false; };
   }, [v2, t.id]);
   // Whether this page is still the one shown: an Apply that answers after the owner left never takes them anywhere.

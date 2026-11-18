@@ -2853,11 +2853,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const own = { templateId: pkg.id, onAgent: entry.agent.id };
         try {
           if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind && !remade.has(i)) {
-            const { enabled: _owners, ...sent } = aimed;
+            const { enabled: _owners, source: given, ...sent } = aimed;
+            // The package's source, sent only when it says something other than the stored one: a PATCH's source puts the
+            // trigger on from now (its next time and an every_s grid restarted, a poll kicked), so an update that leaves a
+            // schedule as it was never moves it. An every_s schedule with no start_at is the stored one's grid (the time
+            // its first apply made it), as it says no other; a Composio one is its `resent` form.
+            const ours = resent.get(i) ?? (isObject(given) && given.kind === "schedule" && given.every_s !== undefined && given.start_at === undefined && isObject(was.source) && was.source.every_s === given.every_s && typeof was.source.start_at === "string" ? { ...given, start_at: was.source.start_at } : given);
+            const source = stable(ours) === stable(was.source) ? undefined : ours;
             // The package's settings whole: one its version leaves out goes back to what a fresh apply makes (POST
             // /triggers' default), never kept from the version before. PATCH reads null as no cap.
             const patch = { ...sent, catchup_window_s: sent.catchup_window_s ?? CATCHUP_WINDOW_S, max_active_runs: sent.max_active_runs ?? null };
-            const source = resent.get(i);
             if (await triggers.update(was.id, source ? { ...patch, source } : patch, own).then(() => true, movedAway)) {
               ids.push(was.id);
               continue;
