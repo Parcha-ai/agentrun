@@ -464,9 +464,9 @@ function CorrectionsEditor({ v2, agentId, onDone }: { v2: Client; agentId: strin
 /** Where a workflow given to runs stands, as the server's `status` says it (the promotions read's own word). */
 const STANDS: Partial<Record<LearnedItem["status"], { word: string; tone: "success" | "active" | "warning" | "muted"; title: string }>> = {
   serving: { word: "Serving", tone: "success", title: "It runs first on the runs it fits." },
-  checking: { word: "Checking", tone: "active", title: "Its check on the agent's own runs decides whether it serves; the agent takes the runs meanwhile." },
+  checking: { word: "Checking", tone: "active", title: "Its check on the agent's own runs decides whether this revision serves. The previous revision keeps serving meanwhile; the agent takes the runs only when none serves." },
   held: { word: "Held", tone: "warning", title: "It does not serve: its newest check or audit held it." },
-  stopped: { word: "Stopped", tone: "muted", title: "It does not serve, and nothing compiles again until a new revision lands." },
+  stopped: { word: "Stopped", tone: "muted", title: "It does not run first until a new revision lands: its checks stopped it, or it cost as much as the agent by hand. The agent takes its runs." },
 };
 
 function LearnedCard({ item, v2, agentId, readOnly, runs, approves, onChanged, refreshHolds }: { item: LearnedItem; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {

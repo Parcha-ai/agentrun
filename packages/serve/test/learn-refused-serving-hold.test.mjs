@@ -155,7 +155,7 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
     const records = await promotionsOf(server.settings, "agent-1");
     const same = { text: (text) => text, name: (name) => name };
     const shown = promotionsShown(records, same);
-    const lines = servingLinesOf(records, [], AUDIT_DEFAULTS);
+    const lines = servingLinesOf(records, [], AUDIT_DEFAULTS, () => false);
     return { agent: "agent-1", promotions: shown.promotions, serving: shown.serving.map((one, i) => ({ ...one, ...lines[i], audits_off: null, not_auditable: 0, ...(one.digest === null ? { champion: null } : {}) })) };
   };
   return { dir, server, store, logs, seed, start, asks, shadows, audits, read, launchOf };

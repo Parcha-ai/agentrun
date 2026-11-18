@@ -821,6 +821,14 @@ describe("what the next run is given", () => {
     expect(t.card("stopped-flow")!.textContent).toContain("Stopped");
     expect(t.card("stopped-flow")!.textContent).not.toContain("Serving");
     expect(t.host.querySelector('section[aria-label="What the next run is given"]')!.textContent).toContain("Workflows: check-refunds (serving), stopped-flow (stopped)");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    // Review on #3179: a revision being checked while an older one still serves: the older one keeps the runs, and the
+    // agent takes them only when none serves.
+    const checking = flow("checking", { name: "checking-flow", file: "workflows/checking-flow/workflow.json", readme: "workflows/checking-flow/README.md" });
+    const t2 = await open(agent(true), { learning: async () => view({ workflows: [checking] }) });
+    const chip = [...t2.card("checking-flow")!.querySelectorAll("[title]")].find((one) => one.textContent === "Checking")!;
+    expect(chip.getAttribute("title")).toContain("The previous revision keeps serving meanwhile");
+    expect(chip.getAttribute("title")).toContain("the agent takes the runs only when none serves");
   });
   it("says the next run gets nothing when learning is off, for the agent or on this server", async () => {
     const t = await open(agent(false));

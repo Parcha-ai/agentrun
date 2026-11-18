@@ -34,7 +34,7 @@ export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 import { endedIn, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
-import { sameAnswer } from "../learn/promote.js";
+import { type CostStop, sameAnswer } from "../learn/promote.js";
 import type { Skipped } from "../learn/replay-calls.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
@@ -120,6 +120,11 @@ export function costLineOf(past: readonly PastRun[], name: string, digest: strin
  *  hold them to, and their mean at or over it. */
 export const overLine = (line: ReturnType<typeof costLineOf>): boolean =>
   line.served.runs >= COST_WINDOW && line.by_hand !== null && line.served.mean_usd !== null && line.served.mean_usd >= line.by_hand.mean_usd;
+
+/** The money rule's decision over the agent's runs (`past`, store-reads/learning.ts pastRunsOverStore): whether it stops a
+ *  workflow at a digest from running first (overLine), the one workflowFirstOf reads at a claim. Each workflow's state
+ *  (learn/promote.ts servingStateOf) folds it in at its champion's digest. */
+export const costStopOf = (past: readonly PastRun[]): CostStop => (workflow, digest) => overLine(costLineOf(past, workflow, digest));
 
 /** Each learned workflow that has served one of the agent's runs (`past`) first, at the digest its newest served run
  *  ran, with the money rule's two sides there, the runs they left out for an unknown all-in, and where it stands:
