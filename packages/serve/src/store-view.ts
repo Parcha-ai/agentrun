@@ -43,6 +43,7 @@ import {
   WITHHELD_TITLE,
   costWordsOfView,
   freeOf,
+  stopAsked,
   usersOf,
   withAsks,
   withApprovalRows,
@@ -345,9 +346,20 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
   // store entries.
   const approvals = asksOf(records.entries);
+  // The run's command rows, read once for what needs them: a stop or a cancel asked for, a hand-over's answers, and the
+  // person's messages not yet taken.
+  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
+  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
+  // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
+  // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it. A stop
+  // asked for and not yet taken (stopAsked) is the mark too, from the stop's answer on, as a cancel's row is (`cancelling`
+  // below): between the turn's cut and the end that takes the stop, a read would otherwise see the cut turn's
+  // input_required with nothing pending.
+  const asked = !terminal && stopAsked(row, runRow, await commandsNow());
   // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
-  // reopen leaves) whose journal holds no end, by its row (answersOf `final`).
-  const answers = answersOf(records.entries, { final: runRow.state === "stopped" || runRow.state === "failed" ? runRow.state : undefined });
+  // reopen leaves) whose journal holds no end, by its row (answersOf `final`); every call still waiting once a stop is
+  // asked (stopAsked).
+  const answers = answersOf(records.entries, { final: runRow.state === "stopped" || runRow.state === "failed" ? runRow.state : asked ? "stopped" : undefined });
   // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
   // arguments and the person's notes through the run's redactor, as the file path's withApprovals served them.
   const rows = withApprovalRows(timeline, approvals, answers, redactorOf(values));
@@ -355,21 +367,10 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The run's cap as it stands, through the one reader the runner's gate reads too (capNowOf): a raise taken shows in the
   // run's cost.cap_usd and its budget card, never the old cap.
   const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
-  // The run's command rows, read once for what needs them: a stop or a cancel asked for, a hand-over's answers, and the
-  // person's messages not yet taken.
-  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
-  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
-  // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
-  // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it. A stop
-  // asked for and not yet taken is the mark too, from the 202 on, as a cancel's row is (`cancelling` below): the runner
-  // takes the stop row in the commit that ends the run stopped, and cuts the turn before it, so between the two a read
-  // would otherwise see the cut turn's input_required with nothing pending.
-  const stopAsked = !terminal && row.kind === "agentic" && runRow.importedFrom === null &&
-    (await commandsNow()).some((command) => command.kind === "stop" && command.takenAt === null && command.refused === null);
   const meta: RunViewMeta = {
     ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}),
     ...(Object.keys(answers).length ? { approvals: answers } : {}),
-    ...(stoppedByPerson(runRow, row.kind) || stopAsked ? { stopped_after: usersOf(rows) } : {}),
+    ...(stoppedByPerson(runRow, row.kind) || asked ? { stopped_after: usersOf(rows) } : {}),
   };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
