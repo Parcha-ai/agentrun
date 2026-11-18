@@ -295,6 +295,11 @@ export class Triggers {
   /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
    *  before it settled to. */
   private readonly turns = new Map<string, Promise<void>>();
+  /** Each trigger's edits and removals (update, remove), one after another on this server: a move to another agent never
+   *  lands between a template update's delete of its Composio instance and its conditional delete of the row (remove),
+   *  so a moved trigger never stands on an instance that delete took. Across servers the store's conditional write holds
+   *  the row. Removed from the map once idle. */
+  private readonly edits = new Map<string, Promise<void>>();
   /** Whether a firing waits for its trigger's room (max_active_runs): the timer then reads the store every WAIT_POLL_MS. */
   private waiting = false;
   /** The triggers whose day-kept keys are at their cap, said once until they are under it again. */
@@ -532,6 +537,10 @@ export class Triggers {
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
   async update(id: string, body: Json, own: TriggerOwn = {}) {
+    return this.one(id, () => this.updating(id, body, own));
+  }
+
+  private async updating(id: string, body: Json, own: TriggerOwn) {
     // A source is written only on the row it was checked against (its updatedAt): another write meanwhile (the
     // after-start seal's, a poll's next time) checks it again on the row as it is then, so a source read before a seal
     // never writes the clear value back over it.
@@ -620,6 +629,10 @@ export class Triggers {
    *  whether it is on), for the next update to remove; once it is gone there, the trigger goes here while it is still that
    *  agent's, then what its sender kept here for it. */
   async remove(id: string, own: Pick<TriggerOwn, "onAgent"> = {}): Promise<Json | undefined> {
+    return this.one(id, () => this.removing(id, own));
+  }
+
+  private async removing(id: string, own: Pick<TriggerOwn, "onAgent">): Promise<Json | undefined> {
     const trigger = await this.need(id, own.onAgent);
     const upstream = this.deps.upstream?.(trigger.source.kind);
     if (own.onAgent === undefined) {
@@ -724,6 +737,18 @@ export class Triggers {
       return;
     }
     await this.arm();
+  }
+
+  /** `work` on trigger `id` once every edit or removal of it asked before has settled (edits). Neither update nor remove
+   *  calls the other, so a turn never waits on itself. */
+  private one<T>(id: string, work: () => Promise<T>): Promise<T> {
+    const done = (this.edits.get(id) ?? Promise.resolve()).then(work);
+    const turn = done.then(() => undefined, () => undefined);
+    this.edits.set(id, turn);
+    void turn.then(() => {
+      if (this.edits.get(id) === turn) this.edits.delete(id);
+    });
+    return done;
   }
 
   /** `key`'s firing driven after every firing of its trigger asked before it. */
