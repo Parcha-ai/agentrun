@@ -43,6 +43,8 @@ const FRAME_BYTES = 48 * 1024;
 const POLL_WAIT_S = 25;
 const POLL_MS = 40_000;
 const STDIN_MS = 30_000;
+/** How long the output read waits out reads that fail before it gives up: a control plane down this long is down. */
+const READ_GIVE_UP_MS = 5 * 60_000;
 
 /** A machine as GET /v1/machines answers it (OpenAPI MachineInfo), as far as this host reads it. */
 interface CloudMachine {
@@ -164,6 +166,8 @@ class SmolcloudHost implements MachineHost {
 	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const base = `/v1/machines/${encodeURIComponent(id)}/execs`;
 		let seq = 0;
+		// Aborted by kill() before its DELETE, so the output read stops even when the DELETE cannot reach smol cloud.
+		const killed = new AbortController();
 		const frame = (execId: string, json: object) => this.#call("POST", `${base}/${execId}/stdin`, { seq: ++seq, ...json }, { timeoutMs: STDIN_MS }, { retry: true });
 		return framedExec<string>(
 			{
@@ -175,34 +179,46 @@ class SmolcloudHost implements MachineHost {
 					await this.#call("POST", base, { execId, command, interactive: true }, ctx, { retry: true });
 					return execId;
 				},
-				events: (execId) => this.#events(base, execId),
+				events: (execId) => this.#events(base, execId, killed.signal),
 				write: async (execId, text) => {
 					const bytes = Buffer.from(text, "utf8");
 					for (let at = 0; at < bytes.length; at += FRAME_BYTES) await frame(execId, { data: bytes.subarray(at, at + FRAME_BYTES).toString("base64") });
 				},
 				end: async (execId) => void (await frame(execId, { eof: true })),
-				kill: async (execId) => void (await this.#call("DELETE", `${base}/${execId}`, undefined, { timeoutMs: STDIN_MS }, { retry: true })),
+				kill: async (execId) => {
+					killed.abort();
+					await this.#call("DELETE", `${base}/${execId}`, undefined, { timeoutMs: STDIN_MS }, { retry: true });
+				},
 			},
 			argv,
 			ctx,
 		);
 	}
 
-	/** A resumable exec's output from its start, read by offset; its exit code last, when it ended with one. */
-	async *#events(base: string, execId: string): AsyncGenerator<FramedEvent> {
+	/**
+	 * A resumable exec's output from its start, read by offset; its exit code last, when it ended with one. It ends when
+	 * killed aborts, and throws once no read has been answered for READ_GIVE_UP_MS.
+	 */
+	async *#events(base: string, execId: string, killed: AbortSignal): AsyncGenerator<FramedEvent> {
 		let after = 0;
+		let answeredAt = Date.now();
 		for (;;) {
 			let read: ExecRead;
 			try {
-				read = await this.#call<ExecRead>("GET", `${base}/${execId}?after=${after}&wait=${POLL_WAIT_S}`, undefined, { timeoutMs: POLL_MS }, { retry: true });
+				read = await this.#call<ExecRead>("GET", `${base}/${execId}?after=${after}&wait=${POLL_WAIT_S}`, undefined, { timeoutMs: POLL_MS, signal: killed }, { retry: true });
 			} catch (error) {
+				if (killed.aborted) return;
 				const code = error instanceof HostError ? error.code : "vendor";
 				if (code === "not_found") return;
 				// A node or control that restarts keeps the output: read again from the same offset.
 				if (code !== "timeout" && code !== "vendor" && code !== "limit") throw error;
-				await pause(1_000);
+				if (Date.now() - answeredAt >= READ_GIVE_UP_MS) {
+					throw new Error(`smol cloud answered no read of exec ${execId}'s output for ${READ_GIVE_UP_MS / 60_000} minutes, so it is read no more: the last answer was ${(error as Error).message}`);
+				}
+				await pause(1_000, killed);
 				continue;
 			}
+			answeredAt = Date.now();
 			if (read.lost) throw new Error(`smol cloud no longer holds part of exec ${execId}'s output: ${JSON.stringify(read.lost)}`);
 			for (const chunk of read.output ?? []) yield { stream: chunk.stream === "stderr" ? "stderr" : "stdout", base64: chunk.data };
 			if (typeof read.next === "number") after = read.next;

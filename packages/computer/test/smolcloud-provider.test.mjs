@@ -99,6 +99,44 @@ test("exec sends argv as given, an argv with an empty word as one /bin/sh -c lin
 	assert.deepEqual(calls.at(-1), { method: "DELETE", path: `/v1/machines/${ID}/execs/${started.body.execId}`, body: undefined, auth: `Bearer ${KEY}` });
 });
 
+/** A recorder whose exec starts, then answers every read of its output 503 and refuses its delete. */
+function unreadable() {
+	return recorder((method, path) => {
+		if (method === "POST" && path.endsWith("/execs")) return [201, {}];
+		if (method === "GET") return [503, { detail: "control restarting" }];
+		if (method === "DELETE") return [400, { detail: "refused" }];
+	});
+}
+
+test("kill stops the output read at once, while smol cloud answers no read and refuses the delete", async () => {
+	const { calls, host } = unreadable();
+	const reads = () => calls.filter((c) => c.method === "GET").length;
+	const proc = await host.exec(ID, ["sleep", "600"], CTX);
+	while (reads() === 0) await new Promise((resolve) => setImmediate(resolve));
+	await proc.kill();
+	const read = reads();
+	let timer;
+	const late = new Promise((resolve) => (timer = setTimeout(resolve, 3_000, "still reading 3 s after kill")));
+	assert.equal(await Promise.race([proc.wait(), late]), -1);
+	clearTimeout(timer);
+	assert.equal(reads(), read, "no read after kill");
+});
+
+test("the output read gives up in words, naming the exec and the last answer, once no read was answered for 5 minutes", async (t) => {
+	const { calls, host } = unreadable();
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	const proc = await host.exec(ID, ["sleep", "600"], CTX);
+	let settled;
+	proc.wait().then((code) => (settled = code), (error) => (settled = error));
+	for (let i = 0; settled === undefined && i < 1_000; i++) {
+		await new Promise((resolve) => setImmediate(resolve));
+		t.mock.timers.tick(5_000);
+	}
+	const { execId } = calls[0].body;
+	assert.ok(settled instanceof Error, `wait() answered ${settled}`);
+	assert.match(settled.message, new RegExp(`no read of exec ${execId}'s output for 5 minutes.*answered 503: control restarting`));
+});
+
 test("upload puts the bytes at the guest path through the files API; extend changes the deadline label alone", async () => {
 	const { calls, host } = recorder(() => [200, {}]);
 	await host.upload(ID, "/tmp/agentrun/computerd", new Uint8Array([1, 2, 3]), CTX);
