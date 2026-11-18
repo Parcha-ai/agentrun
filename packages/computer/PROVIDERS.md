@@ -418,7 +418,34 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   called. The daemon your machines fetch is `hostedDaemonPath(arch)`, the file whose SHA-256 they check.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
-- **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
+- **No Archil mount yet.** A spec with one is refused in words.
+- **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
+  to init, and once the machine dials, its X server and window manager start through computerd's `process.start` over
+  that socket, as the tool user. A machine minted a desktop may say `linux` (same os and arch) until its display
+  answers; until a hello says `desktop`, `connect` gives a linux computer whose screen, input, apps and ui calls are
+  refused in words ("its display isn't up yet"), never sent. Every dial provider takes one, from the box image, whose
+  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
+  sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
+  - **E2B**: its default on either connect, from the box template (the template's own size).
+  - **Fly Machines**: `kind: "desktop"`; 2 shared CPUs and 4 GiB (`guest`), up to 8 shared CPUs and 2 GiB a CPU
+    (fly-go's `MachineGuest`, as `src/fly.ts` holds it).
+  - **Cloudflare**: `kind: "desktop"`; the relay's image is `FROM` the box image (`relays/cloudflare/Dockerfile`), and
+    2 CPUs and 4 GiB pick standard-3, 2 vCPUs, 8 GiB and 16 GB of disk; an image may be as large as the instance's
+    disk ([containers/platform-details/limits](https://developers.cloudflare.com/containers/platform-details/limits/)).
+    The box image is about 400 MB compressed (amd64); its size unpacked is **unverified**, but well under standard-1's
+    8 GB.
+  - **Modal**: `kind: "desktop"` on `connect: "dial"` alone; 2 CPUs and 4 GiB on Modal's VM runtime, with no GPU (a GPU
+    sandbox runs on gVisor). On `connect: "exec"` the constructor refuses a desktop in words; the descriptor's desktop
+    configuration selects dial itself.
+  - **Daytona**: `kind: "desktop"` on `connect: "dial"` alone, from the operator's snapshot of `box/Dockerfile`
+    (`AGENTRUN_DAYTONA_SNAPSHOT`), with its 2 CPUs, 4 GB and 10 GB of disk (`box/build-daytona.py`); no resources may be
+    sent beside a snapshot, and no GPU on dial. On `connect: "exec"` the constructor refuses a desktop in words; the
+    descriptor's desktop configuration selects dial itself.
+
+  Xvfb and the window manager on Fly, Cloudflare, Modal and Daytona are **unverified**: no live run yet. The window
+  manager runs under `unshare --user --map-current-user --net` as the tool user; whether each vendor's runtime lets an
+  unprivileged user make those namespaces is **unverified** (Modal's gVisor, measured for root alone, takes
+  `unshare -Urn`).
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's

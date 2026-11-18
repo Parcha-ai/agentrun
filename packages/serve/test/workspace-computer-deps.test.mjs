@@ -390,7 +390,8 @@ test("a desktop under the default list is open, under the operator's list that l
   const desktops = PROVIDERS.filter((one) => one.kinds.includes("desktop") && one.network?.includes("open"));
   assert.deepEqual(desktops.map((one) => one.id).filter((id) => ["docker", "agent37", "e2b"].includes(id)).sort(), ["agent37", "docker", "e2b"], "Docker's, Agent37's and E2B's desktops make open");
   for (const entry of desktops) {
-    const spec = (env, run) => computerSpecOf({ AGENTRUN_DOCKER_IMAGE: image, ...env })(entry, "desktop", { networks: entry.network, maxLifetimeMs: 3_600_000, ...run });
+    // Daytona's desktop starts from the operator's snapshot of box/Dockerfile, as its dial needs.
+    const spec = (env, run) => computerSpecOf({ AGENTRUN_DOCKER_IMAGE: image, AGENTRUN_DAYTONA_SNAPSHOT: "agentrun-box-0123456789ab", ...env })(entry, "desktop", { networks: entry.network, maxLifetimeMs: 3_600_000, ...run });
     assert.equal(spec({}, { boxAllow: [...DEFAULT_BOX_ALLOW] }).network, "open", `${entry.id}: the launch's default list`);
     assert.equal(spec({}, {}).network, "open", `${entry.id}: no box_allow, this server's default list`);
     assert.deepEqual(spec({}, { boxAllow: ["example.com"], boxAllowSet: true }).network, { allow: ["example.com"] }, `${entry.id}: the launch's operator list`);

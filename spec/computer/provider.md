@@ -270,23 +270,29 @@ refuses to start, so the adapter doesn't fit.
 
 A host whose facts say `connect: "dial"` has no `exec` and no `upload`: descriptor, facts, `create`, `get`, `list`
 and `delete`, with `errorCode`, `extend` and `check` optional. The constructor refuses one with `exec` or `upload`,
-or for kind `desktop` (the machine's init has no display), in words.
+in words.
 `HostedProvider` takes `dial: { url, tokens, hub }`: the server's public address (`AGENTRUN_PUBLIC_URL`), its
 `MachineTokens` and its `AttachHub`. Then:
 
 - `create` refuses `refused`, before the vendor is called, each in its own words: with no `dial` (the process has
   no attach hub), when the url is missing or not `https` (`http` only on `127.0.0.1`), and for an Archil mount. A
   host that doesn't dial ignores `dial`, so a server may pass it to every hosted provider. It mints the machine's token, expiring at `backstopAt`, and calls the
-  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names the five) and `egress`
+  host's `create` with `boot.env` ([`attach.md`](attach.md#hosted-machines-that-dial) names them: five, and `DISPLAY`
+  for a desktop) and `egress`
   true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
   machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
   dial at once. Then it waits up to `createMs` for the machine's socket in the hub; one that
   never dials is deleted, its token revoked, and create fails `timeout`, naming the address.
 - Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
-  holds by the daemon's SHA-256, which the machine checks before it runs it.
-- `connect` goes over the machine's socket, by the attach binding's rules: a drop fails `gone`. `release` with
+  holds by the daemon's SHA-256, which the machine checks before it runs it. A desktop's X server and window manager
+  start over the machine's socket, through `process.start`, as on a host with exec.
+- `connect` goes over the machine's socket, by the attach binding's rules, with a fresh `hello` (a desktop's display
+  answers after it dialed): a drop fails `gone`. A desktop whose `hello` says `linux` is a linux computer until one
+  says `desktop`: its connection's `screen.*`, `input.*`, `apps.*` and `ui.*` calls, and `watch`, are refused
+  `unsupported` ("its display isn't up yet"), never sent. `release` with
   `delete` revokes the token and closes the socket before the vendor's delete.
-- The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400`, and
+- The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400` (a
+  desktop's token takes `linux`, its hello before its display answers), and
   after delete or past `backstopAt` it is refused. A run of a dial host passes `ConformanceOptions.dial`, the server's
   side for the case (through the CLI, its conformance module's `dialKit()`); a host with exec passes the case, observed.
 

@@ -3,6 +3,7 @@
 // each read from options or from what an injected fetch is handed. The adapter's lifecycle is tested once, against its
 // one fake host (hosted-provider.test.mjs); Daytona's own lifecycle is proven live (test/daytona). The fetch here only
 // records what it is given and answers one canned reply per route: no sandbox exists, and nothing reaches the network.
+// One test, the desktop over dial, routes to a sandbox it keeps, booted from its env (fake-dial-host.mjs bootDial).
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
 import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MemoryMachineTokens, mountsOf } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -771,6 +773,61 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.match(plain[0].message, /Daytona's default snapshot has none, so it would never dial/);
 	assert.throws(() => setup({}, { connect: "ssh" }), /connect is how Daytona reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	assert.equal(rec.requests.length, 0);
+});
+
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager, and DISPLAY beside the boot env, for init, with no resources beside the snapshot; on connect exec it is refused when made, in words", async () => {
+	const rec = refusedCreate();
+	const dial = dialOf();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined);
+	assert.equal(provider.host.facts.windowManager, true, "a snapshot of box/Dockerfile has xfwm4");
+	const made = await provider.create({ ...SPEC, image: "agentrun-archil-0123456789ab" }, { requestId: "r-dial-desktop" });
+	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
+	const body = posted(rec);
+	assert.deepEqual(Object.keys(body.env).sort(), [...BOOT_NAMES, "DISPLAY"]);
+	assert.equal(body.env.DISPLAY, ":0");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs and 4 GB: no resources beside a snapshot");
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any request.
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({}, { ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: a Daytona desktop is made on connect "dial" alone, from a snapshot of box\/Dockerfile, its X server started over the socket its machine dials: connect "exec" makes kind linux$/);
+	}
+	assert.equal(setup({}, { kind: "linux" }).provider.capabilities().kind, "linux");
+});
+
+test("Daytona's desktop configuration, as serve builds it over connect exec, makes a desktop over dial from the box snapshot: the sandbox boots from its env, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	// The operator's snapshot of box/Dockerfile (AGENTRUN_DAYTONA_SNAPSHOT, box/build-daytona.py's name): it holds Xvfb and xfwm4.
+	const SNAPSHOT = "agentrun-box-0123456789ab";
+	const ID = "sb-desktop-1";
+	let made;
+	let booted;
+	// A Daytona API that keeps the one sandbox it makes: it boots from the env it was posted (bootDial).
+	const rec = recorder({
+		"GET /api/sandbox": () => ({ body: { items: made === undefined || made.state === "destroyed" ? [] : [made] } }),
+		"POST /api/sandbox": ({ body }) => {
+			made = sandbox({ id: ID, name: body.name, snapshot: body.snapshot, labels: body.labels, networkBlockAll: body.networkBlockAll });
+			booted = bootDial(body.env, dial, { daemon: readFileSync(DAEMON) });
+			return { body: made };
+		},
+		[`GET /api/sandbox/${ID}`]: () => (made.state === "destroyed" ? { status: 404, body: { statusCode: 404, message: "Sandbox not found" } } : { body: made }),
+		[`DELETE /api/sandbox/${ID}`]: () => {
+			made.state = "destroyed";
+			return { status: 204 };
+		},
+	});
+	const { options } = DAYTONA.capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (daytonaConnect exec), then the configuration's.
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "exec", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	assert.equal(provider.host.facts.connect, "dial");
+	await desktopOverDial(provider, dial, () => booted, { image: SNAPSHOT, lifetimeMs: 600_000, network: "none" });
+	const body = posted(rec);
+	assert.equal(body.snapshot, SNAPSHOT, "made from the box snapshot");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs, 4 GB and 10 GB: no resources beside a snapshot");
+	assert.equal(made.state, "destroyed", "release deleted the sandbox");
 });
 
 test("Daytona's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", () => {
