@@ -1420,7 +1420,7 @@ test("import ends with the summary of every session found, read again from the s
   // Every request at 09:01 or 09:03 UTC: 05:00 in Puerto Rico (UTC-4). Bash is two of the four tool calls.
   const expected = [
     "Found 4 sessions  Claude Code 2 · Codex 1 · pi 1",
-    "Imported into 3 agents (one per project)",
+    "Imported 4 sessions into 3 agents (one per project)",
     "+ 8.4K tokens (84% cached) · 0.2 h of agent time",
     "+ Busiest hour: 05:00 · top tool: Bash (50%)",
     "Open http://127.0.0.1:7555/",
@@ -1429,7 +1429,7 @@ test("import ends with the summary of every session found, read again from the s
   assert.deepEqual(dry, [expected[0], "Would import into 3 agents (one per project)", ...expected.slice(2)]);
   assert.equal(existsSync(data), false, "the dry run wrote nothing");
   assert.deepEqual(block(), expected);
-  assert.deepEqual(block(), expected, "run again, every session is held, and counted from the store");
+  assert.deepEqual(block(), [expected[0], "Nothing new to import: all 4 sessions are in 3 agents already", ...expected.slice(2)], "run again, every session is held, counted from the store, and none said imported");
 });
 
 test("the summary says unknown where it has no data", () => {
@@ -1475,6 +1475,94 @@ test("an imported agent runs as imported: a project with no instructions file ge
   const lines = [];
   assert.equal(await importCommand(["--data", join(root, "again"), "--all"], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
   assert.deepEqual(lines.filter((line) => line.startsWith("model not kept: ")), [`model not kept: ${build} (codex) ran on openai/gpt-6.1-codex, which no model catalog here lists; its agent runs on the server's default model until you pick one`]);
+});
+
+test("the summary says what this import took: new sessions out of every agent, nothing new as nothing new, a stop as a stop", () => {
+  const found = [{ source: "codex", agent: "a" }, { source: "codex", agent: "b" }, { source: "pi", agent: "c" }];
+  const second = (imported) => summaryLines(found, "http://127.0.0.1:7340", { imported })[1];
+  assert.equal(second({ sessions: 3, agents: 3 }), "Imported 3 sessions into 3 agents (one per project)");
+  assert.equal(second({ sessions: 1, agents: 1 }), "Imported 1 session into 1 of 3 agents (one per project)");
+  assert.equal(second({ sessions: 0, agents: 0 }), "Nothing new to import: all 3 sessions are in 3 agents already");
+  assert.equal(second({ sessions: 2, agents: 2, stopped: true }), "Stopped: imported 2 sessions into 2 of 3 agents before Ctrl+C; run the import again for the rest");
+  assert.equal(summaryLines([], "http://127.0.0.1:7340", { imported: { sessions: 0, agents: 0 } })[1], "Nothing to import");
+  assert.equal(summaryLines(found, "http://127.0.0.1:7340", { dryRun: true, imported: { sessions: 0, agents: 0 } })[1], "Would import into 3 agents (one per project)", "a dry run says what it would take");
+});
+
+test("the summary's last line names an address only when it is known: a guessed default port says the server may take another", () => {
+  const last = (open) => summaryLines([], open).at(-1);
+  assert.equal(last({ url: "http://127.0.0.1:7555", known: true }), "Open http://127.0.0.1:7555/");
+  assert.equal(last({ url: "http://127.0.0.1:7340", known: false }), "Start the server, then open the address it prints (http://127.0.0.1:7340/ unless that port is taken)");
+  assert.equal(last({ known: false }), "Start the server, then open the address it prints");
+});
+
+test("import with no --port does not promise the default port; --port 0 names none", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "port-hint");
+  mkdirSync(project, { recursive: true });
+  codexSession(at, project, 201);
+  const data = join(root, "agents");
+  const last = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.at(-1);
+  };
+  assert.equal(await last(), "Start the server, then open the address it prints (http://127.0.0.1:7340/ unless that port is taken)");
+  assert.equal(await last("--port", "0"), "Start the server, then open the address it prints");
+  assert.equal(await last("--port", "7400"), "Open http://127.0.0.1:7400/");
+});
+
+test("import says how far it is, and a Ctrl+C stops it between two sessions: what is saved stays, it says so, exits 130, and the next import takes the rest", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "stoppable");
+  mkdirSync(project, { recursive: true });
+  for (const n of [211, 212, 213, 214]) codexSession(at, project, n);
+  const data = join(root, "agents");
+  const shown = [];
+  let interrupted = false;
+  const progress = {
+    show: (text) => {
+      shown.push(text);
+      // Ctrl+C once two sessions are written: the signal's own listeners, as a terminal's Ctrl+C reaches them.
+      if (!interrupted && text === "Importing sessions: 2 of 4") {
+        interrupted = true;
+        process.emit("SIGINT");
+      }
+    },
+    done: () => shown.push("(cleared)"),
+  };
+  const lines = [];
+  const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line), progress });
+  assert.equal(code, 130, lines.join("\n"));
+  assert.equal(process.listenerCount("SIGINT"), 0, "its Ctrl+C listener is gone once it ends");
+  assert.equal(shown[0], "Looking for sessions…");
+  assert.ok(shown.includes("Checking sessions for keys: 0 of 4"), shown.join("\n"));
+  assert.ok(shown.includes("Importing sessions: 0 of 4"), shown.join("\n"));
+  assert.ok(!shown.includes("Importing sessions: 3 of 4"), "nothing after the stop");
+  assert.equal(shown.at(-1), "(cleared)", "the progress line is cleared before the summary");
+  assert.ok(shown.every((text) => !text.includes(root)), "progress holds counts, never a path");
+  assert.equal(lines.at(-4), "Stopped: imported 2 sessions into 1 agent before Ctrl+C; run the import again for the rest");
+  const resumed = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => resumed.push(line), progress: { show: () => undefined, done: () => undefined } }), 0);
+  assert.ok(resumed.includes("already imported, unchanged: 2 session files (not read again)"), resumed.join("\n"));
+  assert.equal(resumed.at(-4), "Imported 2 sessions into 1 agent (one per project)");
+});
+
+test("an import refused because a server holds the store says to stop the server first", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "held");
+  mkdirSync(project, { recursive: true });
+  codexSession(at, project, 221);
+  const data = join(root, "agents");
+  // The server's role: the owner lock a running server holds.
+  const server = await openData(data, "server");
+  t.after(async () => await server.close());
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env: { ...process.env, HOME: at }, encoding: "utf8" });
+  assert.equal(ran.status, 1, ran.stderr);
+  assert.match(ran.stderr, /another server holds/);
+  assert.ok(ran.stderr.includes("Stop the server first (Ctrl+C where it runs, or `npx @parcha/agentrun service stop` when it runs as a service), run the import, then start the server again."), ran.stderr);
 });
 
 test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {
@@ -1626,7 +1714,7 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   // The Claude Code session's 2,688 tokens and the subagent's 1,965 (cache reads 2,300 + 1,500 of 2,608 + 1,900 input);
   // Bash and the subagent's shell call, one each.
   const block = lines.slice(-5);
-  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
+  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported 1 session into 1 agent (one per project)"]);
   assert.match(block[2], /^\+ 4\.7K tokens \(84% cached\) · /);
   assert.match(block[3], / · top tool: Bash \(50%\)$/);
   const store = await openData(data, "runner");
@@ -1685,7 +1773,7 @@ test("an untied subagent's own subagents count in the summary's totals with it, 
   assert.equal(await importCommand(["--data", data, "--all"], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
   // 2,688 + 1,965 + 1,965 tokens; cache reads 2,300 + 1,500 + 1,500 of 2,608 + 1,900 + 1,900 input; one Bash call, two shell.
   const block = lines.slice(-5);
-  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
+  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported 1 session into 1 agent (one per project)"]);
   assert.match(block[2], /^\+ 6\.6K tokens \(83% cached\) · /);
   assert.match(block[3], / · top tool: shell \(67%\)$/);
   const store = await openData(data, "runner");
@@ -1849,7 +1937,9 @@ test("a later file of a session imported already is held as the session's growth
   // The thread resumed later, in a new file of the same id.
   shifted(codexSession(home, project, 192), `rollout-2026-10-20T10-00-00-${sessionId(192)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(191) } } : r));
   const second = await run();
-  assert.deepEqual(second, first, "the run as it was imported");
+  assert.equal(first[1], "Imported 1 session into 1 agent (one per project)");
+  assert.equal(second[1], "Nothing new to import: this session is in 1 agent already", "nothing new written, and said so");
+  assert.deepEqual([second[0], ...second.slice(2)], [first[0], ...first.slice(2)], "the run as it was imported");
   const store = await openData(data, "runner");
   t.after(async () => await store.close());
   assert.equal((await rowsOf(store)).length, 1);
