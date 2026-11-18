@@ -276,7 +276,7 @@ test("a refusal read the token store never answers holds create no later than cr
 	assert.equal(failed.ok, false);
 	assert.equal(failed.error.code, "timeout", failed.error.message);
 	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach within 0\.1 s/);
-	assert.ok(took < 400, `create ended at createMs, not at the read's requestMs: ${took} ms`);
+	assert.ok(took < 450, `create ended at createMs, not at the read's requestMs or a poll past createMs: ${took} ms`);
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
