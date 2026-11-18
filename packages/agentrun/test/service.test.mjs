@@ -320,6 +320,25 @@ test("agentrun open with no server answering says so, exit 1", async () => {
   assert.match(err.join(""), /No AgentRun answers for /);
 });
 
+test("service install --public-url puts the address on the service's command line, so every start has it; a bad one, or one with --tailscale, is refused before anything is written", async () => {
+  const { home, exec, get, calls } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  await assert.rejects(service.install({ "public-url": "http://box.tailnet.example/" }), (error) => error.code === 2 && /--public-url takes an https address/.test(error.message));
+  await assert.rejects(service.install({ "public-url": "https://box.tailnet.example/agentrun" }), (error) => error.code === 2 && /with no path/.test(error.message));
+  await assert.rejects(service.install({ "public-url": "https://box.tailnet.example/", tailscale: true }), (error) => error.code === 2 && /--public-url and --tailscale each set the address people open/.test(error.message));
+  assert.equal(existsSync(file), false, "nothing written");
+  assert.equal(calls.some((call) => call.startsWith("tailscale")), false, "Tailscale is not asked");
+  assert.equal(await service.install({ port: "7345", "public-url": "https://box.tailnet.example" }), 0);
+  const unit = readFileSync(file, "utf8");
+  assert.deepEqual(unitArgs(unit), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://box.tailnet.example/"]);
+  assert.doesNotMatch(unit, /AGENTRUN_PUBLIC_URL/, "the launcher's flag, not a variable: the launcher checks it at each start");
+  // The plist on macOS carries it the same way.
+  const plist = plistText({ program: "/u/mac/.agentrun/bin/agentrun", args: ["--no-open", "--public-url", "https://box.tailnet.example/"], path: "/usr/bin", log: "/u/mac/log" });
+  assert.deepEqual(plistArgs(plist).slice(1), ["--no-open", "--public-url", "https://box.tailnet.example/"]);
+});
+
 test("service install with --data waits on that directory's server, and a restart waits for a record newer than itself", async () => {
   const { home, exec, get } = linuxHome();
   const data = join(home, "elsewhere");

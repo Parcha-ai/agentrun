@@ -8,6 +8,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { main as cli, NOUNS, words } from "./cli.mjs";
+import { chosenPublicUrl } from "./public-url.mjs";
+import { tailnetHint, tailnetNameOf } from "./tailscale.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
 /** This command's package at its version, handed to the server it starts (AGENTRUN_NPX_PACKAGE), so the server's hints
@@ -229,7 +231,8 @@ export function npmExecOf(env, from = process.ppid) {
   return undefined;
 }
 
-export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open]   start the server
+export const USAGE = `Usage: npx @parcha/agentrun [--port N] [--data DIR] [--no-open] [--public-url URL]   start the server
+       (--public-url: the https address people open it at, through a proxy such as tailscale serve)
        npx @parcha/agentrun import|reset-password|runner|native [--data DIR]   a server command (native: discover/connect an existing project)
        npx @parcha/agentrun <command> [args]   the server's API: agents, runs, triggers, ..., api (npx @parcha/agentrun help)`;
 
@@ -245,6 +248,20 @@ export function installedServer(resolve = createRequire(import.meta.url).resolve
 /** The server's arguments: this command's own, with the browser opened unless --no-open says not to (the server's
  *  --open, which itself skips a CI run and a machine with no display). */
 export const serverArgs = (argv) => (argv.includes("--no-open") ? argv.filter((arg) => arg !== "--no-open") : ["--open", ...argv]);
+
+/** Whether the server listens on this machine only: no --listen (127.0.0.1), or a loopback one. Its last --listen counts,
+ *  as the server reads them. */
+export function onLoopback(args) {
+  let listen;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--listen") listen = args[++i];
+    else if (args[i].startsWith("--listen=")) listen = args[i].slice("--listen=".length);
+  }
+  return listen === undefined || /^(localhost|127(?:\.\d{1,3}){3}|::1|\[::1\])$/i.test(listen);
+}
+
+/** Whether this runs in CI, where nobody reads a hint. */
+const inCi = (env) => Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
@@ -317,13 +334,21 @@ export async function main(argv, env = process.env) {
   // opens this same store.
   // `--data <dir>` and `--data=<dir>` are the same option, and the last one wins, as the server reads them; the server is
   // handed exactly one, so this command, its hint and the server agree on the directory.
+  // --public-url is this command's own: the server takes the address as AGENTRUN_PUBLIC_URL, never as a flag.
   let dir;
+  let publicFlag;
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--data" && i + 1 < argv.length) dir = argv[++i];
     else if (argv[i].startsWith("--data=")) dir = argv[i].slice("--data=".length);
+    else if (argv[i] === "--public-url") publicFlag = argv[++i] ?? "";
+    else if (argv[i].startsWith("--public-url=")) publicFlag = argv[i].slice("--public-url=".length);
     else rest.push(argv[i]);
   }
+  const chosen = chosenPublicUrl(publicFlag, env.AGENTRUN_PUBLIC_URL);
+  if (chosen.error !== undefined) return console.error(chosen.error), 2;
+  const publicUrl = chosen.url;
+  if (publicUrl !== undefined) childEnv.AGENTRUN_PUBLIC_URL = publicUrl;
   const dataDir = dir ?? join(homedir(), ".agentrun");
   // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
   const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
@@ -387,6 +412,10 @@ export async function main(argv, env = process.env) {
     if (log.fd !== undefined) try { closeSync(log.fd); } catch {}
     log.fd = undefined;
   };
+  // On loopback with no public address, a person may want it on their other devices: where Tailscale runs here, the
+  // start says how (tailnetHint), once it is up. Reading Tailscale's status is all it does there, bounded, in parallel
+  // with the start; any error says nothing.
+  const tailnetName = publicUrl === undefined && !env.RENDER_EXTERNAL_URL && onLoopback(rest) && !inCi(env) ? tailnetNameOf({ env }) : Promise.resolve(undefined);
   const child = spawn(launcher, serverArgs([...data, ...rest]), { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
   let started = false;
   const errTail = [];
@@ -452,7 +481,7 @@ export async function main(argv, env = process.env) {
     clearTimeout(timer);
     console.error(`AgentRun is starting at ${address}: it listens there now, and opens once its store is ready.`);
   };
-  const url = await Promise.race([openUrl(child.stdout, env.AGENTRUN_PUBLIC_URL, seen, tell, tell, onStarting), new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), bound); })]);
+  const url = await Promise.race([openUrl(child.stdout, publicUrl, seen, tell, tell, onStarting), new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), bound); })]);
   clearTimeout(timer);
   if (url === undefined || url === TIMED_OUT) {
     // Its stdout ended (it exited, was never started, or closed it), or the bound passed with it still running. A server
@@ -499,5 +528,8 @@ export async function main(argv, env = process.env) {
   console.error(env.AGENTRUN_TOKEN ? "The API token is the AGENTRUN_TOKEN this command was started with." : `The API token is in ${join(dataDir, ".token")}.`);
   told = true;
   for (const line of held.splice(0)) console.error(line);
+  const name = await tailnetName;
+  const port = new URL(url).port;
+  if (name !== undefined && port !== "" && new URL(url).hostname === HOST) console.error(tailnetHint(name, port));
   return exited;
 }

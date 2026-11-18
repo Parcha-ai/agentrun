@@ -44,7 +44,7 @@ one when the last has run out) until the password is set, the console after. It 
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. For a local model, such
+`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. For a local model, such
 as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
 AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
 service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
@@ -74,6 +74,27 @@ Tailscale's operator may change what it serves, it prints the one `sudo tailscal
 `agentrun service uninstall` removes the serve entry it added and no other. Tailscale's Personal plan is free: up to 6
 users, unlimited user devices ([pricing](https://tailscale.com/pricing)). The https address needs MagicDNS and HTTPS
 certificates turned on in your tailnet's [DNS settings](https://login.tailscale.com/admin/dns).
+
+Behind a proxy of your own instead (your own `tailscale serve`, a reverse proxy with HTTPS), pass the address people
+open with `--public-url`, and keep the port the proxy points at fixed:
+
+```sh
+npx @parcha/agentrun --port 7340 --public-url https://box.tailnet.example/
+agentrun service install --port 7340 --public-url https://box.tailnet.example/
+```
+
+The server takes it as its public address, as it takes `AGENTRUN_PUBLIC_URL`: its links name it, a browser that sends
+that name as `Host` is let in on loopback (any other gets "unexpected Host header"), and its first visit asks for the
+setup code. The service keeps it on its command line, so every restart has it. It must be an `https://` address, or
+`http://` on this machine (`localhost`, `127.0.0.1`), with no path beyond `/` and no user name or password; anything else
+is refused with exit 2 before the server starts. `AGENTRUN_PUBLIC_URL` still works; given with `--public-url`, the two
+must name the same address. `--public-url` and `--tailscale` don't go together: `--tailscale` names its own.
+
+Started on loopback with no public address, where `tailscale` is on `PATH` and signed in, the command reads
+`tailscale status --json` (at most 2 seconds, and it changes nothing) and says once, on stderr, the address your tailnet
+could open it at and the two steps to it: `tailscale serve --bg <port>`, which keeps it on your tailnet, then a restart
+with `--port <port> --public-url https://<machine>.<tailnet>/`. It never runs either, never suggests Funnel, says
+nothing when Tailscale is missing, signed out or slow, and says nothing in CI.
 
 On a Linux server you rent (Ubuntu or Debian, as root), `--vps` sets up AgentRun in Docker Compose instead, with a
 shell for its agents in Docker sandboxes, on your tailnet when Tailscale is logged in and on the server's loopback

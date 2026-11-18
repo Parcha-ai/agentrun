@@ -145,11 +145,16 @@ service with its own settings; never stop it unasked.
 
 ### My always-on machine
 
-Continue in a session on that machine, or an SSH session they already use. With their OK, run
+The browser is on another device here, so the server needs the address that browser opens. Continue in a session on
+that machine, or an SSH session they already use. With their OK, run
 `curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale`: it installs AgentRun as a service, shares it on their
 own tailnet only (`tailscale serve`, never Funnel) and prints its `https://<machine>.<tailnet DNS name>/` address. When
 Tailscale is missing or signed out, or Linux needs operator rights, it prints the steps and the command to run again;
 pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code: open its page (below).
+When they already put the machine behind HTTPS of their own (their own `tailscale serve`, a reverse proxy), install
+without `--tailscale` and give the service that address: `agentrun service install --port 7340 --public-url
+https://<name>/`, with the proxy pointing at port 7340. Where there is no service manager, start it with
+`npx --yes @parcha/agentrun@0.4 --no-open --port 7340 --public-url https://<name>/` instead.
 On a Linux server they rent (Ubuntu or Debian, as root), run `curl -fsSL https://agentrun.ai/install | sh -s -- --vps`
 instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private the same way and prints the setup code.
 

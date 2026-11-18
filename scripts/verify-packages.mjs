@@ -80,7 +80,7 @@ const allowedExtraFiles = {
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
-  // installer (skill.mjs), its template package check (template.mjs), its user service (service.mjs) and its tailnet
+  // installer (skill.mjs), its template package check (template.mjs), its user service (service.mjs), its --public-url check (public-url.mjs) and its tailnet
   // step (tailscale.mjs), and the installer that brings its own Node (install.sh), which `agentrun service upgrade` runs.
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile and install.sh (the build's
@@ -88,7 +88,7 @@ const allowedExtraFiles = {
   // as a Daytona snapshot, a Modal image or an E2B template, and the recipe's hash with its types (dist/box-image.js names
   // the published image by it, which Agent37 registers as a template).
   computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/install.sh'],
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/install.sh'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [

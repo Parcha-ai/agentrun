@@ -10,6 +10,7 @@ import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, re
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publicUrlOf } from "./public-url.mjs";
 import { TAILNET_PORT, tailnetOf, targetOf } from "./tailscale.mjs";
 
 export const LABEL = "ai.agentrun.server";
@@ -408,7 +409,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 
   return {
     open: ({ data, "setup-only": setupOnly }) => openPage(resolve(data ?? root), { setupOnly }),
-    async install({ data, port, tailscale, env: sets = [] }) {
+    async install({ data, port, tailscale, env: sets = [], "public-url": given }) {
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
       const changes = sets.map((pair) => {
         const at = pair.indexOf("=");
@@ -419,6 +420,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         if (SWITCH_ENV.includes(key) && !["", "1"].includes(pair.slice(at + 1))) throw fail(2, `${key} takes 1 (on) or nothing (off), not ${pair.slice(at + 1)}: the server reads it as on at 1 alone.`);
         return [key, pair.slice(at + 1)];
       });
+      // --public-url goes on the service's command line, so every start of it (a restart, a login) has it.
+      const publicUrl = given === undefined ? undefined : publicUrlOf(given);
+      if (publicUrl?.error !== undefined) throw fail(2, publicUrl.error);
       need();
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
@@ -444,10 +448,13 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       // On the tailnet the port is fixed, so the serve entry and the server still agree after a restart.
       const served = share ? (port ?? TAILNET_PORT) : port;
       if (share && Number(served) === 0) throw fail(2, `--tailscale serves a fixed port, and --port 0 has the system pick another at each start: name a port, or leave --port out for ${TAILNET_PORT}.`);
+      if (share && publicUrl !== undefined) {
+        throw fail(2, `--public-url and --tailscale each set the address people open, and --tailscale names its own (this machine's tailnet name). Leave out --public-url, or take AgentRun off the tailnet with --no-tailscale.`);
+      }
       if (!share) tailnet.off(again("--no-tailscale"));
       // The server knows the address people open: its host check takes the name, and its setup takes the printed code.
       const at = share ? tailnet.address(targetOf(served)) : undefined;
-      const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : [])];
+      const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : []), ...(publicUrl !== undefined ? ["--public-url", publicUrl.url] : [])];
       const vars = { ...model, ...(at ? { AGENTRUN_PUBLIC_URL: at.url, AGENTRUN_TRUSTED_PROXIES: "loopback" } : {}) };
       mkdirSync(join(root, "logs"), { recursive: true, mode: 0o700 });
       mkdirSync(join(manager.file, ".."), { recursive: true });
@@ -592,7 +599,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), or a start-time switch at 1 (${SWITCH_ENV.join(", ")}), kept until KEY= removes it; repeatable`]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), or a start-time switch at 1 (${SWITCH_ENV.join(", ")}), kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],

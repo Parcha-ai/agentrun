@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { test } from "node:test";
 import * as start from "../lib/start.mjs";
-import { openLineUrl, openUrl } from "../lib/start.mjs";
+import { onLoopback, openLineUrl, openUrl } from "../lib/start.mjs";
+import { chosenPublicUrl, publicUrlOf } from "../lib/public-url.mjs";
+import { tailnetHint, tailnetNameOf } from "../lib/tailscale.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
@@ -174,7 +176,7 @@ async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, runnin
   writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
   const served = join(dir, "served.json");
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
-require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, pid: process.pid }));
+require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, pid: process.pid }));
 if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
@@ -524,6 +526,134 @@ test("the lines after the Open line go on, one whole line at a time, however the
   assert.deepEqual(after.filter((line) => start.SAID.test(line)), ["Boxes: docker (on by default; set AGENTRUN_BOXES to change).", "Set up this server: https://agentrun.example.com/setup#code=AbCdEfGh"]);
   assert.equal(start.SAID.test("GET /v2/health 200"), false);
   assert.equal(start.SAID.test("From another machine: http://192.0.2.10:7401/setup#code=AbCdEfGh"), true, "the setup link at this machine's other addresses is said too");
+});
+
+// --public-url: the address people open, through a proxy in front of the server on loopback. The example names are a
+// reserved one and a made-up tailnet's, never a real machine's.
+const TAILNET_URL = "https://box.tailnet.example/";
+
+test("--public-url URL is the server's public address: the server gets it as AGENTRUN_PUBLIC_URL, never as a flag, and the line names it", { timeout: 60_000 }, async (t) => {
+  const run = await throughStub(t, ["--no-open", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL });
+  assert.equal(run.code, 0, run.err);
+  assert.equal(run.public, TAILNET_URL, "the server's public address");
+  assert.deepEqual(run.args, ["--data", STORE(run.home)], "the server has no such flag: it is not passed on");
+  assert.equal(run.out, `AgentRun is running at ${TAILNET_URL}\n`, run.err);
+  // The equals form is the same option, and AGENTRUN_PUBLIC_URL naming the same address (no slash) agrees with it.
+  const equals = await throughStub(t, ["--no-open", `--public-url=${TAILNET_URL}`], { STUB_OPEN: TAILNET_URL, AGENTRUN_PUBLIC_URL: TAILNET_URL.replace(/\/$/, "") });
+  assert.deepEqual([equals.code, equals.public, equals.out], [0, TAILNET_URL, `AgentRun is running at ${TAILNET_URL}\n`], equals.err);
+  // The variable alone still works, as it did.
+  const env = await throughStub(t, ["--no-open"], { STUB_OPEN: TAILNET_URL, AGENTRUN_PUBLIC_URL: TAILNET_URL });
+  assert.deepEqual([env.code, env.public], [0, TAILNET_URL], env.err);
+  // Plain http is taken for this machine's own names.
+  const local = await throughStub(t, ["--no-open", "--public-url", "http://127.0.0.1:8080/"], { STUB_OPEN: "http://127.0.0.1:8080/" });
+  assert.deepEqual([local.code, local.public], [0, "http://127.0.0.1:8080/"], local.err);
+});
+
+test("--public-url is refused, exit 2 before the server starts, when it is no https root address or AGENTRUN_PUBLIC_URL names another", { timeout: 60_000 }, async (t) => {
+  const refused = {
+    "http://box.tailnet.example/": /--public-url takes an https address: over http:\/\/ the password and the session cross the network in clear text/,
+    "https://box.tailnet.example/agentrun": /--public-url takes the address of the server's root, https:\/\/box\.tailnet\.example\/, with no path/,
+    "https://box.tailnet.example/?a=1": /with no path, query or fragment/,
+    // Built, so no address with a password in it is written in the source.
+    [Object.assign(new URL(TAILNET_URL), { username: "someone", password: "hunter2" }).href]: /--public-url takes an address with no user name or password in it/,
+    "ftp://box.tailnet.example/": /--public-url takes an https address/,
+    "box.tailnet.example": /--public-url takes the https address people open AgentRun at, such as https:\/\/box\.tailnet\.example\/, not box\.tailnet\.example\./,
+  };
+  for (const [given, why] of Object.entries(refused)) {
+    const run = await throughStub(t, ["--no-open", "--public-url", given]);
+    assert.equal(run.code, 2, `${given}: ${run.err}`);
+    assert.match(run.err, why, given);
+    assert.equal(run.args, undefined, `${given}: the server was not started`);
+    assert.equal(run.out, "");
+    assert.equal(run.err.includes("hunter2"), false, "a password in the address is never repeated");
+  }
+  const missing = await throughStub(t, ["--no-open", "--public-url"]);
+  assert.deepEqual([missing.code, missing.args], [2, undefined], missing.err);
+  assert.match(missing.err, /^--public-url takes the https address people open AgentRun at/m);
+  const both = await throughStub(t, ["--no-open", "--public-url", TAILNET_URL], { AGENTRUN_PUBLIC_URL: "https://agentrun.example.com" });
+  assert.deepEqual([both.code, both.args], [2, undefined], both.err);
+  assert.match(both.err, /^AGENTRUN_PUBLIC_URL names another address than --public-url https:\/\/box\.tailnet\.example\/, and the server takes one\. Give one of them\.$/m);
+});
+
+test("publicUrlOf and chosenPublicUrl: the root of an https address, http on loopback; the flag and the variable agree or are refused", () => {
+  assert.deepEqual(publicUrlOf("https://Box.Tailnet.Example"), { url: TAILNET_URL });
+  assert.deepEqual(publicUrlOf("https://agentrun.example.com:8443/"), { url: "https://agentrun.example.com:8443/" });
+  for (const local of ["http://localhost:7340/", "http://127.0.0.1:7340", "http://[::1]:7340/"]) assert.equal(publicUrlOf(local).error, undefined, local);
+  for (const bad of ["http://10.0.0.5:7340/", "http://agentrun.example.com/", "https://agentrun.example.com/#x", "https://user@agentrun.example.com/", "", "not a url"]) assert.ok(publicUrlOf(bad).error, bad);
+  assert.deepEqual(chosenPublicUrl(undefined, undefined), { url: undefined });
+  assert.deepEqual(chosenPublicUrl(undefined, "https://agentrun.example.com"), { url: "https://agentrun.example.com" }, "the variable alone is the server's to check");
+  assert.deepEqual(chosenPublicUrl(TAILNET_URL, "https://box.tailnet.example"), { url: TAILNET_URL });
+  assert.match(chosenPublicUrl(TAILNET_URL, "https://agentrun.example.com").error, /names another address/);
+});
+
+/** A folder for PATH holding the fake tailscale (fake-tailscale.sh) in `mode`, or nothing (`none`), and its state: what
+ *  it was asked is in `calls()`. PATH is that folder alone, so this machine's own tailscale is never found. */
+function fakeTailscale(mode) {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-ts-hint-"));
+  removeAtEnd(dir);
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  if (mode !== "none") {
+    cpSync(new URL("fake-tailscale.sh", import.meta.url).pathname, join(dir, "bin", "tailscale"));
+    writeFileSync(join(dir, "state", "mode"), `${mode}\n`);
+  }
+  const calls = () => (existsSync(join(dir, "state", "calls")) ? readFileSync(join(dir, "state", "calls"), "utf8").split("\n").filter(Boolean) : []);
+  // CI empty: the hint is for a person, and is never looked for in CI.
+  return { env: { PATH: join(dir, "bin"), FAKE_TAILSCALE_DIR: join(dir, "state"), CI: "" }, calls };
+}
+
+const HINT = [
+  "Tailscale is running here: AgentRun could be at https://box.tail1234.example/ for your devices on your tailnet, and no one else. To serve it there:",
+  "  1. tailscale serve --bg 7399",
+  "  2. Stop AgentRun and start it again with --port 7399 --public-url https://box.tail1234.example/ added to its command",
+].join("\n");
+
+test("on loopback with no public address and Tailscale signed in here, the start says once (stderr) the tailnet address and the two commands to it, having only read Tailscale's status", { timeout: 60_000 }, async (t) => {
+  const ts = fakeTailscale("ok");
+  const run = await throughStub(t, ["--no-open"], ts.env);
+  assert.equal(run.code, 0, run.err);
+  assert.equal(run.out, "AgentRun is running at http://127.0.0.1:7399/\n", "stdout stays the one line");
+  assert.ok(run.err.includes(`\n${HINT}\n`), run.err);
+  assert.equal(run.err.split("Tailscale is running here").length, 2, "said once");
+  assert.doesNotMatch(run.err, /funnel/i, "never Funnel");
+  assert.deepEqual(ts.calls(), ["status --json"], "Tailscale is only read, never changed");
+  assert.equal(tailnetHint("box.tail1234.example", "7399"), HINT);
+});
+
+test("no Tailscale hint where Tailscale is missing, signed out or not running, with a public address, on another listen address, or in CI", { timeout: 60_000 }, async (t) => {
+  for (const mode of ["none", "logged-out", "down"]) {
+    const ts = fakeTailscale(mode);
+    const run = await throughStub(t, ["--no-open"], ts.env);
+    assert.equal(run.code, 0, `${mode}: ${run.err}`);
+    assert.doesNotMatch(run.err, /Tailscale|tailscale/, `${mode}: nothing said`);
+  }
+  const cases = [
+    ["--public-url", [["--no-open", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL }]],
+    ["AGENTRUN_PUBLIC_URL", [["--no-open"], { STUB_OPEN: TAILNET_URL, AGENTRUN_PUBLIC_URL: TAILNET_URL }]],
+    ["--listen 0.0.0.0", [["--no-open", "--listen", "0.0.0.0"], {}]],
+    ["CI", [["--no-open"], { CI: "true" }]],
+  ];
+  for (const [name, [args, env]] of cases) {
+    const ts = fakeTailscale("ok");
+    const run = await throughStub(t, args, { ...ts.env, ...env });
+    assert.equal(run.code, 0, `${name}: ${run.err}`);
+    assert.doesNotMatch(run.err, /Tailscale is running here/, name);
+    assert.deepEqual(ts.calls(), [], `${name}: Tailscale is not even read`);
+  }
+});
+
+test("tailnetNameOf reads the name of a signed-in tailnet, and gives up silently on a status that does not answer in time", { timeout: 30_000 }, async () => {
+  assert.equal(await tailnetNameOf({ env: fakeTailscale("ok").env }), "box.tail1234.example");
+  assert.equal(await tailnetNameOf({ env: fakeTailscale("logged-out").env }), undefined);
+  assert.equal(await tailnetNameOf({ env: fakeTailscale("none").env }), undefined);
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-ts-slow-"));
+  removeAtEnd(dir);
+  writeFileSync(join(dir, "tailscale"), `#!${process.execPath}\nsetTimeout(() => {}, 30000);\n`, { mode: 0o755 });
+  const began = Date.now();
+  assert.equal(await tailnetNameOf({ env: { PATH: dir }, timeoutMs: 300 }), undefined);
+  assert.ok(Date.now() - began < 5_000, "bounded by its timeout");
+  assert.deepEqual(["--listen 127.0.0.1", "--listen=::1", "--listen localhost", ""].map((args) => onLoopback(args.split(" ").filter(Boolean))), [true, true, true, true]);
+  assert.deepEqual([["--listen", "0.0.0.0"], ["--listen=192.168.1.4"], ["--listen", "127.0.0.1", "--listen", "::"]].map(onLoopback), [false, false, false]);
 });
 
 test("with a public URL and no password yet, the server's setup-code line reaches the person (stderr), not stdout", { timeout: 60_000 }, async (t) => {

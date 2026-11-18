@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun
+kind: feature
+---
+`npx @parcha/agentrun --public-url https://<name>/` and `agentrun service install --public-url https://<name>/` serve AgentRun at an address of your own, through a proxy you run in front of it (your own `tailscale serve`, a reverse proxy). The server gets that address as `AGENTRUN_PUBLIC_URL`, so a browser on another machine that opens it is no longer refused with "unexpected Host header", and setup asks for the code. The service keeps the flag on its command line, so restarts keep it.
+- The address must be `https://`, or `http://` on this machine only, with no path beyond `/` and no user name or password. Anything else, or an `AGENTRUN_PUBLIC_URL` that names another address, is refused with exit 2 before the server starts. `--public-url` with `--tailscale` is refused too: `--tailscale` names its own address.
+- Started on loopback with no public address, where `tailscale` is on `PATH` and signed in, the launcher reads `tailscale status --json` (at most 2 seconds) and says once, on stderr, the tailnet address it could use and the two commands to get there: `tailscale serve --bg <port>`, then a restart with `--port <port> --public-url https://<machine>.<tailnet>/`. It runs neither command, never suggests Funnel, and says nothing when Tailscale is missing, signed out or slow, or in CI.
