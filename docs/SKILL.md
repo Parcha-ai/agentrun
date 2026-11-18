@@ -264,6 +264,9 @@ front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=ht
 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. Then confirm `models.ready` in the
 capabilities.
 
+Claude Code through a gateway they already run (LiteLLM, say): restart the server with `ANTHROPIC_BASE_URL=<gateway>
+ANTHROPIC_API_KEY=<its key, or any placeholder when it adds its own>`; the gateway must take Anthropic Messages at `/v1/messages`.
+
 ## 7. Create the first agent and run it
 
 Check `agents list` first. Reuse a `release-notes` agent only when `agents get release-notes` shows this one, with no

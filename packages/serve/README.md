@@ -2991,6 +2991,20 @@ OPENROUTER_API_KEY (401: User not found): set it where AgentRun starts, or save 
 harness, with the provider's first sentence only.
 Every request to OpenRouter carries AgentRun's app attribution (`HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun`), so a self-hosted server's usage on its own key counts toward AgentRun's listing on OpenRouter; `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts sends none.
 
+**Claude Code through a gateway.** Set `ANTHROPIC_BASE_URL` to a gateway that speaks Anthropic Messages, such as
+LiteLLM's `/v1/messages`, and `ANTHROPIC_API_KEY` to the key it wants, or any placeholder when it adds its own. No
+Anthropic key is needed, and capabilities show claude-agent ready. The base follows `AGENT_MODEL_BASE_URL`'s rules: https,
+or plain http to this machine only, with one trailing `/v1` dropped. The gateway must:
+
+- take `POST <base>/v1/messages` (Claude Code adds `?beta=true`) with the key in `x-api-key`, never as a bearer token, and
+  accept the `anthropic-version` and `anthropic-beta` headers the pinned CLI sends;
+- accept Anthropic's own model ids (`claude-haiku-5-5`, with dashes);
+- report each answer's usage: the run is booked from it at serve's catalog price for that id, not at the gateway's.
+
+AgentRun asks Anthropic's token count only on `api.anthropic.com`, so through a gateway a run's `max_cost_usd` holds each
+request at a bound from its size instead. The same setting routes pi's Anthropic models (above). Contract test:
+`test/gateway-contract.test.mjs` ("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY").
+
 `claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
 adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
