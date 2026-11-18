@@ -748,7 +748,10 @@ size its provider makes it, and is never given them. A value the Docker provider
 the provider's words.
 
 **A lost sandbox.** A run's sandbox can be lost mid-run: its vendor deleted it (from its own console or API), or no
-longer has it. The tool call that finds it lost fails in the provider's words. The run's next tool call starts a new
+longer has it. The tool call in flight when the loss is confirmed fails with code `gone`: `the computer <name> was lost
+while this call ran, and it was not run again: <the provider's words>. A new computer starts at the next call.` It is
+never sent again, to the new sandbox or anywhere, so a command that is not safe to repeat runs at most once. Whatever it
+wrote to the run's folder before the loss stays there. The run's next tool call starts a new
 sandbox under the same claim and runs there, also when the lost one was kept through a park. A start that fails is
 tried again at the next tool call, under the same request, and does not count. In Mode 2 the new sandbox mounts the run's folder again with a new mount
 credential, and the lost one's credential is removed. The run's folder is kept; what was on the lost sandbox outside it
