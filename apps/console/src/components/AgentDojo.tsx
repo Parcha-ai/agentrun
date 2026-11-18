@@ -8,25 +8,23 @@ import { ProblemCard } from "./Problem";
 import { ListSkeleton } from "./Skeleton";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import { type Agent, learningOn } from "@/lib/agentForm";
-import type { AgentLearning, LearningNote } from "@/lib/learning";
+import { type AgentLearning, correctionLines } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 
-type Row = { agent: Agent; view?: AgentLearning; notes?: LearningNote[]; complete?: boolean; stale?: boolean; error?: Problem; unavailable?: boolean; noteIssue?: string };
+type Row = { agent: Agent; view?: AgentLearning; stale?: boolean; error?: Problem; unavailable?: boolean };
 type Measure = { value: number; exact: boolean };
-const NOTES_PAGES = 20;
 const AGENT_PAGES = 100;
 const WORKERS = 4;
 const count = (items: { status: string }[] | undefined, status: string): number => items?.filter((item) => item.status === status).length ?? 0;
 const learningHref = (agent: Agent) => `#/agents/${encodeURIComponent(agent.agent_id)}/learning`;
 const shown = (n: number) => n.toLocaleString("en-US");
 const measures: { label: string; of: (r: Row) => Measure | null }[] = [
-  { label: "Active notes", of: (r) => r.view ? { value: count(r.notes, "active"), exact: !!r.complete } : null },
-  { label: "Learned skills", of: (r) => r.view?.skills ? { value: count(r.view.skills, "active"), exact: true } : null },
-  { label: "Workflow drafts", of: (r) => r.view?.workflows ? { value: count(r.view.workflows, "active"), exact: true } : null },
-  { label: "Pending review", of: (r) => r.view ? { value: count(r.notes, "pending") + count(r.view.skills, "pending") + count(r.view.workflows, "pending"), exact: !!r.complete && !!r.view.skills && !!r.view.workflows } : null },
+  { label: "Corrections", of: (r) => r.view ? { value: correctionLines(r.view.corrections).length, exact: true } : null },
+  { label: "Workflow drafts", of: (r) => r.view ? { value: count(r.view.workflows, "active"), exact: true } : null },
+  { label: "Pending review", of: (r) => r.view ? { value: count(r.view.workflows, "pending"), exact: true } : null },
   { label: "In progress", of: (r) => r.view ? { value: r.view.counts.in_progress, exact: true } : null },
 ];
 /** Unknown or incomplete histories never turn into an exact zero. */
@@ -84,18 +82,7 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
           try {
             const view = await v2.agentLearning(agent.agent_id);
             if (!current()) return;
-            const notes = new Map(view.notes.items.map((note) => [note.file, note]));
-            let cursor = view.notes.next_cursor, noteIssue: string | undefined;
-            const seenNotes = new Set<string>();
-            for (let page = 0; cursor && page < NOTES_PAGES && current(); page++) {
-              if (seenNotes.has(cursor)) { noteIssue = "The note list repeated a page."; break; }
-              seenNotes.add(cursor);
-              try {
-                const more = await v2.learningNotes(agent.agent_id, cursor);
-                more.items.forEach((note) => notes.set(note.file, note)); cursor = more.next_cursor;
-              } catch (e) { noteIssue = problem(e, "more notes").why; break; }
-            }
-            row = { agent, view, notes: [...notes.values()], complete: !cursor, ...(cursor ? { noteIssue: noteIssue ?? "More note pages are available in the agent's Learning tab." } : {}) };
+            row = { agent, view };
           } catch (e) {
             row = { agent, error: problem(e, "Learning"), unavailable: e instanceof ClientError && e.status === 404 };
           }
@@ -135,15 +122,15 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
       <Button className="ml-auto" size="icon" aria-label="Refresh Learning Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
     <div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">
-      <div><h2 className="text-xl font-semibold">What your agents learn</h2><p className="mt-2 max-w-3xl text-lead leading-relaxed text-muted-foreground">Review the notes, skills and workflow drafts your current agents keep for later runs. Open an agent to enable learning, inspect its changes or review pending items.</p><p className="mt-2 max-w-3xl text-small leading-relaxed text-muted-foreground">Imported sessions are history, not learning runs. Learning comes from agentic runs started through this server; notes you add yourself are included too.</p></div>
+      <div><h2 className="text-xl font-semibold">What your agents learn</h2><p className="mt-2 max-w-3xl text-lead leading-relaxed text-muted-foreground">Review the corrections and workflow drafts your current agents keep for later runs. Open an agent to enable learning, inspect its changes or review pending drafts.</p><p className="mt-2 max-w-3xl text-small leading-relaxed text-muted-foreground">Imported sessions are history, not learning runs. Workflow drafts come from agentic runs started through this server; corrections are yours, given with a grade or written on an agent's Learning tab.</p></div>
       {server === undefined ? <p role="status" className="text-lead text-muted-foreground">Checking learning support…</p>
         : server === null ? <div className="border bg-card p-5"><h3 className="font-semibold">This server does not expose learning</h3><p className="mt-2 text-lead text-muted-foreground">Use a server version with learning support to inspect or enable it here.</p><a href="#/agents" className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4">Connected agents</a></div>
         : <>
           {server === "off" && <p role="status" className="border border-warning/40 bg-warning/5 p-4 text-lead text-warning-text">This server has learning turned off. Saved learning remains available; new runs will learn only after the server's learning setting is on.</p>}
           {error && <><ProblemCard problem={error} onRetry={() => void read()} className="" />{rows && <p className="text-small text-warning-text">Showing the last read. Refresh to update these counts.</p>}</>}
           {!rows && !error ? <ListSkeleton label="Loading Learning Dojo" rows={4} /> : rows && <>
-            <dl className="grid grid-cols-2 gap-3 xl:grid-cols-5">{measures.map(({ label, of }) => <div key={label} aria-label={label} className="border bg-card p-4"><dt className="caps text-micro text-muted-foreground">{label}</dt><dd className="mt-3 font-mono text-display">{total(eligible, of)}</dd></div>)}</dl>
-            <p className="text-small leading-relaxed text-muted-foreground">{loaded} of {eligible.length} agent histories read. Counts show active items; pending notes, skills and drafts are counted under review. + means a minimum from incomplete data; — means not reported.{stale ? " Last-read totals include saved histories that may have changed; they are not current minimums." : updated && !loading ? ` Updated ${when(updated)}.` : ""}{loading ? " Loading learning…" : ""}</p>
+            <dl className="grid grid-cols-2 gap-3 xl:grid-cols-4">{measures.map(({ label, of }) => <div key={label} aria-label={label} className="border bg-card p-4"><dt className="caps text-micro text-muted-foreground">{label}</dt><dd className="mt-3 font-mono text-display">{total(eligible, of)}</dd></div>)}</dl>
+            <p className="text-small leading-relaxed text-muted-foreground">{loaded} of {eligible.length} agent histories read. Counts show active drafts; drafts that wait for your OK are counted under review. + means a minimum from incomplete data; — means not reported.{stale ? " Last-read totals include saved histories that may have changed; they are not current minimums." : updated && !loading ? ` Updated ${when(updated)}.` : ""}{loading ? " Loading learning…" : ""}</p>
             {!rows.length ? <div className="border px-6 py-10 text-center"><h3 className="font-semibold">No agents yet</h3><p className="mt-2 text-lead text-muted-foreground">Create an agent, then open its Learning tab to let its runs build on what they learn.</p><a className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4" href="#/agents/new">Build an agent</a><span className="mx-3 text-muted-foreground">·</span><a className="text-lead text-primary-text underline underline-offset-4" href="#/agents">Import existing agents</a></div>
               : <section aria-label="Agents in Dojo" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{rows.map((row) => <AgentCard key={row.agent.agent_id} row={row} server={server} />)}</section>}
             {eligible.length > 0 && <section className="overflow-hidden border" aria-label="Recent learning changes"><header className="border-b px-5 py-4"><h3 className="text-lead font-semibold">Recent learning changes</h3><p className="mt-1 text-small text-muted-foreground">Latest reported changes from the histories read above. Each agent's Learning tab has its full history and run outcomes.</p></header>
@@ -165,7 +152,7 @@ function AgentCard({ row, server }: { row: Row; server: "on" | "off" }) {
     {!supported ? <p className="mt-4 text-lead text-muted-foreground">Workflow runs do not learn. Enable learning on an agentic agent.</p>
       : <>{error && <div role="alert" className="mt-4 text-small text-destructive-text"><p>{row.unavailable ? "Learning unavailable for this agent." : error.title}</p><p className="mt-1">{error.why} {error.said}</p></div>}
       {!view ? !error && <p role="status" className="mt-4 text-lead text-muted-foreground">Loading learning…</p>
-      : <><dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3">{measures.map(({ label, of }) => <div key={label}><dt className="text-small text-muted-foreground">{label}</dt><dd className="mt-1 font-mono text-lead">{total([row], of)}</dd></div>)}</dl>{row.stale && <p role="status" className="mt-3 text-small text-warning-text">Showing the last read. Refresh to update this history.</p>}<p className="mt-4 text-small text-muted-foreground">{shown(view.counts.merged)} runs kept learning · {shown(Object.values(view.counts.dropped).reduce((a, b) => a + b, 0))} kept nothing</p>{row.noteIssue && <p className="mt-3 text-small text-warning-text">Some note counts are incomplete. {row.noteIssue}</p>}{(!view.skills || !view.workflows) && <p className="mt-3 text-small text-muted-foreground">This server does not report every learned-file category.</p>}</>}</>}
+      : <><dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3">{measures.map(({ label, of }) => <div key={label}><dt className="text-small text-muted-foreground">{label}</dt><dd className="mt-1 font-mono text-lead">{total([row], of)}</dd></div>)}</dl>{row.stale && <p role="status" className="mt-3 text-small text-warning-text">Showing the last read. Refresh to update this history.</p>}<p className="mt-4 text-small text-muted-foreground">{shown(view.counts.merged)} runs kept learning · {shown(Object.values(view.counts.dropped).reduce((a, b) => a + b, 0))} kept nothing</p></>}</>}
     <a className="mt-5 inline-flex items-center gap-2 self-start text-small font-semibold text-primary-text hover:underline hover:underline-offset-4" href={supported ? learningHref(agent) : agentHash(agent.agent_id)}>{supported ? "Open learning" : "View agent"}<ArrowUpRight className="size-3.5" aria-hidden /></a>
   </article>;
 }

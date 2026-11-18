@@ -1384,11 +1384,6 @@ class SqliteStore implements Store {
           `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
           agentId, limit,
         )).map(proposalOf),
-      grading: async (agentId) =>
-        (await db.all<ProposalRecord>(
-          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? AND learning_run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})) ORDER BY created_at DESC, run_id DESC, round DESC`,
-          agentId,
-        )).map(proposalOf),
       kept: async (agentId) => {
         const proposals = (await db.all<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY run_id, round`, agentId)).map(proposalOf);
         const learningRuns = (await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id IN (SELECT learning_run_id FROM learning_proposals WHERE agent_id = ? AND learning_run_id IS NOT NULL)`, agentId)).map(runOf);
@@ -1413,31 +1408,6 @@ class SqliteStore implements Store {
           const kept = JSON.parse(row.proposal) as { state?: unknown } | null;
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
         });
-      },
-      spentBeside: async (runId, { beforeRound } = {}) => {
-        type BesideRecord = { state: RunState | null; cost_usd: number | null; body: string | null };
-        const rows = await db.all<BesideRecord>(
-          `SELECT lr.state, ${EXACT_COST_USD("lr")} AS cost_usd, rl.body
-             FROM learning_proposals lp
-             LEFT JOIN runs lr ON lr.id = lp.learning_run_id
-             LEFT JOIN run_launch rl ON rl.run_id = lp.learning_run_id
-            WHERE lp.run_id = ? AND lp.learning_run_id IS NOT NULL${beforeRound === undefined ? "" : " AND lp.round < ?"}`,
-          ...(beforeRound === undefined ? [runId] : [runId, beforeRound]),
-        );
-        const figure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
-        let spent = 0;
-        for (const row of rows) {
-          // A learning run named and never written spent nothing.
-          if (row.state === null) continue;
-          if (FINAL_STATES.includes(row.state) && figure(row.cost_usd)) {
-            spent += row.cost_usd;
-            continue;
-          }
-          const cap = row.body === null ? undefined : (JSON.parse(row.body) as { max_cost_usd?: unknown } | null)?.max_cost_usd;
-          if (!figure(cap)) return null;
-          spent += cap;
-        }
-        return spent;
       },
     };
 

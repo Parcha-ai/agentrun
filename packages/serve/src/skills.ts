@@ -7,7 +7,7 @@
 // refuse. The adapter's own check (its exported skillProblems) says which: serve takes any <name>/SKILL.md, the adapter
 // only a lowercase name, a SKILL.md whose front matter names the skill and describes it, plain file paths, and 1 MiB in
 // all.
-import { learnedFront } from "./learn/skills.js";
+import { learnedFront } from "./learn/workflow-draft.js";
 import { skillNames } from "./validate.js";
 import { type Workspace, workspaceAt } from "./workspace/index.js";
 

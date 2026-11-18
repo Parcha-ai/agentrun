@@ -1,17 +1,17 @@
 import { ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { type DiffLine, learnedBy, type LearningDiff, type NoteChange, noteChanges } from "@/lib/learning";
+import { type DiffLine, type FileChange, fileChanges, type LearningDiff } from "@/lib/learning";
 import { problem } from "@/lib/problem";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
-type Read = { state: "reading" } | { state: "failed"; error: unknown } | { state: "read"; changes: NoteChange[] };
+type Read = { state: "reading" } | { state: "failed"; error: unknown } | { state: "read"; changes: FileChange[] };
 
-/** What a run's learning changed, read once for a run that kept a note (`learned`), and again on Try again; null for a
- *  run that kept none, or with nothing to read it from. */
+/** What a run's learning changed, read once for a run whose learning merged, and again on Try again; null for a run that
+ *  merged nothing, or with nothing to read it from. */
 export function useRunChanges(run: Pick<Run, "run_id" | "learning">, read?: () => Promise<LearningDiff>) {
-  const kept = !!read && learnedBy(run.learning).length > 0;
+  const kept = !!read && run.learning?.state === "merged";
   const [got, setGot] = useState<Read>({ state: "reading" });
   const [asks, setAsks] = useState(0);
   useEffect(() => {
@@ -19,14 +19,15 @@ export function useRunChanges(run: Pick<Run, "run_id" | "learning">, read?: () =
     let live = true;
     setGot({ state: "reading" });
     // A reader that throws at once fails the read like one that rejects: the page says so, never breaks.
-    Promise.resolve().then(() => read!()).then((diff) => { if (live) setGot({ state: "read", changes: noteChanges(diff, run.learning) }); }, (e) => { if (live) setGot({ state: "failed", error: e ?? new Error("unknown") }); });
+    Promise.resolve().then(() => read!()).then((diff) => { if (live) setGot({ state: "read", changes: fileChanges(diff) }); }, (e) => { if (live) setGot({ state: "failed", error: e ?? new Error("unknown") }); });
     return () => { live = false; };
   }, [run.run_id, kept, asks]); // eslint-disable-line react-hooks/exhaustive-deps
   return kept ? { got, retry: () => setAsks((n) => n + 1) } : null;
 }
 
-/** "What it changed": each note the run's learning added, replaced, retired or removed, by its name, its file in small;
- *  each opens to its text before and after, what changed marked. Nothing when it changed no note. */
+/** "What it changed": each file the run's learning added, changed or removed (corrections.md, a workflow draft), by what
+ *  it is, its path in small; each opens to its text before and after, what changed marked. Nothing when it changed no
+ *  file. */
 export function RunChanges({ got, retry }: { got: Read; retry: () => void }) {
   if (got.state === "read" && !got.changes.length) return null;
   const p = got.state === "failed" ? problem(got.error, "what it changed") : null;
@@ -45,7 +46,7 @@ export function RunChanges({ got, retry }: { got: Read; retry: () => void }) {
   );
 }
 
-function Change({ change: c }: { change: NoteChange }) {
+function Change({ change: c }: { change: FileChange }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -68,7 +69,7 @@ function Change({ change: c }: { change: NoteChange }) {
   );
 }
 
-/** One side of a note's text, each line on its own, a taken-out or new line marked (a gutter sign, a tint, and words a
+/** One side of a file's text, each line on its own, a taken-out or new line marked (a gutter sign, a tint, and words a
  *  screen reader says). */
 function Side({ name, lines, none }: { name: "before" | "after"; lines: DiffLine[] | null; none: string }) {
   return (

@@ -9,7 +9,7 @@
 // alone, read at each request, never enumerable and never on the env a tool, a harness or a sandbox runs under.
 //
 // No setting: what the server holds decides. A run with a model_key spends on it alone, outside its turn too (its
-// subagents, learned nodes, end-of-run look-back), never on the server's key. A run without one spends on the server's
+// subagents, learned nodes, end-of-run compile turn), never on the server's key. A run without one spends on the server's
 // key for its route, as before. A server that holds no key for a run's route (no AGENT_MODEL_API_KEY, nothing saved in
 // Settings) is an operator saying "callers bring their own": a start or a message that would start a turn with no key
 // to spend is 422 model_key_required, never a failure at the first model call. Spend after a run's turn ended (its key

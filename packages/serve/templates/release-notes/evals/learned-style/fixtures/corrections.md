@@ -1,0 +1,1 @@
+- We say "agent", not "bot", everywhere in release notes, the top sections and the table's summaries alike: rewrite a PR's "bot" or "bots" as "agent" or "agents", and keep commands, flags and names exactly as they are.

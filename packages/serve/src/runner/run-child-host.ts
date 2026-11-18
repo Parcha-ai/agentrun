@@ -809,14 +809,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // A replay run or an audit's shadow run asks nothing at its end, as the run's spec says (adapter-run-spec.ts).
       if (launch.replay || launch.audit) return undefined;
       const made = await archilOf();
-      // The grade's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
+      // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       // The audit's start after the step (audit.ts withAudit) is this runner's too: it reads the run's journal and writes
       // the ledger and a run.
       const step = withAudit(learningEndOfRun(launch, {
         store,
         data: deps.data,
-        spendOff,
         ...(deps.env ? { env: deps.env } : {}),
         signIns: signInReads(store, sealKey),
         handed: runnerSecrets(claimed),
@@ -847,10 +846,11 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     },
     learnedFirst: (ask) => (chosen ??= (async () => {
       // The workflows the claim's seed lays, read by this runner at the launch's seed (learning-seed.ts workflowsAt), as
-      // the process's lay chose them: none where its lay laid none (`laid` false: a read that failed, a notes-only seed).
+      // the process's lay chose them: none where its lay laid none (`laid` false: a read that failed, a seed with no
+      // workflows).
       const start = learningStartOf(launch);
       const folder = await folderNow();
-      const laid = ask?.laid === true && start && !seedFailed(start) && !start.notesOnly ? await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
+      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
       const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff }, laid);

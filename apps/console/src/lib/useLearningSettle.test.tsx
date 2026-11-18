@@ -94,10 +94,9 @@ describe("useLearningSettle", () => {
     m.render(deciding);
     m.render({ ...deciding });
     expect(m.moves).toEqual(["reflecting"]);
-    m.render({ status: "completed", learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "proposed", reason: null } });
     m.render(merged);
     m.render({ ...merged });
-    expect(m.moves).toEqual(["reflecting", "proposed", "merged"]);
+    expect(m.moves).toEqual(["reflecting", "merged"]);
     // A page opened on a run that has settled reads nothing again.
     act(() => root!.unmount()); root = undefined;
     const settled = mount(merged);

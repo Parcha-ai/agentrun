@@ -9,7 +9,7 @@ import { Playground } from "./Playground";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; localStorage.clear(); });
-const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "project" }, machine_id: "source", version: "0.167.2", model: "native-model", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, remote: { connector_id: "remote-1", target_id: "target-1" }, capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true } };
+const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "project" }, machine_id: "source", version: "0.167.2", model: "native-model", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, remote: { connector_id: "remote-1", target_id: "target-1" }, capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } };
 const base: Agent = { agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], native } };
 
 for (const state of ["online", "offline", "unknown"] as const) it(`uses ${state} runtime status for remote list/playground run actions while preserving the saved binding`, async () => {

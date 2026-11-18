@@ -42,8 +42,8 @@ test("a person grades an ended run; the agent's promotions read empty until a le
 
 // The console's Grade control reads a run's grade back from GET /runs/{id}/learning (`graded`): absent before one, then
 // the newest, a later grade replacing it, in the PUT's answer's shape without `expected`. A wrong grade with words on a
-// run the agent finished opens a look-back, and the read keeps which (`feedback`), so a page read again still says it,
-// and how that round stands (`feedback_status`).
+// run the agent finished opens a correction round, and the read keeps which (`feedback`), so a page read again still says
+// it, and how that round stands (`feedback_status`).
 test("a run's learning read says its grade and the round it opened: none before one, then the newest, never its expected", async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -65,12 +65,12 @@ test("a run's learning read says its grade and the round it opened: none before 
   meets(read);
 
   const wrong = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the answer is 42, said as a number." });
-  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "look_back"], JSON.stringify(wrong.body));
+  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "correction"], JSON.stringify(wrong.body));
   await ended(api, run);
   const again = (await api("GET", `/runs/${run}/learning`)).body;
   assert.deepEqual(again.graded, { ...wrong.body, feedback_status: "ended" }, "the newer grade replaces the older, its round read ended");
-  assert.equal(again.graded.feedback, "look_back", "after the round ended, the read still says the grade opened a look-back");
-  assert.ok(again.learned?.some((note) => note.file === "reviewed.md"), `the look-back kept the reviewer's words: ${JSON.stringify(again)}`);
+  assert.equal(again.graded.feedback, "correction", "after the round ended, the read still says the grade opened a correction round");
+  assert.deepEqual([again.state, again.corrections], ["merged", 1], `the round kept the reviewer's words as a correction: ${JSON.stringify(again)}`);
   meets(again);
 });
 

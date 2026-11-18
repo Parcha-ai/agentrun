@@ -178,7 +178,7 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
   return withPlan(out, planOf(opened) ?? planOf(env));
 }
 
-/** Every model key the server holds, for a model route with no revision to scope it by (a learning run's grade): each
+/** Every model key the server holds, for a model route with no revision to scope it by (an SDK run's compile turn): each
  *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. */
 export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
   // A run's own process holds no seal key: what its runner hands a claim whose routes read them (held.ts savedModelKeys).
@@ -285,7 +285,7 @@ export async function serverKeyless(deps: ClaimSecretsDeps): Promise<boolean> {
 }
 
 /** Why the claim's model spend after the run's turn, or beside it on runs the runner starts (a shadow audit, a replay
- *  check, the learning run's grade), is skipped: `what` the work, asked when that spend would start. A run that brought
+ *  check), is skipped: `what` the work, asked when that spend would start. A run that brought
  *  its own key, at its start or with a message since (everHeld): that key is erased with its turn's end and the server's
  *  never pays for it (runKeyEndedFor). Else, a server that holds no gateway key (the runner's environment or
  *  Settings → Model keys) has none to spend (noServerKeyWords). Undefined where it runs. */

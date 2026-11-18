@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import type { Bill, BillPoint, LearningCost, Serving } from "@/lib/v2";
 
 // The owner's bill on the Learning tab (GET /v2/agents/{id}/learning/cost `bill`, booked dollars only): run after run,
-// what the agent has cost with learning, cumulative (every run that does a job, with its look-back, grade, audit shadow
+// what the agent has cost with learning, cumulative (every run that does a job, with its compile turn, audit shadow
 // and its revision's compile and check spend), against the agent for all of it (the mean of its own runs before its
 // first served run, times the runs), on one dollar axis, and where the bill falls to that line and stays (break-even),
 // or "not yet" with the gap. Under it, the audit line (agreement over the hold window and all time, each hold at the run
@@ -151,7 +151,7 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
           <p className="sr-only" aria-live="polite">{at ? readout(at).join(", ") : ""}</p>
         </div>
         <p className="mt-1 text-small text-muted-foreground">
-          Each point adds a run that did a job, all in: its own cost, its look-back and grade, and its audit&apos;s shadow run, with each replay run on the run before it.
+          Each point adds a run that did a job, all in: its own cost, its compile turn and its audit&apos;s shadow run, with each replay run on the run before it.
           {both ? " The dashed line is the mean of the agent's own runs before its first served run, times the runs." : ""}
           {unattributed > 0 ? ` ${usd(unattributed)} of learning spend is on no run yet: a revision's compile and check its next served runs carry, or one that stopped or never drafted.` : ""}
         </p>

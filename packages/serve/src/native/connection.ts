@@ -59,7 +59,7 @@ export async function verifyConnection(store:Store,entry:AgentEntry,env=nativeEn
  if(native.state==='ready'){
   const snapshot=await snapshotNativeInstructions(native);
   if(snapshot.incomplete||snapshot.truncated){
-   native.capabilities={...native.capabilities,notes:false,skills:false};
+   native.capabilities={...native.capabilities,learning:false};
    native.issues.push(`Self-improvement is unavailable: ${snapshot.incomplete??'the declared native instruction files exceed the 64 KiB grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`);
   }
  }

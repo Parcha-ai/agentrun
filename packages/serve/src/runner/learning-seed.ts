@@ -1,107 +1,64 @@
-// A learning run's seed laid in its work at the claim, the one read of its learning folder both spec builders make
-// (adapter-run-spec.ts for pi, cli-run-spec.ts for the CLI harnesses), as main's start laid it (learning.ts pinSeed),
-// minus the pin: the seed the run's learning start pinned, read once (seedFrom over the folder's read); its index and
-// active notes into `.learning/`, made fresh and cut of the server's secrets (layLearned); then its learned skills the run
-// gets beside the revision's own (chooseSkills) into `.agents/skills/` (laySkills); and the learned workflows its
-// learned_workflow tool runs (chooseWorkflows), handed back to the spec, never written. Mode 1 and Mode 2 alike, through
-// the run's Workspace and the agent's learning folder where the run's place keeps them. A learning fault never fails a
-// run: a seed that cannot be read, or a lay that fails part way, leaves nothing laid (what was laid is taken back), says
-// so in one line, and the claim goes on; the notes still reach the run through its # Learned section.
+// A claim's read of a run's learning seed: the learned workflows its learning folder held active at the commit the run
+// started from, which the run's learned_workflow tool runs and workflow-first serves (learning.ts chooseWorkflows: within
+// the tool's budget, none holding a host secret). Nothing is laid in the run's work: its corrections reach it in its
+// instructions (learning.ts laidLearned, from the launch's learning start).
+import { chooseWorkflows, type LearnedWorkflow, type Seed, seedAt, type Shown } from "../learning.js";
 import type { LearningFolder } from "../learn/folder.js";
-import { chooseSkills, chooseWorkflows, type LearnedWorkflow, layLearned, LEARNED_DIR, laySkills, readerOf, seedFrom, type Seed, type Shown, takeSkills } from "../learning.js";
-import type { Workspace } from "../workspace/index.js";
 
+/** What a claim reads its seed with: the commit, the agent's learning folder where the run's place keeps it (opened for
+ *  the read and ended after it), the server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that
+ *  takes none (an SDK run with no workflow binding). */
 export interface LearningSeedLay {
-  /** The run's Workspace: its work, where `.learning/` and `.agents/skills/` are. */
-  readonly work: Workspace;
-  /** The commit the run's learning start pinned (null: the folder had no main yet, an empty seed). */
   readonly seed: string | null;
-  /** The agent's learning folder where the run's place keeps it, opened for this one read and ended after it. */
   readonly folder: () => LearningFolder;
-  /** The revision's own skill files, by their paths under `.agents/skills/` (laid already): a learned skill named like
-   *  one of them is the revision's and is not laid. */
-  readonly own: readonly string[];
-  /** The server's secrets as a reader cuts them, read at the claim. */
   readonly shown: () => Promise<Shown>;
-  /** One line of the run's log. */
   readonly log: (line: string) => void;
-  /** False for a run of a revision that says `learning: "notes"`: its notes and skills are laid, never a learned workflow. */
   readonly workflows?: false;
-  /** The notes its # Learned section names in no way, over the learning budget (the launch's `notesLeftOut`), by file:
-   *  said in the run's log, so a run that read only some of what its agent learned says which it did not. */
-  readonly notesLeftOut?: readonly string[];
 }
 
-/** The most notes the log line names: past it, it says how many more. */
-export const LEFT_OUT_NAMED = 100;
+/** What a claim read of a run's seed: the seed, and the learned workflows the run's learned_workflow tool runs. */
+export type LaidSeed = { readonly seed: Seed; readonly workflows: readonly LearnedWorkflow[] };
 
-/** The run's log line for the notes its # Learned section leaves out, or undefined for none. */
-export const notesLeftOutLine = (files: readonly string[] | undefined): string | undefined => {
-  if (!files?.length) return undefined;
-  const named = files.slice(0, LEFT_OUT_NAMED).join(", ");
-  const more = files.length > LEFT_OUT_NAMED ? `, and ${files.length - LEFT_OUT_NAMED} more` : "";
-  return `starts without ${files.length} of the notes its agent learned in its # Learned section, over the learning budget (the notes that bear most on it are given whole; the rest stay in ${LEARNED_DIR}/): ${named}${more}`;
-};
+/** What a claim handed a run of its seed, by name, as the adapter loop records it (KINDS.learningLaid): each learned
+ *  workflow it handed the tool; none when nothing was read. */
+export const laidOf = (laid: LaidSeed | undefined): { workflows: string[] } => ({ workflows: (laid?.workflows ?? []).map(({ name }) => name) });
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** What the claim laid of the run's seed: the seed it read, the learned skills' files it laid, by their paths under
- *  `.agents/skills/`, for the skill list the run's harness is handed beside the revision's own, and the learned workflows
- *  the run's learned_workflow tool runs, cut of the server's secrets as the skills are (none of either when the lay
- *  failed part way and was taken back). */
-export type LaidSeed = { readonly seed: Seed; readonly skills: readonly string[]; readonly workflows: readonly LearnedWorkflow[] };
-
-/** What a claim laid of a run's learning seed, by name, as the adapter loop records it (KINDS.learningLaid): each learned
- *  skill whose files it laid, and each learned workflow it handed the tool; none when nothing was laid. */
-export const laidOf = (laid: LaidSeed | undefined): { skills: string[]; workflows: string[] } => ({
-  skills: [...new Set((laid?.skills ?? []).map((path) => path.split("/")[0]!))],
-  workflows: (laid?.workflows ?? []).map(({ name }) => name),
-});
-
-/** Lays the run's learning seed (see the file's head). Undefined when the seed could not be read: nothing was laid.
- *  Never throws. */
+/** The run's seed and its learned workflows. Undefined when the seed could not be read: the run starts with none. A
+ *  secrets read (or a choice) that fails after the seed was read answers the seed with no learned workflow. Never
+ *  throws: a learning fault never stops a run. */
 export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | undefined> {
   let seed: Seed;
   const folder = lay.folder();
   try {
-    seed = await seedFrom(lay.seed, readerOf(folder.workspace), { warn: lay.log });
+    seed = await seedAt(folder.workspace, lay.seed);
   } catch (error) {
-    lay.log(`the run starts with nothing learned laid in its work: ${message(error)}`);
+    lay.log(`the run starts with no learned workflow: ${message(error)}`);
     return undefined;
   } finally {
     await folder.end().catch(() => undefined);
   }
-  const made: string[] = [];
+  if (lay.workflows === false) return { seed, workflows: [] };
   try {
-    const shown = await lay.shown();
-    await layLearned(lay.work, seed, shown);
-    const { taken, left } = await chooseSkills(lay.work, seed, lay.own, shown);
-    await laySkills(lay.work, taken, made);
-    for (const path of seed.skipped) lay.log(`its learning folder's ${path} was not read`);
-    const leftOut = notesLeftOutLine(lay.notesLeftOut);
-    if (leftOut) lay.log(leftOut);
-    for (const name of left) lay.log(`starts without the skill ${name} its agent learned: it is over what is left of the learned skills' budget, or holds a secret`);
-    const workflows = lay.workflows === false ? { flows: [], left: [] } : chooseWorkflows(seed, shown);
-    for (const name of workflows.left) lay.log(`starts without the learned workflow ${name} its agent learned: it is over what is left of the learned workflows' budget, or holds a secret`);
-    return { seed, skills: taken.flatMap(({ name, files = {} }) => Object.keys(files).sort().map((path) => `${name}/${path}`)), workflows: workflows.flows };
+    const { flows, left } = chooseWorkflows(seed, await lay.shown());
+    for (const name of left) lay.log(`starts without the learned workflow ${name} its agent learned: it is over what is left of the learned workflows' budget, or holds a secret`);
+    return { seed, workflows: flows };
   } catch (error) {
-    // Nothing half laid: the notes' copy and every learned skill laid so far go, as pinSeed takes them back. The seed was
-    // read all the same, and is answered with no skills and no learned workflows.
-    await lay.work.remove(LEARNED_DIR, { recursive: true, force: true }).catch(() => undefined);
-    await takeSkills(lay.work, made).catch(() => undefined);
-    lay.log(`the run starts with nothing learned laid in its work: ${message(error)}`);
-    return { seed, skills: [], workflows: [] };
+    lay.log(`the run starts with no learned workflow: ${message(error)}`);
+    return { seed, workflows: [] };
   }
 }
 
-/** The learned workflows the folder held active at `commit`, as a claim's lay hands them to the learned_workflow tool
- *  (chooseWorkflows: within the budget, none holding a secret): what a champion serves from while a newer revision of it
- *  is on main (runner/promotion.ts). Throws when the folder cannot answer or the commit is gone. */
+/** The learned workflows the folder held active at `commit`, as a claim's read hands them to the learned_workflow tool
+ *  (chooseWorkflows): what a champion serves from while a newer revision of it is on main (runner/promotion.ts), and
+ *  what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the folder cannot answer or the
+ *  commit is gone. */
 export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown">, commit: string | null): Promise<LearnedWorkflow[]> {
   const folder = read.folder();
   let seed: Seed;
   try {
-    seed = await seedFrom(commit, readerOf(folder.workspace));
+    seed = await seedAt(folder.workspace, commit);
   } finally {
     await folder.end().catch(() => undefined);
   }

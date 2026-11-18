@@ -80,12 +80,13 @@ checkout; these new exports are not a guarantee about the current npm release.
 | Codex SDK client, project and tools | [Preserve native threads, add checked learning](../../docs/tutorials/codex-sdk-learning.md) |
 
 Your backend still starts and cancels tasks. The wrapper records original source policy/input, assistant text,
-tool names/status and usage; raw tool arguments/results and SDK credentials are not sent. AgentRun reflects
-without tools, independently grades proposals, and supplies accepted context to the next fresh task.
+tool names/status and usage; raw tool arguments/results and SDK credentials are not sent. AgentRun supplies the
+owner's corrections (`corrections.md`, whole) to the next fresh task, and compiles a workflow once the agent has
+enough completed runs.
 `learning: true` opts in on first registration only; existing agents keep their console setting.
 
 Both wrappers expose `flushLearning()`. Await it before shutdown or before testing a fresh run's use of newly
-accepted learning. Errors in persistence or grading surface there without replacing the original SDK result/error.
+accepted learning. Errors in persistence or learning surface there without replacing the original SDK result/error.
 The first integration supports fresh, single-task sessions/threads only. See the cookbooks for cancellation,
 policy snapshots and multimodal limits, or run the [opt-in live examples](../../examples/sdk-learning/README.md).
 

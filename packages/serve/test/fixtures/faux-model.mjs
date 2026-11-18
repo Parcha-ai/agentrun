@@ -426,7 +426,5 @@ function replyTo(context, faux) {
   if (gated) return results < 2 ? faux.message(faux.toolCall("web_fetch", { url: `http://public.example/hold?until=${encodeURIComponent(gated[results + 1])}` }), { stopReason: "toolUse" }) : faux.message("Fetched both.");
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
-  // Asked at a learning run's end what to keep (learn/reflect.ts reflectPrompt): nothing.
-  if (last.startsWith("The task is done. Before the run ends")) return faux.message("No notes.");
   return faux.message(`On ${last}: done.`);
 }

@@ -17,8 +17,8 @@ export type NativeTarget = {
   issues: string[];
   capabilities: {
     launch: boolean;
-    notes: boolean;
-    skills: boolean;
+    /** Whether its runs may learn: its owner's corrections reach it and its runs compile (no unresolved policy). */
+    learning: boolean;
     workflows: false;
     approval: "native" | "unavailable";
     usage: boolean;

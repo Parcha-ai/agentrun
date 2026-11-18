@@ -100,8 +100,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   schema as the server checks a run's, so a case its schema refuses fails before any run. The model reads them as the
   server writes them, under `Input:`; a body that holds its own `Input:` block is refused.
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
-  list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a folder of notes in the case
-  the agent starts with: `MEMORY.md` and its notes), `web` (fakes `web_search` and `web_fetch` for the case's runs),
+  list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a file in the case holding
+  the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search` and `web_fetch` for the case's runs),
   `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
   for the case's runs), `calendar` (a fake calendar for the case's runs).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
@@ -213,7 +213,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   (GitHub code search's syntax, read loosely: terms every one of which a file holds, `NOT` before a term or a
   qualifier, and `path:`, `filename:`, `extension:`, `language:`; a `/.../` term is read as literal text, never as a
   regular expression, so no query can stall the eval), as `path:line: text` lines, at most `limit` (100).
-- `fixtures/`: what the case's fakes and notes read.
+- `fixtures/`: what the case's fakes read, and its corrections.
 - `graders/*.md`, each one check of every run, by its front matter's `type`:
   - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its arguments and the head of its result) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
   - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
@@ -251,8 +251,8 @@ It exits 0 when every case passed, 1 when one failed, and 2 when nothing ran: a 
 A Ctrl-C cancels the run in progress and cleans up as the end does (a second one leaves at once), and exits 130 with no
 report.
 Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the
-package (its parameters and grants as an apply checks them), each fake MCP server's fixture, each learned note as the
-learning API checks one, and each grader's fields (an unknown field, a pattern that does not compile, a tool the
+package (its parameters and grants as an apply checks them), each fake MCP server's fixture, its corrections as the
+learning API checks them, and each grader's fields (an unknown field, a pattern that does not compile, a tool the
 package does not have).
 
 **Where it runs.** By default on a server of its own, started in the command's process over a temp data directory that
@@ -275,8 +275,8 @@ and runs on the eval's own server.
    alike (see below), so a granted tool runs with no one to answer and a tool the case did not grant is refused. On its
    own in-process server the eval writes the case's pins in that server's tool settings before the apply, and no
    permission; with `--server` it writes nothing.
-3. The `learning` folder's notes are written to the agent's learning folder (`PUT .../learning/files/{file}`); the
-   server builds `MEMORY.md` from them, so the folder's own `MEMORY.md` is not sent.
+3. The `learning` file is written as the agent's corrections (`PUT .../learning/corrections`), checked as that route
+   checks them.
 4. A run starts with the prompt's body as its input's `content` and its `input` front matter as its typed fields, and
    `max_cost_usd` as its cap, and is waited for (30 minutes at
    most, then cancelled and failed). A run that ends waiting on its person's answer (an `ask_person` question, a tool

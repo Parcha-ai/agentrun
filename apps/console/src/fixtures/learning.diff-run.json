@@ -42,21 +42,12 @@
     "learning": {
       "state": "merged",
       "reason": null,
-      "detail": "Learned: Try /policies/refund-policy first (replaces 1 older note)",
+      "detail": "Learned 1 workflow: find-refund-policy",
       "at": "2026-11-05T22:36:41.386Z",
-      "given": [
+      "workflows": [
         {
-          "file": "shopify-refund-policy-path.md",
-          "name": "Shopify refund policy path"
-        }
-      ],
-      "learned": [
-        {
-          "file": "try-policies-refund-policy-first.md",
-          "name": "Try /policies/refund-policy first",
-          "supersedes": [
-            "shopify-refund-policy-path.md"
-          ]
+          "file": "workflows/find-refund-policy/workflow.json",
+          "name": "find-refund-policy"
         }
       ]
     },
