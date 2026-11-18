@@ -108,8 +108,13 @@ export type TriggerUpstream = {
   patched(was: Source, given: Source): Source;
   /** The trigger `id` of `source`, turned on or off here: the same there. */
   turned(source: Source, id: string, on: boolean): Promise<Json | undefined>;
-  /** The trigger `id` of `source`, deleted here: removed there. */
+  /** The trigger `id` of `source`, deleted here: removed there, with what it keeps here for it (a sealed config). */
   removed(source: Source, id: string): Promise<Json | undefined>;
+  /** The trigger `id` of `source`, still here: removed there alone, what it keeps here for it left (`forgotten` drops
+   *  that once the trigger is gone). Undefined when it is gone there; what could not be done, said. */
+  removedThere(source: Source, id: string): Promise<Json | undefined>;
+  /** What it keeps here for the trigger `id` of `source` (a sealed config), dropped once the trigger is gone here. */
+  forgotten(source: Source, id: string): Promise<void>;
 };
 
 /** `max_cost_usd`: each run's cap; absent, the agent's default as it stands when the firing starts (one of the two is
@@ -609,11 +614,31 @@ export class Triggers {
     return { ...(await this.view(asTrigger(row))), ...said };
   }
 
-  /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds). */
+  /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds).
+   *  On its agent's condition (`onAgent`: a template update's removal), what its sender keeps goes first: one its sender
+   *  did not remove is said, and the trigger is kept here as it was (its row, its package mark, its sealed config and
+   *  whether it is on), for the next update to remove; once it is gone there, the trigger goes here while it is still that
+   *  agent's, then what its sender kept here for it. */
   async remove(id: string, own: Pick<TriggerOwn, "onAgent"> = {}): Promise<Json | undefined> {
     const trigger = await this.need(id, own.onAgent);
+    const upstream = this.deps.upstream?.(trigger.source.kind);
+    if (own.onAgent === undefined) {
+      await this.dropHere(trigger);
+      return upstream?.removed(trigger.source, id);
+    }
+    const said = await upstream?.removedThere(trigger.source, id);
+    if (said !== undefined) return said;
     await this.dropHere(trigger, own.onAgent);
-    return this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
+    await upstream?.forgotten(trigger.source, id);
+    return undefined;
+  }
+
+  /** `value` as a create keeps a source (its adapter's defaults filled in: a feed's every_s), or undefined when a create
+   *  would refuse it. */
+  sourceAsKept(value: unknown): Source | undefined {
+    const issues: InputIssue[] = [];
+    const source = sourceOf(this.adapters, value, this.clock.now(), issues);
+    return issues.length ? undefined : source;
   }
 
   /** A deleted agent's trigger (agent-delete.ts), its first half: what its sender keeps of it removed there, the trigger

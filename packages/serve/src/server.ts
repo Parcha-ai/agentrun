@@ -2886,6 +2886,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // a composio one Composio can't reach or run as here) is skipped, never the apply: the agent stands, and the answer
     // says what to do (a warning under triggers.<i>). Kept with its refusal, whose words the warning carries.
     const unconnected = new Map<number, ApiError>();
+    // Each trigger the package no longer lists whose sender kept what it has of it (a Composio instance): kept here, marked,
+    // for the next update to remove, and said in the answer.
+    const leftThere: InputIssue[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         if (emptyFeeds.has(i)) continue;
@@ -2900,7 +2903,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             // schedule as it was never moves it. An every_s schedule with no start_at is the stored one's grid (the time
             // its first apply made it), as it says no other; a Composio one is its `resent` form.
             const ours = resent.get(i) ?? (isObject(given) && given.kind === "schedule" && given.every_s !== undefined && given.start_at === undefined && isObject(was.source) && was.source.every_s === given.every_s && typeof was.source.start_at === "string" ? { ...given, start_at: was.source.start_at } : given);
-            const source = stable(ours) === stable(was.source) ? undefined : ours;
+            // Compared as a create keeps it (Triggers.sourceAsKept: a feed's every_s the package leaves out is the default the
+            // trigger was made with), so a package that says no more than it did never moves it.
+            const source = stable(resent.has(i) ? ours : (triggers.sourceAsKept(ours) ?? ours)) === stable(was.source) ? undefined : ours;
             // The package's settings whole: one its version leaves out goes back to what a fresh apply makes (POST
             // /triggers' default), never kept from the version before. PATCH reads null as no cap.
             const patch = { ...sent, catchup_window_s: sent.catchup_window_s ?? CATCHUP_WINDOW_S, max_active_runs: sent.max_active_runs ?? null };
@@ -2912,11 +2917,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }
           // Of another kind now (a trigger's source kind is fixed), or a Composio one whose fixed part changed: the old one
           // goes, then the new one is made, off where the owner turned the old one off. The old one's instance on Composio
-          // goes first: one Composio did not delete leaves the new one unmade, so two instances never watch, and the
-          // apply fails with its revision standing, as a refused trigger's does.
+          // goes first (Triggers.remove on its agent's condition): one Composio did not delete leaves the old trigger here
+          // as it was (on or off, marked, its config sealed) and the new one unmade, so two instances never watch, and the
+          // apply fails with its revision standing, as a refused trigger's does; the next apply finds the old one again.
           const left = was ? await triggers.remove(was.id, own).catch(movedAway) : false;
           if (left === false) was = undefined;
-          else if (isObject(left) && isObject(left.composio) && left.composio.done === false) throw new ApiError("upstream_failed", `The ${pkg.name} template's trigger ${String(trigger.name).trim()} changed, so its old Composio trigger instance must go before the new one is made, and Composio didn't delete it: the new one was not made. ${String(left.composio.note ?? "")} Then apply again.`.trim());
+          else if (isObject(left) && isObject(left.composio) && left.composio.done === false) throw new ApiError("upstream_failed", `The ${pkg.name} template's trigger ${String(trigger.name).trim()} changed, so its old Composio trigger instance must go before the new one is made, and Composio didn't delete it: the new one was not made, and the old trigger is kept here as it was. ${String(left.composio.note ?? "")} Then apply again.`.trim());
           const { id: madeId, secret } = await triggers.create(was && !was.enabled ? { ...aimed, enabled: false } : aimed, { templateId: pkg.id });
           ids.push(madeId);
           madeNow.push(madeId);
@@ -2931,7 +2937,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
       }
       // Each trigger the package marked and no longer lists, while it is still the agent's.
-      for (const row of removing) await triggers.remove(row.id, { onAgent: entry.agent.id }).catch(movedAway);
+      for (const row of removing) {
+        const left = await triggers.remove(row.id, { onAgent: entry.agent.id }).catch(movedAway);
+        if (isObject(left) && isObject(left.composio) && left.composio.done === false) leftThere.push({ field: "triggers", reason: "upstream_failed", message: `The trigger ${row.name} (${row.id}), which the ${pkg.name} template no longer lists, is kept until its Composio trigger instance is gone. ${String(left.composio.note ?? "")} The next update of the agent from the template removes the trigger.` });
+      }
     } catch (error) {
       // An update's revision and the triggers it changed stand; what it made is removed. A fresh apply is undone whole.
       for (const id of madeNow.reverse()) {
@@ -2972,7 +2981,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...appShort, ...twins] };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 

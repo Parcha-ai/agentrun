@@ -249,7 +249,22 @@ export class ComposioTriggers implements TriggerUpstream {
     // Its sealed config goes with it, whatever Composio says below; read first, so Composio's words about its instance are
     // withheld (asking).
     const values = this.sealedValues([{ id, source }]);
+    await this.forgotten(source, id);
+    return this.leftThere(source, id, values);
+  }
+
+  async removedThere(source: Source, id: string): Promise<Json | undefined> {
+    return this.leftThere(source, id, this.sealedValues([{ id, source }]));
+  }
+
+  async forgotten(source: Source, id: string): Promise<void> {
     for (const name of sealedOf(source)) await this.deps.sealed.remove(configScope(id, name)).catch((error: unknown) => this.deps.say({ condition: "composio_sealed_config_not_removed", trigger: id, field: name, error: String((error as Error)?.message ?? error) }));
+  }
+
+  /** The trigger `id`'s instance on Composio deleted, or turned off while other triggers hold it (none of them on), or
+   *  kept (one of them on): undefined when that is done, else what is left there, said. `values`: its sealed config's,
+   *  withheld from Composio's words. */
+  private async leftThere(source: Source, id: string, values: readonly string[]): Promise<Json | undefined> {
     const instance = instanceOf(source);
     let left = "delete" as Left;
     try {
