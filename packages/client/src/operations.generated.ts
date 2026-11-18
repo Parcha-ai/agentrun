@@ -3987,7 +3987,7 @@ export type ListToolKeysResponse = {
     kind: "tool" | "model";
     label: string;
     unlocks: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     fields: Array<{
       name: string;
       set: boolean;

@@ -52,7 +52,8 @@ export const installDirOf = (data: string, harness: string): string => join(harn
 /** What a run shows while its harness installs (a `phase` row of its timeline). */
 export const installingWords = (label: string): string => `Installing ${label} (first use)…`;
 
-const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
+/** `word` as a shell reads it back: as it is when it holds nothing a shell would read, else single-quoted. */
+export const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
 
 /** The command that installs a harness by hand into `dir`, as a first use does: the lock and the package.json it locks
  *  copied into a fresh directory beside `dir`, `npm ci` there with no package's install script and with the optional
@@ -302,17 +303,17 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
 /** `path` and all under it made writable, then removed (retried a few times: a file can still be closing). One that can't
  *  be removed now (an orphaned npm of a crashed server still writing into it, a folder that can't be read) stays: removing
  *  what an install leaves is housekeeping, and never fails an install or hides why one failed. */
-async function removeLeftover(path: string): Promise<void> {
+export async function removeLeftover(path: string): Promise<void> {
   await writable(path, true).then(() => rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })).catch(() => undefined);
 }
 
 /** The prefix of every directory an install into `dir` works in beside it (its staging, and the install it replaces). */
-const leftoverPrefix = (dir: string): string => `.${basename(dir)}-`;
+export const leftoverPrefix = (dir: string): string => `.${basename(dir)}-`;
 
 /** What installs into `dir` left beside it (a staging directory of an install cut short, an install replaced), each
  *  removed if it can be now (removeLeftover). Only under the install's hold (takeHold): an install that runs works in a
  *  directory of that very prefix. Never fails. */
-async function sweepLeftovers(dir: string): Promise<void> {
+export async function sweepLeftovers(dir: string): Promise<void> {
   const prefix = leftoverPrefix(dir);
   for (const name of await readdir(dirname(dir)).catch(() => [] as string[])) if (name.startsWith(prefix)) await removeLeftover(join(dirname(dir), name));
 }
@@ -320,7 +321,7 @@ async function sweepLeftovers(dir: string): Promise<void> {
 
 /** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone and
  *  readable by everyone: a folder entered and listed, a file read, one its owner may run run by all. */
-async function writable(dir: string, on: boolean): Promise<void> {
+export async function writable(dir: string, on: boolean): Promise<void> {
   const walk = async (path: string): Promise<void> => {
     const st = await lstat(path).catch(() => undefined);
     if (!st || st.isSymbolicLink()) return;

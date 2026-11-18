@@ -6529,7 +6529,7 @@ class ListToolKeysResponseKeysItem(TypedDict):
     kind: Literal["tool", "model"]
     label: str
     unlocks: list[str]
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     fields: list[ListToolKeysResponseKeysItemFieldsItem]
     secrets: list[SecretMeta]
     check: ListToolKeysResponseKeysItemCheck1 | ListToolKeysResponseKeysItemCheck2 | ListToolKeysResponseKeysItemCheck3 | None

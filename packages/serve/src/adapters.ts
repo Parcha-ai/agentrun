@@ -406,6 +406,33 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
+/** Goose's adapter (its package's gooseAdapter, acp-package.ts), on the binary its owner installed into the data's
+ *  harnesses directory (`agentrun harness install goose`, harness-goose.ts) and from nowhere else: not there, or not the
+ *  pinned binary, it says that command, and nothing here installs it. Its model goes where claude-agent's does (the host's
+ *  Anthropic Messages provider, providerFor), through a model proxy of its own, priced and capped as every run is. */
+export async function gooseOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
+  const [{ acpPackage }, { gooseMissing, GOOSE_ID }] = await Promise.all([import("./acp-package.js"), import("./harness-goose.js")]);
+  const acp = acpPackage();
+  // What no key fixes is said first, as claudeOf does: the binary, checked off the event loop.
+  const found = await gooseMissing(env);
+  if ("missing" in found) throw new HarnessUnavailable(found.missing.message, acp && fixOf(acp.gooseFacts, found.missing));
+  if (!acp) throw new HarnessUnavailable("Goose's adapter is not installed beside this server");
+  const facts = acp.gooseFacts;
+  const provider = providerFor(facts.wire, env, needs.model, GOOSE_ID);
+  // A person's Claude Code login is its CLI's alone (claude-login.ts): Goose's requests never go on it.
+  if (provider.login) throw new HarnessUnavailable("Goose runs on a model key: Claude Code's login on this machine is its CLI's alone.", undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+  try {
+    return acp.gooseAdapter({
+      binary: found.binary, sha256: found.sha256, model: provider.modelId,
+      provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
+      price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(GOOSE_ID, env),
+      ...(needs.confine ? { confine: needs.confine } : {}),
+    });
+  } catch (error) {
+    throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
+  }
+}
+
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and
  *  the adapter's own check of the model `given` names (with none, a model of its wire's vendor: whether it runs here at
  *  all). `atStart`: asked by the start's probe, whose offers hold until a restart, so a reason installing fixes ends

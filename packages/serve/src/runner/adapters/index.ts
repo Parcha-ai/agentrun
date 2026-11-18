@@ -9,6 +9,8 @@ import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
 import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
 import { harnessOf } from "../../harness-table.js";
+import { acpPackage } from "../../acp-package.js";
+import { GOOSE_ID } from "../../harness-goose.js";
 import { piAdapter, type PiAdapterOptions } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
@@ -103,6 +105,24 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         model: launch.model,
         provider: { origin: launch.provider.origin, credential: launch.provider.credential },
         ...(launch.price ? { price: launch.price as never } : {}),
+        ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        sessionsDir: launch.sessionsDir,
+        ...extra,
+      });
+    },
+  },
+  // Goose, where its package is beside serve (acp-package.ts): on the binary `extra.binary` names, which its owner
+  // installed (harness-goose.ts); a run on serve's table builds its adapter from its entry (adapters.ts gooseOf).
+  [GOOSE_ID]: {
+    record: "loop",
+    adapter: async (launch, extra = {}) => {
+      const acp = acpPackage();
+      if (!acp) throw new Error("Goose's adapter (@parcha/agentrun-harness-acp) is not installed beside this runner");
+      if (typeof extra.binary !== "string") throw new Error("Goose's runner adapter needs the installed binary's path (extra.binary)");
+      return acp.gooseAdapter({
+        model: launch.model,
+        provider: { origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
+        ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
         sessionsDir: launch.sessionsDir,
         ...extra,
