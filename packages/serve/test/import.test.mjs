@@ -1397,7 +1397,8 @@ test("an imported agent runs as imported: a project with no instructions file ge
   t.after(async () => await store.close());
   const env = { PATH: "/usr/bin" };
   const opts = { home: at, env, all: true };
-  await runImport(store, await planImport(opts), opts);
+  const report = await runImport(store, await planImport(opts), opts);
+  assert.deepEqual(report.modelsLeftOut, [{ cwd: build, source: "codex", model: "openai/gpt-6.1-codex" }], "the report names the model it did not pin, and only that one");
   const current = async (cwd) => (await agentOf(store, agentIdOf(cwd))).revisions.find((r) => r.current).body;
   const built = await current(build);
   assert.equal(built.model, undefined);
@@ -1409,7 +1410,10 @@ test("an imported agent runs as imported: a project with no instructions file ge
   for (const body of [built, await current(docs)]) {
     const blockers = await blockersOf({ PATH: "/usr/bin", HOME: at, OPENROUTER_API_KEY: "sk-or-v1-test" }, { kind: "agentic", ...body });
     assert.deepEqual(blockers.map((b) => b.message), [], JSON.stringify(body));
-  }
+  }  // The CLI says which model it did not keep, for which project, in a fresh data directory.
+  const lines = [];
+  assert.equal(await importCommand(["--data", join(root, "again"), "--all"], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
+  assert.deepEqual(lines.filter((line) => line.startsWith("model not kept: ")), [`model not kept: ${build} (codex) ran on openai/gpt-6.1-codex, which no model catalog here lists; its agent runs on the server's default model until you pick one`]);
 });
 
 test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {

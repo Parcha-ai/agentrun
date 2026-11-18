@@ -248,6 +248,9 @@ export type ImportReport = {
   }[];
   skipped: Skipped[];
   already: number;
+  /** Each session model a new revision does not pin (no model catalog here lists it): the agent's folder, the source, the
+   *  model. The agent runs on the server's default for its harness. */
+  modelsLeftOut?: { cwd: string; source: Source; model: string }[];
   /** Keys and tokens cut out of what it wrote (secret-cut.ts): the environment's values, the saved keys, and those of a
    *  known format secretlint found. */
   secretsRemoved?: number;
@@ -1142,7 +1145,9 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     const toWrite: NewRevision[] = [];
     for (const source of order) {
       const model = byStart.findLast((s) => s.source === source && s.model)?.model;
-      const resolved = await revisionFor(store, project.agentId, source, files, model && (await listed(model)) ? model : undefined, keptName(project, text), text);
+      const pinned = model && (await listed(model)) ? model : undefined;
+      const resolved = await revisionFor(store, project.agentId, source, files, pinned, keptName(project, text), text);
+      if (resolved.create && model && !pinned) (report.modelsLeftOut ??= []).push({ cwd: project.cwd, source, model });
       revisions.set(source, resolved.id);
       if (resolved.create) toWrite.push(resolved.create);
     }
@@ -1486,6 +1491,7 @@ export async function importCommand(
       out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
       out(`${report.secretsRemoved ?? 0} secret${report.secretsRemoved === 1 ? "" : "s"} removed`);
       for (const line of leftOutLines(report.skipped)) out(line);
+      for (const { cwd, source, model } of report.modelsLeftOut ?? []) out(`model not kept: ${cwd} (${source}) ran on ${model}, which no model catalog here lists; its agent runs on the server's default model until you pick one`);
       // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
       const held = await importedIn(store);
       const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
