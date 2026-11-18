@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ATTACH_PATH, type AttachHub, DAEMON_PATH, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { syncs } from "../descriptor.js";
-import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
+import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import { BACKSTOP_MARGIN_MS, type HostCall, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "../host.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
@@ -169,6 +169,8 @@ const USER = /^(\d+):(\d+)$/;
 /** A spec's user, where the host takes one: a uid, or uid:gid, in numbers (a uid alone is its own gid). */
 const SPEC_USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
+/** The calls of a desktop's display (DESKTOP_GROUPS): screen, input, apps and ui. */
+const DISPLAY_METHOD = /^(screen|input|apps|ui)\./;
 const DEFAULTS: HostedTimeouts = {
 	requestMs: 30_000,
 	createMs: 120_000,
@@ -1265,10 +1267,15 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a linux computer has no screen. */
 	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
-		return daemonWatch(this, ref, handlers, options);
+		return daemonWatch({ connect: (one) => this.#connect(one, "screen.watch") }, ref, handlers, options);
 	}
 
-	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+		return this.#connect(ref);
+	}
+
+	/** connect; `watching`, a watch's: a dial desktop whose display isn't up yet refuses it in words, as its client does. */
+	async #connect(ref: ComputerRef, watching?: "screen.watch"): Promise<Result<ComputerConnection>> {
 		const problem = this.#refProblem(ref);
 		if (problem) return this.#fail("invalid", problem);
 		const found = await this.#own(ref);
@@ -1279,7 +1286,20 @@ export class HostedProvider implements ComputerProvider {
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.host.facts.arch, fence: true });
+		// A dial desktop says linux until its display answers (attach.ts helloMismatch), and until a hello says desktop it is
+		// a linux computer: its screen, input, apps and ui calls are refused here in words, never sent.
+		const dark = this.#dialing && kind === "desktop" && opened.value.hello?.kind === "linux";
+		const expected = dark ? { kind: "linux" as const, groups: groups.filter((group) => !(DESKTOP_GROUPS as readonly string[]).includes(group)) } : { kind, groups };
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, ...expected, arch: this.host.facts.arch, fence: true });
+		const notUp = (method: string) => this.#fail("unsupported", `${ref.name}'s display isn't up yet: ${method} was not sent, and it is a linux computer until its daemon's hello says desktop`);
+		if (drifted.length === 0 && dark && watching) {
+			await opened.value.close();
+			return notUp(watching);
+		}
+		if (drifted.length === 0 && dark) {
+			const client = opened.value.client;
+			return ok({ ...opened.value, client: { call: (method, params, options) => (DISPLAY_METHOD.test(method) ? Promise.resolve(notUp(method)) : client.call(method, params, options)), close: () => client.close() } });
+		}
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers. A synced
 		// folder's sync is its runner's (the sink is serve's), which wraps the client itself.
 		if (drifted.length === 0) return recordedFolder(found.value.labels)?.mount?.kind !== "archil" ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client, archilSync(opened.value.client)) });

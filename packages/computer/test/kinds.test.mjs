@@ -316,8 +316,12 @@ const BUILT = {
 	e2b: [() => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX, kind: "linux" }), () => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX })],
 	// Each configuration built by its own create() options, as serve builds the one a setting selects.
 	agent37: PROVIDERS.find((one) => one.id === "agent37").capabilities.map(({ options }) => () => new Agent37Provider({ ...options, apiKey: "fake-test-key", sshKey: FAKE_SSH_KEY, ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })),
-	daytona: [() => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
-	modal: [() => new ModalProvider({ sdk: MODAL_SDK, app: "computers" })],
+	// The sandbox on connect exec, the desktop on dial alone (its configuration's options, as serve builds it).
+	daytona: [
+		() => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) }),
+		() => new DaytonaProvider({ kind: "desktop", connect: "dial", apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) }),
+	],
+	modal: [() => new ModalProvider({ sdk: MODAL_SDK, app: "computers" }), () => new ModalProvider({ kind: "desktop", connect: "dial", sdk: MODAL_SDK, app: "computers" })],
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
 	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
 	"local-chrome": [() => new LocalBrowserProvider({ executablePath: "/nonexistent/chrome" })],

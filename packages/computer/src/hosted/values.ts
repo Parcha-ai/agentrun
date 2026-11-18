@@ -18,6 +18,10 @@ export function connectOf(value: unknown, label: string): "exec" | "dial" {
 	throw new Error(`connect is how ${label} reaches its machines, "exec" (the default) or "dial", not ${JSON.stringify(value)}`);
 }
 
+/** Why a provider of both makes no desktop on exec (label: "Modal"): its desktop is the box image's, started over the dial. */
+export const execDesktopRefusal = (label: string, image: string) =>
+	`a ${label} desktop is made on connect "dial" alone, from ${image}, its X server started over the socket its machine dials: connect "exec" makes kind linux`;
+
 /** A vendor whose computer has its image's size: a spec's cpus or memoryMb, refused in words (computer: "an E2B computer"). */
 export function sizeRefusals(spec: Partial<ComputerSpec>, computer: string, image: string): Refusal[] {
 	return (["cpus", "memoryMb"] as const).filter((field) => spec[field] !== undefined).map((field) => ({ field, message: `${computer} has the size of its ${image}: name a ${image} of the size you need, not ${field}` }));

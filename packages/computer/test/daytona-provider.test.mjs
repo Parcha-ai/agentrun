@@ -773,6 +773,28 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.equal(rec.requests.length, 0);
 });
 
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager, and DISPLAY beside the boot env, for init, with no resources beside the snapshot; on connect exec it is refused when made, in words", async () => {
+	const rec = refusedCreate();
+	const dial = dialOf();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined);
+	assert.equal(provider.host.facts.windowManager, true, "a snapshot of box/Dockerfile has xfwm4");
+	const made = await provider.create({ ...SPEC, image: "agentrun-archil-0123456789ab" }, { requestId: "r-dial-desktop" });
+	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
+	const body = posted(rec);
+	assert.deepEqual(Object.keys(body.env).sort(), [...BOOT_NAMES, "DISPLAY"]);
+	assert.equal(body.env.DISPLAY, ":0");
+	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs and 4 GB: no resources beside a snapshot");
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any request.
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({}, { ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: a Daytona desktop is made on connect "dial" alone, from a snapshot of box\/Dockerfile, its X server started over the socket its machine dials: connect "exec" makes kind linux$/);
+	}
+	assert.equal(setup({}, { kind: "linux" }).provider.capabilities().kind, "linux");
+});
+
 test("Daytona's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", () => {
 	assert.deepEqual(DAYTONA.settings, [{ name: "daytonaConnect", option: "connect" }]);
 });

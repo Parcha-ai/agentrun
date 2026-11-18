@@ -31,8 +31,8 @@ export interface FlyMachine {
 	incomplete_config?: { metadata?: Record<string, string> | null } | null;
 }
 
-/** The Fly provider's options: the token and the app, then the shared adapter's (HostedOptions). */
-export interface FlyProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs"> {
+/** The Fly provider's options: the token and the app, then the shared adapter's (HostedOptions), kind among them. */
+export interface FlyProviderOptions extends Omit<HostedOptions, "desktop" | "maxLifetimeMs"> {
 	/** A Fly API token that may make machines in the app. The caller passes it; this provider reads no environment. */
 	apiToken: string;
 	/** The Fly app the machines live in, made by the operator beforehand (fly apps create). */
@@ -124,6 +124,8 @@ class FlyHost implements MachineHost {
 		// Unverified: Fly's init runs hallpass, the SSH server `fly ssh console` reaches, on port 22 of the machine's private
 		// address. Declared, so isolation.vendor-agent checks the computer's programs reach none of it.
 		vendorAgentPorts: [22],
+		// The box image has xfwm4 (box/install.sh's desktop step): a desktop's apps are framed and focused.
+		windowManager: true,
 		// The machine dials the server: Fly's exec answers once the command ends (docs.machines.dev, Machines_exec), so
 		// there is no exec and no upload here.
 		connect: "dial",
@@ -256,7 +258,8 @@ export const conformance = () => import("./conformance/fly.js");
 
 /**
  * Computers that are Fly Machines, on the shared adapter, each dialing the server that made it: a server with no public
- * https address (AGENTRUN_PUBLIC_URL) refuses a create in words before Fly is called. Kind linux alone.
+ * https address (AGENTRUN_PUBLIC_URL) refuses a create in words before Fly is called. Kind linux (default) or desktop,
+ * whose X server and window manager start through computerd over the socket the machine dialed.
  */
 export class FlyProvider extends HostedProvider {
 	/**
@@ -272,6 +275,6 @@ export class FlyProvider extends HostedProvider {
 		if (typeof apiToken !== "string" || apiToken === "") throw new Error("options.apiToken, a Fly API token, is required: the provider reads no environment, so the caller passes it");
 		if (typeof app !== "string" || !APP.test(app)) throw new Error(`options.app is the name of the Fly app its machines live in (lowercase letters, digits and hyphens), not ${JSON.stringify(app)}`);
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
-		super(new FlyHost({ apiToken, app, fetch: fetcher }), { ...rest, kind: "linux", timeouts: { ...FLY_TIMEOUTS, ...timeouts } });
+		super(new FlyHost({ apiToken, app, fetch: fetcher }), { ...rest, timeouts: { ...FLY_TIMEOUTS, ...timeouts } });
 	}
 }

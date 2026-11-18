@@ -5,6 +5,7 @@
 // packages/serve/scripts/dial-conformance.mjs.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
@@ -130,6 +131,25 @@ test("the provider dials: kind linux, a microVM, no exec or upload, a synced fol
 	assert.equal(refused.error?.code, "refused");
 	assert.match(refused.error.message, /^Cloudflare machines dial this server, and it has no public https address/);
 	assert.deepEqual(relay.calls, []);
+});
+
+test("kind desktop: the desktop's groups and the window manager, and DISPLAY beside the boot env the relay is given, for init, on standard-3; kind linux, the default, gets none", async () => {
+	for (const kind of ["desktop", "linux", undefined]) {
+		// The relay refuses the container: what it was asked is all this reads. The daemon is any file (its sha256 goes in the env).
+		const relay = fakeRelay((method, url) => (method === "POST" ? { status: 400, json: { error: "refused in a test" } } : health()(method, url)));
+		const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub() };
+		const made = provider(relay, { ...(kind === undefined ? {} : { kind }), dial, daemonPath: fileURLToPath(import.meta.url) });
+		const caps = made.capabilities();
+		assert.equal(caps.kind, kind ?? "linux");
+		assert.deepEqual(caps.groups, kind === "desktop" ? ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"] : ["exec", "files", "processes"]);
+		assert.equal(made.host.facts.windowManager, true, "the relay's image is FROM the box image, which has xfwm4");
+		const result = await made.create({ image: BOX, lifetimeMs: 600_000, network: "none" }, { requestId: `cf-${kind}` });
+		assert.equal(result.error?.code, "invalid", JSON.stringify(result));
+		const { env, instance } = relay.calls.find(({ method }) => method === "POST").body;
+		assert.deepEqual(Object.keys(env).sort(), [...["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"], ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), String(kind));
+		assert.equal(env.DISPLAY, kind === "desktop" ? ":0" : undefined);
+		assert.equal(instance, "standard-3", "a desktop's size is the sandbox's: 2 vCPUs, 8 GiB");
+	}
 });
 
 test("the constructor refuses a relay URL that is not https and a missing token, never echoing the token", () => {

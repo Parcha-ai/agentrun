@@ -5,6 +5,7 @@
 // packages/serve/scripts/dial-conformance.mjs.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
@@ -164,6 +165,25 @@ test("the provider dials: kind linux, no exec or upload, a synced folder alone, 
 	assert.equal(refused.error?.code, "refused");
 	assert.match(refused.error.message, /^Fly Machines machines dial this server, and it has no public https address/);
 	assert.deepEqual(fly.calls, []);
+});
+
+test("kind desktop: the desktop's groups and the window manager, and DISPLAY beside the boot env Fly posts as config.env, for init; kind linux, the default, posts none", async () => {
+	for (const kind of ["desktop", "linux", undefined]) {
+		// Fly refuses the machine: what it was asked is all this reads. The daemon is any file (its sha256 goes in the env).
+		const fly = fakeFly((method, url) => (method === "POST" && url.href === BASE ? { status: 422, json: { error: "refused in a test" } } : method === "GET" ? { json: [] } : undefined));
+		const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub() };
+		const made = provider(fly, { ...(kind === undefined ? {} : { kind }), dial, daemonPath: fileURLToPath(import.meta.url) });
+		const caps = made.capabilities();
+		assert.equal(caps.kind, kind ?? "linux");
+		assert.deepEqual(caps.groups, kind === "desktop" ? ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"] : ["exec", "files", "processes"]);
+		assert.equal(made.host.facts.windowManager, true, "the box image has xfwm4");
+		const result = await made.create({ image: "ghcr.io/parcha-ai/agentrun-box:0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId: `fly-${kind}` });
+		assert.equal(result.error?.code, "invalid", JSON.stringify(result));
+		const { env, guest } = fly.calls.find(({ method }) => method === "POST").body.config;
+		assert.deepEqual(Object.keys(env).sort(), [...["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"], ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), String(kind));
+		assert.equal(env.DISPLAY, kind === "desktop" ? ":0" : undefined);
+		assert.deepEqual(guest, { cpu_kind: "shared", cpus: 2, memory_mb: 4096 }, "a desktop's size is the sandbox's");
+	}
 });
 
 test("check holds a size to Fly's shared CPUs and their memory, and an image to a registry path", () => {

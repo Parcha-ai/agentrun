@@ -851,6 +851,27 @@ test("connect dial: init is agentrun-dial's child, no Archil mount (refused in w
 	assert.deepEqual(rec.calls, []);
 });
 
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager, and DISPLAY beside the boot env, for init; on connect exec it is refused when made, in words", async () => {
+	const dial = dialOf();
+	const { provider, rec } = setup({ connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined, "a desktop offers no GPU");
+	assert.deepEqual(provider.check({ ...SPEC, gpu: { type: "T4", count: 1 } }).map(({ field }) => field), ["gpu"]);
+	assert.equal(provider.host.facts.windowManager, true, "the box image has xfwm4");
+	const result = await create(provider);
+	assert.equal(result.error?.code, "invalid", "a create Modal refused made nothing");
+	const { env } = rec.params();
+	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS", "DISPLAY"]);
+	assert.equal(env.DISPLAY, ":0");
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call.
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: a Modal desktop is made on connect "dial" alone, from the box image, its X server started over the socket its machine dials: connect "exec" makes kind linux$/);
+	}
+	assert.equal(setup({ kind: "linux" }).provider.capabilities().kind, "linux");
+});
+
 test("the conformance module reads COMPUTER_MODAL_CONNECT as connect, and its dialKit refuses in words: this process is no public server", async () => {
 	const { MODAL_ENV, settingsFromEnv, dialKit } = await import("../dist/conformance/modal.js");
 	const env = { [MODAL_ENV.tokenId]: "ak-fake-test-key", [MODAL_ENV.tokenSecret]: "as-not-a-secret", [MODAL_ENV.app]: APP, [MODAL_ENV.connect]: "dial" };

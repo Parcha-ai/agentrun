@@ -3,7 +3,7 @@
 // Its machines dial the server (MachineHost facts.connect "dial"): Fly's exec answers only once the command ends, so
 // nothing reaches into a machine from outside, and its computerd dials the server's attach route instead.
 import { defineProvider } from "../descriptor.js";
-import { SANDBOX } from "./shared.js";
+import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
 export const FLY = defineProvider({
 	id: "fly",
@@ -21,8 +21,9 @@ export const FLY = defineProvider({
 	// one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts alone
 	// (hosted/network.ts). The machine itself always reaches out: it fetches its daemon from the server and dials it.
 	network: ["none", "open", "allow"],
-	// A linux computer alone: no desktop configuration yet, though the box image has one (PROVIDERS.md, Machines that dial in).
-	capabilities: [SANDBOX],
+	// A linux computer, or a desktop: the box image's X server and xfwm4, started through computerd over the socket the
+	// machine dialed. A desktop's size is the sandbox's, the adapter's default of 2 shared CPUs and 4 GiB (fly.ts).
+	capabilities: [SANDBOX, { ...LINUX_DESKTOP, options: { kind: "desktop" } }],
 	// No default image: every computer starts from the box image its prepareImage() answers.
 	prepareImage: true,
 	load: () => import("../fly.js"),

@@ -1396,6 +1396,10 @@ conformance module's `dialKit()` refuses, as E2B's does: the Core run happens in
 run image with `COMPUTER_MODAL_CONNECT=dial` is the box image, the one that holds `agentrun-dial` (debian:bookworm-slim
 on exec, as before).
 
+A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server and xfwm4, started over the socket it
+dialed, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
+constructor refuses `kind: "desktop"` in words. **Unverified**: Xvfb and the window manager on Modal (no live run yet).
+
 ## Daytona
 
 ```ts
@@ -1665,7 +1669,10 @@ default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md
 no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
-no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. What each part rests on:
+no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
+(`kind: "desktop"`): the box snapshot's X server and xfwm4, started over the socket it dialed, with the snapshot's 2 CPUs
+and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words.
+**Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
@@ -2044,7 +2051,9 @@ With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E
 ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): a desktop by default, as on exec, since the box template has
 the desktop (`box/install.sh`'s `desktop` step), or kind linux; no Archil mount, and the host has no
 exec and no upload. A desktop's launch adds `DISPLAY` to the boot env, and its X server and xfwm4 start over the
-socket the sandbox dialed, through `process.start`. E2B runs a template's start command once, at the template's build, and snapshots it running, so
+socket the sandbox dialed, through `process.start`. A dial desktop whose X server has gone is not refused at `connect()`
+as on exec: it reads back kind `linux`, and its screen, input, apps and ui calls are refused in words, never sent, until
+its hello says `desktop` again. E2B runs a template's start command once, at the template's build, and snapshots it running, so
 it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
 So create starts the box template's `agentrun-dial` itself, once, right after `Sandbox.create`: one envd process as
 root with the boot env as that process's env alone (never the sandbox's `envs`, which envd gives every process), after

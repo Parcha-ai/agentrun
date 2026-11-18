@@ -287,7 +287,9 @@ in words.
   holds by the daemon's SHA-256, which the machine checks before it runs it. A desktop's X server and window manager
   start over the machine's socket, through `process.start`, as on a host with exec.
 - `connect` goes over the machine's socket, by the attach binding's rules, with a fresh `hello` (a desktop's display
-  answers after it dialed): a drop fails `gone`. `release` with
+  answers after it dialed): a drop fails `gone`. A desktop whose `hello` says `linux` is a linux computer until one
+  says `desktop`: its connection's `screen.*`, `input.*`, `apps.*` and `ui.*` calls, and `watch`, are refused
+  `unsupported` ("its display isn't up yet"), never sent. `release` with
   `delete` revokes the token and closes the socket before the vendor's delete.
 - The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400` (a
   desktop's token takes `linux`, its hello before its display answers), and

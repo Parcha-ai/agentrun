@@ -211,7 +211,9 @@ provider's, made and deleted by runs; only the transport is this binding's.
 - **The upgrade.** A minted token the store doesn't hold, revoked or past its expiry is `401` before the upgrade. A
   minted socket goes to the hub under the computer's name, a paired computer of its mint (`mintedComputer`); a `hello`
   of another kind, os or arch is closed `4400` (its token is that machine's alone), and one of another build `4400`.
-  One exception: a machine minted a desktop may say `linux`, as it does until its display answers.
+  One exception: a machine minted kind `desktop` may say kind `linux`, on exactly the os and arch it was minted for,
+  as it does until its display answers. The hub keeps the `hello` it said, never the token's kind. A paired computer
+  (not minted) has no such exception.
 - **Delete.** `release` with `delete`, the provider's own failed create and a machine that never dials within
   `createMs` (create fails `timeout`, naming the URL it was given) all revoke the token and close the socket.
 - **Never logged.** The token sits in the machine's env and in the `Authorization` header. Neither serve nor `computerd`
