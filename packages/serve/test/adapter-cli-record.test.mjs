@@ -431,7 +431,6 @@ test("an output retry written on the record but never sent is sent by the next c
   await queue(opened.server, "run-1");
   const sent = [];
   let lost = 0;
-  const SHORT = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
   const adapter = {
     id: "stand-in-cli",
     capabilities: () => ({}),
@@ -470,13 +469,18 @@ test("an output retry written on the record but never sent is sent by the next c
     gate: () => "allow",
     outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
   }));
-  const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...SHORT });
+  // One claim each: a lease no stall of a loaded machine outlasts, so the first runner never loses its claim before the
+  // test kills it (a stall past a short lease retook it, and the retry was never written); the test moves the store's
+  // clock past it instead.
+  const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
   const journalOf = async (row) => journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
   await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return lost === 1 && messagesOf(await journalOf(now)).length === 3;
   }, "the retry on the record, its send never done", 10_000);
   first.kill();
+  // The killed claim's lease runs out for the next runner at once.
+  opened.clock.skewMs += STEADY.leaseMs * 2;
   const next = startRunner({ store: observed(opened.runners[1], recorder()), createLoop, name: "runner-b", ...STEADY });
   // Its three stores' connections go when the case ends, never held to the file's end beside the other files' on Postgres.
   t.after(async () => {
