@@ -339,6 +339,22 @@ test("service install --public-url puts the address on the service's command lin
   assert.deepEqual(plistArgs(plist).slice(1), ["--no-open", "--public-url", "https://box.tailnet.example/"]);
 });
 
+// With a public address the server asks for a setup code and prints its link at that address: the page the install
+// opens is that link, never the loopback one its record names. A later --env keeps the address on the command line.
+test("service install --public-url opens the setup page at the public address, and a later --env keeps --public-url", async () => {
+  const { home, calls, exec, get, launch } = setupHome();
+  const { out, io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { DISPLAY: ":0", PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000, launch });
+  assert.equal(await service.install({ port: "7345", "public-url": "https://box.example.test/" }), 0);
+  assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open https://box.example.test/setup#code=OLDCODE1"]);
+  assert.doesNotMatch(out.join(""), /http:\/\/127\.0\.0\.1:7345\/setup/);
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENT_MODEL=llama3.2"] }), 0);
+  assert.deepEqual(unitArgs(readFileSync(file, "utf8")), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://box.example.test/"]);
+  assert.equal(await service.install({ "public-url": "https://other.example.test/" }), 0, "a new --public-url replaces it");
+  assert.deepEqual(unitArgs(readFileSync(file, "utf8")).slice(-2), ["--public-url", "https://other.example.test/"]);
+});
+
 test("service install with --data waits on that directory's server, and a restart waits for a record newer than itself", async () => {
   const { home, exec, get } = linuxHome();
   const data = join(home, "elsewhere");

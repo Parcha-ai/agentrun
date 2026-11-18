@@ -422,7 +422,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       });
       // --public-url goes on the service's command line, so every start of it (a restart, a login) has it, and with it
       // the launcher's AGENTRUN_TRUSTED_PROXIES=loopback.
-      const publicUrl = given === undefined ? undefined : publicUrlOf(given);
+      let publicUrl = given === undefined ? undefined : publicUrlOf(given);
       if (publicUrl?.error !== undefined) throw fail(2, publicUrl.error);
       need();
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
@@ -434,13 +434,15 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         if (value === "") delete model[key];
         else model[key] = value;
       }
-      // --tailscale, --no-tailscale or --env on an installed service changes that only: its data folder and port stay
-      // unless named (the installer passes the flag alone).
+      // --tailscale, --no-tailscale or --env on an installed service changes that only: its data folder, port and public
+      // address stay unless named (the installer passes the flag alone). --tailscale names its own address instead.
       if ((tailscale !== undefined || changes.length > 0) && installed()) {
         const now = argsNow();
         const option = (name) => (now.includes(name) ? now[now.indexOf(name) + 1] : undefined);
         data ??= option("--data");
         port ??= option("--port");
+        const kept = option("--public-url");
+        if (publicUrl === undefined && tailscale !== true && kept !== undefined && publicUrlOf(kept).url !== undefined) publicUrl = publicUrlOf(kept);
       }
       const again = (flag) => [`agentrun service install ${flag}`, ...(port !== undefined ? [`--port ${port}`] : []), ...(data !== undefined ? [`--data ${resolve(data)}`] : [])].join(" ");
       const tailnet = tailnetOf({ platform, root, uid, exec, say, fail, again: again("--tailscale") });
