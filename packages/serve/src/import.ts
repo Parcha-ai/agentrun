@@ -1323,8 +1323,69 @@ export async function describePlan(plan: Plan, store?: ImportStore, { verbose = 
   return [...lines, ...(plan.already ? [`already imported, unchanged: ${plan.already} session files`] : []), ...(verbose ? plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`) : [])];
 }
 
-/** `agentrun-serve import ARGS`: its exit code. */
-export async function importCommand(
+/** What `importCommand` takes besides its arguments. */
+type ImportDeps = {
+  home?: string;
+  env?: NodeJS.ProcessEnv;
+  out?: (line: string) => void;
+  temp?: string;
+  /** Where the import says how far it is while it works (default: one line on stderr, on a terminal only). */
+  progress?: Progress;
+};
+
+/** `agentrun-serve import ARGS`: its exit code. A Ctrl+C it took is in the code (130) whenever it came, the summary's
+ *  last line included: its listeners stay until everything it says is printed. */
+export async function importCommand(args: string[], usage: string, deps: ImportDeps = {}): Promise<number> {
+  const progress = deps.progress ?? terminalProgress();
+  const stops = stopOnCtrlC(progress);
+  try {
+    const code = await importWith(args, usage, { ...deps, progress }, stops);
+    return code === 0 && stops.signal.aborted ? 130 : code;
+  } finally {
+    stops.unhook();
+  }
+}
+
+/** The import's Ctrl+C (SIGINT, and SIGTERM): `hook` listens from when the import starts to write, `unhook` once the
+ *  command has printed everything. The first one stops the import between two sessions: each session is written whole
+ *  (importRun is atomic), what is written stays, and the next import picks up the rest. One that comes once the sessions
+ *  are written (`written`) stops nothing, since nothing is left to stop: the summary is printed all the same. A second
+ *  one, a while after the first, leaves at once; sooner, it is the launcher's copy of the first (stop-signals.ts). */
+type Stops = { signal: AbortSignal; hook: () => void; written: () => void; unhook: () => void };
+
+function stopOnCtrlC(progress: Progress): Stops {
+  const stop = new AbortController();
+  let stoppedAt = 0;
+  let written = false;
+  const onStop = () => {
+    if (stop.signal.aborted) {
+      if (Date.now() - stoppedAt > REPEAT_MS) process.exit(130);
+      return;
+    }
+    stoppedAt = Date.now();
+    progress.done();
+    console.error(
+      written
+        ? "agentrun-serve import: the sessions are saved; printing the summary (Ctrl+C again to quit now)"
+        : "agentrun-serve import: stopping after the session being saved; what is saved stays, and the next import picks up the rest (Ctrl+C again to quit now)",
+    );
+    stop.abort();
+  };
+  return {
+    signal: stop.signal,
+    hook: () => {
+      process.on("SIGINT", onStop);
+      process.on("SIGTERM", onStop);
+    },
+    written: () => void (written = true),
+    unhook: () => {
+      process.off("SIGINT", onStop);
+      process.off("SIGTERM", onStop);
+    },
+  };
+}
+
+async function importWith(
   args: string[],
   usage: string,
   {
@@ -1333,15 +1394,9 @@ export async function importCommand(
     temp = tmpdir(),
     env,
     out = console.log,
-    progress = terminalProgress(),
-  }: {
-    home?: string;
-    env?: NodeJS.ProcessEnv;
-    out?: (line: string) => void;
-    temp?: string;
-    /** Where the import says how far it is while it works (default: one line on stderr, on a terminal only). */
-    progress?: Progress;
-  } = {},
+    progress,
+  }: ImportDeps & { progress: Progress },
+  stops: Stops,
 ): Promise<number> {
   // The server's own secrets, kept sealed in the store, open only under the server's seal key: it is
   // booted the one way the server and runner boot it (seal-key.ts bootSealKey) once the store is open (keyed below), and
@@ -1500,39 +1555,27 @@ export async function importCommand(
         if (sealRefused(error)) return 1;
         throw error;
       }
-      // The first Ctrl+C stops the import between two sessions: each session is written whole (importRun is atomic), what
-      // is written stays, and the next import picks up the rest. A second one, a while after, leaves at once.
-      const stop = new AbortController();
-      let stoppedAt = 0;
-      const onStop = () => {
-        if (stop.signal.aborted) {
-          if (Date.now() - stoppedAt > REPEAT_MS) process.exit(130);
-          return;
-        }
-        stoppedAt = Date.now();
-        progress.done();
-        console.error("agentrun-serve import: stopping after the session being saved; what is saved stays, and the next import picks up the rest (Ctrl+C again to quit now)");
-        stop.abort();
-      };
-      process.on("SIGINT", onStop);
-      process.on("SIGTERM", onStop);
+      // A Ctrl+C from here on is the import's own (stopOnCtrlC), until the command has printed everything: the lines are
+      // held until the end, so a Ctrl+C left to end the process after the sessions are written would print none of them.
+      stops.hook();
       let plan: Plan;
       let report: ImportReport;
+      let stopped: boolean;
       try {
         const options: ImportOptions = {
           ...(await optionsFrom(store)),
-          signal: stop.signal,
+          signal: stops.signal,
           onProgress: (step, done, total) => progress.show(`${step === "keys" ? "Checking sessions for keys" : "Importing sessions"}: ${done.toLocaleString("en-US")} of ${total.toLocaleString("en-US")}`),
         };
         progress.show("Looking for sessions…");
         plan = await planImport(options, store);
         report = await runImport(store, plan, options);
+        // A stop asked while sessions were being written; one asked later stops no session, and the summary says none.
+        stopped = stops.signal.aborted;
+        stops.written();
       } finally {
         progress.done();
-        process.off("SIGINT", onStop);
-        process.off("SIGTERM", onStop);
       }
-      const stopped = stop.signal.aborted;
       for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.already ? `, already imported ${agent.already}` : ""}`);
       if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
       if (values.verbose) for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);

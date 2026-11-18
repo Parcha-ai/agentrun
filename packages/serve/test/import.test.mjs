@@ -1549,6 +1549,30 @@ test("import says how far it is, and a Ctrl+C stops it between two sessions: wha
   assert.equal(resumed.at(-4), "Imported 2 sessions into 1 agent (one per project)");
 });
 
+test("a Ctrl+C once the sessions are saved still gets the whole summary: the import holds it until everything is printed, and exits 130", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "late-stop");
+  mkdirSync(project, { recursive: true });
+  for (const n of [215, 216]) codexSession(at, project, n);
+  const data = join(root, "agents");
+  const lines = [];
+  let held;
+  const out = (line) => {
+    // Ctrl+C as the first held line is printed: every session is saved, and the summary is still to come. A signal with
+    // no listener ends the process there, the rest unprinted; `emit` says whether a listener took it.
+    if (held === undefined) held = process.emit("SIGINT");
+    lines.push(line);
+  };
+  const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out, progress: { show: () => undefined, done: () => undefined } });
+  assert.equal(held, true, "the import's own listener takes a Ctrl+C until its last line is printed");
+  assert.equal(code, 130, "a Ctrl+C the import took is in its exit code");
+  assert.equal(process.listenerCount("SIGINT"), 0, "its Ctrl+C listener is gone once it ends");
+  assert.equal(process.listenerCount("SIGTERM"), 0);
+  assert.equal(lines.at(-4), "Imported 2 sessions into 1 agent (one per project)", "every session was saved, so none is said stopped");
+  assert.equal(lines.at(-1), "Start the server, then open the address it prints (http://127.0.0.1:7340/ unless that port is taken)", "the summary is printed to its last line");
+});
+
 test("an import refused because a server holds the store says to stop the server first", { timeout: 60_000 }, async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
