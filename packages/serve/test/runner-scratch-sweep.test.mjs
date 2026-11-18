@@ -94,6 +94,24 @@ test("a data directory with no scratch folder, or a store that fails on a row, n
   assert.equal(existsSync(join(dir, "scratch", "agent-a", "run-ended")), true, "nothing is deleted on a failed read");
 });
 
+test("a claim's sweep ends at a folder above it this process may not remove, as a run's own process meets its runner's", { skip: process.getuid?.() === 0 && "root can remove from read-only folders" }, async (t) => {
+  const { sweepScratch } = await import("../dist/runner/cli-run-spec.js");
+  const { dir, lay, folder } = laid(t);
+  lay("agent-a", "run-x", 1);
+  const harnesses = join(folder("agent-a", "run-x"), "harness");
+  // The agent's scratch folder is not this process's to write, as a slot's process meets the server's (0711).
+  const { chmodSync } = await import("node:fs");
+  const agent = join(dir, "scratch", "agent-a");
+  chmodSync(agent, 0o511);
+  try {
+    await sweepScratch(harnesses, 1, [harnesses, folder("agent-a", "run-x"), agent]);
+  } finally {
+    chmodSync(agent, 0o700);
+  }
+  assert.equal(existsSync(harnesses), false, "the claim's own harness folder is removed");
+  assert.equal(existsSync(folder("agent-a", "run-x")), true, "the run's scratch folder is left to its runner");
+});
+
 test("an earlier claim's folder that cannot be swept never keeps the current claim's own folder", { skip: process.getuid?.() === 0 && "root can remove read-only folders" }, async (t) => {
   const { sweepScratch } = await import("../dist/runner/cli-run-spec.js");
   const { dir, lay } = laid(t);

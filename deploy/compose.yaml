@@ -92,6 +92,11 @@ services:
 
   # Each runner names the host the server reaches its live viewers at (its own, on this stack's network), and its
   # viewers listen there, taking only the server's signed requests (live-reach.ts). The hop is this stack's own network.
+  # Each runs every run as a user of its own (uid 1001 + its slot), from a first slot of its own
+  # (AGENTRUN_RUN_SLOT_FIRST): runners on one /data volume never share a slot, or two of their runs would be one user
+  # on the volume. A runner takes as many slots from its first as it holds runs at once (its --loops, else its memory's:
+  # fifteen at most at 2 GB), so runner-1's stay below runner-2's 128 while it holds fewer than 128 runs. Each run's
+  # slot is locked on /data too, so ranges that overlap never put two runs on one slot at once.
   runner-1:
     <<: *runner
     hostname: runner-1
@@ -99,6 +104,7 @@ services:
     environment:
       <<: *agentrun-env
       AGENTRUN_RUNNER_LIVE_HOST: runner-1
+      AGENTRUN_RUN_SLOT_FIRST: "0"
     healthcheck:
       <<: *runner-check
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-1"]
@@ -110,6 +116,7 @@ services:
     environment:
       <<: *agentrun-env
       AGENTRUN_RUNNER_LIVE_HOST: runner-2
+      AGENTRUN_RUN_SLOT_FIRST: "128"
     healthcheck:
       <<: *runner-check
       test: ["CMD", "env", "-i", "/usr/local/bin/node", "/opt/agentrun/packages/serve/dist/cli.js", "runner", "--check", "--data", "/data", "--name", "runner-2"]

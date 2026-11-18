@@ -82,10 +82,11 @@ async function besideRunner(t, flags, ids) {
 }
 
 test("the server's flags are the beside runner's: --max-runs its loops, as the capabilities count them, and --drain-timeout its drain", () => {
-  assert.deepEqual(besideRunnerOptions({ maxRuns: 2, drainTimeout: "6s" }, {}), { loops: 2, drainMs: 6_000 });
-  assert.deepEqual(besideRunnerOptions({}, { AGENTRUN_MAX_RUNS: "3" }), { loops: 3, drainMs: 30_000 }, "AGENTRUN_MAX_RUNS, and the documented 30s drain");
+  assert.deepEqual(besideRunnerOptions({ maxRuns: 2, drainTimeout: "6s" }, {}), { loops: 2, loopsTold: true, drainMs: 6_000 });
+  assert.deepEqual(besideRunnerOptions({}, { AGENTRUN_MAX_RUNS: "3" }), { loops: 3, loopsTold: true, drainMs: 30_000 }, "AGENTRUN_MAX_RUNS, and the documented 30s drain");
   assert.equal(DRAIN_TIMEOUT, "30s");
   assert.equal(besideRunnerOptions({}, {}).loops, maxRunsOf({}), "with neither, as many as the host holds: the capabilities' own number");
+  assert.equal(besideRunnerOptions({}, {}).loopsTold, false, "the host's memory's count is no number given: on uid isolation it is cut to the slots, never refused");
   assert.equal(besideRunnerOptions({ drainTimeout: "0s" }, {}).drainMs, 0);
 });
 

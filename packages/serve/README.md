@@ -1280,7 +1280,9 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
 switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys.
+sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
+user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
+login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
@@ -3942,8 +3944,44 @@ carries no cost at all, as from a provider that does not price the model. The te
   temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
   included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token,
   `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is the
-  Workspace's confinement inside the runner's process, not an operating-system boundary: the runner and the server
-  share a user (one uid in the container), so the confinement holds only because the run has no shell on this machine.
+  Workspace's confinement inside the run's process; in the image the operating system holds the same line (below).
+- Each run is a process of its own, started by its runner at the claim. It is handed its own keys on a pipe (read and
+  closed as it loads) and a channel to its runner, over which it reads and writes what its loop needs: its journal,
+  under the runner's fence, and the store's rows of its own run and agent, each call checked against its claim (another
+  run's journal or row, another agent's revision, and any call off the list are refused). What the seal key opens for
+  the run, the runner opens and hands over; the seal key, the API token and the store's URL stay in the runner. A frame
+  on the channel past 32 MiB, or one that is no message of it, fails the run. The runner keeps the claim and its end: at
+  the end, or on a stop the run does not take in its grace, the run's process group is killed (in the image, every
+  process of its uid).
+- In the image, each run's process also runs as a user of its own: slot `s` of its runner is uid and gid `1001 + s`
+  (256 slots), started through `agentrun-runas`, a helper installed root:node `0750` with the file capabilities
+  `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
+  the run's uid, gid and groups (its slot's group alone: not node's, not the Docker socket's group compose gives the
+  server), empties every capability set, sets `no_new_privs` and keeps only the run's two descriptors open. So one run
+  reads neither another live run's folder nor its process's memory, environment or descriptors, and none reads the data
+  directory (`0711`: crossed to its own folders, never listed), the store's files (`0600`), the seal key or the
+  server's memory. A run's folders are its slot group's (`2770`), which the server's user is in. At the run's end every
+  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`,
+  `/run/lock` (`/var/lock`) and `/dev/mqueue` are removed, and its folders go back to the server's group, which the
+  slot's next run cannot enter. SysV IPC objects (`ipcs`) a run leaves are not removed.
+  `GET /v2/capabilities` says `run_isolation: "uid"`.
+- A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
+  `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
+  switch: the runner then refuses to claim, saying so and naming the setting. `AGENTRUN_RUN_USER=same` runs every run as
+  the runner's own user instead, still each in a process of its own, said on the runner's log at its start. Runners in
+  containers of their own on one `/data` volume each take slots from an `AGENTRUN_RUN_SLOT_FIRST` of their own
+  (`deploy/compose.yaml`: 0 and 128). A runner told to hold more runs (`--loops`, `AGENTRUN_MAX_RUNS`) than the slots
+  from its first to the last (255) refuses to start, in words; with no number told, it holds those slots. Each run's
+  slot is also locked on the volume (`/data/run-slots`, util-linux `flock`) from before its run starts until after its
+  reap, so runners whose ranges overlap never run two runs as one user: a slot another runner holds is skipped, and a
+  run that finds every free slot held is handed back unstarted, said on the runner's log.
+- A local install (`npx`, `node dist/cli.js`) has no helper: each run is a process of its own as the user who started
+  the server, and `run_isolation` is `"process"`. Its runs, and a program one starts, can read what that user reads,
+  another run's folder and the data directory included, as before; keep a local server to agents you trust as you trust
+  that user.
+- A host that starts the server as root could run each run's process as a user of its own with no file capability: a
+  small spawner, kept as root, that starts the server as an unprivileged user and each run as its slot's uid. The image
+  does not ship one: it never runs anything as root, so it needs the helper's capabilities or `AGENTRUN_RUN_USER=same`.
 - No path offers a shell on this machine. On the runner `bash` is not bound: a definition that names it is not saved
   here (`422`), one saved before that check is not runnable (`409`), and a model that calls it anyway, as an agent or as
   a workflow's model node, is answered that the tool is not available and runs nothing. In a [sandbox](#sandbox) it runs

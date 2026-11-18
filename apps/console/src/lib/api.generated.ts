@@ -249,6 +249,7 @@ export interface components {
       condition: string;
       limit: string;
     };
+    run_isolation?: "uid" | "process";
   };
   CommitSha: string;
   Cost: {

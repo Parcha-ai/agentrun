@@ -50,8 +50,10 @@ COPY . .
 # Codex CLI with its platform packages (they hold its binary), with their bin links. Each installs itself on first use
 # into the data's harnesses (src/harness-install.ts): docker/image-check.sh names them. Never `npm prune --omit=dev`:
 # the pi packages the server loads are dev dependencies too.
-# Go, for the computer daemon (computerd) alone: built for both architectures after the workspace, into the computer
-# package's dist, where a computer finds it. The toolchain stays in this stage; GOTOOLCHAIN=local fetches no other.
+# Go, for the computer daemon (computerd), built for both architectures after the workspace, into the computer package's
+# dist, where a computer finds it; and for agentrun-runas (packages/serve/runas), the helper that starts each run's
+# process as a uid of its own, built for this image's architecture alone into /opt/runas, which the final stage copies.
+# The toolchain stays in this stage; GOTOOLCHAIN=local fetches no other.
 COPY --from=golang:1.24.13-trixie@sha256:5835f052b784aa39f2fe9070def3568605c8bc3fcd810f10402066348b61e716 /usr/local/go /usr/local/go
 # A JDK 17 and the Android SDK's files (the android stage), for phoned, the phone's driver (dist/phoned.jar), which the
 # phone provider pushes to each phone: built after the daemon, the same way. Both stay in this stage.
@@ -61,6 +63,8 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
  && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
  && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go npm run build:daemon -w @parcha/agentrun-computer \
  && test -x packages/computer/dist/computerd-linux-amd64 && test -x packages/computer/dist/computerd-linux-arm64 \
+ && (cd packages/serve/runas && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go CGO_ENABLED=0 \
+      go build -trimpath -ldflags=-s -o /opt/runas/agentrun-runas .) \
  && rm -rf /tmp/go-build /tmp/go \
  && JAVA_HOME=/opt/jdk-17 ANDROID_HOME=/opt/android-sdk npm run build:phoned -w @parcha/agentrun-computer \
  && npm run check:phoned -w @parcha/agentrun-computer \
@@ -129,18 +133,44 @@ FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f0
 COPY --from=node /opt/node/ /usr/local/
 # The node user (1000:1000) the official node image has, which the server runs as and /data belongs to.
 RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
+# A run's process runs as a user of its own: slot s of a runner as uid and gid 1001 + s (s < 256, the helper's compiled
+# range), each a user with no home and no shell, its group holding node too, so the server reads what a run writes in
+# its folders (made the slot group's, 2770) and nothing of one run is another's.
+RUN s=0 && while [ "$s" -lt 256 ]; do \
+      id=$((1001 + s)) \
+      && groupadd --gid "$id" "run-$s" \
+      && useradd --uid "$id" --gid "$id" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "run-$s" \
+      && s=$((s + 1)); \
+    done \
+ && usermod -a -G "$(seq -s, 1001 1256)" node \
+ && [ "$(id -G node | wc -w)" = 257 ]
 # tini is PID 1, so the run processes the server starts are reaped and get its SIGTERM. git is for an agent's learning
 # folder, which needs 2.32 or newer; this image holds itself to 2.40 by its own choice: trixie's is 2.47. docker-cli (26.1) is the Docker client alone, no daemon:
 # with the host's Docker socket mounted (compose.yaml at the repository's root), a run's Docker box is a container beside this one.
 # ca-certificates: git's HTTPS (a run's pull request checkout, runner/pr-checkout.ts) trusts nothing without them, and the
-# slim base purges them.
+# slim base purges them. libcap2-bin: setcap gives the run helper its capabilities below, and getcap checks them.
+# /data is the server's, and a run's process (another uid) crosses it to its own folders without listing it (0711).
 RUN apt-get update -qq \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tini git ca-certificates docker-cli >/dev/null \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tini git ca-certificates docker-cli libcap2-bin >/dev/null \
  && rm -rf /var/lib/apt/lists/* \
- && install -d -o node -g node -m 0700 /data
+ && install -d -o node -g node -m 0711 /data
 RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40 \
  || { echo "git $v is older than 2.40" >&2; exit 1; }
 COPY --from=build --chown=root:root /src /opt/agentrun
+# The run helper (packages/serve/runas): root:node 0750, so only the server's user starts it, with the file capabilities
+# it switches to a slot's uid by (setuid, setgid) and empties the run's bounding set with (setpcap), each set here in the
+# final stage, where no later COPY can drop them. The build fails unless getcap reads exactly that set back and the
+# helper's own check finds it effective, as node, the user it runs as, and unless util-linux's flock is there: the runner
+# locks each run's slot on the data directory with it.
+COPY --from=build /opt/runas/agentrun-runas /usr/local/bin/agentrun-runas
+RUN chown root:node /usr/local/bin/agentrun-runas && chmod 0750 /usr/local/bin/agentrun-runas \
+ && setcap cap_setuid,cap_setgid,cap_setpcap+ep /usr/local/bin/agentrun-runas \
+ && caps="$(getcap /usr/local/bin/agentrun-runas)" \
+ && { [ "$caps" = "/usr/local/bin/agentrun-runas cap_setgid,cap_setuid,cap_setpcap=ep" ] \
+      || { echo "the run helper's capabilities are \"$caps\", not cap_setgid,cap_setuid,cap_setpcap=ep" >&2; exit 1; }; } \
+ && [ "$(stat -c '%U:%G %a' /usr/local/bin/agentrun-runas)" = "root:node 750" ] \
+ && setpriv --reuid=node --regid=node --init-groups /usr/local/bin/agentrun-runas check \
+ && flock --version >/dev/null
 # The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
 # is not the build its adapter is pinned to.
 RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun

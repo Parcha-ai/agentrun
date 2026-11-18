@@ -4,7 +4,8 @@
 // host only when it is one of its runners' (AGENTRUN_RUNNER_HOSTS, a comma list), else the row reads as no viewer: a
 // store writer that is no runner can't aim the server's socket elsewhere. Each request the server makes of a runner's
 // viewer (the HEAD that asks whether it answers, and the proxied WebSocket) carries the proxy's proof: an HMAC of the
-// viewer's id and the time, under a key derived from the seal key the server and its runners already share. A runner's
+// viewer's id and the time, under the viewer's run's key (reachForRun, liveForRun), derived from a key derived from the
+// seal key the server and its runners already share. A runner's
 // endpoint off loopback takes no request without a good, fresh proof for its own viewer. The proof is not the viewer's:
 // the hello's token still decides who watches. The hop is plain HTTP, for a private network (the server and its
 // runners' own); TLS on it is a later step.
@@ -60,6 +61,18 @@ export function runnerLiveOf(env: { readonly AGENTRUN_RUNNER_LIVE_HOST?: string 
   const bind = env.AGENTRUN_RUNNER_LIVE_BIND?.trim().toLowerCase();
   return { host, bind: bind && (isLiveHost(bind) || bind === "0.0.0.0") ? bind : host, key: proofKey(sealKey) };
 }
+
+/** A run's own proof key, from the runners' shared one: what proves a request for one run's viewers and no other's. A
+ *  run's own process is handed its run's (held.ts liveAt), never the shared key, so it can open no other run's viewer. */
+const runKey = (key: Buffer, runId: string): Buffer => createHmac("sha256", key).update(`${RUN_LABEL}\n${runId}`).digest();
+/** The run label of runKey: another MAC than the proof's own. */
+const RUN_LABEL = "agentrun live run v1";
+
+/** The server's reach for run `runId`'s viewers: its hosts, under that run's key. */
+export const reachForRun = (reach: LiveReach, runId: string): LiveReach => ({ hosts: reach.hosts, key: runKey(reach.key, runId) });
+
+/** A runner's live address for run `runId`'s viewers: its host and bind, under that run's key. */
+export const liveForRun = (live: RunnerLive, runId: string): RunnerLive => ({ host: live.host, bind: live.bind, key: runKey(live.key, runId) });
 
 /** Whether `req` carries a good, fresh proof for viewer `viewerId` under `live`'s key. */
 export function provenFor(req: Pick<IncomingMessage, "headers">, live: Pick<RunnerLive, "key">, viewerId: string, now: number = Date.now()): boolean {
