@@ -34,14 +34,17 @@ export const TOOL_FIELDS: readonly string[] = TOOL_KEYS.filter((row) => row.kind
 
 /** What `candidates` unlock here, as capabilities show it: the tools of `tools` (capabilities' `tools`, available or
  *  not) and the providers of `providers` (its `workflows.decisions.providers`) named among them, and the harnesses
- *  that run those tools. A name neither holds is left out; a key that unlocks none of its names lists nothing. */
+ *  that run those tools: the built-in ones first, then any other the tools run on (Goose once its owner installs it). A
+ *  name neither holds is left out; a key that unlocks none of its names lists nothing. */
 export function unlockedBy(candidates: readonly string[], tools: readonly { name: string; harnesses: readonly string[] }[], providers: readonly { id: string }[]) {
   const bound = new Set([...tools.map((tool) => tool.name), ...providers.map((provider) => `decisions.${provider.id}`)]);
   // A catalog source's tools (`monid:*`) are granted by name, never listed: the source is shown as it is, and its tools are
-  // host tools, run on every harness.
+  // host tools, run on every harness: the built-in ones and any other a tool here runs on.
   const unlocks = candidates.filter((name) => bound.has(name) || name.endsWith(":*"));
-  const run = new Set(tools.filter((tool) => unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
-  return { unlocks, harnesses: HARNESSES.filter((harness) => run.has(harness) || unlocks.some((name) => name.endsWith(":*"))) };
+  const every = unlocks.some((name) => name.endsWith(":*"));
+  const run = new Set(tools.filter((tool) => every || unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
+  const listed = [...run].filter((harness) => !(HARNESSES as readonly string[]).includes(harness));
+  return { unlocks, harnesses: [...HARNESSES.filter((harness) => every || run.has(harness)), ...listed] };
 }
 
 /** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other

@@ -148,6 +148,12 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
   // Bound later: once capabilities list web_search, the key table's own name shows it.
   const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }];
   assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
+  // A harness the server lists beyond the built-in ones (Goose, once installed) is named where its tools run on it, after
+  // them; a catalog source's row, whose tools run on every harness, names it too.
+  const withGoose = [{ name: "web_fetch", harnesses: ["goose", "pi", "claude-agent"] }, { name: "web_search", harnesses: ["pi"] }];
+  assert.deepEqual(unlockedBy(["web_fetch"], withGoose, []).harnesses, ["pi", "claude-agent", "goose"], "the tool's harnesses, goose after the built-in ones");
+  assert.deepEqual(unlockedBy(["web_search"], withGoose, []).harnesses, ["pi"], "a tool goose does not run names no goose");
+  assert.deepEqual(unlockedBy(["monid:*"], withGoose, []).harnesses, ["pi", "claude-agent", "codex", "opencode", "goose"], "a catalog source's tools run on every harness listed");
   // A key of another kind (a model's; none yet) unlocks no tool, and is for the harnesses this server offers.
   const offers = [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false }];
   assert.deepEqual(rowUnlocks({ kind: "model", unlocks: [] }, later, [], offers), { unlocks: [], harnesses: ["pi", "claude-agent"] });
@@ -210,6 +216,15 @@ test("Goose installed and verified, Anthropic's and OpenRouter's rows name it am
   const view = (await api("GET", "/settings/tool-keys")).body;
   // The rows of an uninstalled Goose (OWN, the case above), with goose last where its key runs it.
   assert.deepEqual(Object.fromEntries(view.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses])), { ...OWN, anthropic: [...OWN.anthropic, "goose"], openrouter: [...OWN.openrouter, "goose"] }, JSON.stringify(goose));
+  // A tool row names the harnesses its tools run on as capabilities list them, goose among them: the host tools run on it,
+  // so Monid's row (a catalog source, whose tools are host tools) names it, last.
+  const tools = new Map(caps.tools.map((tool) => [tool.name, tool]));
+  assert.ok(tools.get("web_fetch").harnesses.includes("goose"), `a host tool runs on Goose: ${JSON.stringify(tools.get("web_fetch").harnesses)}`);
+  for (const key of view.keys.filter((row) => row.kind === "tool")) {
+    const run = new Set(key.unlocks.flatMap((name) => (name.endsWith(":*") ? tools.get("web_fetch").harnesses : tools.get(name)?.harnesses ?? [])));
+    assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks`);
+  }
+  assert.equal(view.keys.find((key) => key.id === "monid").harnesses.at(-1), "goose", "Monid's row names Goose, after the built-in ones");
   await meetsDocument(api, view);
 });
 

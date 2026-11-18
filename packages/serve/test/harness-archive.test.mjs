@@ -188,7 +188,8 @@ test("tar runs with a fixed argument list on the verified archive, and with no k
   const bin = await scratch(t);
   const seen = join(bin, "seen.json");
   const tar = join(bin, "tar");
-  writeFileSync(tar, `#!/bin/sh\nnode -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({ argv: process.argv.slice(2), env: process.env }))' ${JSON.stringify(seen)} "$@"\nexec tar "$@"\n`);
+  // The stand-in writes what it was given to `seen`, named in its code; after "--", tar's arguments are no node options.
+  writeFileSync(tar, `#!/bin/sh\nnode -e 'require("node:fs").writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(1), env: process.env }))' -- "$@"\nexec tar "$@"\n`);
   chmodSync(tar, 0o755);
   await installArchive(harnessOf(served.url, release), dir, { platform: PLATFORM, tar, env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key", AGENTRUN_API_KEY: "fake-test-key" } });
   const { argv, env } = JSON.parse(readFileSync(seen, "utf8"));
