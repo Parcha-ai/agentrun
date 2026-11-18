@@ -45,23 +45,41 @@ export const urlPresetOf = (id: string | undefined): McpPreset | undefined => MC
 
 /** What `#/settings/mcp?add=` opens, for a server a template needs: the add form with its name (for GitHub's own, its
  *  address and credential; for a url server, its toolkit; for a URL preset, its address, credential and note) filled,
- *  or, with `preset=composio`, the Composio form with its toolkit and the actions to tick. */
-export type McpAdd = { name: string; auth?: "github_app"; preset?: "composio" | McpPresetId; toolkit?: string; tools?: string[] };
-/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=<URL preset id> | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`.
- *  Undefined when the query asks for none; a preset id that is none of them opens the plain form. */
+ *  or, with `preset=composio`, the Composio form with its toolkit and the actions to tick. A secret write the server
+ *  refused the API token links here too (its refusal's `details.console_url`): the form filled with what the request held
+ *  that is no secret, its `url`, the kind of credential (`auth`) and `toolkit`, so the person pastes the credential alone;
+ *  `change` (from `?change=<name>`) opens that saved server's Change form instead of a new one. */
+export type McpAdd = { name: string; auth?: McpAuthType; preset?: "composio" | McpPresetId; toolkit?: string; tools?: string[]; url?: string; change?: true };
+const LINK_AUTH: readonly McpAuthType[] = ["none", "bearer", "headers", "oauth", "github_app"];
+/** An address a link may fill: an http or https URL, never one with a user or password in it. */
+const linkUrl = (value: string | null): string | undefined => {
+  try {
+    const url = new URL(value ?? "");
+    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password ? value! : undefined;
+  } catch {
+    return undefined;
+  }
+};
+/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=<URL preset id> | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`,
+ *  or `?add=<name>|change=<name>[&url=<URL>][&auth=<type>][&toolkit=<toolkit>]`. Undefined when the query asks for none;
+ *  a preset id that is none of them opens the plain form. */
 export function addOf(query: string | undefined): McpAdd | undefined {
   const q = new URLSearchParams(query ?? "");
-  const name = q.get("add");
+  const added = q.get("add");
+  const name = added ?? q.get("change");
   if (!name || !TOOLKIT.test(name)) return undefined;
   const toolkit = q.get("toolkit") ?? "";
   const preset = q.get("preset") ?? undefined;
-  if (preset === "composio" && TOOLKIT.test(toolkit)) {
+  if (added !== null && preset === "composio" && TOOLKIT.test(toolkit)) {
     const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
     return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}) };
   }
   const url = urlPresetOf(preset);
-  if (url) return { name, preset: url.id as McpPresetId };
-  return { name, ...(q.get("auth") === "github_app" ? { auth: "github_app" as const } : {}) };
+  if (added !== null && url) return { name, preset: url.id as McpPresetId };
+  const auth = LINK_AUTH.find((a) => a === q.get("auth"));
+  const address = linkUrl(q.get("url"));
+  const linked = { ...(auth ? { auth } : {}), ...(address ? { url: address } : {}), ...(TOOLKIT.test(toolkit) ? { toolkit } : {}) };
+  return added === null ? { name, change: true, ...linked } : { name, ...linked };
 }
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
  *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */

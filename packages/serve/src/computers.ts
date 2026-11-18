@@ -18,7 +18,7 @@ import { commandOnPath } from "./host-command.js";
 import { gpuRefused } from "./gpu-words.js";
 import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
-import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
@@ -30,6 +30,7 @@ import { restartWith } from "./start-switches.js";
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
 // is looked up, so a token learns nothing of which providers exist. The view and the connection test write none.
 registerSecretWrite("saveComputerKeys", () => true);
+registerSecretPage("saveComputerKeys", "/#/settings/computers");
 registerNotSecretWrite("testComputer", "A connection test reads the saved keys and writes none.");
 
 /** A setting kind as the kind registry's SETTING_KINDS gives it. */

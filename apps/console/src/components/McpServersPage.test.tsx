@@ -518,6 +518,44 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=Not_A_Toolkit").add).toEqual({ name: "slack" });
   });
 
+  it("routes a refused secret write's link to the form filled with its name, address, kind of credential and toolkit: a user or password in the address is dropped", () => {
+    expect(route(`#/settings/mcp?add=linear&url=${encodeURIComponent("https://mcp.example.test/mcp")}&auth=bearer&toolkit=linear`).add)
+      .toEqual({ name: "linear", url: "https://mcp.example.test/mcp", auth: "bearer", toolkit: "linear" });
+    expect(route(`#/settings/mcp?change=docs&url=${encodeURIComponent(VARS.url)}&auth=headers`).add).toEqual({ name: "docs", change: true, url: VARS.url, auth: "headers" });
+    // A user and password in the address (built here, so no source line holds one).
+    const withUser = Object.assign(new URL("https://mcp.example.test/mcp"), { username: "someone", password: "pw" }).href;
+    expect(route(`#/settings/mcp?add=leaky&url=${encodeURIComponent(withUser)}&auth=nonsense`).add).toEqual({ name: "leaky" });
+    expect(route("#/settings/mcp?add=x&url=javascript:alert(1)").add).toEqual({ name: "x" });
+  });
+
+  it("a refused secret write's link opens the add form filled, the cursor in the token: the person pastes it, previews and saves", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "linear" })) : undefined));
+    const p = await open(s.v2, { add: route(`#/settings/mcp?add=linear&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=linear`).add });
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("linear");
+    expect(p.input("mcp-url").value).toBe(VARS.url);
+    expect(p.input("mcp-toolkit").value).toBe("linear");
+    expect((p.host.querySelector('input[name="mcp-auth"][value="bearer"]') as HTMLInputElement).checked).toBe(true);
+    expect(p.input("mcp-token").value).toBe("");
+    expect(document.activeElement).toBe(p.input("mcp-token"));
+    await p.type("mcp-token", VARS.token);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/linear", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token }, toolkit: "linear" } });
+  });
+
+  it("a link to change a saved server opens that server's Change form with the link's kind of credential, never a new server beside it", async () => {
+    const s = server([[saved({ name: "docs", auth: { type: "none" }, credential: null })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "docs" })) : undefined));
+    const p = await open(s.v2, { add: route(`#/settings/mcp?change=docs&url=${encodeURIComponent(VARS.url)}&auth=bearer`).add });
+    expect(p.host.querySelector('form[aria-label="Change docs"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("docs");
+    expect((p.host.querySelector('input[name="mcp-auth"][value="bearer"]') as HTMLInputElement).checked).toBe(true);
+    expect(document.activeElement).toBe(p.input("mcp-token"));
+    await p.type("mcp-token", VARS.token);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token } } });
+  });
+
   it("opens the add form for a template's url need with its toolkit filled, and saves the server as url and that toolkit", async () => {
     const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "hubspot" })) : undefined));
     const p = await open(s.v2, { add: { name: "hubspot" } });

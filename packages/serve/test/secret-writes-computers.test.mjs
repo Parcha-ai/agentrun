@@ -49,7 +49,7 @@ test("on the server: the token's PUT to a computer's keys with an empty body or 
     for (const [what, sent] of [["an empty body", { headers: { ...json, ...bearer }, body: {} }], ["no body", { headers: bearer }]]) {
       const res = await call(server.port, { method: "PUT", path: `/v2/computers/${id}/keys`, ...sent });
       assert.equal(res.status, 403, `${id}, ${what}, by the token: ${res.text}`);
-      assert.equal(res.json?.error?.message, SECRET_WRITE_REFUSAL);
+      assert.ok(String(res.json?.error?.message).startsWith(SECRET_WRITE_REFUSAL));
     }
   }
   const unknown = await call(server.port, { method: "PUT", path: "/v2/computers/x/keys", headers: { ...json, ...owner }, body: {} });
@@ -90,7 +90,7 @@ test("on the server: the token is 403 for a computer key's save or removal and f
   for (const [what, body] of [["a save", { [key]: planted() }], ["a removal", { [key]: null }]]) {
     const byToken = await call(server.port, { method: "PUT", path: keysPath, headers: { ...json, ...bearer }, body });
     assert.equal(byToken.status, 403, `${what} of ${key} by the token: ${byToken.text}`);
-    assert.equal(byToken.json?.error?.message, SECRET_WRITE_REFUSAL);
+    assert.ok(String(byToken.json?.error?.message).startsWith(SECRET_WRITE_REFUSAL));
   }
   const byOwner = await call(server.port, { method: "PUT", path: keysPath, headers: { ...json, ...owner }, body: { [key]: planted() } });
   assert.equal(byOwner.status, 200, `the owner's session saves it: ${byOwner.text}`);
@@ -104,7 +104,7 @@ test("on the server: the token is 403 for a computer key's save or removal and f
   ]) {
     const byToken = await call(server.port, { method: "PUT", path: "/v2/workspace/archil", ...sent });
     assert.equal(byToken.status, 403, `${what} by the token: ${byToken.text}`);
-    assert.equal(byToken.json?.error?.message, SECRET_WRITE_REFUSAL);
+    assert.ok(String(byToken.json?.error?.message).startsWith(SECRET_WRITE_REFUSAL));
   }
   const ownerEmpty = await call(server.port, { method: "PUT", path: "/v2/workspace/archil", headers: { ...json, ...owner }, body: {} });
   assert.equal(ownerEmpty.status, 422, `the owner's session reaches the settings' own check: ${ownerEmpty.text}`);

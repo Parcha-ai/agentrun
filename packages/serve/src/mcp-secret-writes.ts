@@ -9,8 +9,12 @@
 //   since they widen where a sign-in sends its code and tokens.
 // A server with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a refresh (each keeps
 // nothing new) stay open to a token.
-import { registerNotSecretWrite, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
+import type { InputIssue } from "./errors.js";
+import { secretShapes } from "./learn/secrets.js";
+import { urlOf } from "./mcp-probe.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, type SecretRequest } from "./secret-writes.js";
 import type { McpCredentialMark } from "./store/index.js";
+import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject } from "./validate.js";
 
 /** Whether `operation`'s `body` writes an MCP secret by the body alone (see above). */
@@ -72,3 +76,70 @@ registerSecretWrite("saveComposioServer", () => true);
 registerSecretWrite("rotateComposioSecret", () => true);
 registerSecretWrite("deleteComposioSubscription", () => true);
 registerNotSecretWrite("refreshMcpServer", "A refresh lists the saved server's tools again with its sealed credential, and writes no credential.");
+
+// ---- where a refused MCP secret write is finished ---------------------------------------------------------------------
+//
+// The console's Settings → MCP servers (`/#/settings/mcp`). A save or a sign-in's start opens its form filled with what
+// the request held that is no secret (the console reads these: apps/console src/lib/mcp.ts addOf): `add=<name>` for a new
+// server, `change=<name>` for a saved one (its Change form, so the save lands on it and never on a `<name>-2`); `url`,
+// only when nothing in it could be a credential (linkableUrl); `auth`, the kind of credential (never one); `toolkit`.
+// A Composio save or listing opens the Composio form with its toolkit and the actions to tick. Never a token, a header's
+// name or value, a client id or secret, a Composio key.
+
+/** A path segment, query name or value, or name shaped like a key: 20 or more characters of a token's alphabet, with a
+ *  digit or both cases of letter in it (a Zapier-style /mcp/<key>/sse, a UUID, base64). A plain word or a dashed name
+ *  ("streamable-http-endpoint") is none. */
+const keyShaped = (part: string): boolean => /^[A-Za-z0-9_\-+/=.~%]{20,}$/.test(part) && (/\d/.test(part) || (/[a-z]/.test(part) && /[A-Z]/.test(part)));
+const decoded = (part: string): string => {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+};
+
+/** The URL a refusal's console link may carry: only one a save would take as it is (http or https, at most 2048
+ *  characters, no user or password, no query parameter named like a credential: urlOf, the save's own check), with
+ *  nothing in it shaped like a secret (secretShapes, the learning guard's shapes) and no key-shaped path segment or query
+ *  name or value. Its fragment is dropped. Anything else is left out whole, and the person pastes it in the console. */
+export function linkableUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const issues: InputIssue[] = [];
+  const url = urlOf(value, issues);
+  if (!url || issues.length || secretShapes(value).length || secretShapes(decoded(value)).length) return undefined;
+  const parts = [...url.pathname.split("/"), ...[...url.searchParams].flat()];
+  return parts.some((part) => keyShaped(part) || keyShaped(decoded(part))) ? undefined : url.href;
+}
+
+/** A server's name or a toolkit as a link may carry it: a name a server can have, and not key-shaped. */
+const linkName = (value: unknown): string | undefined => (typeof value === "string" && MCP_SERVER_NAME.test(value) && !keyShaped(value) ? value : undefined);
+const AUTH_TYPES: ReadonlySet<string> = new Set(["none", "bearer", "headers", "oauth", "github_app"]);
+const MCP_PAGE = "/#/settings/mcp";
+
+/** `operation`'s console page, built from the request (see above). */
+export const mcpSecretPage = (operation: string) => async (body: unknown, request: SecretRequest): Promise<string> => {
+  const given = isObject(body) ? body : {};
+  const toolkit = linkName(given.toolkit);
+  if (operation === "listComposioTools" || operation === "saveComposioServer") {
+    const name = linkName(operation === "saveComposioServer" ? request.params[0] : given.toolkit);
+    if (!name) return MCP_PAGE;
+    const query = new URLSearchParams({ add: name, preset: "composio", ...(toolkit ? { toolkit } : {}) });
+    const tools = Array.isArray(given.tools) ? given.tools.filter((tool): tool is string => typeof tool === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(tool) && !keyShaped(tool)).slice(0, 64) : [];
+    if (tools.length) query.set("tools", tools.join(","));
+    return `${MCP_PAGE}?${query}`;
+  }
+  if (operation !== "saveMcpServer" && operation !== "startMcpOAuth") return MCP_PAGE;
+  const name = linkName(request.params[0]);
+  if (!name) return MCP_PAGE;
+  const saved = await (request.store as SavedServers).mcp.server(name);
+  const query = new URLSearchParams({ [saved ? "change" : "add"]: name });
+  const url = linkableUrl(given.url);
+  if (url) query.set("url", url);
+  const auth = operation === "startMcpOAuth" ? "oauth" : isObject(given.auth) && typeof given.auth.type === "string" && AUTH_TYPES.has(given.auth.type) ? given.auth.type : undefined;
+  if (auth) query.set("auth", auth);
+  if (toolkit) query.set("toolkit", toolkit);
+  return `${MCP_PAGE}?${query}`;
+};
+
+for (const operation of ["saveMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer"]) registerSecretPage(operation, mcpSecretPage(operation));
+registerSecretPage(["previewMcpServer", "putMcpPrivateHosts", "deleteMcpServer", "rotateComposioSecret", "deleteComposioSubscription"], MCP_PAGE);
