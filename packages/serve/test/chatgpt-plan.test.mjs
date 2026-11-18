@@ -508,10 +508,13 @@ test(`the renewal lease across two processes on one ${STORE_KIND} store, on the 
   const refreshesBeforeSignOut = openai.refreshes;
   const renewing = new two.ChatGPTPlan({ store: runnerStore, sealKey }).token();
   renewing.catch(() => undefined);
-  while (openai.refreshes === refreshesBeforeSignOut) await new Promise((resolve) => setTimeout(resolve, 5));
-  await new one.ChatGPTPlan({ store: serverStore, sealKey }).signOut();
-  openai.holdRefresh = undefined;
-  release();
+  try {
+    await until(() => openai.refreshes > refreshesBeforeSignOut, "the renewal at OpenAI");
+    await new one.ChatGPTPlan({ store: serverStore, sealKey }).signOut();
+  } finally {
+    openai.holdRefresh = undefined;
+    release();
+  }
   await assert.rejects(renewing, (error) => error instanceof two.PlanUnavailable && /not signed in/.test(error.message));
   assert.equal(await runnerStore.sealedKeys.get(PLAN_ROW), undefined, "the row stays gone");
   assert.equal(await serverStore.sealedKeys.get(PLAN_ROW), undefined);
