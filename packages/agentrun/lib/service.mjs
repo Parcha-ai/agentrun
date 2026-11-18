@@ -5,7 +5,7 @@
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
 // (tailscale.mjs); with --env, on a local model (MODEL_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -240,6 +240,17 @@ async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
 
 /** Whether a browser can be opened here: not in CI, and on Linux or FreeBSD only with a display (serve's host.ts canOpen). */
 export const canOpen = (env, platform) => !env.CI && (platform === "darwin" || (["linux", "freebsd"].includes(platform) && Boolean(env.DISPLAY || env.WAYLAND_DISPLAY)));
+/** Starts `command` on `args` for the browser and leaves it running: an opener can stay in the foreground until the
+ *  browser it starts closes, so nothing waits for its exit (serve's --open spawns it the same way). True once it started,
+ *  false when it could not (no such command). */
+export const launchOpener = (command, args, env) => new Promise((done) => {
+  const child = spawn(command, args, { env, stdio: "ignore", detached: true });
+  child.once("error", () => done(false));
+  child.once("spawn", () => {
+    child.unref();
+    done(true);
+  });
+});
 /** The newest setup link a server printed to `log` (`Set up this server: <link> ...`), or undefined. */
 export const SETUP_LINE = /^Set up this server: (https?:\/\/\S+\/setup#code=[A-Za-z0-9_-]+)/;
 const SETUP_TAIL = 2_000;
@@ -272,7 +283,7 @@ const tailOf = (file, count) => {
 };
 
 /** Every service command, given what it runs on; the entries below bind it to this machine. */
-export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS }) {
+export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS, launch = launchOpener }) {
   exec ??= (command, args, options = {}) => spawnSync(command, args, { encoding: "utf8", ...options });
   const root = join(home, ".agentrun");
   const program = join(root, "bin", "agentrun");
@@ -366,7 +377,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     } else if (setupOnly) return 0;
     else link = url;
     const opener = platform === "darwin" ? "open" : "xdg-open";
-    const opened = canOpen(env, platform) && exec(opener, [link], { stdio: "ignore" }).status === 0;
+    const opened = canOpen(env, platform) && (await launch(opener, [link], env));
     const setup = !(link === url && session?.password_set !== false);
     if (opened) say(setup ? "Opened the setup page in your browser: set the owner password there." : "Opened the console in your browser.");
     else say(setup ? `Set the owner password at the setup page: ${link}` : `The console: ${link}`);

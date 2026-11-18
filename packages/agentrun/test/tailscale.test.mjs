@@ -174,7 +174,8 @@ function serviceBox(mode = "ok", { env = { PATH: "/usr/bin" }, get = async () =>
   };
   const out = [];
   const io = { stdout: { write: (text) => out.push(text) }, stderr: { write: (text) => out.push(text) } };
-  const service = serviceOf({ platform: "linux", home: box.home, uid: 1000, user: "a", env, exec, io, fail, get, waitMs: 5_000 });
+  const launch = async (command, args) => (execed.push([command, ...args].join(" ")), true);
+  const service = serviceOf({ platform: "linux", home: box.home, uid: 1000, user: "a", env, exec, io, fail, get, waitMs: 5_000, launch });
   const unit = () => readFileSync(join(box.home, ".config", "systemd", "user", UNIT), "utf8");
   return { ...box, service, unit, said: () => out.join(""), execed };
 }

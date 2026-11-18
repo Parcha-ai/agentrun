@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { LABEL, UNIT, INSTALL_COMMAND, canOpen, managerOf, plistArgs, plistEnv, plistText, serviceOf, systemdWord, systemdWords, unitArgs, unitEnv, unitText } from "../lib/service.mjs";
+import { LABEL, UNIT, INSTALL_COMMAND, canOpen, launchOpener, managerOf, plistArgs, plistEnv, plistText, serviceOf, systemdWord, systemdWords, unitArgs, unitEnv, unitText } from "../lib/service.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
@@ -193,6 +193,13 @@ function setupHome({ session = { accounts: true, password_set: false, signed_in:
     }
     return { ok: false, status: 404, json: async () => ({}) };
   };
+  // The opener is launched, never run through exec: exec waits for its exit, and an opener can stay until the browser closes.
+  const run = box.exec;
+  box.exec = (command, args, options) => {
+    if (["open", "xdg-open"].includes(command)) throw new Error(`${command} went through exec, which waits for the browser`);
+    return run(command, args, options);
+  };
+  box.launch = async (command, args) => (box.calls.push([command, ...args].join(" ")), true);
   return { ...box, asked, log };
 }
 
@@ -206,9 +213,9 @@ test("canOpen: a browser on macOS, and on Linux with a display; never in CI", ()
 });
 
 test("service install on a server with no owner opens its setup page in the browser, the logged setup code filled in", async () => {
-  const { home, calls, exec, get, asked } = setupHome();
+  const { home, calls, exec, get, asked, launch } = setupHome();
   const { out, io } = ioOf();
-  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { DISPLAY: ":0" }, exec, io, fail, get, waitMs: 5_000 });
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { DISPLAY: ":0" }, exec, io, fail, get, waitMs: 5_000, launch });
   assert.equal(await service.install({}), 0);
   assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open https://box.example.test/setup#code=OLDCODE1"]);
   assert.ok(asked.includes("POST /v2/setup/code"), "a code still good is kept; an expired or spent one is replaced first");
@@ -217,9 +224,9 @@ test("service install on a server with no owner opens its setup page in the brow
 });
 
 test("with no browser here (a remote machine), the setup link is printed for the person, never opened; a new code is waited for", async () => {
-  const { home, calls, exec, get } = setupHome({ printed: true });
+  const { home, calls, exec, get, launch } = setupHome({ printed: true });
   const { out, io } = ioOf();
-  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000, launch });
   assert.equal(await service.install({}), 0);
   assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), []);
   assert.match(out.join(""), /Set the owner password at the setup page: https:\/\/box\.example\.test\/setup#code=NEWCODE2\n/, "the newest code, printed after the renewal");
@@ -229,19 +236,39 @@ test("agentrun open: the setup page with no code on a loopback server; the conso
   const open = setupHome({ session: { accounts: true, password_set: false, signed_in: false, setup_code: false }, line: false });
   writeFileSync(join(open.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
   const first = ioOf();
-  assert.equal(await serviceOf({ platform: "darwin", home: open.home, uid: 501, user: "a", env: {}, exec: open.exec, io: first.io, fail, get: open.get }).open({}), 0);
+  assert.equal(await serviceOf({ platform: "darwin", home: open.home, uid: 501, user: "a", env: {}, exec: open.exec, io: first.io, fail, get: open.get, launch: open.launch }).open({}), 0);
   assert.deepEqual(open.calls.filter((call) => call.startsWith("open ")), ["open http://127.0.0.1:7345/setup"]);
   assert.ok(!open.asked.includes("POST /v2/setup/code"), "setup takes no code here: none is asked for");
 
   const owned = setupHome({ session: { accounts: true, password_set: true, signed_in: false, setup_code: false } });
   writeFileSync(join(owned.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
   const said = ioOf();
-  const service = serviceOf({ platform: "darwin", home: owned.home, uid: 501, user: "a", env: {}, exec: owned.exec, io: said.io, fail, get: owned.get });
+  const service = serviceOf({ platform: "darwin", home: owned.home, uid: 501, user: "a", env: {}, exec: owned.exec, io: said.io, fail, get: owned.get, launch: owned.launch });
   assert.equal(await service.open({ "setup-only": true }), 0);
   assert.deepEqual(owned.calls.filter((call) => call.startsWith("open ")), [], "the installer's last step opens nothing once the owner is set");
   assert.equal(await service.open({}), 0);
   assert.deepEqual(owned.calls.filter((call) => call.startsWith("open ")), ["open http://127.0.0.1:7345/"]);
   assert.match(said.out.join(""), /Opened the console in your browser\./);
+});
+
+// An opener that stays in the foreground until the browser closes held `agentrun service install` (and the installer)
+// open after the setup page was up, until the browser closed: the opener is started and left running.
+test("launchOpener returns once the opener has started, while it still runs; false when there is no such command", async (t) => {
+  const dir = fresh();
+  const pidFile = join(dir, "opener.pid");
+  writeFileSync(join(dir, "xdg-open"), `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 30\n`, { mode: 0o755 });
+  const began = Date.now();
+  assert.equal(await launchOpener("xdg-open", ["http://127.0.0.1:7345/setup"], { PATH: `${dir}:/usr/bin:/bin` }), true);
+  assert.ok(Date.now() - began < 5_000, "it did not wait for the opener to exit");
+  for (let waited = 0; !existsSync(pidFile) && waited < 5_000; waited += 50) await new Promise((done) => setTimeout(done, 50));
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  });
+  assert.doesNotThrow(() => process.kill(pid, 0), "the opener still runs");
+  assert.equal(await launchOpener("agentrun-no-such-opener", ["x"], { PATH: dir }), false);
 });
 
 test("agentrun open with no server answering says so, exit 1", async () => {
