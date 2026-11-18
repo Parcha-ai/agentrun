@@ -423,27 +423,28 @@ describe("what runs did not keep", () => {
 });
 
 describe("the before and after", () => {
-  const IMPACT = { before: { runs: 2, median_duration_s: 18, median_cost_usd: 0.11, cost_runs: 2 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.03, cost_runs: 4 } };
-  it("shows run time and cost before and after it learned, on the after side's runs, in words that name a correction or a workflow", async () => {
+  const IMPACT = { before: { runs: 2, median_duration_s: 18 }, after: { runs: 4, median_duration_s: 12 } };
+  it("shows run time before and after it learned, on the after side's runs, in words that name a correction or a workflow, and no cost of a run of its own", async () => {
     const t = await open(agent(true), { learning: async () => view({ impact: IMPACT }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
+    expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
     expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
-    expect(card.textContent).toContain("A run costs$0.03 est.instead of $0.11 est.−73%");
+    // A run's cost is the cost card's all-in before and after, learning included: a median of the job's own cost here
+    // left learning out and read -86% beside the cost card's 2.0x cheaper.
+    expect(card.textContent).not.toContain("A run costs");
     expect(card.textContent).not.toContain("Learning itself");
-    expect(card.querySelector('[title^="Medians of"]')!.getAttribute("title")).toContain("Medians of 2 runs before it first learned and 4 runs that started from what it learned (a correction or a workflow).");
+    expect(card.querySelector('[title^="Medians of"]')!.getAttribute("title")).toBe("Medians of 2 runs before it first learned and 4 runs that started from what it learned (a correction or a workflow).");
   });
-  it("says what learning itself costs a run from the bill (compile turns, audit shadows, replays over its runs), and a costlier after as it is, in the warning colour", async () => {
+  it("says what learning itself costs a run from the bill (compile turns, audit shadows, replays over its runs), and a slower after as it is, in the warning colour", async () => {
     const cost = async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 9, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: { ...BILL, learning_usd: 0.0675 } });
     // Learning's cost is the bill's: the impact has no figure of its own (its old median of mostly-zero rows read $0).
-    const t = await open(agent(true), { cost, learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2, median_cost_usd: 0.000814, cost_runs: 2 }, after: { runs: 4, median_duration_s: 1.1, median_cost_usd: 0.000837, cost_runs: 4 } } }) });
+    const t = await open(agent(true), { cost, learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2 }, after: { runs: 4, median_duration_s: 1.3 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.textContent).toContain("Learning itself$0.0075 a run, booked");
     expect(card.textContent).not.toContain("$0.0000");
-    expect(card.textContent).toContain("Answers in1.1sinstead of 1.2s−8%");
-    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+3%")!;
+    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+8%")!;
+    expect(card.textContent).toContain("Answers in1.3sinstead of 1.2s+8%");
     expect(up.className).toContain("text-warning-text");
-    expect(card.querySelector('[title^="Medians of 2 runs"]')?.getAttribute("title")).toContain("Costs are of the 2 and 4 runs whose cost is known.");
   });
   it("renders for an agent that learned only a workflow", async () => {
     const t = await open(agent(true), { learning: async () => view({ corrections: "", workflows: [flow()], impact: IMPACT }) });

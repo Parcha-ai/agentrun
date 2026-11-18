@@ -5,7 +5,6 @@
 // drafts, its before and after (`impact`) and the changes on its learning folder's main (`log`).
 
 import { usd } from "./costPerRun";
-import { cost } from "./format";
 import { elapsed } from "./runGraph";
 import { rowDetail, rowFailed } from "./timeline";
 import type { TimelineRow } from "./v2";
@@ -58,10 +57,10 @@ export const changeWords = (kind: LastChange["kind"], by: LastChange["by"]) => `
 /** One change to what the agent learned, newest first: a run's (`by.run`; `reason`, why it was kept) or a person's. */
 export type LearningChange = { by: { run: string } | { user: true }; commit: string; at: string; reason: string; files: string[] };
 export type LearningCounts = { merged: number; dropped: Record<string, number>; in_progress: number };
-/** One side of the before and after: how many runs, the median time to the answer, the median cost of the run's own work
- *  (null when no run's cost is known) and how many runs that cost is of (`cost_runs`). What learning itself costs a run
- *  is the bill's (learningBill.ts learningPerRun). */
-export type ImpactSide = { runs: number; median_duration_s: number; median_cost_usd: number | null; cost_runs: number };
+/** One side of the before and after: how many runs and the median time to the answer. What a run costs is the cost
+ *  card's all-in before and after, learning included, and what learning itself costs a run the bill's (learningBill.ts
+ *  learningPerRun): never a second cost here. */
+export type ImpactSide = { runs: number; median_duration_s: number };
 /** The agent's runs before its first learned item against its runs that started from one; null until each side has two. */
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
 /** GET /v2/agents/{id}/learning. `main` is null until the agent first learns; `corrections` is corrections.md's text on
@@ -155,23 +154,18 @@ export const took = (seconds: number) => {
   const shown = shownSeconds(seconds);
   return shown < 10 ? `${shown.toFixed(1)}s` : elapsed(shown * 1000);
 };
-/** A median cost, as the console writes a run's: the medians are of estimates, so each says so. */
-export const money = (usd: number) => cost({ usd, basis: "estimate", charge_state: null, cap_usd: null });
 /** The change from `a` to `b` as a whole percent: -33 is a third less. Null when `a` is not above zero. */
 export const change = (a: number, b: number) => (a > 0 ? Math.round(((b - a) / a) * 100) : null);
 /** The change between two median times as shown (took), so the percent and the times beside it say one thing. */
 export const tookChange = (a: number, b: number) => change(shownSeconds(a), shownSeconds(b));
-/** Whether both sides' costs are known, so they can be set side by side. */
-export const costsShown = (i: NonNullable<Impact>) => typeof i.before.median_cost_usd === "number" && typeof i.after.median_cost_usd === "number";
 /** What learning booked a run, in words: "$0.0193 a run, booked" (the bill's figure, learningBill.ts learningPerRun). */
 export const learningWords = (learning: number) => `${usd(learning)} a run, booked`;
 /** The before and after in one line, as the card says it and a screen reader reads it, whichever way the numbers went,
  *  with what learning itself booked a run (`learning`, the bill's: its compile turns, audit shadows and replays over its
  *  runs; null before the bill has a run): "Since it learned (medians of 4 runs started from what it learned): answers in
- *  12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0193 a run, booked". */
+ *  12s instead of 18s · learning itself $0.0193 a run, booked". No cost of a run: that is the cost card's all-in. */
 export function impactWords(i: NonNullable<Impact>, learning: number | null = null): string {
   const parts = [`answers in ${took(i.after.median_duration_s)} instead of ${took(i.before.median_duration_s)}`];
-  if (costsShown(i)) parts.push(`${money(i.after.median_cost_usd!)} instead of ${money(i.before.median_cost_usd!)} a run`);
   if (learning !== null) parts.push(`learning itself ${learningWords(learning)}`);
   return `Since it learned (${impactBase(i)}): ${parts.join(" · ")}`;
 }

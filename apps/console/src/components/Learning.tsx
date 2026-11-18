@@ -19,8 +19,8 @@ import { type Agent, editBody, learningOn, learningWriteError } from "@/lib/agen
 import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
-  type AgentLearning, APPROVE_SIGN_IN, type Approval, approval, bytesOf, CHANGED, change, changeWords, correctionLines, corrections, costsShown, counted, dropKind, dropWords,
-  impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, learningWords, money, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
+  type AgentLearning, APPROVE_SIGN_IN, type Approval, approval, bytesOf, CHANGED, changeWords, correctionLines, corrections, counted, dropKind, dropWords,
+  impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, learningWords, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
 } from "@/lib/learning";
 import { learningPerRun } from "@/lib/learningBill";
 import { backendSdkOf } from "@/lib/backendSdk";
@@ -256,21 +256,20 @@ function Skeleton() {
 }
 
 /** Before and after the agent first learned (a correction or a workflow: the server counts a run that started from
- *  either on the after side), as a flat panel like the others: the median time to its answer and the median cost of a
- *  run, each side's, how many runs the after side counts, and what learning itself books a run, the bill's (`cost`, the
- *  tab's cost read: its compile turns, audit shadows and replays over the runs that did a job). Said as the numbers are,
- *  a slower or costlier after included: a change down is in the primary colour, one up in the warning colour, and
+ *  either on the after side), as a flat panel like the others: the median time to its answer, each side's, how many
+ *  runs the after side counts, and what learning itself books a run, the bill's (`cost`, the tab's cost read: its
+ *  compile turns, audit shadows and replays over the runs that did a job). What a run costs is the cost card's all-in
+ *  before and after alone: a median of the job's own cost here left learning out and said a second ratio. Said as the
+ *  numbers are, a slower after included: a change down is in the primary colour, one up in the warning colour, and
  *  neither is ever left out. Shown only when the server has two runs on each side. */
 function ImpactCard({ impact, cost }: { impact: NonNullable<AgentLearning["impact"]>; cost: LearningCost | null }) {
   const { before: b, after: a } = impact;
   const stats: { label: string; now: string; was: string; delta: number | null }[] = [
     // The change is of the times as shown, so "1.5s instead of 1.4s" never reads +7% against "2s instead of 1s".
     { label: "Answers in", now: took(a.median_duration_s), was: took(b.median_duration_s), delta: tookChange(b.median_duration_s, a.median_duration_s) },
-    ...(costsShown(impact) ? [{ label: "A run costs", now: money(a.median_cost_usd!), was: money(b.median_cost_usd!), delta: change(b.median_cost_usd!, a.median_cost_usd!) }] : []),
   ];
   const learning = cost?.bill ? learningPerRun(cost.bill) : null;
-  const basis = [`Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a correction or a workflow).`,
-    `Costs are of the ${b.cost_runs} and ${a.cost_runs} runs whose cost is known.`].join(" ");
+  const basis = `Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a correction or a workflow).`;
   return (
     <section className="border" aria-label={impactWords(impact, learning)}>
       <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-4 py-3">

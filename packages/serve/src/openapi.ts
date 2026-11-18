@@ -711,8 +711,6 @@ const LEARNING_COUNTS = closed({
 const IMPACT_SIDE = (side: "before" | "after") => closed({
   runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first learned item (a correction or a workflow)." : "The completed runs that started from at least one learned item: a correction in corrections.md, or a learned workflow their learned_workflow tool could run." },
   median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before its end-of-run step (a run that does not learn: to its end)." },
-  median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is." },
-  cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
 });
 /** A workflow draft the agent learned, as the agent's learning lists it (learning-routes.ts workflowView). */
 const LEARNED_WORKFLOW = {

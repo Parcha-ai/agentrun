@@ -48,15 +48,15 @@ test("an agent's impact from the store: before and after its first run started f
 
   const view = await agentLearningOverStore(store, "agent-1");
   assert.deepEqual(view.impact, {
-    // Before: their rows' end and cost; no learning of their own.
-    before: { runs: 2, median_duration_s: 15, median_cost_usd: 0.2, cost_runs: 2 },
-    // After: to their job's answer at their job's cost (what learning cost is the bill's, never a median here).
-    after: { runs: 2, median_duration_s: 40, median_cost_usd: 0.3, cost_runs: 2 },
+    // Before: to their rows' end. After: to their job's answer. What a run costs, learning included, is the cost read's
+    // (its takeover's before and after, its bill), never a median here.
+    before: { runs: 2, median_duration_s: 15 },
+    after: { runs: 2, median_duration_s: 40 },
   });
   assert.deepEqual(view.counts, { merged: 0, dropped: { empty: 2 }, in_progress: 0 }, "its counts, as before");
 });
 
-test("a run whose stored cost is only the most it can have cost counts in the impact's runs and durations, never in its costs: no median_cost_usd or cost_runs reads a bound as spend", async (t) => {
+test("a run whose stored cost is only the most it can have cost counts in the impact's runs and durations", async (t) => {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
@@ -67,7 +67,7 @@ test("a run whose stored cost is only the most it can have cost counts in the im
   await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: FROM_WORKFLOW, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
 
   const { impact } = await agentLearningOverStore(store, "agent-1");
-  assert.deepEqual(impact?.before, { runs: 3, median_duration_s: 20, median_cost_usd: 0.2, cost_runs: 2 }, `the bounded run is a run of unknown cost: ${JSON.stringify(impact)}`);
+  assert.deepEqual(impact?.before, { runs: 3, median_duration_s: 20 }, `the bounded run is a run, its time as any other's: ${JSON.stringify(impact)}`);
 });
 
 test("a run started from its owner's corrections counts on the after side by its # Learned section, though it laid no workflow", async (t) => {
@@ -96,7 +96,7 @@ test("runs that only use what the agent learned (learning: use, no proposal) cou
 
   const { impact } = await agentLearningOverStore(store, "agent-1");
   assert.deepEqual(impact, {
-    before: { runs: 2, median_duration_s: 15, median_cost_usd: 0.2, cost_runs: 2 },
-    after: { runs: 2, median_duration_s: 50, median_cost_usd: 0.3, cost_runs: 2 },
+    before: { runs: 2, median_duration_s: 15 },
+    after: { runs: 2, median_duration_s: 50 },
   });
 });

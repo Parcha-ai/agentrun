@@ -2111,14 +2111,10 @@ export interface operations {
         before: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
         };
         after: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
         };
       } | null;
     };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bytesOf, change, changeWords, correctionLines, corrections, dropKind, dropWords, fileChanges, fileWords, impactWords, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, type RunLearning, shownImpact, took, tookChange, underWay, waitingWords, workflowsBy } from "./learning";
+import { approval, bytesOf, change, changeWords, correctionLines, corrections, dropKind, dropWords, fileChanges, fileWords, impactWords, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, type RunLearning, shownImpact, took, tookChange, underWay, waitingWords, workflowsBy } from "./learning";
 import { recorded } from "@/fixtures";
 import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
@@ -47,11 +47,14 @@ describe("a run's learning, read tolerantly", () => {
 });
 
 describe("the before and after", () => {
-  const impact = { before: { runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146, cost_runs: 2 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.0311, cost_runs: 4 } };
-  it("says it in a line: the time to the answer and a run's cost, each side's median, on the after side's runs", () => {
-    expect(impactWords(impact)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
-    expect(impactWords({ ...impact, after: { ...impact.after, median_cost_usd: null } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
-    expect(impactWords(impact, 0.0193)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0193 a run, booked");
+  const impact = { before: { runs: 2, median_duration_s: 18.4 }, after: { runs: 4, median_duration_s: 12 } };
+  it("says it in a line: the time to the answer, each side's median, on the after side's runs, and what learning booked a run", () => {
+    expect(impactWords(impact)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
+    expect(impactWords(impact, 0.0193)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · learning itself $0.0193 a run, booked");
+  });
+  it("says no cost of a run of its own: the tab's one is the cost card's all-in before and after, learning included", () => {
+    // A median of the job's own cost left learning out and read -86% beside the cost card's 2.0x cheaper.
+    expect(impactWords(impact, 0.0193)).not.toMatch(/est\.|instead of \$/);
   });
   it("learning itself is the bill's (compile turns, audit shadows, replays over its runs), never a median of mostly-zero rows", () => {
     // The impact carries no learning figure of its own (a median of mostly-zero rows read $0): only the bill's is said.
@@ -66,17 +69,16 @@ describe("the before and after", () => {
     expect(tookChange(1.44, 1.46)).toBe(7);
     expect(tookChange(18.4, 12)).toBe(-33);
   });
-  it("says a slower or costlier after as it is", () => {
-    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214, cost_runs: 2 }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377, cost_runs: 4 } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
+  it("says a slower after as it is", () => {
+    expect(impactWords({ before: { runs: 2, median_duration_s: 14 }, after: { runs: 4, median_duration_s: 21 } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 21s instead of 14s");
   });
   it("is shown only when the server sends both sides with two runs each", () => {
     expect(shownImpact(impact)).toBe(true);
     expect(shownImpact(null)).toBe(false);
     expect(shownImpact({ ...impact, before: { ...impact.before, runs: 1 } })).toBe(false);
   });
-  it("formats with the console's own: a run's time as elapsed() writes it, a cost as cost() writes an estimate, the change as a whole percent", () => {
+  it("formats with the console's own: a run's time as elapsed() writes it, the change as a whole percent", () => {
     expect([took(65), took(12.4), took(9.96), took(3.8), took(0)]).toEqual(["1m 05s", "12s", "10s", "3.8s", "0.0s"]);
-    expect([money(1.234), money(0.1146), money(0.000814)]).toEqual(["$1.23 est.", "$0.11 est.", "$0.0008 est."]);
     expect([change(18, 12), change(0.11, 0.03), change(0, 1)]).toEqual([-33, -73, null]);
   });
 });

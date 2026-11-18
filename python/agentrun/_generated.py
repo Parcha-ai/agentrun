@@ -3277,15 +3277,11 @@ class GetAgentLearningResponseImpact(TypedDict):
 class GetAgentLearningResponseImpactBefore(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
 
 
 class GetAgentLearningResponseImpactAfter(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
 
 
 class ListLearningLogResponse(TypedDict):

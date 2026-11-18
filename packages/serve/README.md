@@ -3423,8 +3423,8 @@ with the token, an archived agent's too:
   fared (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them, and `impact`, what
   learning changed: the agent's completed runs that started from at least one learned item (a correction, or a learned
   workflow) against those that started before its first, each side's `runs`; `median_duration_s`, the time to the
-  answer (the run's start to its job's end, before its end-of-run step); `median_cost_usd`, the job's own cost, over
-  the `cost_runs` whose cost is known. What learning itself cost is the bill's `learning_usd` (`.../learning/cost`).
+  answer (the run's start to its job's end, before its end-of-run step). What a run costs, learning included, and what
+  learning itself cost are `.../learning/cost`'s (`summary.before`/`after`, the bill's `learning_usd`).
   Null unless both sides count 2 runs. An agent with no folder answers `main: null`, empty lists and `impact: null`.
   `GET .../learning/log?cursor=&limit=` pages on, up to 200 at a time; a cursor reads the same commit its first page
   did.
