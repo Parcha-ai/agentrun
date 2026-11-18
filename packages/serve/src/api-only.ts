@@ -9,11 +9,16 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 /** The routes (server.ts ROUTES, by name) an API-only server serves: a run's launch, read, list, timeline, messages,
  *  stop, cancel, cap raise and grade; its files and the uploads a launch names; an agent's Archil disk, read and removed (the
  *  agent layer of a run's disk, archil-routes.ts); the delete of an agent its inline runs made (agent-delete.ts), which
- *  the backend that made it is the one to send; capabilities, health and usage; and a run's hosted machine that dials
- *  fetching this server's computerd with its own token (computer-attach.ts), as it dials the attach socket, which the
- *  upgrade takes for such a machine alone (a paired computer is the console's). */
+ *  the backend that made it is the one to send; capabilities, health and usage; the two reads of the computer settings a
+ *  backend checks before it launches, each by the token and naming keys and whether each is saved, never a value: the
+ *  computer providers and whether each is ready (GET /computers, computers.ts) and the Archil settings, whether runs'
+ *  folders are on Archil (GET /workspace/archil, archil-routes.ts), while their writes, tests and key choices stay the
+ *  console's; and a run's hosted machine that dials fetching this server's computerd with its own token
+ *  (computer-attach.ts), as it dials the attach socket, which the upgrade takes for such a machine alone (a paired
+ *  computer is the console's). */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
+  "listComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
