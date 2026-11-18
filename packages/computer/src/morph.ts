@@ -18,6 +18,7 @@ import { isIP, connect as tcp } from "node:net";
 import { boxRecipeHash } from "./box-image.js";
 import { MORPH } from "./descriptors/morph.js";
 import { DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
+import { proxyFor, tunnelThrough } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { orThrow, pause, runToExit, uploadThroughExec } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
@@ -197,18 +198,25 @@ class MorphHost implements MachineHost {
 	}
 
 	/**
-	 * A TCP connection to the gateway. No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's
-	 * AutoAddPolicy). The login is a public key, so a host posing as the gateway learns no credential.
+	 * A TCP connection to the gateway, through the proxy's CONNECT tunnel when the proxy variables name one for it
+	 * (env-proxy.ts). No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's AutoAddPolicy). The
+	 * login is a public key, so a host posing as the gateway learns no credential.
 	 */
 	#tunnel(): SshTunnel {
 		const host = `${this.#sshHost}:${this.#sshPort}`;
-		const socket = tcp(this.#sshPort, this.#sshHost);
+		const name = isIP(this.#sshHost) === 6 ? `[${this.#sshHost}]` : this.#sshHost;
+		const proxy = proxyFor(new URL(`https://${name}:${this.#sshPort}`));
+		const through = proxy && tunnelThrough(proxy, name, this.#sshPort);
+		const socket = through ? through.socket : tcp(this.#sshPort, this.#sshHost);
 		// ssh2 reads the socket's errors once it has it; this keeps one before then from being thrown.
 		socket.on("error", () => {});
-		const opened = new Promise<void>((resolve, reject) => {
-			socket.once("connect", resolve);
-			socket.once("error", (error) => reject(new SshTunnelError(`the SSH connection to ${host} failed to open: ${error.message}`)));
-		});
+		const failed = (error: Error) => new SshTunnelError(`the SSH connection to ${host}${proxy ? ` through the proxy ${proxy.host}` : ""} failed to open: ${error.message}`);
+		const opened = through
+			? through.opened.catch((error: Error) => Promise.reject(failed(error)))
+			: new Promise<void>((resolve, reject) => {
+					socket.once("connect", resolve);
+					socket.once("error", (error) => reject(failed(error)));
+				});
 		opened.catch(() => {});
 		return { duplex: socket, opened, host };
 	}

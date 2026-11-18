@@ -802,6 +802,15 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   `extend`), `release` (delete, then the same wait; a stop is refused: a computer here is deleted, never stopped and
   kept), `watch` and `testConnection`.
   Every refusal uses the codes above, and `vendor` carries your API's own words.
+- **A proxy for your vendor calls.** Behind a corporate proxy or a gateway that holds one allowlist, set the standard
+  `HTTPS_PROXY` (or `HTTP_PROXY`) and `NO_PROXY` where the server and the runner start. `agentrun-serve` installs them
+  once for the process (Node's `http.setGlobalProxyFromEnv`), which covers `fetch`, Node's global `WebSocket` and
+  `https.request`; gRPC (Modal's and boxd's SDKs) gets the same values as its own `grpc_proxy` and `no_grpc_proxy`; E2B's
+  SDK, whose fetch is its own undici Agent, is handed the proxy as its `proxy` option; Morph's SSH gateway goes through
+  the proxy's CONNECT tunnel (the proxy must allow CONNECT to port 22). Loopback and the server's own public address
+  always go direct. Archil's SDK builds its own undici Agent with no proxy option, so the Archil mount can't use one.
+  Unset, nothing changes. A provider of yours that calls out with `fetch` or the global `WebSocket` needs nothing more;
+  one whose client brings its own HTTP stack or a raw socket reads the same variables through `src/env-proxy.ts`.
 
 ### The live sweep
 

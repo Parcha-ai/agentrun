@@ -9,6 +9,7 @@ import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { boxE2bTemplate } from "./box-image.js";
 import { E2B } from "./descriptors/e2b.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
+import { proxyFor } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { AGENTRUN_DIAL, hostedCommands, shellLine } from "./hosted/scripts.js";
@@ -18,7 +19,9 @@ import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /**
- * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
+ * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152);
+ * and the proxy when the proxy variables name one for the API (env-proxy.ts): the SDK's fetch is its own undici Agent,
+ * which no process-wide proxy reaches, and it sends the API's and envd's calls through a `proxy` it is given.
  * The SDK's types below are `import type`: erased at build, so nothing loads the SDK from here and the published types
  * name none of it (the package declares no dependency on e2b).
  */
@@ -27,6 +30,7 @@ export interface E2BConnectionOptions {
 	domain: string;
 	apiUrl: string;
 	debug: false;
+	proxy?: string;
 	requestTimeoutMs?: number;
 	signal?: AbortSignal;
 }
@@ -89,8 +93,10 @@ const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
-export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }): E2BConnectionOptions {
-	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false };
+export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }, env: NodeJS.ProcessEnv = process.env): E2BConnectionOptions {
+	const apiUrl = `https://api.${domain}`;
+	const proxy = proxyFor(new URL(apiUrl), env);
+	return { apiKey, domain, apiUrl, debug: false, ...(proxy ? { proxy: proxy.href } : {}) };
 }
 
 /**
