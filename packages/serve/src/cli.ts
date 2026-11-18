@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
-import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
+import { REPEAT_MS, stopOnce, stopOnSignals } from "./stop-signals.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
@@ -260,21 +260,9 @@ if (process.argv[2] === "eval-template") {
     if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
   }
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
-  // left going would go on spending. A second one leaves at once; one within a second of the first is the same Ctrl-C,
-  // reaching this process twice (stop-signals.ts REPEAT_MS).
-  const stop = new AbortController();
-  let stoppedAt = 0;
-  const onStop = () => {
-    if (stop.signal.aborted) {
-      if (Date.now() - stoppedAt > REPEAT_MS) process.exit(130);
-      return;
-    }
-    stoppedAt = Date.now();
-    console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)");
-    stop.abort();
-  };
-  process.on("SIGINT", onStop);
-  process.on("SIGTERM", onStop);
+  // left going would go on spending. A second one leaves at once (stop-signals.ts stopOnce).
+  const stop = stopOnce(() => console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)"));
+  stop.hook();
   try {
     const report = await evalTemplate({
       dir: resolve(positionals[0]!), cases: given.case, ...(given.runs !== undefined ? { runs: Number(given.runs) } : {}),
