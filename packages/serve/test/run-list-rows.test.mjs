@@ -32,12 +32,14 @@ async function everyItem(api, path) {
 }
 
 /** Each listed item against the item main's list built from the run's view (summaryOfView of the run's own read, read
- *  just after), field by field, its keys too. */
+ *  just after), field by field, its keys too. The run's read alone adds what learning spent for it to its cost
+ *  (learning_usd, all_in_usd: server.ts allInViewOf), which no list item of main's carries. */
 async function sameAsViews(api, items, why) {
   for (const item of items) {
     const { status, body: view } = await api("GET", `/runs/${item.run_id}`);
     assert.equal(status, 200, JSON.stringify(view));
-    const expected = summaryOfView(view);
+    const cost = Object.fromEntries(Object.entries(view.cost).filter(([key]) => key !== "learning_usd" && key !== "all_in_usd"));
+    const expected = summaryOfView({ ...view, cost });
     assert.deepEqual(Object.keys(item).sort(), Object.keys(expected).sort(), `${why}: ${item.run_id} (${expected.status}) lists the same fields`);
     for (const key of Object.keys(expected)) assert.deepEqual(item[key], expected[key], `${why}: ${item.run_id} (${expected.status}) lists ${key} as its read says it`);
   }
