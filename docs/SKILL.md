@@ -302,6 +302,8 @@ it is the fastest way to a finished result, and the cap bounds the spend.
 ~/.agentrun/bin/agentrun runs start release-notes --wait --timeout 300 --max-cost-usd 0.25 --body '{"input":{"content":"Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings."}}'
 ```
 
+If they want an agent to use a service such as Sentry, GitHub or Slack, follow [Give an agent tools](https://github.com/Parcha-ai/agentrun/blob/main/docs/connect-tools.md): connect it as an MCP server in the console, never a token in the box.
+
 ## 8. Hand over
 
 `runs start --wait` prints the run's `status`, `result.final_answer`, `cost.usd` and `console_url` once it ends: show

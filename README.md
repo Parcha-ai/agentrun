@@ -605,6 +605,7 @@ The server counts itself anonymously (a random id, its version, its platform): n
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
 - [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)
