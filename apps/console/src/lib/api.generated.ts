@@ -1483,6 +1483,7 @@ export interface operations {
       id: string;
       code: string;
       expires_at: string;
+      runs_refused: string | null;
     };
   };
   createQuote: {
@@ -3459,6 +3460,7 @@ export interface operations {
         kind: string;
         serves: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
         unserved: string | null;
+        runs_refused: string | null;
         os: string;
         os_version: string | null;
         device: {
@@ -3500,6 +3502,7 @@ export interface operations {
           }[];
           required: string[];
           ready: boolean;
+          runs_refused: string | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -4216,6 +4219,7 @@ export interface operations {
     answer: {
       computer: string;
       token: string;
+      runs_refused: string | null;
     };
   };
   pauseRun: {
@@ -4841,6 +4845,7 @@ export interface operations {
       }[];
       required: string[];
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;

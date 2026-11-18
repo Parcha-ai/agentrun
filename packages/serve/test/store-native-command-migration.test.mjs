@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { migrate, migrationsIn, openPostgresStore, openSqliteStore, SchemaVersionUnknown } from "../dist/store/index.js";
+import { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSION, SchemaVersionUnknown } from "../dist/store/index.js";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const ONLY = postgresOnly("native command migration lineage");
@@ -68,7 +68,7 @@ for (const missing of missingMetadata) {
     const existingColumns = Object.keys(before.revisions[0]);
     assert.deepEqual(after.revisions.map(row => Object.assign(Object.create(null), Object.fromEntries(existingColumns.map(key => [key, row[key]])))), before.revisions);
     assert.equal(db.prepare("SELECT connector_id FROM settings WHERE key=?").get(commandKey).connector_id, "chosen");
-    assert.equal(db.prepare("SELECT schema_version FROM store_meta").get().schema_version, 11);
+    assert.equal(db.prepare("SELECT schema_version FROM store_meta").get().schema_version, SCHEMA_VERSION);
     assert.equal(db.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='settings_native_commands'").get().n, 1);
     db.close();
     await runner.close(); runner = undefined;

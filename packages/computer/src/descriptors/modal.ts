@@ -44,6 +44,7 @@ export const MODAL = defineProvider({
 		{ name: "modalApp", option: "app", default: "agentrun" },
 		{ name: "modalConnect", option: "connect" },
 	],
+	connect: "either",
 	metered: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with

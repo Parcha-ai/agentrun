@@ -19,6 +19,7 @@ import type { Serve, ServeOptions } from "./server.js";
 import { apiOnlyFrom } from "./api-only.js";
 import { harnessModulesOf } from "./harness-table.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
+import { installEnvProxy } from "./env-proxy.js";
 import { startTelemetry } from "./telemetry.js";
 // The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
 // on a slow disk that load is most of a start. Nothing above loads more than a few files.
@@ -27,6 +28,9 @@ import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.j
 // A stdout or stderr its reader closed loses the lines written after, never the process (closed-pipes.ts): for every
 // command, the server and the runner alike.
 surviveClosedPipes();
+// Every outbound call through the proxy HTTPS_PROXY or HTTP_PROXY names, NO_PROXY's hosts and loopback direct
+// (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
+installEnvProxy();
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
@@ -397,6 +401,8 @@ try {
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
     ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
+    // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
+    ...(values["no-runner"] ? { runnerApart: true } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);

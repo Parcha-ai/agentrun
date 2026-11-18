@@ -6,8 +6,9 @@ This guide covers the open-source deployment you operate: its server, runners, p
 AgentRun runs as two kinds of process on one store:
 
 - **The server** serves the API and the console, sets the store up (it is the only one that migrates it), and records
-  each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner beside itself
-  (a single container, as on Render).
+  each run it starts. Started with `--no-runner`, it runs no run itself; without it, it runs one runner in its own
+  process. The image's default command runs the server with `--no-runner` and one runner as two processes in a single
+  container (as on Render).
 - **A runner** claims runs from the store and runs them, many at once, as many as its host's memory holds by each run's
   harness (a claude-agent run 288 MB, a pi run 128 MB; its host's memory is its container's limit when it has one, so
   give each runner on a shared host its own) and at most `--loops` (default `AGENTRUN_MAX_RUNS`, else as
@@ -31,7 +32,7 @@ load: copy its whole address into the console.
 
 ## One container, no key
 
-The server and one runner in one container, its data on a named volume, its port on this machine's loopback:
+The server and one runner in one container, two processes on one data volume, its port on this machine's loopback:
 
 ```sh
 (umask 077; [ -f agentrun.env ] || echo "AGENTRUN_SEAL_KEY=$(openssl rand -base64 32)" > agentrun.env)   # once; keep this file
@@ -89,6 +90,57 @@ secrets over a one-character alphabet (always `7340` and `0`), and model keys ar
 Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
 then picks up again after the restart.
 
+## One command on a server you rent
+
+On a fresh Linux server (Ubuntu or Debian, x64 or arm64), logged in as root:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+Its agents get a shell in Docker sandboxes, and it stays private. In order, it:
+
+1. Picks the release: the server image `ghcr.io/parcha-ai/agentrun-server:v<version>` that the latest `@parcha/agentrun`
+   depends on. `--version V` picks another release; `--image IMAGE` names an image.
+2. Uses the Docker already on the server, if it is Docker Engine 26 or later with the compose plugin, and never changes
+   it. With no Docker, it installs Docker Engine and the compose plugin from Docker's apt repository, as
+   [Docker's install guide](https://docs.docker.com/engine/install/ubuntu/) does.
+3. Writes `/opt/agentrun` (mode 700): `compose.yaml`, written again on every run, and `.env` (mode 600), whose
+   `AGENTRUN_TOKEN` and `AGENTRUN_SEAL_KEY` it makes once with `openssl rand` and then keeps. Lines you add to `.env`
+   (a model key, a price, `AGENTRUN_BOX_ALLOW`) stay and reach the server. A `compose.override.yaml` of your own stays too.
+4. Starts it with `docker compose up` and waits for its health check. If the first visit would not ask for the setup
+   code, it stops the server and says so.
+5. Prints the address, the setup link with its code, and the line that reads the code again later:
+   `cd /opt/agentrun && docker compose logs agentrun | grep 'Set up this server' | tail -n 1`.
+
+Running it again upgrades to the release it names and keeps the token, the seal key and the data volume.
+
+Where you open it:
+
+- **Tailscale logged in.** On your own tailnet only, at `https://<server>.<tailnet DNS name>/`, through `tailscale serve`,
+  never Funnel, as `--tailscale` does on your own computer. The installer runs that step from the server's image with
+  the server's `tailscale` and its socket. The address needs MagicDNS and HTTPS certificates on in your tailnet's
+  [DNS settings](https://login.tailscale.com/admin/dns). Tailscale's Personal plan is free.
+- **No Tailscale, or logged out.** The server's loopback only. The installer prints the steps (install Tailscale, then
+  `tailscale up`) and the command to run again, and exits 0. It never installs Tailscale or logs in for you. Until
+  then, open it through an SSH tunnel: the installer prints the one `ssh -N -L` line to run on your computer.
+- **`--public`.** Every address of the server, port 7340, over plain HTTP, at `http://<its IPv4 address>:7340/`. Behind
+  NAT, name the address: `curl -fsSL https://agentrun.ai/install | AGENTRUN_PUBLIC_URL=http://<address>:7340/ sh -s --
+  --vps --public`. Before it starts, the installer says what this exposes. Anyone who reaches the address reaches the
+  console and the API, and the setup code, your password and the token cross the network unencrypted. A later run
+  without `--public` makes it private again.
+
+The server's container gets the server's Docker socket, so a run's computer can be a Docker sandbox: a container beside
+it with no socket, every capability dropped, no network but its egress proxy (`AGENTRUN_BOX_ALLOW`, by default the
+package registries and GitHub), and only its run's folder of the data volume. Whatever reaches that socket is root on
+the server, and the AgentRun server reaches it. Keep the server for AgentRun alone, with no other services, keys or
+data on it.
+
+It runs on 1 GB of memory, with room for a run or two at once; 2 GB holds more. At the providers' prices when this was
+written, a Hetzner Cloud CPX02 (1 vCPU, 1 GB, 20 GB) is from €5.49 a month before VAT
+([pricing](https://www.hetzner.com/cloud/regular-performance)), and a DigitalOcean Basic Droplet (1 vCPU, 1 GiB, 25
+GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). The $4 Droplet's 512 MiB is too little.
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -98,6 +150,7 @@ password. The console says where to look and never shows the code. It is in one 
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
 | Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
+| A server you rent (`--vps`) | The installer prints it. Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
 
@@ -128,7 +181,18 @@ docker run --hostname server -v agentrun-data:/data --env-file agentrun.env ghcr
 docker run -v agentrun-data:/data --env-file agentrun.env ghcr.io/parcha-ai/agentrun-server:beta runner --data /data --name runner-1 [--loops N] [--drain-timeout D]
 ```
 
-The image's default command is the server with a runner beside it, for one container on its own (above).
+The image's default command, for one container on its own (above), is
+`server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s`. It starts the server with those options
+and `--no-runner`, and one runner on the same data once the server answers `GET /v2/health`. The runner takes the
+server's `--data`, `--drain-timeout`, `--max-runs` (as `--loops`), `--faux`, `--faux-browser` and each `--harness-module`. Each process has its own store
+connection, so a busy runner never holds up the API. A `docker stop` reaches both, and each drains as it does on its
+own. If either exits, the other stops and the container exits non-zero, so a restart policy starts both again.
+
+Any other arguments are one command, run as given: `runner ...` is a runner, `reset-password --data /data` resets the
+password, and server options alone are a server with its runner in its own process, which a paired computer needs, and
+so does a provider whose machines dial the server (Fly Machines and Cloudflare). Under `server-and-runner`, Settings →
+Computers says so on each such provider's row (`runs_refused` in `GET /v2/computers`), and its Test connection fails
+naming the fix.
 
 What each takes, from its environment alone:
 
@@ -234,10 +298,10 @@ On a database you run yourself, the store's role needs no `CREATE` on the databa
 and given to it (`CREATE SCHEMA agentrun AUTHORIZATION <role>`, or the name in `AGENTRUN_STORE_SCHEMA`): the server
 migrates a schema its role owns.
 
-**More runners on Render.** `render.yaml` runs the image's default command: the server with one runner beside it, on a
-disk only that one service can mount. More runners on Render need the Postgres store: the server with `--no-runner`, and
-each runner a background worker from the same image with `runner --data /data --name <name>`. render.yaml has Render
-generate AGENTRUN_SEAL_KEY once; keep it with the service, and set the same value on each worker.
+**More runners on Render.** `render.yaml` runs the image's default command: the server and one runner, two processes in
+one service, on a disk only that one service can mount. More runners on Render need the Postgres store: the server with
+`--no-runner`, and each runner a background worker from the same image with `runner --data /data --name <name>`.
+render.yaml has Render generate AGENTRUN_SEAL_KEY once; keep it with the service, and set the same value on each worker.
 
 ## Rotating the API token
 

@@ -96,6 +96,7 @@ export const DAYTONA = defineProvider({
 	// How the server reaches its machines: exec (the provider's default, when the server's settings name none), a session
 	// command through the toolbox per connection, or dial, the machine dials the server (a snapshot of box/Dockerfile).
 	settings: [{ name: "daytonaConnect", option: "connect" }],
+	connect: "either",
 	metered: true,
 	// No mount by default: on Daytona's hosted cloud, Archil's client (0.10.1) mounts on its container sandboxes, but
 	// nothing reads its /dev/fuse after, so the first statx of the folder hangs, on every kernel and mount shape tried

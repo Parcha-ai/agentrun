@@ -29,7 +29,9 @@
 // journal tables, keyed by run_id (store/journal): one schema for every run's journal, so a query joins runs and their
 // journals.
 
-export const SCHEMA_VERSION = 11;
+// Version 12 keeps each run's listing on its row (RUN_LISTING_COLUMNS): what a runs list shows of it, so a list reads rows
+// alone. It is the one version a server upgrades in place (listingUpgrade, from 11, at its open); a runner waits for it.
+export const SCHEMA_VERSION = 12;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -89,6 +91,96 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
     revoked_at INTEGER,
     created_at INTEGER NOT NULL
   ) STRICT`;
+
+/** A run's listing on its row (version 12): what a runs list shows of the run, so a list reads rows alone and never builds
+ *  a run's view. `list_mark` moves (+1) in the transaction of every write that can change what the run's view shows: its
+ *  journal's commits (store/journal/storage.ts), its row's state, claim, cost and end (runs_list_moved), its commands
+ *  (commands_list_moved), its learning's rows (learning_list_moved), and its learning run's or audit's own moves
+ *  (runs_list_parent). The server rebuilds a listing from the run's view (store-view.ts listingOverStore, run-listing.ts)
+ *  and writes it with the mark it read before it built (`listing_mark`), only while list_mark is still that mark: a write
+ *  that lands meanwhile keeps the row as it left it (its list_status too), behind (listing_mark < list_mark), and it is
+ *  built again: a crash between a write and its listing leaves a row that says
+ *  it is behind, never one that says it is current. `listing` is the list item without the parts read when it is listed
+ *  (console_url, archived_at); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
+ *  held the run when it was built (its status reads otherwise once that claim runs out); `listing_until` when it goes stale
+ *  by the clock alone (an ask that expires, or the retry of a build that withheld the run for a sign-in it could not read
+ *  back); `listing_flags` what outside the run it read (LISTING_HELD: learning held for
+ *  its owner's OK on its agent's folder; LISTING_KEYED: a failed run's error words, which read the server's keys). */
+export const RUN_LISTING_COLUMNS = [
+  "list_mark INTEGER NOT NULL DEFAULT 1",
+  json("listing", true),
+  "list_status TEXT",
+  "listing_mark INTEGER NOT NULL DEFAULT 0",
+  "listing_live INTEGER NOT NULL DEFAULT 0 CHECK (listing_live IN (0, 1))",
+  "listing_until INTEGER",
+  "listing_flags INTEGER NOT NULL DEFAULT 0",
+] as const;
+/** listing_flags: the run's learning holds items for its owner's OK, read as they stand on its agent's folder now. */
+export const LISTING_HELD = 1;
+/** listing_flags: a failed run's error words, which name a refused key by the server's keys and settings. */
+export const LISTING_KEYED = 2;
+
+/** A run's status from its row alone, where its row says it (an end that is no person's stop of an agentic run): the status
+ *  its view reads (store-view.ts STATUS_OF), in SQL. Null for any other run, whose listing says it once it is built. */
+export const SETTLED_LIST_STATUS = `CASE
+    WHEN state = 'ended' THEN 'completed'
+    WHEN state = 'failed' THEN 'failed'
+    WHEN state = 'stopped' AND (outcome IS NULL OR outcome <> 'stopped' OR imported_from IS NOT NULL
+      OR (SELECT kind FROM revisions WHERE revisions.id = runs.revision_id) <> 'agentic') THEN 'cancelled'
+    ELSE NULL END`;
+
+/** The listing's indexes and triggers (RUN_LISTING_COLUMNS), after every table they name. A write to a run's row moves its
+ *  mark and sets its list_status from the row (SETTLED_LIST_STATUS: a settled run's status, else none until its listing
+ *  is built), so a status filter never reads a status the row has left. The parent trigger moves the mark of the run a
+ *  learning run grades (learning_proposals.learning_run_id) or an audit's shadow run audits (its id after "audit.",
+ *  learn/audit.ts shadowRunId), since each run's view reads those. */
+export const RUN_LISTING_DDL: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS runs_listing_behind ON runs (started_at) WHERE listing_mark < list_mark`,
+  `CREATE INDEX IF NOT EXISTS runs_listing_live ON runs (started_at) WHERE listing_live = 1`,
+  `CREATE INDEX IF NOT EXISTS runs_listing_until ON runs (listing_until) WHERE listing_until IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS runs_by_list_status ON runs (list_status, started_at)`,
+  `CREATE INDEX IF NOT EXISTS runs_listing_flagged ON runs (agent_id) WHERE listing_flags <> 0`,
+  `CREATE INDEX IF NOT EXISTS learning_proposals_by_learning_run ON learning_proposals (learning_run_id) WHERE learning_run_id IS NOT NULL`,
+  `CREATE TRIGGER IF NOT EXISTS runs_list_moved AFTER UPDATE OF state, epoch, runner, cost_usd, cost_upper_bound, metrics, summary, outcome, imported_from, sign_in_handed, labels, ended_at ON runs
+    BEGIN
+      UPDATE runs SET list_mark = list_mark + 1, list_status = ${SETTLED_LIST_STATUS} WHERE id = NEW.id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS runs_list_parent AFTER UPDATE OF list_mark ON runs
+    WHEN substr(NEW.id, 1, 6) = 'audit.' OR EXISTS (SELECT 1 FROM learning_proposals WHERE learning_run_id = NEW.id)
+    BEGIN
+      UPDATE runs SET list_mark = list_mark + 1
+        WHERE (substr(NEW.id, 1, 6) = 'audit.' AND id = substr(NEW.id, 7)) OR id IN (SELECT run_id FROM learning_proposals WHERE learning_run_id = NEW.id);
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS commands_list_moved AFTER INSERT ON commands
+    BEGIN
+      UPDATE runs SET list_mark = list_mark + 1 WHERE id = NEW.run_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS commands_list_settled AFTER UPDATE OF taken_at, refused ON commands
+    BEGIN
+      UPDATE runs SET list_mark = list_mark + 1 WHERE id = NEW.run_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS learning_list_moved AFTER INSERT ON learning_proposals
+    BEGIN
+      UPDATE runs SET list_mark = list_mark + 1 WHERE id = NEW.run_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS learning_list_changed AFTER UPDATE ON learning_proposals
+    BEGIN
+      UPDATE runs SET list_mark = list_mark + 1 WHERE id = NEW.run_id;
+    END`,
+];
+
+/** Version 11 → 12 on SQLite (the server's open, sqlite/store.ts), given the runs table's columns now: the listing's columns
+ *  it lacks, its indexes and triggers, every settled run's status from its row (SETTLED_LIST_STATUS), and the version, in
+ *  one durable write. Every run starts behind (listing_mark 0 < list_mark 1): the server's lister builds each listing in
+ *  the background, the runs no runner holds first. */
+export function listingUpgrade(runColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...RUN_LISTING_COLUMNS.filter((column) => !runColumns.has(column.split(" ")[0]!)).map((column) => `ALTER TABLE runs ADD COLUMN ${column}`),
+    ...RUN_LISTING_DDL,
+    `UPDATE runs SET list_status = ${SETTLED_LIST_STATUS}`,
+    "UPDATE store_meta SET schema_version = 12 WHERE singleton = 1",
+  ];
+}
 
 export const STORE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS store_meta (
@@ -181,7 +273,9 @@ export const STORE_DDL: readonly string[] = [
     -- build of this version made (RUNS_LABELS), its runs reading as given none.
     ${json("labels", true)},
     started_at INTEGER NOT NULL,
-    ended_at INTEGER
+    ended_at INTEGER,
+    -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
+    ${RUN_LISTING_COLUMNS.join(",\n    ")}
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
@@ -552,6 +646,7 @@ export const STORE_DDL: readonly string[] = [
     PRIMARY KEY (run_id, round)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS learning_proposals_by_agent ON learning_proposals (agent_id, created_at DESC)`,
+  ...RUN_LISTING_DDL,
 ];
 
 /** pi-durable's journal tables (its SqliteStorage schema, version 2, the `sleeping` task status included; MIT, see NOTICE),

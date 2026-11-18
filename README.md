@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -529,6 +529,24 @@ blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service'
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
 date. Do not share it with anyone.
+
+**Self-host on a $5 VPS.**
+
+On a fresh Linux server you rent (Ubuntu or Debian), as root:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+It installs Docker if the server has none, runs the published image with Docker Compose in `/opt/agentrun`, and makes
+the token and seal key once, in `/opt/agentrun/.env` (mode 600). Its agents get a shell in Docker sandboxes. It stays
+private. With [Tailscale](https://tailscale.com) logged in, only your own tailnet reaches it. Without Tailscale,
+AgentRun listens on the server's loopback and the installer prints the steps to add it. `--public` opens port 7340 to
+the internet over plain HTTP instead, and warns you first. It prints the address and the setup code. Run it again to
+upgrade.
+A Hetzner Cloud CPX02 (1 GB) is from €5.49 a month before VAT and a DigitalOcean Basic Droplet (1 GiB) is $6, at their
+prices when this was written. The server gets the VPS's Docker socket, which is root on it, so keep the VPS for
+AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-server-you-rent).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>

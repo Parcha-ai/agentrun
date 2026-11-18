@@ -452,3 +452,24 @@ test("install.sh: POSIX sh syntax, its help, and its refusals before it download
   const quoted = spawnSync("sh", [INSTALLER, "--no-start"], { encoding: "utf8", env: { HOME: "/tmp/it's", PATH: process.env.PATH } });
   assert.match(quoted.stderr, /has a single quote in it/);
 });
+
+// --vps (vps-walk.sh walks it as root in CI): its options and its refusals, before it installs or downloads anything.
+test("install.sh --vps: its help, the options it refuses, and root", () => {
+  const run = (...args) => spawnSync("sh", [INSTALLER, ...args], { encoding: "utf8", env: { HOME: fresh(), PATH: process.env.PATH } });
+  const help = run("--help").stdout;
+  assert.match(help, /curl -fsSL https:\/\/agentrun\.ai\/install \| sh -s -- --vps\n/);
+  assert.match(help, /--vps +AgentRun in Docker Compose in \/opt\/agentrun/);
+  assert.match(help, /--public +with --vps: listen on every address of the server, port 7340, over plain HTTP/);
+  for (const flag of ["--public", "--image=x"]) {
+    const refused = run(flag);
+    assert.deepEqual([refused.status, refused.stderr], [1, "agentrun install: --public and --image go with --vps (see --help)\n"], flag);
+  }
+  for (const flag of [["--tailscale"], ["--no-start"], ["--service"], ["--package", "x.tgz"], ["--node-version", "24.22.3"]]) {
+    const refused = run("--vps", ...flag);
+    assert.deepEqual([refused.status, refused.stderr], [1, `agentrun install: ${flag[0]} is for an install on this computer; --vps runs AgentRun in Docker (see --help)\n`], flag[0]);
+  }
+  if (process.getuid?.() !== 0 && process.platform === "linux") {
+    const user = run("--vps", "--public");
+    assert.deepEqual([user.status, user.stderr], [1, "agentrun install: --vps installs Docker and writes /opt/agentrun, so it runs as root: curl -fsSL https://agentrun.ai/install | sudo sh -s -- --vps --public\n"]);
+  }
+});

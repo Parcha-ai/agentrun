@@ -17,8 +17,21 @@ export const PAIRED_ID_PREFIX = "cmp-";
 /** The image a paired computer's spec names: none is made, so this only says what it is. */
 export const ATTACHED_IMAGE = "attached";
 
+/** How to start a server so its runs can use a paired computer, in one line: the same words wherever it is said. */
+export const ONE_PROCESS_FIX = "start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+
 /** The words a run gets when its agent's computer is a paired computer and its runner is not in the server's process. */
-export const ONE_PROCESS_WORDS = "a paired computer's socket is held by the serve process it dialed, and this runner runs in a process of its own: start AgentRun as one process (agentrun serve, with its runner beside it, not --no-runner) to use a paired computer";
+export const ONE_PROCESS_WORDS = `a paired computer's socket is held by the server process it dialed, and this runner runs in a process of its own: ${ONE_PROCESS_FIX}`;
+
+/** What a pairing code, the pair answer and each paired computer say on a server whose runner runs in a process of its
+ *  own (--no-runner; the image's server-and-runner): the computer pairs, and no run here can use it. */
+export const RUNNER_APART_WORDS = `no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: ${ONE_PROCESS_FIX}`;
+
+/** What a provider whose machines dial this server (the computer package's connectOf "dial": Fly Machines, Cloudflare,
+ *  and E2B, Daytona or Modal set to dial) says on such a server: its row in GET /v2/computers and its test. Its
+ *  machines' sockets are taken by the server's attach hub, and a runner of its own process has none, so its create
+ *  refuses (the computer package's hosted/provider.ts, naming the same fix). */
+export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${ONE_PROCESS_FIX}`;
 
 /** What the claim reads of the paired computers: the store's rows (removed ones left out), and the server's hub where
  *  the runner shares its process (absent: a runner of its own process). */

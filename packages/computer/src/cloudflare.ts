@@ -89,7 +89,8 @@ class CloudflareHost implements MachineHost {
 		arch: "amd64",
 		// No page names an agent of Cloudflare's inside the container (unverified).
 		vendorAgentPorts: [],
-		connect: "dial",
+		// Its descriptor's (connectOf): the container dials the server.
+		connect: CLOUDFLARE.connect,
 	};
 	readonly relayUrl: string;
 	readonly #client: Rest;
