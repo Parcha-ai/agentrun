@@ -192,6 +192,31 @@ describe("Slack's messages", () => {
     assert.match(slack.got[1].body.text, /run completed/);
   });
 
+  test("an events-only save keeps an end from before it: switching another event loses no run's end; turning run.ended on again posts no end from while it was off", async (t) => {
+    const slack = await fakeSlack(t);
+    const { posts } = await slackOn(t, slack);
+    await posts.saveSlack({ url: canaryUrl().url });
+    const set = posts.slackView().updated_at;
+    // A run ends; before the server reads it, the owner switches trigger.failed off.
+    const ended = new Date().toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await posts.saveSlack({ events: { "trigger.failed": false } });
+    assert.equal(posts.slackView().updated_at, set, "the cutoff stays where the URL was saved");
+    assert.equal(await posts.emit("run.ended", { run_id: "r1", agent_id: "a1", agent_name: "Lead triage", status: "completed", title: "t" }, ended), "queued");
+    const [post] = await slack.when(1);
+    assert.match(post.body.text, /^Lead triage: run completed/);
+    // run.ended off, a run ends, run.ended on again: that end is not posted later.
+    await posts.saveSlack({ events: { "run.ended": false } });
+    const whileOff = new Date().toISOString();
+    assert.equal(await posts.emit("run.ended", { run_id: "r2", agent_id: "a1", agent_name: "Lead triage", status: "completed", title: "t" }, whileOff), "off");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await posts.saveSlack({ events: { "run.ended": true } });
+    assert.ok(posts.slackView().updated_at > whileOff, "turned on again, the cutoff moves past the end it was off for");
+    await posts.emit("run.ended", { run_id: "r2", agent_id: "a1", agent_name: "Lead triage", status: "completed", title: "t" }, whileOff);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(slack.got.length, 1, "the end from while run.ended was off is not posted");
+  });
+
   test("with the webhook set too, each destination gets its own message for the same moment: its id, its body, its delivery", async (t) => {
     const slack = await fakeSlack(t);
     const hook = await fakeSlack(t);

@@ -164,10 +164,15 @@ export class SlackPosts extends Webhooks {
   private async saveSlackNow(href: string | undefined, events: Partial<Events>): Promise<{ created: boolean; view: SlackView }> {
     const was = this.config as SlackConfig | undefined;
     const now = new Date().toISOString();
-    // `updated_at` moves with every save: an end from before it is not queued by a start's catch-up (webhooks.ts due).
+    // `updated_at` is the run-end cutoff (webhooks.ts due): an end from before it is never queued, by a notice or a start's
+    // catch-up. It moves when a URL is saved, and when run.ended turns on again (an end while it was off is not posted
+    // later). Any other change of events keeps it: an end the server has not read yet when another event is switched is
+    // still posted.
     if (href === undefined) {
       if (!was) throw new ApiError("not_found", SLACK_OUTBOUND.words.unset);
-      await this.write({ ...was, events: { ...this.events(was), ...events }, updated_at: now } as SlackConfig);
+      const next = { ...this.events(was), ...events };
+      const endsOn = !this.events(was)["run.ended"] && next["run.ended"];
+      await this.write({ ...was, events: next, updated_at: endsOn ? now : was.updated_at } as SlackConfig);
       return { created: false, view: this.slackView() };
     }
     const scope = `${SERVER_SCOPE}:${randomBytes(8).toString("hex")}`;
