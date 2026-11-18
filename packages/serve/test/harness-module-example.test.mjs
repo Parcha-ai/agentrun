@@ -15,7 +15,7 @@ const { HARNESS_MODULES_ENV, harnessIds } = table;
 const EXAMPLE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../examples/harness-module/index.mjs");
 const { BINARY_SETTING, ID } = await import(EXAMPLE);
 const loaded = { [HARNESS_MODULES_ENV]: JSON.stringify([EXAMPLE]) };
-const ANTHROPIC = { ANTHROPIC_API_KEY: "sk-ant-placeholder-0000" };
+const ANTHROPIC = { ANTHROPIC_API_KEY: "anthropic-test-value" };
 
 /** Its offer on `env`, with the built-in harnesses' offers there with and without the module. */
 async function offers(t, env) {

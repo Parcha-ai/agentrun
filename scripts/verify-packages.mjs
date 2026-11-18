@@ -363,7 +363,7 @@ syncBuiltinESMExports();
   await cp(join(root, 'examples/harness-module'), harnessModule, {
     recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)),
   });
-  receipt.harnessModule = { commands: [], network: 'Installation, and loopback alone during the tests: the suite reaches the fake ACP agent on 127.0.0.1.' };
+  receipt.harnessModule = { commands: [], network: 'Installation, and loopback alone during the tests: the suite reaches the fake ACP agent on this machine.' };
   async function harnessModuleCommand(args) {
     const result = await run('npm', args, harnessModule, true, env);
     receipt.harnessModule.commands.push({ command: ['npm', ...args], ...result });

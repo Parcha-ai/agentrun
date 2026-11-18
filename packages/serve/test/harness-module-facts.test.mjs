@@ -35,10 +35,10 @@ function acmeModule(dir, { id = "acme", wire = "anthropic-messages" } = {}) {
 async function environments(t) {
   const shapes = [
     {},
-    { ANTHROPIC_API_KEY: "sk-ant-placeholder-0000" },
-    { OPENAI_API_KEY: "sk-openai-placeholder-0000" },
-    { OPENROUTER_API_KEY: "sk-or-placeholder-0000" },
-    { ANTHROPIC_API_KEY: "sk-ant-placeholder-0000", OPENAI_API_KEY: "sk-openai-placeholder-0000", OPENROUTER_API_KEY: "sk-or-placeholder-0000" },
+    { ANTHROPIC_API_KEY: "anthropic-test-value" },
+    { OPENAI_API_KEY: "openai-test-value" },
+    { OPENROUTER_API_KEY: "openrouter-test-value" },
+    { ANTHROPIC_API_KEY: "anthropic-test-value", OPENAI_API_KEY: "openai-test-value", OPENROUTER_API_KEY: "openrouter-test-value" },
     { AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1", AGENT_MODEL: "gateway-model", AGENT_MODEL_API_KEY: "gw-placeholder-0000" },
   ];
   return Promise.all(shapes.map(async (shape) => ({ AGENTRUN_SERVE_DATA: await scratch(t), ...shape })));
@@ -104,7 +104,7 @@ test("a module's adapter harness is offered its wire's vendor's models only, nam
   const dir = await scratch(t);
   const anthropic = { [HARNESS_MODULES_ENV]: JSON.stringify([acmeModule(dir)]) };
   const openai = { [HARNESS_MODULES_ENV]: JSON.stringify([acmeModule(dir, { id: "acme-oai", wire: "openai-responses" })]) };
-  const keys = { ANTHROPIC_API_KEY: "sk-ant-placeholder-0000", OPENAI_API_KEY: "sk-openai-placeholder-0000", OPENROUTER_API_KEY: "sk-or-placeholder-0000" };
+  const keys = { ANTHROPIC_API_KEY: "anthropic-test-value", OPENAI_API_KEY: "openai-test-value", OPENROUTER_API_KEY: "openrouter-test-value" };
   assert.deepEqual([...harnessIds(anthropic)].slice(-1), ["acme"]);
 
   const onAnthropic = modelForm.pickerCandidates({ ...anthropic, ...keys }, "acme");
@@ -125,7 +125,7 @@ test("a module's adapter harness is offered its wire's vendor's models only, nam
 
 test("a module's adapter harness is gated and searched by its own facts: its native tool is held to the setting it names, and it has no native search of its own", async (t) => {
   const dir = await scratch(t);
-  const env = { [HARNESS_MODULES_ENV]: JSON.stringify([acmeModule(dir)]), ANTHROPIC_API_KEY: "sk-ant-placeholder-0000" };
+  const env = { [HARNESS_MODULES_ENV]: JSON.stringify([acmeModule(dir)]), ANTHROPIC_API_KEY: "anthropic-test-value" };
   assert.equal(toolGate.settingsKeyOf("acme", "acme_shell", toolGate.nameMapOf("acme", factsOf(env, "acme"))), "bash");
   const plane = toolPlane.planeFor(env, { harness: "acme", tools: ["web_search"], model: "anthropic/claude-sonnet-5-5" }, { web_search: { provider: "native" } });
   assert.match(plane.web_search, /^unavailable: no native search for acme, whose model requests carry no provider-hosted tool/, "read off its own facts, not pi's hosted search");
