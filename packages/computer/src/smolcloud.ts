@@ -7,9 +7,10 @@
 // timer (ttlSeconds) is set to the request's backstop. The rest of the computer is the shared machine-host adapter's.
 import { randomBytes } from "node:crypto";
 import { SMOLCLOUD } from "./descriptors/smolcloud.js";
-import { DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB } from "./drift.js";
+import { DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { type FramedEvent, framedExec } from "./hosted/framed-exec.js";
+import { networkFormOf } from "./hosted/network.js";
 import { orThrow, pause } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
@@ -45,6 +46,12 @@ const POLL_MS = 40_000;
 const STDIN_MS = 30_000;
 /** How long the output read waits out reads that fail before it gives up: a control plane down this long is down. */
 const READ_GIVE_UP_MS = 5 * 60_000;
+
+/** smol cloud's label name (validate.rs label_key) and the most characters of a label's value. */
+const LABEL_KEY = /^[a-z0-9]([a-z0-9._/-]{0,61}[a-z0-9])?$/;
+const LABEL_VALUE_CHARS = 255;
+/** A string's length as smol cloud counts it: in characters (code points), not UTF-16 units or bytes. */
+const chars = (text: string) => [...text].length;
 
 /** A machine as GET /v1/machines answers it (OpenAPI MachineInfo), as far as this host reads it. */
 interface CloudMachine {
@@ -240,9 +247,30 @@ class SmolcloudHost implements MachineHost {
 		await this.#call("PATCH", `/v1/machines/${encodeURIComponent(id)}/labels`, { labels: { [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
 	}
 
+	/**
+	 * An image is an OCI reference; labels are what smol cloud takes (validate.rs): a name of 1 to 63 of a-z, 0-9 and
+	 * ._/-, starting and ending with a letter or digit, and a value of at most 255 characters, the image and the network
+	 * list among them (the adapter stores both as label values). Their count, the adapter's own among them, is the
+	 * adapter's to check (facts.labels).
+	 */
 	check(spec: Partial<ComputerSpec>): Refusal[] {
-		if (spec.image === undefined || (typeof spec.image === "string" && spec.image.trim() !== "")) return [];
-		return [{ field: "image", message: "a smol cloud image is an OCI reference, such as alpine:3.20" }];
+		const refusals: Refusal[] = [];
+		const { image, labels, network } = spec;
+		if (image !== undefined && (typeof image !== "string" || image.trim() === "")) refusals.push({ field: "image", message: "a smol cloud image is an OCI reference, such as alpine:3.20" });
+		else if (typeof image === "string" && chars(image) > LABEL_VALUE_CHARS) refusals.push({ field: "image", message: `smol cloud keeps the image in a label of at most ${LABEL_VALUE_CHARS} characters, and this one has ${chars(image)}` });
+		const entries = labels !== null && typeof labels === "object" ? Object.entries(labels) : [];
+		const keys = entries.filter(([key]) => !LABEL_KEY.test(key)).map(([key]) => show(key));
+		if (keys.length > 0) refusals.push({ field: "labels", message: `smol cloud takes label names of 1 to 63 of a-z, 0-9 and ._/-, starting and ending with a letter or digit: ${keys.join(", ")}` });
+		const long = entries.filter(([, value]) => typeof value === "string" && chars(value) > LABEL_VALUE_CHARS).map(([key, value]) => `${show(key)} has ${chars(value)}`);
+		if (long.length > 0) refusals.push({ field: "labels", message: `smol cloud takes label values of at most ${LABEL_VALUE_CHARS} characters: ${long.join(", ")}` });
+		let form = "";
+		try {
+			form = network === undefined ? "" : networkFormOf(network);
+		} catch {
+			// A network the adapter refuses itself, in its own words.
+		}
+		if (chars(form) > LABEL_VALUE_CHARS) refusals.push({ field: "network", message: `smol cloud keeps the network list in a label of at most ${LABEL_VALUE_CHARS} characters, and this one comes to ${chars(form)}: name fewer hosts` });
+		return refusals;
 	}
 }
 

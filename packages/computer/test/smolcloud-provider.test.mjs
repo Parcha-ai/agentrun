@@ -22,8 +22,8 @@ function recorder(route) {
 		const [status, json] = route(init.method, `${pathname}${search}`, body) ?? [404, { detail: "no such route" }];
 		return new Response(json === undefined ? null : JSON.stringify(json), { status });
 	};
-	const host = new SmolcloudProvider({ apiKey: KEY, apiUrl: API, fetch }).host;
-	return { calls, host };
+	const provider = new SmolcloudProvider({ apiKey: KEY, apiUrl: API, fetch });
+	return { calls, host: provider.host, provider };
 }
 
 test("create names the machine agr-<name> on amd64 with the labels and a size, the idle stop off and the delete timer at the backstop; a 409 is exists, the account's cap limit", async () => {
@@ -135,6 +135,30 @@ test("the output read gives up in words, naming the exec and the last answer, on
 	const { execId } = calls[0].body;
 	assert.ok(settled instanceof Error, `wait() answered ${settled}`);
 	assert.match(settled.message, new RegExp(`no read of exec ${execId}'s output for 5 minutes.*answered 503: control restarting`));
+});
+
+test("check refuses before any call to smol cloud the labels it would refuse: a name, a value, the image or network list past 255 characters, past 32 labels", async () => {
+	const { calls, provider } = recorder(() => [201, { id: ID, state: "started" }]);
+	const spec = { image: "alpine:3.20", lifetimeMs: 600_000, network: "none" };
+	const long = "x".repeat(256);
+	const hosts = Array.from({ length: 12 }, (_, i) => `service-${i}.example.com`);
+	const many = Object.fromEntries(Array.from({ length: 28 }, (_, i) => [`k${i}`, "v"]));
+	const cases = [
+		["a name with a capital", { labels: { Team: "test" } }, "labels", /label names of 1 to 63 .*"Team"/],
+		["a name ending in a dot", { labels: { "team.": "test" } }, "labels", /"team\."/],
+		["a value of 256 characters", { labels: { team: long } }, "labels", /values of at most 255 characters: "team" has 256/],
+		["an image of 256 characters", { image: long }, "image", /image in a label of at most 255 characters, and this one has 256/],
+		["a network list of 271 characters", { network: { allow: hosts } }, "network", /network list in a label of at most 255 characters, and this one comes to 271/],
+		["28 labels and the adapter's own 5", { labels: many }, "labels", /at most 32 labels, the adapter's own among them/],
+	];
+	for (const [name, more, field, words] of cases) {
+		const refusals = provider.check({ ...spec, ...more });
+		assert.deepEqual(refusals.map((one) => one.field), [field], name);
+		assert.match(refusals[0].message, words, name);
+	}
+	assert.deepEqual(provider.check({ ...spec, network: { allow: hosts.slice(0, 10) }, labels: { team: "test", "agentrun.run": "run-1", "a/b_c.d-e": "x".repeat(255) } }), []);
+	const made = await provider.create({ ...spec, labels: { Team: "test" } }, { requestId: "request-1" });
+	assert.deepEqual([made.ok, made.error?.code, calls.length], [false, "refused", 0]);
 });
 
 test("upload puts the bytes at the guest path through the files API; extend changes the deadline label alone", async () => {
