@@ -4,9 +4,11 @@
 // server is warming. GET /v2/health says so (503, status "warming", the store "opening"), the API answers 503
 // `unavailable` with a Retry-After, and a browser gets a page that reloads itself. Only node's own modules load here.
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { networkInterfaces } from "node:os";
 import type { Duplex } from "node:stream";
 
 /** The port a server takes when none is named: the first free one from here (cli.ts). */
@@ -47,6 +49,22 @@ export async function listenOn(server: Server, host: string, first: number, next
 }
 
 /** The URL a listening `server` on `host` is reached at on this machine: an address of every interface at its loopback one. */
+/** Where a server listening on every address (`host` 0.0.0.0 or ::) at `port` is reached from another machine: this
+ *  machine's own IPv4 addresses, loopback, link-local and container bridges left out, at most three. None for a server on one address, and
+ *  none in a container, whose addresses are its own network's, not the ones its host publishes the port on. */
+const BRIDGES = /^(docker|br-|veth|virbr|cni|flannel|vmnet|bridge\d)/;
+
+export function elsewhereOf(
+  host: string,
+  port: number,
+  { interfaces = networkInterfaces(), container = existsSync("/.dockerenv") || existsSync("/run/.containerenv") }: { interfaces?: ReturnType<typeof networkInterfaces>; container?: boolean } = {},
+): string[] {
+  if ((host !== "0.0.0.0" && host !== "::") || container) return [];
+  // A container network's bridge (Docker's, a VM's) is this machine's alone: no other machine reaches it there.
+  const addresses = Object.entries(interfaces).filter(([name]) => !BRIDGES.test(name)).flatMap(([, list]) => (list ?? []).filter((one) => one.family === "IPv4" && !one.internal && !one.address.startsWith("169.254.")).map((one) => one.address));
+  return [...new Set(addresses)].slice(0, 3).map((address) => `http://${address}:${port}`);
+}
+
 export function urlOf(server: Server, host: string): string {
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   return `http://${shown.includes(":") ? `[${shown}]` : shown}:${(server.address() as AddressInfo).port}`;

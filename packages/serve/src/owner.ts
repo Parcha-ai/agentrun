@@ -123,6 +123,8 @@ export class Owner {
   readonly signIns: SignInLimit;
   private setupCode: { code: string; until: number; tries: number } | null = null;
   private base = "";
+  /** The addresses the server is reached at from another machine, when it listens on every address with no public one. */
+  private elsewhere: readonly string[] = [];
   /** Taken while a first password is being set, so a second at the same moment is refused. */
   private settingUp = false;
 
@@ -159,9 +161,11 @@ export class Owner {
     return this.read().password !== undefined;
   }
 
-  /** The address the setup link is printed with, fixed once the server listens. */
-  attach(baseUrl: string): void {
+  /** The address the setup link is printed with, fixed once the server listens; `elsewhere`, the addresses another
+   *  machine reaches it at (a server listening on every address with no public one), each printed with the code too. */
+  attach(baseUrl: string, elsewhere: readonly string[] = []): void {
     this.base = baseUrl;
+    this.elsewhere = elsewhere;
   }
 
   /** The setup page's link: with its code when setup needs one, a new code printed (never answered) when none is good. */
@@ -170,6 +174,7 @@ export class Owner {
     if (!this.setupCode || Date.now() > this.setupCode.until) {
       this.setupCode = { code: randomBytes(16).toString("base64url"), until: Date.now() + SETUP_TTL_MS, tries: 0 };
       this.say(`Set up this server: ${this.base}/setup#code=${this.setupCode.code} (or paste AGENTRUN_TOKEN)`);
+      for (const base of this.elsewhere) this.say(`From another machine: ${base}/setup#code=${this.setupCode.code}`);
     }
     return `${this.base}/setup#code=${this.setupCode.code}`;
   }
