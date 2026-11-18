@@ -295,10 +295,10 @@ export class Triggers {
   /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
    *  before it settled to. */
   private readonly turns = new Map<string, Promise<void>>();
-  /** Each trigger's edits and removals (update, remove), one after another on this server: a move to another agent never
-   *  lands between a template update's delete of its Composio instance and its conditional delete of the row (remove),
-   *  so a moved trigger never stands on an instance that delete took. Across servers the store's conditional write holds
-   *  the row. Removed from the map once idle. */
+  /** Each trigger's removals and the edits that name a target (the one way it moves to another agent), one after another
+   *  on this server: a move never lands between a template update's delete of its Composio instance and its conditional
+   *  delete of the row (remove), so a moved trigger never stands on an instance that delete took. Across servers the
+   *  store's conditional write holds the row. Removed from the map once idle. */
   private readonly edits = new Map<string, Promise<void>>();
   /** Whether a firing waits for its trigger's room (max_active_runs): the timer then reads the store every WAIT_POLL_MS. */
   private waiting = false;
@@ -537,7 +537,7 @@ export class Triggers {
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
   async update(id: string, body: Json, own: TriggerOwn = {}) {
-    return this.one(id, () => this.updating(id, body, own));
+    return isObject(body) && body.target !== undefined ? this.one(id, () => this.updating(id, body, own)) : this.updating(id, body, own);
   }
 
   private async updating(id: string, body: Json, own: TriggerOwn) {
@@ -740,7 +740,10 @@ export class Triggers {
   }
 
   /** `work` on trigger `id` once every edit or removal of it asked before has settled (edits). Neither update nor remove
-   *  calls the other, so a turn never waits on itself. */
+   *  calls the other, so a turn never waits on itself. Only a target edit takes a turn: any other edit runs beside one, as
+   *  concurrent edits each keep their change (trigger-engine.test.mjs, two edits at once, one a target whose check is
+   *  slow: the source edit lands while the target's check waits). One racing a removal writes its row while the row is
+   *  there, or finds it gone (not_found): the store's update changes no row a delete took. */
   private one<T>(id: string, work: () => Promise<T>): Promise<T> {
     const done = (this.edits.get(id) ?? Promise.resolve()).then(work);
     const turn = done.then(() => undefined, () => undefined);
