@@ -217,6 +217,42 @@ describe("Slack's messages", () => {
     assert.equal(slack.got.length, 1, "the end from while run.ended was off is not posted");
   });
 
+  test("Slack's 404 whose delivery write the store refuses, then an events save before it is written again: Slack goes off and keeps the saved events", async (t) => {
+    const slack = await fakeSlack(t, () => [404, "no_service"]);
+    // Once armed, the store refuses the next write of a try's outcome (channels.settle), once: the try's write is tried
+    // again after storeRetryMs (resettle), with the 404's turn-off after it.
+    let refuseSettle = false;
+    const flaky = (store) => new Proxy(store, {
+      get: (target, name) => {
+        if (name === "channels") return { ...target.channels, settle: async (...args) => { if (refuseSettle) { refuseSettle = false; throw new Error("the store could not write"); } return target.channels.settle(...args); } };
+        const value = Reflect.get(target, name, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const dir = await scratch(t);
+    const raw = await openSqliteStore({ file: join(dir, "store.sqlite") });
+    t.after(() => raw.close());
+    await raw.agents.create({ id: "a1", name: "Lead triage" }, { id: "rev-a1", kind: "agentic", body: {} });
+    await raw.runs.create({ id: "r1", agentId: "a1", revisionId: "rev-a1" });
+    const lines = [];
+    const posts = new SlackPosts(flaky(raw), randomBytes(32), (fields) => lines.push(JSON.stringify(fields)), { retryMs: [50], storeRetryMs: 300, sendTo: slack.origin });
+    t.after(() => posts.close());
+    await posts.load();
+    posts.attach(BASE);
+    await posts.saveSlack({ url: canaryUrl().url });
+    refuseSettle = true;
+    await posts.emit("run.ended", { run_id: "r1", agent_id: "a1", agent_name: "Lead triage", status: "completed", title: "t" }, new Date(Date.now() + 1_000).toISOString());
+    await slack.when(1);
+    await arrived(() => lines.some((line) => line.includes("attempt_unsaved")), "the refused write");
+    // Before the write is tried again, the owner turns trigger.failed off.
+    await posts.saveSlack({ events: { "trigger.failed": false } });
+    const off = await arrived(() => posts.slackView().disabled, "Slack turned off by the 404");
+    assert.equal(off.reason, "Slack answered 404 no_service: the URL posts nowhere now");
+    assert.deepEqual(posts.slackView().events, { "run.ended": true, "run.needs_input": true, "trigger.failed": false }, "the saved switch is kept");
+    const kept = await raw.settings.get("slack-out");
+    assert.equal(kept.events["trigger.failed"], false, "and so in the store");
+  });
+
   test("with the webhook set too, each destination gets its own message for the same moment: its id, its body, its delivery", async (t) => {
     const slack = await fakeSlack(t);
     const hook = await fakeSlack(t);

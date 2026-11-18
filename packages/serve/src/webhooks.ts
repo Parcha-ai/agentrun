@@ -807,8 +807,10 @@ export class Webhooks {
     const current = this.config;
     const stillGone = gone !== undefined && standing !== undefined && current !== undefined && !current.disabled && current.url === standing.url && current.secret_scope === standing.secret_scope && current.updated_at === standing.updated_at;
     if (stillGone) {
-      // Gone: the receiver says this endpoint is no more. Off, its queued messages dropped, until a PUT sets it again.
-      const off = { ...standing!, disabled: { at: attempt.at, reason: gone.reason } };
+      // Gone: the receiver says this endpoint is no more. Off, its queued messages dropped, until a PUT sets it again. It is
+      // the setting as it stands now that goes off (the same URL, secret and cutoff as the try's): a change since that
+      // kept those (Slack's events, slack.ts) is kept, never written over by the try's older copy.
+      const off = { ...current!, disabled: { at: attempt.at, reason: gone.reason } };
       try {
         await this.write(off);
       } catch (error) {
