@@ -45,6 +45,10 @@ test("on a server started with --no-runner, the pairing code, the pair answer an
   const listed = await api("GET", "/computers");
   assert.equal(listed.status, 200, JSON.stringify(listed.body));
   saysRunnerApart(listed.body.paired.find((one) => one.id === paired.body.computer)?.runs_refused, "the computer's row");
+  // It is one more provider of its kind too, whose row says the same.
+  const asProvider = listed.body.kinds.flatMap((kind) => kind.providers).filter((one) => one.id === paired.body.computer);
+  assert.ok(asProvider.length > 0, "listed as a provider of its kind");
+  for (const row of asProvider) saysRunnerApart(row.runs_refused, "its provider row");
 
   // A run's refusal, from a runner of its own process, names the same fix in the same words.
   assert.ok(String(words.ONE_PROCESS_WORDS).includes(FIX), `the run's refusal names the fix: ${words.ONE_PROCESS_WORDS}`);

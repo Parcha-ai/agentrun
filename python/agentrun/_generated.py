@@ -4256,6 +4256,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     secrets: list[ListComputersResponseKindsItemProvidersItemSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -4516,6 +4517,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     secrets: list[SaveComputerKeysResponseSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 

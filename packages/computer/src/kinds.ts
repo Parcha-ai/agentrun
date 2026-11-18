@@ -120,6 +120,8 @@ export interface ProviderEntry {
 	readonly keys: readonly DescriptorKey[];
 	/** Settings that are no key but go to its options. */
 	readonly settings?: readonly DescriptorSetting[];
+	/** Whether its machines dial the server: always ("dial"), or as its connect option says ("either"); descriptor.ts connectOf. */
+	readonly connect?: "dial" | "either";
 	/** The mount kinds its computers take; [] cannot mount the run's folder. */
 	readonly mounts: readonly MountKind[];
 	/** Why its computers take none of these mount kinds, each in one sentence (descriptor.ts). */

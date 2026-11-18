@@ -3801,6 +3801,7 @@ export interface operations {
           }[];
           required: string[];
           ready: boolean;
+          runs_refused: string | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -5271,6 +5272,7 @@ export interface operations {
       }[];
       required: string[];
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;

@@ -125,8 +125,8 @@ class FlyHost implements MachineHost {
 		// address. Declared, so isolation.vendor-agent checks the computer's programs reach none of it.
 		vendorAgentPorts: [22],
 		// The machine dials the server: Fly's exec answers once the command ends (docs.machines.dev, Machines_exec), so
-		// there is no exec and no upload here.
-		connect: "dial",
+		// there is no exec and no upload here. Its descriptor's (connectOf).
+		connect: FLY.connect,
 	};
 	readonly #client: Rest;
 	readonly #app: string;

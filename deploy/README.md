@@ -138,7 +138,9 @@ own. If either exits, the other stops and the container exits non-zero, so a res
 
 Any other arguments are one command, run as given: `runner ...` is a runner, `reset-password --data /data` resets the
 password, and server options alone are a server with its runner in its own process, which a paired computer needs, and
-so does a provider whose machines dial the server (Fly, Cloudflare, and E2B, Daytona or Modal set to dial).
+so does a provider whose machines dial the server (Fly Machines and Cloudflare). Under `server-and-runner`, Settings →
+Computers says so on each such provider's row (`runs_refused` in `GET /v2/computers`), and its Test connection fails
+naming the fix.
 
 What each takes, from its environment alone:
 

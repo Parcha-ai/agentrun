@@ -32,12 +32,12 @@ const secret = (provider: string, key: string, set: boolean, source: ComputerSec
  *  host tool; one that doesn't, the file tools only. */
 const MOUNTS = { shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
 const NO_SHELL = { shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
-const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, ...MOUNTS };
-const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), ...NO_SHELL });
-const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, ...NO_SHELL };
-const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", ...NO_SHELL };
+const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...MOUNTS };
+const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), runs_refused: null, ...NO_SHELL });
+const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, runs_refused: null, ...NO_SHELL };
+const kernel: ComputerProvider = { id: "kernel", name: "Kernel", metered: true, secrets: [secret("kernel", "KERNEL_API_KEY", false), secret("kernel", "KERNEL_REGION", false)], required: ["computer:kernel:KERNEL_API_KEY"], ready: false, why: "Kernel needs KERNEL_API_KEY saved", runs_refused: null, ...NO_SHELL };
 /** Daytona's key is in the server's environment: it wins, greyed, with nothing to paste over it. */
-const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, ...NO_SHELL };
+const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: true, secrets: [secret("daytona", "DAYTONA_API_KEY", true, "env")], required: ["computer:daytona:DAYTONA_API_KEY"], ready: true, runs_refused: null, ...NO_SHELL };
 /** A person's own Mac, paired and attached; it is also a provider of the desktop kind. */
 /** A paired computer of no OS the page knows: it is shown by what its hello says. */
 const DESK: PairedComputer = {
@@ -45,7 +45,7 @@ const DESK: PairedComputer = {
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
   driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
-const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, ...NO_SHELL };
+const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], providers, ...extra });
 const view = (saved = false): Computers => ({
   paired: [],
@@ -342,7 +342,7 @@ describe("Settings → Computers", () => {
   });
 
   it("offers Test connection only to a provider whose keys are saved: none to one with no key, or with a required key missing", async () => {
-    const optional: ComputerProvider = { id: "opt", name: "Opt", metered: false, secrets: [secret("opt", "OPT_TOKEN", false)], required: [], ready: true, ...NO_SHELL };
+    const optional: ComputerProvider = { id: "opt", name: "Opt", metered: false, secrets: [secret("opt", "OPT_TOKEN", false)], required: [], ready: true, runs_refused: null, ...NO_SHELL };
     const { v2, calls } = server([{ paired: [], kinds: [kind("sandbox", [docker, e2b(false), daytona, optional]), kind("browser", [kernel])] }]);
     const { row, button } = await open(v2);
     // Docker has no key: its Ready says whether this machine's daemon answers.

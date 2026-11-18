@@ -830,6 +830,8 @@ const COMPUTER_PROVIDER_GPU = closedWith({
   fence: { enum: ["netns", "userns-netns"], description: "How the computer's daemon holds a GPU computer's programs off its network, where it is not the plain network namespace: `userns-netns`, one made inside a user namespace (Modal's gVisor, where root may not make one itself). Either way the programs reach their own loopback alone." },
   why: { type: "string", description: "Why a run on this server cannot have its GPUs: its GPU computers take no mount of this server's folder mode." },
 });
+/** `runs_refused` of a provider in Settings → Computers (computers.ts ProviderView; attached-computers.ts dialApartWords). */
+const PROVIDER_RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use this provider's computers, and the one-line fix: start the image with the server options alone, without `server-and-runner`. Said for a provider whose machines dial this server (Fly Machines, Cloudflare, and E2B, Daytona or Modal set to dial), whose sockets the server's process takes and its runner never reaches, and for a paired computer; its test (POST /computers/{provider}/test) fails in the same words. Null where this server's runs can use it." };
 /** A provider in Settings → Computers (computers.ts ProviderView). */
 const COMPUTER_PROVIDER = closedWith({
   id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
@@ -838,6 +840,7 @@ const COMPUTER_PROVIDER = closedWith({
   secrets: { type: "array", items: SECRET_ITEM("\"computer:<provider>:<KEY>\": KEY is the name PUT /computers/{provider}/keys takes, and the environment variable that sets it."), description: "Each key the provider declares, as its SecretMeta: never a value." },
   required: { type: "array", items: { type: "string" }, description: "The names of the secrets the provider needs; any other may stay unset." },
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
+  runs_refused: PROVIDER_RUNS_REFUSED,
   shell: CHOICE_SHELL,
   host_tools: CHOICE_HOST_TOOLS,
 }, {
@@ -2148,7 +2151,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/computers/{provider}/test": {
     post: {
       operationId: "testComputer", tags: ["local"], summary: "Test a computer provider's account with its saved keys",
-      description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key.",
+      description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key. A provider whose row says `runs_refused` (its machines dial this server, and this server's runner runs in a process of its own) fails in those words, with no call to the vendor.",
       parameters: [PROVIDER_PARAM],
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 404, 429, 500) },
       ...COMPUTER_MARK,

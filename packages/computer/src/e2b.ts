@@ -12,7 +12,8 @@ import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { AGENTRUN_DIAL, hostedCommands, shellLine } from "./hosted/scripts.js";
-import { connectOf, dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
+import { connectOf } from "./descriptor.js";
+import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
@@ -482,7 +483,7 @@ export class E2BProvider extends HostedProvider {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
 		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind: named, maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
-		const via = connectOf(connect, "E2B");
+		const via = connectOf(E2B, { connect });
 		// A server names connect alone (its e2bConnect setting): on dial the kind is linux unless named, since agentrun-dial
 		// starts init with no display; a desktop named on dial is the adapter's refusal.
 		const kind = named ?? (via === "dial" ? "linux" : "desktop");

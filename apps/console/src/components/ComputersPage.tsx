@@ -331,9 +331,12 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
           <p className="flex flex-wrap items-center gap-2">
             <span data-provider className="font-mono text-prose font-semibold">{p.name}</span>
             {p.ready ? <Chip tone="success">Ready</Chip> : <Chip>Not ready</Chip>}
+            {p.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
             {p.metered && <span data-metered className="text-small text-muted-foreground">Metered</span>}
           </p>
           {!p.ready && p.why && <p className="mt-1.5 font-mono text-small text-muted-foreground">{p.why}</p>}
+          {/* A server whose runner runs apart: the server's words, with the fix (a dial provider's machines). */}
+          {p.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{p.runs_refused}</p>}
           {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-small text-muted-foreground">{METERED}</p>}
           {p.secrets.length > 0 && (
             <ul className="mt-3 space-y-1.5">

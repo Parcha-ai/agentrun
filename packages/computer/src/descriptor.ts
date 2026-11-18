@@ -110,6 +110,14 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 * provider's own check() still judges the image. Absent: its images are its defaultImage alone.
 	 */
 	readonly imageEnv?: string;
+	/**
+	 * How the server reaches its machines, where they may dial it (MachineHost facts.connect "dial": every connection goes
+	 * over the socket the machine's computerd dials, which the server's attach hub takes). "dial": always (Fly Machines,
+	 * Cloudflare). "either": its create() option `connect` says, "exec" (the default) or "dial", and a setting of its
+	 * settings fills that option (E2B, Daytona, Modal). Absent: never. connectOf reads it; its built host's facts.connect
+	 * is connectOf's answer.
+	 */
+	readonly connect?: "dial" | "either";
 	/** Its computers run on this machine's container engine: a server passes it its local host options (volume, host addresses). */
 	readonly local?: boolean;
 	/** create() takes a ledger the server keeps for it, as `options[ledger.option]` (the phone harness's sessions). */
@@ -197,6 +205,8 @@ export function descriptorProblems(value: unknown): string[] {
 	named(d.settings, "settings");
 	if (Array.isArray(d.keys) && d.keys.some((key) => typeof key?.required !== "boolean")) problems.push("each key says whether it is required");
 	if (Array.isArray(d.keys) && d.keys.some((key) => key?.picked !== undefined && typeof key.picked !== "boolean")) problems.push("a key's picked is true or false");
+	if (d.connect !== undefined && d.connect !== "dial" && d.connect !== "either") problems.push("connect is dial or either");
+	else if ((d.connect === "either") !== (Array.isArray(d.settings) && d.settings.some((setting) => setting?.option === "connect"))) problems.push("connect is either exactly where a setting fills the connect option");
 	if (d.ledger !== undefined && (typeof d.ledger?.option !== "string" || d.ledger.option === "")) problems.push("ledger names the option it fills");
 	if (d.imageEnv !== undefined && (typeof d.imageEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(d.imageEnv))) problems.push("imageEnv is an environment variable name (capital letters, digits and underscores)");
 	if (d.hostEnv !== undefined && (!Array.isArray(d.hostEnv) || d.hostEnv.some((name) => typeof name !== "string" || name === ""))) problems.push("hostEnv is a list of environment variable names");
@@ -211,6 +221,20 @@ export function descriptorProblems(value: unknown): string[] {
 		else if (Array.isArray(d.capabilities) && d.parked.some((one) => d.capabilities!.some((offered) => offered?.image === one.image))) problems.push("a parked image is also offered");
 	}
 	return problems;
+}
+
+/**
+ * How a provider made with create() `options` reaches its machines: "dial", they dial the server (its descriptor's
+ * connect "dial", or "either" with options.connect "dial"); else "exec". The one answer to whether a provider's machines
+ * dial: each provider's host takes its facts.connect from it (hosted/provider.ts reads that), and a server reads it
+ * before it builds one (serve's Settings → Computers, where a runner in a process of its own has no attach hub). A
+ * connect other than exec or dial is refused in words.
+ */
+export function connectOf(descriptor: Pick<ProviderDescriptor, "label" | "connect">, options: { readonly connect?: unknown } = {}): "exec" | "dial" {
+	if (descriptor.connect !== "either") return descriptor.connect === "dial" ? "dial" : "exec";
+	const { connect } = options;
+	if (connect === undefined || connect === "exec" || connect === "dial") return connect ?? "exec";
+	throw new Error(`connect is how ${descriptor.label} reaches its machines, "exec" (the default) or "dial", not ${JSON.stringify(connect)}`);
 }
 
 /**
