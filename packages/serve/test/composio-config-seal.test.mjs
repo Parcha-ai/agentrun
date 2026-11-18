@@ -342,7 +342,7 @@ test("the API document: a composio source's sealed_config is read-only, and conf
 });
 
 /** A package whose composio trigger takes HubSpot's developer key from a parameter, under a fresh templates folder. */
-async function keyPackage(t) {
+async function keyPackage(t, { noted = false } = {}) {
   const root = join(await scratch(t), "templates");
   const dir = join(root, "deals");
   mkdirSync(dir, { recursive: true });
@@ -353,7 +353,8 @@ description: Notes each deal's new stage.
 budget: { per_run_usd: 0.5 }
 parameters:
   app_id: { type: string, description: "the HubSpot app's id" }
-  developer_api_key: { type: string, description: "the HubSpot app's developer key" }
+  developer_api_key: { type: string, description: "the HubSpot app's developer key" }${noted ? `
+  team: { type: string, description: "the team whose deals they are" }` : ""}
 mcp:
   - source: composio
     toolkit: hubspot
@@ -368,7 +369,7 @@ triggers:
       config:
         app_id: "\${parameters.app_id}"
         developer_api_key: \${parameters.developer_api_key}
-    target: { kind: start_run, input: { content: "Note the deal's new stage." } }
+    target: { kind: start_run, input: { content: "Note the deal's new stage${noted ? " for \${parameters.team}" : ""}." } }
 ---
 Note the deal's new stage with mcp:hubspot/HUBSPOT_LIST_DEALS.
 `);
@@ -393,6 +394,82 @@ test("a template's composio trigger whose key comes from a parameter: the apply'
   assert.deepEqual([...composio.instances.values()][0]?.trigger_config, { app_id: "4242", developer_api_key: key }, "Composio's instance watches with the key");
   assert.ok(!readFileSync(join(server.data, ".idempotency.json"), "utf8").includes(key), "the apply's Idempotency-Key record holds no key");
   assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
+});
+
+/** A server with the `deals` package (keyPackage, `noted`: its trigger's input names a `team` parameter) and a saved
+ *  HubSpot Composio server; every log line kept. */
+async function dealsServer(t, { noted = false } = {}) {
+  const root = await keyPackage(t, { noted });
+  const composio = await startFakeComposio({ toolkits: { hubspot: { no_auth: false, tools: TOOLS } }, authConfigs: { hubspot: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["hubspot"], triggerTypes: { hubspot: [DEAL_STAGE] } });
+  t.after(() => composio.close());
+  const lines = [];
+  const server = await serve(t, { templates: root, publicUrl: PUBLIC, composioControl: { baseUrl: composio.baseUrl }, log: (line) => lines.push(line) });
+  const saved = await server.api("PUT", "/settings/mcp-servers/work-hubspot/composio", { api_key: composio.apiKey, toolkit: "hubspot", tools: ["HUBSPOT_LIST_DEALS"], user_id: "agentrun-qa" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  return { server, composio, lines };
+}
+
+/** What an update must leave as it was: the agent's current revision and its triggers, as read. */
+const standing = async (api, agentId) => ({
+  revision: (await api("GET", `/agents/${agentId}`)).body.revision,
+  triggers: (await api("GET", "/triggers")).body.triggers.filter((one) => one.target?.agent_id === agentId).map(({ id, name, source, target, enabled }) => ({ id, name, source, target, enabled })),
+});
+
+test("a template's composio trigger with a key from a parameter, applied again with agent_id and the same parameters: 200, the same trigger, its config still sealed, and no file holds the key", async (t) => {
+  const { server, composio, lines } = await dealsServer(t);
+  const key = fakeKey();
+  const parameters = { app_id: "4242", developer_api_key: key };
+  const first = await server.api("POST", "/templates/deals/apply", { parameters });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const again = await server.api("POST", "/templates/deals/apply", { parameters, agent_id: first.body.agent_id }, { "idempotency-key": "deals-update" });
+  assert.equal(again.status, 200, `the update with the same key is no change to the sealed config: ${again.status} ${again.status === 200 ? "" : JSON.stringify(again.body).replaceAll(key, "<key>")}`);
+  assert.deepEqual(again.body.trigger_ids, first.body.trigger_ids, "the same trigger, kept by name");
+  assert.ok(!JSON.stringify(again.body).includes(key), "the update's answer holds no key");
+  const read = await server.api("GET", `/triggers/${first.body.trigger_ids[0]}`);
+  assert.equal(read.body.source.config.developer_api_key, MASK, "still sealed");
+  assert.deepEqual(read.body.source.sealed_config, ["developer_api_key"]);
+  assert.equal((await sealedRowsOf(server.store, first.body.trigger_ids[0])).length, 1, "its sealed value kept");
+  assert.equal(composio.instances.size, 1, "nothing new made on Composio");
+  assert.deepEqual(filesUnder(server.data).filter((path) => readFileSync(path).includes(key)), [], "no file under the data directory holds the key in the clear");
+  assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
+});
+
+test("a template's composio trigger applied again with agent_id and another key: refused under triggers.<i>, saying to delete that trigger and apply again, with nothing changed", async (t) => {
+  const { server, lines } = await dealsServer(t);
+  const key = fakeKey();
+  const other = fakeKey();
+  const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const before = await standing(server.api, first.body.agent_id);
+  const refused = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body).replaceAll(other, "<other>").replaceAll(key, "<key>"));
+  assert.equal(refused.body.error.fields[0].field, "triggers.0.source.config");
+  assert.deepEqual(await standing(server.api, first.body.agent_id), before, "nothing changed: the agent's current revision is the one before, its trigger as it was, and no other made");
+  assert.match(refused.body.error.fields[0].message, /delete that trigger/, "the words say to delete that trigger");
+  assert.match(refused.body.error.fields[0].message, /apply/, "and apply again");
+  assert.ok(![key, other].some((one) => JSON.stringify(refused.body).includes(one)), "the refusal holds neither key");
+  assert.ok(!lines.some((l) => [key, other].some((one) => l.includes(one))), "no log line holds either key");
+});
+
+test("a template's composio trigger applied again with agent_id and the same key: a change outside its config is made in place with the key still sealed; a change to another config field is refused with nothing changed", async (t) => {
+  const { server, composio } = await dealsServer(t, { noted: true });
+  const key = fakeKey();
+  const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key, team: "sales" } });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const [id] = first.body.trigger_ids;
+  const moved = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key, team: "support" }, agent_id: first.body.agent_id });
+  assert.equal(moved.status, 200, `a change outside the config is made in place: ${moved.status} ${moved.status === 200 ? "" : JSON.stringify(moved.body).replaceAll(key, "<key>")}`);
+  const read = await server.api("GET", `/triggers/${id}`);
+  assert.equal(read.body.target.input.content, "Note the deal's new stage for support.", "the input changed in place");
+  assert.equal(read.body.source.config.developer_api_key, MASK, "the key still sealed");
+  assert.equal((await sealedRowsOf(server.store, id)).length, 1);
+  assert.equal(composio.instances.size, 1, "nothing new made on Composio");
+  const before = await standing(server.api, first.body.agent_id);
+  const refused = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "5151", developer_api_key: key, team: "support" }, agent_id: first.body.agent_id });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body).replaceAll(key, "<key>"));
+  assert.equal(refused.body.error.fields[0].field, "triggers.0.source.config");
+  assert.deepEqual(await standing(server.api, first.body.agent_id), before, "nothing changed: the agent's current revision is the one before, its trigger as it was");
+  assert.ok(!JSON.stringify(refused.body).includes(key), "the refusal holds no key");
 });
 
 /** Trigger `id`'s ordinary life before the upgrade: other triggers made after it share its page, then a pause, a resume
