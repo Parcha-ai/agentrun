@@ -15,7 +15,7 @@ const { HARNESS_MODULES_ENV, harnessIds } = table;
 const EXAMPLE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../examples/harness-module/index.mjs");
 const { BINARY_SETTING, ID } = await import(EXAMPLE);
 const loaded = { [HARNESS_MODULES_ENV]: JSON.stringify([EXAMPLE]) };
-const ANTHROPIC = { ANTHROPIC_API_KEY: "anthropic-test-value" };
+const ANTHROPIC = { ANTHROPIC_API_KEY: "fake-test-key" };
 
 /** Its offer on `env`, with the built-in harnesses' offers there with and without the module. */
 async function offers(t, env) {
@@ -28,7 +28,7 @@ async function offers(t, env) {
 test("the example module adds its harness after the built-in ones, which are offered as before, and its key rows are Anthropic's and OpenRouter's", async (t) => {
   assert.equal(ID, "goose-module");
   assert.deepEqual([...harnessIds(loaded)].slice(-1), [ID]);
-  for (const env of [{}, ANTHROPIC, { OPENROUTER_API_KEY: "sk-or-placeholder-0000" }]) {
+  for (const env of [{}, ANTHROPIC, { OPENROUTER_API_KEY: "fake-test-key" }]) {
     const { plain, builtins, added } = await offers(t, env);
     assert.deepEqual(builtins, plain, JSON.stringify(Object.keys(env)));
     assert.deepEqual(added.map((offer) => [offer.id, offer.label, offer.steer]), [[ID, "Goose (module)", false]]);

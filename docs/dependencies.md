@@ -32,7 +32,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 
 | Package | Version | Declared license | Used by | Optional | Lock locations |
 | --- | --- | --- | --- | --- | --- |
-| @agentclientprotocol/sdk | 2.7.0 | Apache-2.0 | run-adapters-acp | no | 1 |
+| @agentclientprotocol/sdk | 2.7.0 | Apache-2.0 | agentrun, run-adapters-acp, serve | no | 1 |
 | @anthropic-ai/claude-agent-sdk-darwin-arm64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
 | @anthropic-ai/claude-agent-sdk-darwin-x64 | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |
 | @anthropic-ai/claude-agent-sdk-linux-arm64-musl | 0.3.286 | SEE LICENSE IN LICENSE.md | agentrun, run-adapters-claude-agent, serve | yes | 1 |

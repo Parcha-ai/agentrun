@@ -11,6 +11,8 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import type { AdapterFacts, AgentAdapter } from "@parcha/agentrun-kernel";
 import type { ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+// Types only: serve loads the ACP package by name at run time (acp-package.ts), and a serve without it still runs.
+import type { AcpProxy, AcpRecipe } from "@parcha/agentrun-harness-acp";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
@@ -116,8 +118,8 @@ export interface ModuleLaunch {
  *  through the proxy); an agent that cannot load a session gives `resume: "restart"`. */
 export interface AcpEntryOptions extends ModuleChecks {
   readonly facts: AdapterFacts;
-  recipe(launch: ModuleLaunch): unknown;
-  proxy(launch: ModuleLaunch): unknown;
+  recipe(launch: ModuleLaunch): AcpRecipe;
+  proxy(launch: ModuleLaunch): AcpProxy;
   beforeStart?(command: string): Promise<void>;
   readonly promises?: HarnessPromises;
 }
