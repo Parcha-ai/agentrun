@@ -18,7 +18,7 @@ Use `"capy"` for a Capy thread. One agent belongs to one runtime: a run that nam
 
 1. **Start.** `POST /v2/agents/{agent_id}/sdk-runs` with an `Idempotency-Key` header (one per run; a retry with the same key and body returns the same run) and `{runtime, input, instructions, model?}`. The response holds `run_id`, a `token` scoped to that run, and the `learning` to apply (context, skills and workflows; empty while learning is off).
 2. **Events.** `POST /v2/sdk-runs/{run_id}/events` with the run token: `{sequence, events}`, sequences contiguous from 1, at most 100 events per batch. Event types are `text`, `session` (the platform's own session or thread id) and `tool` (`started`, then `completed` or `failed`, with the same `id`).
-3. **Complete.** `POST /v2/sdk-runs/{run_id}/complete` with the run token: `{status: "completed" | "failed" | "cancelled", answer?, session_id?, usage?}`. Usage fields are `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `cost_usd`, each optional. Set `evidence_complete: false` when some of the trace was not sent: the result is kept, and nothing is learned from it.
+3. **Complete.** `POST /v2/sdk-runs/{run_id}/complete` with the run token: `{status: "completed" | "failed" | "cancelled", answer, session_id?, usage?}`. `answer` is required for every status; send `""` when there is no answer to report. Usage fields are `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `cost_usd`, each optional. Set `evidence_complete: false` when some of the trace was not sent: the result is kept, and nothing is learned from it.
 
 ```sh
 run=$(curl -sS "$AGENTRUN_BASE_URL/agents/nightly-digest/sdk-runs" \
