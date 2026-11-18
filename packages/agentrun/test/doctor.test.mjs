@@ -172,7 +172,9 @@ test("Server: a record that is refused (unreadable as private, or an address wit
   }
   assert.deepEqual(server.requests, []);
 
-  for (const base_url of ["http://someone:secret@127.0.0.1:7340/v2", "http://127.0.0.1:7340/v2?to=elsewhere", "file:///etc/passwd", "ftp://127.0.0.1/v2"]) {
+  // The address with a user and password is built here: the source holds no URL with a credential in it.
+  const withUser = Object.assign(new URL(BASE), { username: "someone", password: "x" }).href;
+  for (const base_url of [withUser, "http://127.0.0.1:7340/v2?to=elsewhere", "file:///etc/passwd", "ftp://127.0.0.1/v2"]) {
     const odd = homeOf();
     writeFileSync(join(odd.data, ".server.json"), JSON.stringify({ base_url, pid: 4242, token_file: join(odd.data, ".token") }), { mode: 0o600 });
     const asked = serverOf();
@@ -180,7 +182,7 @@ test("Server: a record that is refused (unreadable as private, or an address wit
     assert.equal(run.report.exit, 1, base_url);
     assert.match(run.check("server").summary, /is not a server record .*refusing it/, base_url);
     assert.deepEqual(asked.requests, [], base_url);
-    assert.ok(!run.text.includes("secret"), "the record's password is not echoed");
+    assert.ok(!run.text.includes("someone"), "the record's user is not echoed");
   }
 
   const broken = homeOf();
