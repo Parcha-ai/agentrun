@@ -49,7 +49,7 @@ A rejected workflow comes back as `{ ok: false, errors, issues }`. `errors` are 
 | `SCHEMA_UNKNOWN` | A node's `out` names a schema in `schemas` | `root.steps[1] (b): out schema "Nope" not in workflow.schemas` |
 | `INPUT_INVALID` | The input supplied to validation fits the input schema | `input: #: must have required properties doc` |
 | `NODE_KIND_UNKNOWN` | A node is one of the kinds (a missing body is none) | `root.steps[1]: unknown node kind "teleport"` |
-| `NODE_KEY_UNKNOWN` | A node holds only its kind's keys, and none of another form's (another `via`, a file artifact, the other route form) | `root.steps[0] (a): unknown key(s) for a agent node: colour` |
+| `NODE_KEY_UNKNOWN` | A node holds only its kind's keys, and none of another form's (another `via`, a file artifact, the other route form) | `root.steps[0] (a): unknown key(s) for an agent node: colour` |
 | `NODE_FIELD_INVALID` | A node's required field is present and each field has an allowed value | `root.steps[1] (l): maxIters must be an integer >= 1` |
 | `STATE_KEY_RESERVED` | No node writes an engine-owned `$` key or the reserved host key | `root.steps[0] (a): "as" must not name an engine-owned "$" state key ("$mine")` |
 | `STATE_PATH_UNPRODUCED` | A read, interpolation, `requires`, `itemsPath`, `valuePath`, `output.path` or file names something an input key or an earlier node produces | `root.steps[0] (a): requires "nowhere" but no upstream node produces it` |

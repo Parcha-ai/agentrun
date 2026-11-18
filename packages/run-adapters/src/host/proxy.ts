@@ -4,8 +4,8 @@
 // forward, where a response reports its usage). The core:
 //  - admits a request only with the session's key (compared in constant time), on a route the policy lists, by exact
 //    path text, with no query or one the route lists exactly: an absolute URL, `..`, `//` or `%` escapes never match. A
-//    route may be answered here with a status alone, with no key (a client's connectivity check), or be free (a token
-//    count, which the runner never pays);
+//    route may be answered here with a status alone, with no key (a client's connectivity check), or with a body the
+//    policy fixed, with the key (a client's list of models), or be free (a token count, which the runner never pays);
 //  - parses the body strictly (one JSON value, no duplicate key at any depth, so a check on one `model` cannot pass while
 //    the provider reads another), then has the policy shape it (or refuse it);
 //  - asks the runner before every paid request (`beforeRequest`, where a turn cap or the host's budget refuses it) and
@@ -39,6 +39,10 @@ export interface ProxyRoute {
   readonly headers?: readonly string[];
   /** Answered here with this status and an empty body, never forwarded (a client's connectivity check). */
   readonly local?: number;
+  /** With `local`: the JSON text it is answered with in place of an empty body (a client's list of models, answered
+   *  with the session's own so the provider's list is never asked for), and then only to the session's key or a side
+   *  key. */
+  readonly localJson?: string;
   /** Not a paid request (a token count): forwarded without asking the runner, and no usage is reported. */
   readonly free?: boolean;
 }
@@ -1159,11 +1163,18 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const e = error as ProxyRefusal;
       return refuse(res, e.status ?? 403, e.message, req);
     }
-    // A local route forwards nothing and answers only a status, so it needs no key: a client's connectivity check
-    // (the Claude Agent CLI's `HEAD /api/hello`) is sent without one.
+    // A local route forwards nothing. One that answers only a status needs no key: a client's connectivity check (the
+    // Claude Agent CLI's `HEAD /api/hello`) is sent without one. One that answers a body says something of the session
+    // (its model, to Goose's `GET /v1/models`), so it takes a key as every other route does.
     if (route.local !== undefined) {
-      res.writeHead(route.local, { "content-length": "0" });
-      return res.end();
+      if (route.localJson === undefined) {
+        res.writeHead(route.local, { "content-length": "0" });
+        return res.end();
+      }
+      const sent = policy.keyOf(req.headers);
+      if (!sameKey(sent, key) && sideOf(sent) === undefined) return refuse(res, 401, "this session's key is required", req);
+      res.writeHead(route.local, { "content-type": "application/json", "content-length": String(Buffer.byteLength(route.localJson)) });
+      return res.end(route.localJson);
     }
     // The session's key (the harness's requests), or a side key the host holds (its own, labelled).
     const sentKey = policy.keyOf(req.headers);

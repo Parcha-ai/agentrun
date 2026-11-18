@@ -84,7 +84,8 @@ function flagType(shape) {
   return types.length === 1 && SCALAR.includes(types[0]) ? { type: types[0] } : undefined;
 }
 
-const firstLine = (text) => (text ?? '').split('\n')[0].trim();
+// A description's first paragraph, its hard-wrapped lines joined: its first line alone can stop mid-sentence.
+const firstLine = (text) => (text ?? '').trim().split(/\n\s*\n/)[0].replace(/\s*\n\s*/g, ' ');
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
 const COMPONENT = '#/components/schemas/';
 // The JSON Schema types the client's types are made of, and the keywords that shape a value beyond them.

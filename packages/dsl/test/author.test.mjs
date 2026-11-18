@@ -120,7 +120,7 @@ const backed = [
   ['Keys that hold a `$` are engine-owned', doc(extract({ as: 'result$answers' })), /engine-owned/],
   ['neither may the label of an agent, decide, extract or code node without `as`', doc({ node: 'code', label: '$x', code: 's => ({ result: { count: 1 } })' }), /label must not contain "\$"/],
   ['Every key a state map, call or child input interpolates must be produced upstream', doc(extract({ state: { t: '{nowhere}' } })), /interpolates \{nowhere\}/],
-  ['Each kind accepts exactly these fields; any other field is an error', doc(extract({ colour: 'red' })), /unknown key\(s\) for a extract node: colour/],
+  ['Each kind accepts exactly these fields; any other field is an error', doc(extract({ colour: 'red' })), /unknown key\(s\) for an extract node: colour/],
   ['`instructions` (required, non-empty)', doc(extract({ instructions: ' ' })), /instructions required/],
   ['`thinking` is low|medium|high (never off)', doc(extract({ thinking: 'off' })), /thinking is never off/],
   ['`tier` is fast|default|strong', doc(extract({ tier: 'huge' })), /tier must be fast\|default\|strong/],
