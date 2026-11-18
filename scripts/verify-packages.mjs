@@ -184,6 +184,9 @@ const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
   computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
+  // What serve loads of the ACP adapter at runtime: its entry, Goose's recipe (recipeFile), and the stdio MCP bridge an
+  // agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
+  'run-adapters-acp': ['package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/facts.js', 'package/dist/host/mcp-stdio.js', 'package/recipes/goose.json'],
 };
 
 try {
