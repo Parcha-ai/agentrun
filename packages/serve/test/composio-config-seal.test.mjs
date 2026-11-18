@@ -1384,3 +1384,35 @@ test("a template update's removal of a Composio trigger and the owner's move of 
     { move: 404, trigger: 404, agent: null, deleted: 1 },
     "the move waited for the removal and found the trigger gone; no trigger was left on another agent with its instance deleted");
 });
+
+test("two agents' template triggers on one Composio instance, both dropped by updates at once: the instance is deleted once, as the last of them goes, never left with no trigger to remove it", async (t) => {
+  const key = fakeKey();
+  const first = await dealsServer(t);
+  const a = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  const b = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.deepEqual([a.status, b.status], [201, 201], JSON.stringify([a.body, b.body]));
+  const [x] = a.body.trigger_ids;
+  const [y] = b.body.trigger_ids;
+  const instances = instancesOf(first.composio);
+  assert.equal(instances.length, 1, "the two agents' deal-stage triggers share one instance (the same event and config)");
+  const [{ id: instance }] = instances;
+  assert.equal((await first.server.api("PATCH", `/triggers/${y}`, { enabled: false })).status, 200, "the owner turns b's off");
+  await first.server.stop();
+  const second = await dealsServer(t, { dropped: true, data: first.server.data, composio: first.composio });
+  // a's removal first: b's trigger, off, still holds the instance, so a's turns it off (held at Composio), and b's
+  // update reaches its own removal meanwhile.
+  const turning = first.composio.hold(`/trigger_instances/manage/${instance}`, "PATCH");
+  const dropA = second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: a.body.agent_id });
+  await turning.reached;
+  const dropB = second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: b.body.agent_id });
+  await Promise.race([dropB, new Promise((resolve) => setTimeout(resolve, 1000))]);
+  turning.release();
+  const [doneA, doneB] = await Promise.all([dropA, dropB]);
+  assert.deepEqual([doneA.status, doneB.status], [200, 200], JSON.stringify([doneA.body, doneB.body]));
+  assert.deepEqual({
+    a: (await second.server.api("GET", `/triggers/${x}`)).status,
+    b: (await second.server.api("GET", `/triggers/${y}`)).status,
+    deletes: first.composio.to(`/api/v3/trigger_instances/manage/${instance}`, "DELETE").length,
+    left: instancesOf(first.composio).length,
+  }, { a: 404, b: 404, deletes: 1, left: 0 }, "both triggers gone and the instance deleted once, by the removal that took the last trigger holding it");
+});
