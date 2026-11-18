@@ -368,7 +368,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
 
 /** The text of each file a step's learning merged (corrections.md when it added a line, its workflow draft), read from
  *  the agent's folder as it is now, by file. */
-async function keptTexts(api, agentId, learning) {
+export async function keptTexts(api, agentId, learning) {
   const files = [
     ...(learning?.corrections > 0 ? [CORRECTIONS_FILE] : []), ...(learning?.workflows ?? []).map((x) => x.file),
   ].filter((f) => typeof f === "string");

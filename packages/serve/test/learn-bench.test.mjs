@@ -125,6 +125,18 @@ test("the active and pending items: corrections.md's lines, the active workflows
   assert.deepEqual(got.pending, ["workflows/file/README.md"]);
 });
 
+test("a step's kept texts: corrections.md from its own route (the file route refuses it), the workflow draft by file", async () => {
+  // As the server answers: the file route takes a workflow draft only (learning-routes.ts fileOf), corrections.md has its own.
+  const api = async (method, path) => {
+    if (path.endsWith("/learning/corrections")) return { status: 200, body: { text: "- Say the total.\n", etag: "\"e1\"", cap_bytes: 2048 }, headers: new Headers() };
+    if (path.endsWith(`/learning/files/${encodeURIComponent("workflows/sort/workflow.json")}`)) return { status: 200, body: { steps: [] }, headers: new Headers() };
+    if (path.includes("/learning/files/")) return { status: 400, body: { error: { code: "bad_request" } }, headers: new Headers() };
+    return { status: 404, body: null, headers: new Headers() };
+  };
+  const got = await bench.keptTexts(api, "a", { corrections: 1, workflows: [{ name: "sort", file: "workflows/sort/workflow.json" }] });
+  assert.deepEqual(got, { "corrections.md": "- Say the total.\n", "workflows/sort/workflow.json": JSON.stringify({ steps: [] }) });
+});
+
 test("a run with unmetered requests is left out of the tokens metrics, and counted apart", () => {
   const metered = (id, pass) => step(id, "repeat", [["a.md", pass]], { tokens: { input: 900, cache_read: 0, cache_write: 0, output: 100, requests: 2, unmetered: 0 } });
   const partial = step("03", "repeat", [["a.md", true]], { tokens: { input: 50, cache_read: 0, cache_write: 0, output: 10, requests: 3, unmetered: 2 } });
