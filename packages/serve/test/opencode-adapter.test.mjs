@@ -870,7 +870,7 @@ test("an opencode second crash in the same open turn: recovery 1 marked and neve
 
 test("OpenCode's skills note gives a served skill's description as YAML reads it: a quote in it is a quote, never an escape", async () => {
   const { skillsNote } = await import("../dist/harness-opencode/adapter.js");
-  const { servedSkill } = await import("../dist/learn/skills.js");
+  const { servedSkill } = await import("../dist/learn/workflow-draft.js");
   const served = servedSkill('---\nname: refunds\ndescription: Find "refund" policies, then the \\\\ path\n---\nSteps.\n');
   const note = skillsNote([{ name: "refunds", files: { "SKILL.md": served } }]);
   assert.match(note, /^- refunds: Find "refund" policies, then the \\\\ path$/m, note);
@@ -878,7 +878,7 @@ test("OpenCode's skills note gives a served skill's description as YAML reads it
 
 test("OpenCode's skills note gives a revision skill's description from its own line when the strict reader can't read the whole front matter (a key in a syntax it refuses), as the adapter's check accepted it", async () => {
   const { skillsNote } = await import("../dist/harness-opencode/adapter.js");
-  const { learnedFront } = await import("../dist/learn/skills.js");
+  const { learnedFront } = await import("../dist/learn/workflow-draft.js");
   const { skillProblems } = await import("@parcha/agentrun-kernel");
   const md = '---\nname: refunds\ndescription: Find a shop\'s refund policy page\n"license": MIT\n---\nSteps.\n';
   assert.deepEqual(skillProblems([{ name: "refunds", files: { "SKILL.md": md } }]), [], "the adapter's check accepts it");

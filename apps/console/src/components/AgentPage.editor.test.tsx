@@ -26,7 +26,7 @@ const native: NativeBinding = {
   runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready",
   version: "1.0.0", model: "claude-test", fingerprint: "editor-route-fixture", configuration: [], skills: [], mcp_servers: [], issues: [],
   connected: true, verified_at: "2026-11-12T00:00:00Z",
-  capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true },
+  capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true },
 };
 const revisions = (agent: Agent) => [
   { revision: "r2", version: 2, created_at: "2026-11-12T00:00:00Z", current: agent.revision === "r2", note: "Current revision", definition: managed.definition },

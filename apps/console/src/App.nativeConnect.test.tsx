@@ -16,7 +16,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.u
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 it("runs a verified native connection without requesting a managed model key or promising spend-cap enforcement", async () => {
   const { App } = await import("./App");
-  const native = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "source", version: "0.167.2", model: "native-model", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true } };
+  const native = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "source", version: "0.167.2", model: "native-model", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } };
   const agent = { agent_id: "native", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { name: "Native", version: 1, tools: [], skills: [], native } };
   vi.stubGlobal("fetch", async (url: string) => {
     const path = new URL(url, "https://console.example.test").pathname;

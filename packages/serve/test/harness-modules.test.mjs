@@ -126,12 +126,12 @@ test("a harness module's id is one the API carries (^[a-z][a-z0-9-]{0,39}$): one
 });
 
 test("a module that names an id the runner or serve keeps for its own runs (learning, sdk, workflow, an SDK runtime's) refuses the start, naming the module and the id", async (t) => {
-  const [{ HARNESS_MODULES_ENV, harnessTable }, { RESERVED_HARNESS_IDS }, { LEARNING_HARNESS }, { SDK_BINDING }] = await Promise.all([
-    import("../dist/harness-table.js"), import("../dist/harness.js"), import("../dist/runner/learning-factory.js"), import("../dist/sdk/schema.js"),
+  const [{ HARNESS_MODULES_ENV, harnessTable }, { RESERVED_HARNESS_IDS }, { SDK_BINDING }] = await Promise.all([
+    import("../dist/harness-table.js"), import("../dist/harness.js"), import("../dist/sdk/schema.js"),
   ]);
-  // The names serve's own runs carry as a launch's harness or a run's harness in analytics: a learning run's (the runner's
-  // loop choice keys on it), an SDK run's, a workflow revision's, and each SDK runtime's.
-  for (const id of [LEARNING_HARNESS, "sdk", "workflow", ...SDK_BINDING.properties.runtime.enum]) assert.ok(RESERVED_HARNESS_IDS.includes(id), id);
+  // The names serve's own runs carry as a launch's harness or a run's harness in analytics: `learning` (the stores'
+  // learning queries match it), an SDK run's, a workflow revision's, and each SDK runtime's.
+  for (const id of ["learning", "sdk", "workflow", ...SDK_BINDING.properties.runtime.enum]) assert.ok(RESERVED_HARNESS_IDS.includes(id), id);
   const dir = await scratch(t);
   for (const id of RESERVED_HARNESS_IDS) {
     const path = ownModule(dir, id);

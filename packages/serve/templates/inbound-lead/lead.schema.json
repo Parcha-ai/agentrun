@@ -17,9 +17,9 @@
   ],
   "$defs": {
     "source": {
-      "description": "where a fact came from: \"submission\", \"learned:<note file>\", or the http(s) URL of a page fetched or a search result",
+      "description": "where a fact came from: \"submission\", \"learned\" (an owner's correction under # Learned), or the http(s) URL of a page fetched or a search result",
       "type": "string",
-      "pattern": "^(submission|learned:[A-Za-z0-9][A-Za-z0-9._-]*\\.md|https?://\\S+)$"
+      "pattern": "^(submission|learned|https?://\\S+)$"
     },
     "fact": {
       "type": "object",
@@ -294,10 +294,11 @@
                   "learned"
                 ]
               },
-              "note": {
+              "correction": {
                 "type": "string",
-                "description": "the learned note's file, when origin is learned",
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+                "minLength": 1,
+                "maxLength": 300,
+                "description": "the owner's correction under # Learned this criterion comes from, quoted, when origin is learned"
               },
               "evidence": {
                 "type": "string",

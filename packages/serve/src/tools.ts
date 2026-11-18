@@ -769,7 +769,7 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
  *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
  *  tool-names.ts mcpNameOf), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name
  *  does not run either). A
- *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
+ *  learned model node runs without tools (learn/workflow-draft.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
   [...new Set(granted.filter((name) => (options.mcp === true && mcpNameOf(name) !== undefined) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];

@@ -18,8 +18,8 @@ const aborted = (options: unknown): boolean => object(options).signal instanceof
 const signalOf = (options: unknown): AbortSignal | undefined => object(options).signal instanceof AbortSignal ? object(options).signal as AbortSignal : undefined;
 
 export interface CodexAgentLearningConfig extends BackendLearningConfig {
-  /** The standing policy for this backend agent, including relevant project instructions. It is evidence for the
-   * independent grader, not a replacement for Codex's own instructions or configuration. */
+  /** The standing policy for this backend agent, including relevant project instructions. It is recorded with
+   * each run, not a replacement for Codex's own instructions or configuration. */
   instructions: string;
 }
 
@@ -79,7 +79,7 @@ function pairedEvidence(event: SdkLearningEvent, started: Set<string>): SdkLearn
 
 /** Add AgentRun learning to fresh Codex SDK threads without replacing their tools, credentials or execution.
  * Each wrapped thread admits one task; use startThread() again for the next task and its current learning revision.
- * Reflection and grading run on the AgentRun server, never as a hidden turn in the caller's Codex conversation. */
+ * Learning runs on the AgentRun server, never as a hidden turn in the caller's Codex conversation. */
 export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: CodexAgentLearningConfig): T & { flushLearning(): Promise<void> } {
   if (typeof config.instructions !== 'string') throw new TypeError('Codex learning requires an explicit instructions snapshot.');
   const client = new BackendLearningClient(config);
@@ -95,7 +95,7 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
       const session = await client.begin({ runtime: 'codex-sdk', input: originalText(input), instructions: config.instructions, ...(model ? { model } : {}) }, signal);
       session.followAbort(signal);
       if (session.learningEnabled && Array.isArray(input) && input.some(part => part.type === 'local_image')) {
-        session.markEvidenceIncomplete('Image inputs remain in the native Codex SDK and are not available to the learning grader. This run will not produce new learning.');
+        session.markEvidenceIncomplete('Image inputs remain in the native Codex SDK and are not available to the compile turn. This run will not produce new learning.');
       }
       return session;
     };

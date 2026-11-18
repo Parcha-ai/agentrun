@@ -533,7 +533,7 @@ def worker(state, bridge_path=None, once=False):
         target = targets.get(command['target_id'])
         if target is None:
             raise ValueError('The destination requested a source target that was not approved locally.')
-        if command['type'] not in {'prepare', 'open', 'send', 'close', 'grade'}:
+        if command['type'] not in {'prepare', 'open', 'send', 'close'}:
             raise ValueError('Unsupported source operation.')
         message = {'id': command['command_id'], 'type': command['type'], 'target': target, 'payload': command.get('payload', {})}
         if command.get('session_key'):
@@ -632,8 +632,7 @@ def worker(state, bridge_path=None, once=False):
                 break
             for command_id, record in active.items():
                 command = record['command']
-                session = f'grade-{command_id}' if command['type'] == 'grade' else command.get('session_key')
-                if session == event.get('session_key') and command['type'] in ('send', 'grade'):
+                if command.get('session_key') == event.get('session_key') and command['type'] == 'send':
                     if record.get('events_rejected'):
                         break
                     native_event = event['event']

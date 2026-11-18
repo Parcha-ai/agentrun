@@ -1,15 +1,15 @@
 # Learn workflows without replacing your backend SDK
 
-The [Claude Agent SDK](claude-sdk-learning.md) and [Codex SDK](codex-sdk-learning.md) wrappers can supply more than notes and skills. With an explicit MCP bridge, an accepted workflow can call your backend's existing tool callbacks on a later request. Your application still starts the job, owns its native SDK client, and supplies its tool permissions and credentials.
+The [Claude Agent SDK](claude-sdk-learning.md) and [Codex SDK](codex-sdk-learning.md) wrappers can supply more than the owner's corrections. With an explicit MCP bridge, an accepted workflow can call your backend's existing tool callbacks on a later request. Your application still starts the job, owns its native SDK client, and supplies its tool permissions and credentials.
 
-This requires the client and server from the same reviewed development checkout. Build the DSL and client packages, and install their checkout versions alongside `@modelcontextprotocol/sdk` in your backend. Your backend imports the DSL interpreter and supplies its inspection, execution and schema-resolution functions through the bridge's required `engine` option. The client stays an API surface and imports no workflow engine. The MCP entry point uses the MCP SDK; the notes-and-skills wrappers do not require a bridge.
+This requires the client and server from the same reviewed development checkout. Build the DSL and client packages, and install their checkout versions alongside `@modelcontextprotocol/sdk` in your backend. Your backend imports the DSL interpreter and supplies its inspection, execution and schema-resolution functions through the bridge's required `engine` option. The client stays an API surface and imports no workflow engine. The MCP entry point uses the MCP SDK; the basic wrappers do not require a bridge.
 
 ## How MCP fits in
 
 Think of a learned workflow as a saved recipe that can use your agent's existing tools. MCP gives the native agent one extra tool, `learned_workflow`, to follow an accepted recipe:
 
 1. Your backend starts a normal Claude or Codex task. The wrapper records the run through the AgentRun API.
-2. After the task, AgentRun uses the recorded evidence to propose, check and grade learning. A reusable skill may later become an accepted workflow.
+2. Once the agent has its `learning.compile_after` completed runs, the server's compile turn drafts a workflow from them, and the draft is checked once on those runs' inputs before it serves.
 3. On a fresh task, the wrapper fetches the accepted learning revision. The native agent can choose its `learned_workflow` MCP tool when a saved workflow fits the request.
 4. The bridge in your backend executes that workflow with fresh inputs, calling the original functions you registered. It checks your tool policy and returns their result to the native agent.
 
@@ -21,7 +21,7 @@ For example, a release reporter can learn “read the release status, then forma
 | --- | --- |
 | Existing Claude or Codex agent | Keep its current native login or provider credentials in your backend. |
 | AgentRun wrapper | An AgentRun API key (`AGENTRUN_API_KEY`) for recording runs and fetching accepted learning. |
-| Server reflection and grading | A working model route configured on the AgentRun server, with that provider's credentials, such as an OpenRouter key. These model calls incur usage separately from the native task. |
+| Server compile turn | A working model route configured on the AgentRun server, with that provider's credentials, such as an OpenRouter key. These model calls incur usage separately from the native task. |
 | Original tool callbacks | Keep any credentials those tools already need in your backend. |
 | Optional workflow model or judgment nodes | Supply an explicit `runNode` or `runJudge` adapter and its provider credentials. The bridge supplies neither adapter automatically. |
 
@@ -147,13 +147,13 @@ Here `existingCodexOptions`, `existingMcpServers`, and `existingThreadOptions` a
 
 ## What can become a workflow
 
-Ordinary checked learning first accepts reusable skills. After a skill has appeared in enough earlier runs, reflection may propose an executable workflow. The server checks the proposal against the registered tool capabilities, permissions and cost information and independently grades it. Pending proposals stay pending until their owner reviews them. A later fresh run receives only the accepted workflow revision.
+Once the agent has its `learning.compile_after` completed runs (20 by default), the compile turn reads them and drafts one executable workflow for the job. The server checks the draft against the registered tool capabilities, permissions and cost information, then replays it once on those runs' inputs: it serves only when it answers enough of them alone and agrees with the agent's own answers. Pending drafts stay pending until their owner reviews them. A later fresh run receives only the accepted workflow revision.
 
-The initial bridge supports workflows over the explicitly registered callbacks. It supplies no default shell, arbitrary code executor, or model provider. Workflows needing agent or judge nodes require explicit backend `runNode` or `runJudge` adapters. Reflection cannot assume those adapters exist when you have not supplied them. Your backend remains responsible for the adapter's model credentials, policies and cost.
+The initial bridge supports workflows over the explicitly registered callbacks. It supplies no default shell, arbitrary code executor, or model provider. Workflows needing agent or judge nodes require explicit backend `runNode` or `runJudge` adapters. The compile turn cannot assume those adapters exist when you have not supplied them. Your backend remains responsible for the adapter's model credentials, policies and cost.
 
-When self-improving is Off, a fresh run receives no learned workflows. The bridge also revokes that run's capability when the native session finishes; it is not a permanent workflow endpoint for that agent. Notes/skills and workflow learning remain scoped to the stable AgentRun id and the accepted learning revision.
+When self-improving is Off, a fresh run receives no learned workflows. The bridge also revokes that run's capability when the native session finishes; it is not a permanent workflow endpoint for that agent. Corrections and workflows remain scoped to the stable AgentRun id and the accepted learning revision.
 
-An existing agent registered by the basic wrapper may be set to **Notes and skills only**. Choose full learning in its agent settings (or set `learning: true` through the owner API) to enable workflow promotion. `learning` also takes an object, on with the loop's numbers set: `{ compile_after: 5, agree_min: 0.9, alone_min: 0.7 }` compiles the job after 5 completed runs and promotes the draft only when its one check, a replay on those runs' inputs, answers at least 70% of them alone and at least 90% of those as the agent did. Once it serves, 1 in `audit_every` (10) of its runs, then 1 in `audit_every_later` (20) after `audit_later_after` (50), is audited: the agent answers the same input with learning off, billed as learning, and `hold_disagree` (3) disagreements in the last `hold_window` (10) audits hold the workflow for one recompile; a second hold within `stop_window` (100) served runs stops it. GET `/v2/agents/{id}/learning/audits` lists the rows. Adding the bridge or passing `learning: true` to the wrapper never overrides an existing owner's learning setting.
+An existing agent registered by the basic wrapper with learning Off compiles nothing. Turn learning on in its agent settings (or set `learning: true` through the owner API) to enable workflow promotion. `learning` also takes an object, on with the loop's numbers set: `{ compile_after: 5, agree_min: 0.9, alone_min: 0.7 }` compiles the job after 5 completed runs and promotes the draft only when its one check, a replay on those runs' inputs, answers at least 70% of them alone and at least 90% of those as the agent did. Once it serves, 1 in `audit_every` (10) of its runs, then 1 in `audit_every_later` (20) after `audit_later_after` (50), is audited: the agent answers the same input with learning off, billed as learning, and `hold_disagree` (3) disagreements in the last `hold_window` (10) audits hold the workflow for one recompile; a second hold within `stop_window` (100) served runs stops it. GET `/v2/agents/{id}/learning/audits` lists the rows. Adding the bridge or passing `learning: true` to the wrapper never overrides an existing owner's learning setting.
 
 ## Prove learning and reuse
 
@@ -161,4 +161,4 @@ The [workflow release-reporter examples](../../examples/sdk-learning/README.md#l
 
 The test teaches the sequence, waits through the agent's compile cadence (`learning: { compile_after: 5 }`, set when the demo registers it; an agent compiles after 20 completed runs by default), and requires an active workflow generated by a real run. It then changes the requested service and version in a fresh session. Success requires the accepted revision, a completed MCP workflow invocation, both original callbacks running inside that workflow, and an answer matching their fresh result. A correct-looking answer produced by direct tool fallback fails that proof. A separate learning-Off agent receives the same fresh request for comparison.
 
-The examples make paid native-model and server reflection/grading calls only with `--live`. They never write a workflow file themselves, bypass owner review, lower the promotion threshold, or blindly repeat a failed paid call. Inspect the generated workflow and run evidence in Learning Dojo. This is an integration smoke test, not a claim that every repeated task should or will become a workflow.
+The examples make paid native-model and server compile-turn calls only with `--live`. They never write a workflow file themselves, bypass owner review, lower the promotion threshold, or blindly repeat a failed paid call. Inspect the generated workflow and run evidence in Learning Dojo. This is an integration smoke test, not a claim that every repeated task should or will become a workflow.

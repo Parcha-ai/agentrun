@@ -1,49 +1,50 @@
-// A run on a CLI harness reads `reflecting` while its end-of-run turn runs, as a pi run does (#2349): the CLI record writes
-// the turn's prompt as the turn is asked, not only once it is answered, so the run's view and Timeline say it is looking
-// back from the moment it starts, between the job's answer and what the turn proposes.
+// A run on a CLI harness reads `reflecting` while its end-of-run turn (the compile turn) runs, as a pi run does (#2349):
+// the CLI record writes the turn's prompt as the turn is asked, not only once it is answered, so the run's view and
+// Timeline say it is keeping what it learned from the moment the turn starts, between the job's answer and its commit.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { answerWith, note } from "./fixtures/faux-learn.mjs";
+import { askedForCompile } from "../dist/learn/compile.js";
 import { ended, learner, made, reflectRows, sleep, started } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const MODEL = "claude-haiku-5-5";
-const UNITS = note("Check units", "Convert every amount to one unit before comparing", "Amounts in one answer came in cents and in dollars.\n");
-/** The end-of-run turn's message (reflectPrompt). */
-const ASKED = /Answer with one block per note to keep\./;
 const textOf = (m) => (typeof m.content === "string" ? m.content : m.content.filter((b) => b.type === "text").map((b) => b.text).join("\n"));
+/** A compile answer whose draft the checks and the dry run pass. */
+const COMPILED = `\`\`\`\`workflow answer\n---\ndescription: Answers a question; use when asked\nexample: {"content":"What is six times seven?"}\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" },
+})}\n\`\`\`\``;
 
-test("on claude-agent, a run reads reflecting while its end-of-run turn runs: after the job's answer, before the turn's proposal", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("on claude-agent, a run reads reflecting while its compile turn runs: after the job's answer, before its commit", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   let turnStarted;
   const asked = new Promise((resolve) => (turnStarted = resolve));
   let release;
   const held = new Promise((resolve) => (release = resolve));
   const fake = await fakeAnthropic({
     reply: async (r) => {
-      if (r.text.includes("Answer with one JSON object and nothing else")) {
-        return { text: JSON.stringify({ merge: true, reason: "General and new.", items: [{ file: "check-units.md", decision: "keep", general: true, why: "It holds as a general rule." }] }) };
-      }
-      // The end-of-run turn: held open until the test has read the run while it runs.
-      if (r.messages.some((m) => m.role === "user" && ASKED.test(textOf(m)))) {
+      // The compile turn: held open until the test has read the run while it runs.
+      if (r.messages.some((m) => m.role === "user" && askedForCompile(textOf(m)))) {
         turnStarted();
         await held;
-        return { text: answerWith([["check-units.md", UNITS]]) };
+        return { text: COMPILED };
       }
       return { text: "Claude answered." };
     },
   });
   t.after(() => fake.close());
   t.after(() => release());
-  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
+  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_STRONG"]);
   const { api } = await serve(t, { learning: "on", faux: undefined });
-  await made(api, learner("cli-reflect", { harness: "claude-agent", model: `anthropic/${MODEL}`, instructions: "Answer the question." }));
+  await made(api, learner("cli-reflect", { harness: "claude-agent", model: `anthropic/${MODEL}`, learning: { compile_after: 1 } }));
   const runId = await started(api, "cli-reflect", "Answer.");
 
   await asked;
   // The turn runs (its model request is held): the run reads reflecting, its answer is already given, and its Timeline
-  // shows the turn's "Looking back" row.
+  // shows the turn's prompt, labelled the turn's.
   let view;
   for (let i = 0; i < 200; i++) {
     view = (await api("GET", `/runs/${runId}`)).body;
@@ -53,7 +54,7 @@ test("on claude-agent, a run reads reflecting while its end-of-run turn runs: af
   assert.equal(view.learning?.state, "reflecting", JSON.stringify(view.learning));
   const rows = (await api("GET", `/runs/${runId}/timeline`)).body.rows;
   assert.ok(rows.some((row) => row.kind === "final_answer"), "the job has answered");
-  assert.ok(reflectRows(rows).some((row) => /Looking back/.test(row.summary ?? row.text ?? "")), JSON.stringify(rows.map((row) => [row.kind, row.agent_label, row.summary])));
+  assert.ok(reflectRows(rows).some((row) => row.kind === "user_message"), JSON.stringify(rows.map((row) => [row.kind, row.agent_label, row.summary])));
 
   release();
   const { view: done } = await ended(api, runId);
@@ -63,8 +64,8 @@ test("on claude-agent, a run reads reflecting while its end-of-run turn runs: af
 
 // The live wake (#2365 review): an already-open Timeline stream (server.ts timeline, its watchRun) re-reads its page only
 // when a commit gives it events. A CLI run's end-of-run turn starts with one commit that holds only the turn's prompt (the
-// CLI record's answering): that commit gives the turn's message, labelled the turn's, so the open stream shows "Looking
-// back" at once, never on its 15-second beat.
+// CLI record's answering): that commit gives the turn's message, labelled the turn's, so the open stream shows it at
+// once, never on its 15-second beat.
 test("a stream already open when a CLI run's end-of-run turn is asked is woken by the turn's prompt, labelled the turn's", async (t) => {
   const { KINDS } = await import("../dist/runner/journal-kinds.js");
   const { REFLECT_LABEL } = await import("../dist/runner/end-of-run.js");
@@ -91,8 +92,8 @@ test("a stream already open when a CLI run's end-of-run turn is asked is woken b
   await sleep(100);
   const before = woken.length;
   // The turn is asked: the CLI record writes its prompt in a commit of its own (adapter-loop.ts answering).
-  const prompt = "Answer with one block per note to keep.";
-  commit([entry(KINDS.endOfRunTurn, { role: "person", text: prompt, requestId: "learn-reflect-run-1" }, [{ role: "user", content: prompt, timestamp: 1 }])]);
+  const prompt = "One more turn: write this agent's job as a learned workflow.";
+  commit([entry(KINDS.endOfRunTurn, { role: "person", text: prompt, requestId: "learn-reflect-run-1:compile-1" }, [{ role: "user", content: prompt, timestamp: 1 }])]);
   for (let i = 0; i < 100 && woken.length === before; i++) await sleep(20);
   const turn = woken.slice(before);
   assert.ok(turn.length > 0, "the turn's prompt wakes the open stream");

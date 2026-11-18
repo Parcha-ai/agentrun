@@ -3,7 +3,7 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's notes; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output's head through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
@@ -16,8 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock } from "./answer-json.js";
-import { checkNote } from "./learn/index.js";
-import { NOTE_FILE } from "./learn/notes.js";
+import { correctionsProblems } from "./learn/index.js";
 import { linkCheck } from "./link-check.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
@@ -132,8 +131,8 @@ export type EvalCase = {
   /** How the case's runs' monid endpoints answer in place of monid (runner/monid-run.ts): `unavailable`, as monid
    *  unreachable does, never sent. The eval's own server's runner alone binds it. Absent: monid. */
   monid?: MonidFake;
-  /** The notes a run's agent starts with (not MEMORY.md, which the server builds from them). */
-  learning: { file: string; text: string }[];
+  /** The owner's corrections a run's agent starts with (its corrections.md, whole). Absent: none. */
+  learning?: string;
   graders: Grader[];
   /** The case's clock (`now:`, an RFC 3339 date-time with its offset, as written): each run's current date and time,
    *  which the eval's own runner alone sets, and its llm graders are told. Absent: the real clock. */
@@ -307,7 +306,7 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
 
 /** The package in `dir`, checked as the server checks it, and its eval cases (all, or those `names` lists), each read and
  *  checked whole: the prompt, case.yaml against the package (an apply's parameters and grants), each fake MCP server's
- *  fixture, each learned note as the learning API checks one, and each grader's fields. Nothing runs. PackageError or
+ *  fixture, its corrections as the learning API checks them, and each grader's fields. Nothing runs. PackageError or
  *  CaseError with every problem found. */
 export function readCases(dir: string, names?: readonly string[]): { pkg: Package; cases: EvalCase[] } {
   // The cases are read below, each fixture checked there in the case's own words (a CaseError), not by the package read.
@@ -459,24 +458,15 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a feed case's run is started by the package's trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
-    const learning: EvalCase["learning"] = [];
+    let learning: string | undefined;
     if (c.learning !== undefined) {
-      const folder = inside(root, c.learning, "dir");
-      if (!folder) bad(`${at}/case.yaml: learning names ${JSON.stringify(c.learning)}, not a folder in the case`);
+      const file = inside(root, c.learning, "file");
+      if (!file) bad(`${at}/case.yaml: learning names ${JSON.stringify(c.learning)}, not a file in the case`);
       else {
-        for (const entry of readdirSync(join(root, folder), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-          if (entry.name === "MEMORY.md") continue;
-          const path = `${at}/${folder}/${entry.name}`;
-          if (!entry.isFile() || !NOTE_FILE.test(entry.name)) {
-            bad(`${path}: a learning folder holds MEMORY.md and notes (<name>.md) only`);
-            continue;
-          }
-          const bytes = readFileSync(join(root, folder, entry.name));
-          const checked = checkNote(entry.name, bytes);
-          if (!checked.note) for (const problem of checked.problems) bad(`${path}: ${problem.detail}`);
-          learning.push({ file: entry.name, text: bytes.toString("utf8") });
-        }
-        if (!learning.length) bad(`${at}/${folder}: holds no note`);
+        // The owner's corrections as the learning API takes them (PUT .../learning/corrections): one file, within its cap.
+        learning = readFileSync(join(root, file), "utf8");
+        for (const problem of correctionsProblems(learning)) bad(`${at}/${file}: ${problem.detail}`);
+        if (!learning.trim()) bad(`${at}/${file}: holds no correction`);
       }
     }
     const graders: Grader[] = [];
@@ -493,7 +483,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), learning, graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -1078,7 +1068,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
       const work = await workOf(options.data).catch((error: unknown) => (removeTree(scratch!), Promise.reject(error)));
       if (work) {
         removeTree(scratch!);
-        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs and learning batches end (or stop them), then run the eval; or run it without --on-data`);
+        throw new Error(`the server on ${options.data} has work of its own: ${work}, which the eval's server and runner would take up: disable its triggers and let its runs end (or stop them), then run the eval; or run it without --on-data`);
       }
     }
     const { startServe } = await import("./server.js");
@@ -1282,15 +1272,11 @@ async function workOf(data: string): Promise<string | undefined> {
   const store = await openStore({ dataDir: data, role: "server" });
   try {
     const triggers = (await store.triggers.all()).filter((one) => one.enabled && !one.disabled).length;
-    // The runs not ended a list shows, and every run a runner would claim: the list leaves out built-in learning runs
-    // (a kept learning's), which the eval's runner claims as any other.
+    // The runs not ended a list shows, and every run a runner would claim.
     const runs = new Set<string>();
     for (const state of ["queued", "running", "parked"] as const) for (const run of await store.runs.list({ state })) runs.add(run.id);
     for (const id of await store.runs.claimable()) runs.add(id);
-    // A learning batch still running, which the eval's server would resume at its start (learning-batch.ts resume), its
-    // next rows' runs with it.
-    const batches = (await store.settings.all()).filter(({ key, value }) => /^learning_batch\/lb_[0-9a-f]{16}$/.test(key) && isObject(value) && value.status === "running").length;
-    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs.size ? `${runs.size} run${runs.size === 1 ? "" : "s"} not ended` : "", batches ? `${batches} learning batch${batches === 1 ? "" : "es"} running` : ""].filter(Boolean);
+    const said = [triggers ? `${triggers} enabled trigger${triggers === 1 ? "" : "s"}` : "", runs.size ? `${runs.size} run${runs.size === 1 ? "" : "s"} not ended` : ""].filter(Boolean);
     return said.length ? said.join(", ") : undefined;
   } finally {
     await store.close();
@@ -1380,7 +1366,7 @@ async function triggerRun(ctx: Ctx, name: string, agentId: string, triggerId: st
   }
 }
 
-/** One run of a case: a fresh agent (so one run's learning never reaches the next), its notes, the run, its grades. An
+/** One run of a case: a fresh agent (so one run's learning never reaches the next), its corrections, the run, its grades. An
  *  email case's run (`mail`) is its trigger's (triggerRun). */
 async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[], mail?: MailOf, feeds?: CaseFeeds): Promise<RunResult> {
   const { api, pkg, options, made } = ctx;
@@ -1418,8 +1404,10 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   await sameAsLocal(ctx, one, agent, used);
   stopped();
-  for (const note of one.learning) {
-    expectOk(`seeding the note ${note.file}`, await api("PUT", `/agents/${encodeURIComponent(agentId)}/learning/files/${encodeURIComponent(note.file)}`, note.text, { "if-none-match": "*" }));
+  if (one.learning !== undefined) {
+    const corrections = `/agents/${encodeURIComponent(agentId)}/learning/corrections`;
+    const read = expectOk("reading the agent's corrections", await api("GET", corrections));
+    expectOk("seeding the agent's corrections", await api("PUT", corrections, { text: one.learning }, { "if-match": String(read.etag) }));
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.

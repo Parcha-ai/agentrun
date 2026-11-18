@@ -90,9 +90,8 @@ export const KINDS = {
    *  read it decided, written on the root before the end-of-run step asks its first turn. A claim that finds that turn
    *  open ends the run on the newest one, never working the job's end out again. Neither a call nor a message. */
   jobEnd: "agentrun.end-of-run.job",
-  /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
-   *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
-   *  what the run was given. Neither a call nor a message. */
+  /** What a learning run's claim laid of its seed: the learned workflows its learned_workflow tool runs (`workflows`, by
+   *  name). Written once per claim, on the root; the newest is what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
   /** The claim made the run a computer of its own (`computer`: its kind, desktop, sandbox or phone; computer-for-claim.ts
    *  ClaimComputer.made): written on the root at the claim's first pass. A later claim's computer is a new one, and this

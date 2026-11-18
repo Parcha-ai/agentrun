@@ -1,0 +1,1 @@
+- We don't sell to agencies: marketing, design, development or consulting shops that build products for clients are a disqualifier, even when their clients are fintechs and even when they want to embed or resell our checks.

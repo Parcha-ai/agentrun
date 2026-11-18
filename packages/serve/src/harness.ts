@@ -14,8 +14,7 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 /** What a harness id is, as the API says it (openapi.ts): a harness module's id that is not one refuses the start. */
 export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** The names serve's own runs carry where a harness id goes, so a harness module may not take one (its start is refused):
- *  `learning`, a learning run's launch harness, which the runner's loop choice keys on (harness-loops.ts,
- *  learning-factory.ts LEARNING_HARNESS) and the stores' learning queries match; `sdk`, an SDK run's launch harness
+ *  `learning`, the launch harness the stores' learning queries match; `sdk`, an SDK run's launch harness
  *  (sdk/runs.ts); and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */

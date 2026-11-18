@@ -112,10 +112,10 @@ test("a path argument is encoded whole, a file path keeps its slashes, and one t
     assert.ok(error instanceof AgentRunUsage, `${call}: ${error}`);
   }
   assert.equal(server.requests.length, 0, "nothing was sent");
-  await client.learning.read("a", "skills/find-policies/SKILL.md");
+  await client.learning.read("a", "workflows/find-policies/README.md");
   await client.home.read("a", "notes/a b.md");
   await client.runs.get("a b/c?d#e");
-  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/"), "/v2/runs/a%20b%2Fc%3Fd%23e"]);
+  assert.deepEqual(server.requests.map((r) => r.url), ["/v2/agents/a/learning/files/workflows%2Ffind-policies%2FREADME.md", ["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"].join("/"), "/v2/runs/a%20b%2Fc%3Fd%23e"]);
 });
 
 test("a secret body's values are cut from the answer as JSON values, its structure and public fields kept, and a refusal keeps only its code", async (t) => {

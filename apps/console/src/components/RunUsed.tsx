@@ -1,4 +1,4 @@
-import { BookOpen, Workflow } from "lucide-react";
+import { Workflow } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Chip } from "@/components/ui/chip";
 import { backoffMs } from "@/lib/connection";
@@ -10,8 +10,8 @@ const newer = (read: RunGraded | null, sent: RunGraded | null): RunGraded | null
   !sent ? read : !read || Date.parse(sent.graded_at) > Date.parse(read.graded_at) ? sent : read;
 
 /** The run's learning (GET /v2/runs/{id}/learning), read for a run that learns, once and again when it ends or its end
- *  moves (a skill read late counts; a grade's feedback round ends it again, and says it ended here): what its job did
- *  with the learned skills and workflows its agent gave it (`used`). `read` is null while unread, when the read failed,
+ *  moves (a grade's feedback round ends it again, and says it ended here): what its job did with the learned workflows
+ *  its agent gave it (`used`). `read` is null while unread, when the read failed,
  *  or for a run with nothing to read it from. `grade` is the run's grade with the round it opened: the newer of the
  *  read's (`graded`) and the one this page sent, taken by `graded` from the PUT's answer (PUT /v2/runs/{id}/grade,
  *  without `expected`, its round running). It is kept apart from the read, so a read still pending or failed never loses
@@ -56,11 +56,10 @@ const READ_RETRIES = 8;
 
 const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);
 
-/** "What it used of what it learned": each learned skill the run was given, and whether its job read it; each learned
- *  workflow it called, how many times and how many of those failed. Nothing when it was given no skill and called no
- *  workflow. The agent's Learning tab is a click away. */
+/** "What it used of what it learned": each learned workflow it called, how many times and how many of those failed.
+ *  Nothing when it called no workflow. The agent's Learning tab is a click away. */
 export function RunUsed({ used, agentId }: { used: LearnedUse | null; agentId: string }) {
-  if (!used || (!used.skills.length && !used.workflows.length)) return null;
+  if (!used?.workflows.length) return null;
   return (
     <section className="border" aria-label="What it used of what it learned">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-3">
@@ -69,14 +68,6 @@ export function RunUsed({ used, agentId }: { used: LearnedUse | null; agentId: s
         <a href={learningHash(agentId)} className="font-mono text-label text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">Open the Learning tab</a>
       </div>
       <ul className="divide-y">
-        {used.skills.map((s) => (
-          <li key={`skill:${s.name}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
-            <BookOpen className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="caps w-16 text-micro text-muted-foreground">Skill</span>
-            <span className="min-w-0 flex-1 break-all font-mono text-body">{s.name}</span>
-            {s.read ? <Chip tone="success">Read</Chip> : <Chip tone="muted">Given, not read</Chip>}
-          </li>
-        ))}
         {used.workflows.map((w) => (
           <li key={`workflow:${w.name}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
             <Workflow className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />

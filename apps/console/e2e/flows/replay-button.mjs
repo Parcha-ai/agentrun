@@ -18,7 +18,7 @@ const REVISIONS = [
   [{ run: "run_aaaaaaaa01" }, [SORT]],
   [{ run: "run_aaaaaaaa02" }, [SORT, step("check total", "Check the total against the lines.")]],
   [{ user: true }, [step("classify", "Sort the invoice into a ledger account by vendor."), step("check total", "Check the total against the lines.")]],
-].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the grader or a person said it.`, text: JSON.stringify(flow(steps)), digest: DIGESTS[i] }));
+].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the run or a person wrote it.`, text: JSON.stringify(flow(steps)), digest: DIGESTS[i] }));
 const REPLAY = { replay: "rp_e2e0000001", workflow: "invoice-sorter", digest: DIGESTS[2], inputs: 6 };
 const replay = (over) => ({ ...REPLAY, status: "running", outcomes: { answered: 0, handed_back: 0, failed: 0, skipped_write: 0 }, score: { n: 0, agree: 0, agent_acc: 0, wf_acc: 0, delta: 0, handed_back: 0 }, cost_usd: null, ...over });
 /** A check's record as the server keeps it (a promotion record's `check`): the bar it ran at and its numbers. */

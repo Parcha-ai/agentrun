@@ -132,6 +132,22 @@ test("a run of a workflow revision (kind workflow) lists no learned workflow, th
   assert.equal(learnedOf((await piSpec(t, { kind: "workflow" })).spec), undefined);
 });
 
+test("a seed read whose secrets read fails starts the run with no learned workflow and says so: it never stops the run", async () => {
+  const { layLearningSeed } = await import("../dist/runner/learning-seed.js");
+  const log = [];
+  let ended = 0;
+  const laid = await layLearningSeed({
+    seed: null,
+    folder: () => ({ workspace: {}, end: async () => void ended++ }),
+    shown: async () => { throw new Error("the secrets read failed"); },
+    log: (line) => log.push(line),
+  });
+  assert.deepEqual(laid, { seed: { sha: null, corrections: "", workflows: [] }, workflows: [] });
+  assert.equal(ended, 1, "the folder is ended");
+  assert.equal(log.length, 1, JSON.stringify(log));
+  assert.match(log[0], /no learned workflow: the secrets read failed/);
+});
+
 test("a run with no learning start lists no learned workflow, on pi and on a CLI harness", async (t) => {
   assert.equal(learnedOf((await piSpec(t, { seed: "none" })).spec), undefined);
   assert.equal(learnedOf((await cliSpec(t, "codex", { seed: "none" })).spec), undefined);

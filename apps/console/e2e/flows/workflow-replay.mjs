@@ -18,7 +18,7 @@ const REVISIONS = [
   [{ run: "run_aaaaaaaa02" }, [SORT, step("check total", "Check the total against the lines.")]],
   [{ run: "run_aaaaaaaa03" }, [step("classify", "Sort the invoice into a ledger account by vendor."), step("check total", "Check the total against the lines.")]],
   [{ user: true }, [step("classify", "Sort the invoice into a ledger account by vendor."), step("check total", "Check the total against the lines."), step("file it", "Name the ledger account.")]],
-].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the grader or a person said it.`, text: JSON.stringify(flow(steps)), digest: String(i + 1).repeat(16) }));
+].map(([by, steps], i) => ({ commit: String(i + 1).repeat(40), at: new Date(Date.UTC(2026, 10, 3 + i, 14, 10)).toISOString(), by, reason: `Revision ${i + 1}, as the run or a person wrote it.`, text: JSON.stringify(flow(steps)), digest: String(i + 1).repeat(16) }));
 
 async function playToTheNewest(card, page, at) {
   await card.getByRole("button", { name: "Play the replay" }).focus();

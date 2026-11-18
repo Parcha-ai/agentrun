@@ -26,10 +26,10 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 
-const LEARNS = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } };
+const LEARNS = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: { seed: "a".repeat(40), section: "" } };
 const PLAIN = { input: { content: "Go." }, title: "t", place: { mode: "runner" } };
 const dropped = { state: "dropped", reason: "empty", detail: "nothing to keep" };
-const proposed = { state: "proposed", proposal: { notes: [] }, detail: "proposed" };
+const merged = { state: "merged", reason: null, merged: "b".repeat(40), corrections: 1, detail: "Kept your correction." };
 
 async function agentOn(t) {
   const { store } = await storeOn(t);
@@ -37,37 +37,20 @@ async function agentOn(t) {
   return store;
 }
 
-test("a follow-up's end beside a kept learning that names no learning run queues none: the series lists the agent's runs alone", async (t) => {
+test("a follow-up's end beside a kept learning: the series lists the agent's runs alone, the run's whole cost once", async (t) => {
   const store = await agentOn(t);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
-  // Its first end keeps a learning with nothing to grade: no learning run.
   const first = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(first, { state: "ended", costUsd: 0.01, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: dropped } }] });
-  // A person's follow-up opens it again; its end keeps another learning and queues the learning run that would grade it.
+  // A person's follow-up opens it again; its end keeps its second round's learning (its correction, merged).
   const steer = await store.runs.reopen("run-1", { kind: "steer", body: { content: "And again." } });
   const second = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(second, { state: "ended", costUsd: 0.03, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: proposed } }, { table: "learning_run", row: { id: "run-1-learning" } }], take: [steer.id] });
+  await store.runs.update(second, { state: "ended", costUsd: 0.03, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: merged, round: 2 } }], take: [steer.id] });
 
-  assert.equal(await store.runs.get("run-1-learning"), undefined, "no learning run that no kept learning names");
   assert.deepEqual((await store.runs.list({ agentId: "agent-1" })).map((run) => run.id), ["run-1"]);
   const cost = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(cost.runs.map((run) => [run.run_id, run.path, run.cost_usd, run.total_usd]), [["run-1", "agent", 0.03, 0.03]], "the run's whole cost, its follow-up's included");
   assert.equal(cost.total_runs, 1);
-});
-
-test("a learning run its kept learning names is no run of the series: its spend is that run's learning_usd, all-in", async (t) => {
-  const store = await agentOn(t);
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
-  const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(source, { state: "ended", costUsd: 0.05, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: proposed } }, { table: "learning_run", row: { id: "run-1-learning" } }] });
-  assert.equal((await store.runs.get("run-1-learning"))?.state, "queued", "queued with the kept learning that names it");
-  assert.equal((await store.learning.proposal("run-1"))?.learningRunId, "run-1-learning");
-  // Graded: the learning run ends at its grade's cost.
-  const grade = await store.claim("run-1-learning", "runner-b", { leaseMs: 60_000 });
-  await store.runs.update(grade, { state: "ended", costUsd: 0.02 });
-  const cost = await agentCostOverStore(store, "agent-1");
-  assert.deepEqual(cost.runs.map((run) => [run.run_id, run.cost_usd, run.learning_usd, run.total_usd]), [["run-1", 0.05, 0.02, 0.07]]);
-  assert.deepEqual([cost.total_runs, cost.unknown_path_runs], [1, 0]);
 });
 
 test("a run that learns whose record names no path is left out and counted, never the agent's at $0; one that does not learn reads agent", async (t) => {

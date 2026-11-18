@@ -34,7 +34,7 @@ import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earend
 import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
-import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
+import { decisionsAsked, deniedDecisionWords } from "./learn/workflow-draft.js";
 import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
@@ -550,7 +550,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
 const nestedKey = (label: string, executionPath: string | undefined, item: { index: number } | undefined): string =>
   `${label.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40)}-${createHash("sha256").update(JSON.stringify([label, executionPath ?? "", item?.index ?? null])).digest("hex").slice(0, 16)}`;
 
-/** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
+/** The draft check's decisions for `run` (learn/workflow-draft.ts DraftDecisions): its providers, and the gate's setting of each
  *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed
  *  no decisions (its claim was handed no key: none named, or each denied) has no provider, so a decision node is refused
  *  in the gate's words when its provider is denied, else as one the host does not have; never asked. */

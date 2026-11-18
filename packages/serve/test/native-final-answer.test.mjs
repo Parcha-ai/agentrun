@@ -3,7 +3,6 @@ import {test} from 'node:test';
 import {nativeFixture} from './native-fixtures/setup.mjs';
 import {discoverNative} from '../dist/native/discovery.js';
 import {openNativeSession} from '../dist/native/runtime.js';
-import {parseReflection} from '../dist/learn/reflect.js';
 import {serve,follow,withEnv} from "./support.mjs";
 
 const sessionId='22222222-2222-4222-8222-222222222222';
@@ -42,12 +41,12 @@ for(const runtime of ['claude-code','codex'])test(`${runtime} keeps progress and
  assert.equal((await dispatched(f)).length,1,'duplicate final events never dispatch another task');
 });
 
-test('Codex reflection parses the final note without retaining an earlier completed draft',async t=>{
- const final='```note final.md\nKeep the checked preference.\n```';
+test('a Codex reflection turn answers its final message without retaining an earlier completed draft',async t=>{
+ const final='Keep the checked preference.';
  const {f,env,session}=await opened(t,codexEvents());await session.send('Complete the task.');
- env.NATIVE_TEST_EVENTS=JSON.stringify([{type:'thread.started',thread_id:sessionId},message('draft','```note stale.md\nDiscard this draft.\n```\n'),message('final',final),completed]);
- const reflection=await session.send('Return the checked learning note.',{reflection:true});
- assert.equal(reflection.answer,final);assert.deepEqual(parseReflection(reflection.answer),parseReflection(final));
+ env.NATIVE_TEST_EVENTS=JSON.stringify([{type:'thread.started',thread_id:sessionId},message('draft','Discard this draft.'),message('final',final),completed]);
+ const reflection=await session.send('Answer once more.',{reflection:true});
+ assert.equal(reflection.answer,final);
  const calls=await dispatched(f);assert.equal(calls.length,2);assert.ok(calls[1].args.includes('resume'));assert.ok(calls[1].args.includes(sessionId));
 });
 

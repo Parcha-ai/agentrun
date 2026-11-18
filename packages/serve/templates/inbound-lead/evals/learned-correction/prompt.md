@@ -1,5 +1,5 @@
 ---
-description: 'With the learned note "we don''t sell to agencies", a dev agency serving fintech clients is disqualified and the note is named. Pass: 3 of 3.'
+description: 'With the learned correction "we don''t sell to agencies", a dev agency serving fintech clients is disqualified and the correction is quoted. Pass: 3 of 3.'
 runs: 3
 max_cost_usd: 0.40
 ---

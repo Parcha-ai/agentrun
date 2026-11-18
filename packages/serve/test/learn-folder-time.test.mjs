@@ -8,7 +8,7 @@ import { commitTime, nextSnapshot, parseRead } from "../dist/learn/folder.js";
 /** The script's `read` with one commit at `cI` and no tree or blob, as learning.sh prints it. */
 function readWith(cI) {
   const sha = "a".repeat(40);
-  const log = `\x1e${[sha, cI, "learning: init", "", "", "", ""].join("\x1f")}\0MEMORY.md\0`;
+  const log = `\x1e${[sha, cI, "learning: init", "", "", "", ""].join("\x1f")}\0corrections.md\0`;
   const head = `agentrun-read 1 ${sha} 0 ${Buffer.byteLength(log)} 0\n`;
   return Buffer.from(`${head}${log}`, "utf8");
 }
