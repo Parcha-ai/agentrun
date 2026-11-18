@@ -197,7 +197,8 @@ export class Webhooks {
     options: WebhooksOptions = {},
   ) {
     this.timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
-    if (!(this.timeoutMs > 0 && this.timeoutMs < CLAIM_MS)) throw new RangeError(`a webhook try's bound is between 0 and ${CLAIM_MS} ms (its claim), not ${this.timeoutMs}`);
+    // Whole milliseconds: AbortSignal.timeout takes no other, and would throw at every send, after its claim.
+    if (!(Number.isInteger(this.timeoutMs) && this.timeoutMs > 0 && this.timeoutMs < CLAIM_MS)) throw new RangeError(`a webhook try's bound is whole milliseconds between 0 and ${CLAIM_MS} (its claim), not ${this.timeoutMs}`);
     this.secrets = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, say);
     this.retryMs = options.retryMs ?? RETRY_MS;
     this.storeRetryMs = options.storeRetryMs ?? STORE_RETRY_MS;
