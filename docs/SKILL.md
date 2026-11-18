@@ -96,31 +96,40 @@ On **Check**, run the step 4 scan now, while AgentRun installs; it looks at this
 
 ### This computer
 
-Reuse a server that already runs here (`npx --yes @parcha/agentrun@0.4 server health` answers, `AGENTRUN_BASE_URL`
-is set, or `~/.agentrun` exists) rather than starting another. Never overwrite, migrate or delete a data folder.
-<!-- INSTALLER: the one-command installer replaces the Node check and the npx start below once it ships. -->
-The published launcher needs Node.js 24.22.3 or newer (`node --version`). If Node is missing or older, say so in one
-sentence and offer a hosted service, or, with their OK, `nvm install 24.22.3` when they already use nvm. Then start it:
+First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records
+answers, however it was started:
 
 ```sh
-umask 077
-npx --yes @parcha/agentrun@0.4 --no-open > agentrun.log 2>&1 &
-agentrun_setup_pid=$!
-echo "$agentrun_setup_pid" > agentrun.pid
-for i in $(seq 600); do
-  grep -q 'AgentRun is running at' agentrun.log && break
-  kill -0 "$agentrun_setup_pid" 2>/dev/null || break
-  sleep 1
-done
-grep 'AgentRun is running at' agentrun.log || { echo 'AgentRun did not start; inspect its private log.'; exit 1; }
+base=$(sed -n 's/.*"base_url": *"\([^"]*\)".*/\1/p' ~/.agentrun/.server.json 2>/dev/null | head -n 1)
+[ -n "$base" ] && curl -fsS --max-time 3 "$base/health"
 ```
 
-Its data is in `~/.agentrun`; it takes the first free port from 7340 on loopback. If it did not start, read the log
-yourself and explain the error without quoting a token. Give the person the address and wait until they say it opens
-in their browser; a request from here does not show that. They set the owner password on the first visit.
-To restart a server this step started, `kill "$(cat agentrun.pid)"`, wait until `server health` stops answering, and
-run the same command again. A server you reused was started some other way: ask how it runs (free text, one plain
-message), agree on when to stop it, and restart that same service with its own settings; never stop it unasked.
+Reuse it rather than starting another. When `~/.agentrun/bin/agentrun` is missing, install the command alone, which
+leaves that server running: `curl -fsSL https://agentrun.ai/install | sh -s -- --no-start`. Never overwrite, migrate
+or delete a data folder. Otherwise run the installer:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh
+```
+
+It needs no Node.js and no sudo: it downloads its own Node.js into `~/.agentrun` and changes nothing else on the
+machine. It starts AgentRun as a service of this user (launchd on macOS, systemd on Linux), which keeps running after
+the terminal closes and starts again at login. Where there is no service manager, such as a container, it starts
+AgentRun in the background and says so. Either way it returns once AgentRun answers and prints
+`AgentRun is running at <address>`. Its data is in `~/.agentrun`, and it takes the first free port from 7340 on
+loopback. If it fails, read the lines it printed and explain the error without quoting a token. Give the person the
+address and wait until they say it opens in their browser; a request from here does not show that. They set the owner
+password on the first visit.
+
+The command is now `~/.agentrun/bin/agentrun`. The installer adds `~/.agentrun/bin` to PATH in the shell's startup
+file (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile` on macOS, fish's `conf.d`, else `~/.profile`), which only a new
+terminal reads. Tell the person a new terminal has `agentrun`, and in this session always write the full path.
+
+To restart it, `~/.agentrun/bin/agentrun service restart`; `service stop` and `service start` stop and start it. Where
+it runs in the background, `~/.agentrun/bin/agentrun stop` stops it and the installer line starts it again. A reused
+server the installer did not start (`service status` shows no service, and there is no `~/.agentrun/agentrun.pid`) was
+started some other way: ask how it runs (free text, one plain message), agree on when to stop it, and restart that same
+service with its own settings; never stop it unasked.
 
 ### My always-on machine
 
@@ -132,11 +141,9 @@ pass them on, and never run `sudo` or `tailscale up` for them. It asks for a set
 
 ### A hosted service
 
-<!-- RAILWAY: the template's deploy button replaces the Railway steps once it is published. -->
-- **Railway:** the person deploys it from their own Railway account, in their browser: a new service from the image
-  `ghcr.io/parcha-ai/agentrun-server:beta`, a volume at `/data`, a public domain, and the variables `PORT=7340` and
-  `AGENTRUN_PUBLIC_URL=https://${{RAILWAY_PUBLIC_DOMAIN}}`. Leave `AGENTRUN_SEAL_KEY` unset; the server keeps its own
-  key on the volume. Walk them through it; never create the service yourself with a Railway CLI.
+- **Railway:** they open https://railway.com/deploy/agentrun and deploy it from their own Railway account with one
+  click. The template sets up the image, a volume at `/data` and a public domain, and makes the API token and the seal
+  key for them. Never create the service yourself with a Railway CLI.
 - **Render:** they open https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun and confirm the plan
   Render shows; it reads the repository's `render.yaml` (the published image, 1 CPU / 2 GB, a 10 GB disk).
 - **AgentRun Cloud:** hosted for you, by request. They request access at https://console.agentrun.ai/ and follow its
@@ -145,7 +152,8 @@ pass them on, and never run `sudo` or `tailscale up` for them. It asks for a set
 ### The setup code
 
 A server at a public address asks for a **setup code** before the first password; say where it is with the address.
-On Render, the **Environment** tab holds `AGENTRUN_TOKEN`; they paste its value into **Setup code**. Elsewhere, the
+On Railway, the service's **Variables** tab holds `AGENTRUN_TOKEN`, and on Render its **Environment** tab does; they
+paste its value into **Setup code**. Elsewhere, the
 server's log has `Set up this server: <address>/setup#code=<code>`: read it privately and give them the newest such
 link. Never put the API token (`AGENTRUN_TOKEN`, or `.token` in the data folder) in the chat. The link works **once**
 and **expires 30 minutes** after it was printed. Then they press **Get a new code**, or you send
@@ -205,12 +213,12 @@ can be named in the free-text answer. Nothing found, no job named, or **Start fr
 
 1. **Connect it.** It keeps its own sign-in; connecting and importing need no model key. Ask which project folder the
    job runs in (free text, one plain message; never read it from the job). On this computer run
-   `npx --yes @parcha/agentrun@0.4 native discover --project <folder>`, show what it found, then the same with
+   `~/.agentrun/bin/agentrun native discover --project <folder>`, show what it found, then the same with
    `native connect --project <folder> --runtime claude-code` (or `codex`; `--agent NAME` or `--profile NAME` for the
    setup they pick). It prints the agent's id. When AgentRun runs elsewhere, connect from here with a one-use code from
    the console's **Connect agent → Another machine**, as `<console address>/skills/agentrun-serve/SKILL.md` says; the
    person types the code into the connector's own prompt, never into this chat.
-2. **Import its recent history.** `npx --yes @parcha/agentrun@0.4 import --from claude-code --dry-run` (or `codex`)
+2. **Import its recent history.** `~/.agentrun/bin/agentrun import --from claude-code --dry-run` (or `codex`)
    lists every session of that tool in this home, not only this job's; nothing leaves this computer. With their OK,
    stop the server (step 3), run it without `--dry-run`, and start the server again. Elsewhere, a one-use code with
    **Both** scope imports this project's history. Then give them the console's **Runs** address, where it now shows.
@@ -218,15 +226,15 @@ can be named in the free-text answer. Nothing found, no job named, or **Start fr
    post or write wherever the job does." Recommendation: Run it now because one finished run shows the job working.
    - Run it now (Recommended): you give it a task next; I follow it to the end.
    - Not now: it waits in the console; nothing runs until you press Run.
-4. On **Run it now**, ask for the task (free text, one plain message), then run `npx --yes @parcha/agentrun@0.4 runs
-   start <agent id> --wait --timeout 600 --body '{"input":{"content":"<task>"}}'`. AgentRun caps no connected agent;
+4. On **Run it now**, ask for the task (free text, one plain message), then run `~/.agentrun/bin/agentrun runs start
+   <agent id> --wait --timeout 600 --body '{"input":{"content":"<task>"}}'`. AgentRun caps no connected agent;
    its own plan bounds it. Go to step 8.
 
 ## 6. Connect a model
 
-Reuse what the server has: when `npx --yes @parcha/agentrun@0.4 server capabilities` shows `models.ready` true, go to
-step 7. Otherwise, on this computer, look read-only for a local model: `ollama list` and `ollama show <tag>` (`tools`
-under its capabilities), or LM Studio's `http://localhost:1234/v1/models`. Never start a model download.
+Reuse what the server has: when `~/.agentrun/bin/agentrun server capabilities` shows `models.ready` true, go to step 7.
+Otherwise, on this computer, look read-only for a local model in Ollama: `ollama list` and `ollama show <tag>`
+(`tools` under its capabilities). Never start a model download.
 
 Question tool, header `Model`: "Which model should your first agent use?" Recommendation: Continue with ChatGPT
 because it runs on the plan you already pay for, with no key to find.
@@ -243,23 +251,27 @@ plenty), and paste it into Settings → Model keys, never into this chat; it wor
 and Team plans include monthly API credits: a key from the Claude Console organization linked to the plan, saved
 there, runs the claude-agent harness on them (AgentRun Cloud included). Pro, Free and Enterprise plans don't.
 
-On **Local model**, restart the server (step 3) with `AGENT_MODEL_BASE_URL=http://localhost:11434/v1
-AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0` in front of `npx` (LM Studio:
-`http://localhost:1234/v1` and its model id). Only on this computer. Then confirm `models.ready` in the capabilities.
+On **Local model**, only on this computer, give the service the model; it restarts with it and keeps it:
+
+```sh
+~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0
+```
+
+Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same four in
+front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1
+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. Then confirm `models.ready` in the
+capabilities.
 
 ## 7. Create the first agent and run it
 
 Check `agents list` first. Reuse a `release-notes` agent only when `agents get release-notes` shows this one, with no
 tools; if another agent has that id, use the first free `release-notes-N` (N from 2) in both commands. Otherwise:
 
-<!-- WORKAROUND: drop after the serve first-run fix -->
 ```sh
-npx --yes @parcha/agentrun@0.4 agents create --body '{"definition":{"id":"release-notes","name":"Release notes","harness":"pi","place":{"mode":"runner"},"max_cost_usd":0.25,"instructions":"Write concise release notes from the changes you are given. Group them under Added, Changed and Fixed. Do not invent changes."}}'
+~/.agentrun/bin/agentrun agents create --body '{"definition":{"id":"release-notes","name":"Release notes","harness":"pi","tools":[],"max_cost_usd":0.25,"instructions":"Write concise release notes from the changes you are given. Group them under Added, Changed and Fixed. Do not invent changes."}}'
 ```
 
-The runner place keeps this no-tool agent from waiting minutes for a sandbox box to start. On a local model, add
-`"thinking":"low"` to the definition, or the model's reasoning lands in the answer.
-<!-- WORKAROUND: drop after the serve first-run fix -->
+With `"tools":[]` it needs no shell, so it runs at once with no container to start; keep the empty list.
 
 Question tool, header `First run`: "Start the first run of release-notes now on <model>, capped at $0.25?" (the model
 from `models.default`, and whether it bills their ChatGPT plan, a key or nothing). Recommendation: Run it now because
@@ -268,7 +280,7 @@ it is the fastest way to a finished result, and the cap bounds the spend.
 - Show me the agent: open it in the console; nothing runs until you press Run.
 
 ```sh
-npx --yes @parcha/agentrun@0.4 runs start release-notes --wait --timeout 300 --max-cost-usd 0.25 --body '{"input":{"content":"Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings."}}'
+~/.agentrun/bin/agentrun runs start release-notes --wait --timeout 300 --max-cost-usd 0.25 --body '{"input":{"content":"Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings."}}'
 ```
 
 ## 8. Hand over
@@ -277,9 +289,13 @@ npx --yes @parcha/agentrun@0.4 runs start release-notes --wait --timeout 300 --m
 the answer, the cost and the `console_url` link. A run waiting on its cap (`status` `input_required`, `pending.kind`
 `budget`) is theirs to raise in the console: link it. A failed run: show its `error`, and never retry silently.
 
-A server elsewhere needs `--base-url <address>/v2` and its API token, which the person saves in their own terminal
-with `npx @parcha/agentrun@0.4 login --base-url <address>/v2` (it reads standard input), or they run it in the console.
+For a server elsewhere, the commands above run from here with the command alone installed
+(`curl -fsSL https://agentrun.ai/install | sh -s -- --no-start`), `--base-url <address>/v2` and its API token, which
+the person saves in their own terminal with `~/.agentrun/bin/agentrun login --base-url <address>/v2` (it reads
+standard input). Or they create and run the agent in the console.
 
 Report the console address, the run's link and cost, the data folder, `server.version` and any step still pending.
-Offer **Learning** (off by default; turned on in the agent's **Learning** tab; reflection and grading add model
-usage). Don't turn on learning, import more history or install a persistent service unasked.
+On this computer, say how it runs: as a service that starts again at login (`~/.agentrun/bin/agentrun service
+uninstall` removes it and keeps the data), or in the background until the machine stops. Offer **Learning** (off by
+default; turned on in the agent's **Learning** tab; reflection and grading add model usage). Don't turn on learning or
+import more history unasked.

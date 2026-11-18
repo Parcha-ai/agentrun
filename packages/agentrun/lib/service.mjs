@@ -3,7 +3,7 @@
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
-// (tailscale.mjs). `agentrun stop` stops the AgentRun the installer starts in the
+// (tailscale.mjs); with --env, on a local model (MODEL_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -63,6 +63,10 @@ ${vars}
 /** The command and arguments a plist made by plistText runs. */
 export const plistArgs = (text) => [...(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1] ?? "").matchAll(/<string>([^<]*)<\/string>/g)].map((match) => unxml(match[1]));
 
+/** The variables a plist made by plistText sets. */
+export const plistEnv = (text) =>
+  Object.fromEntries([...(/<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/.exec(text)?.[1] ?? "").matchAll(/<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g)].map((match) => [unxml(match[1]), unxml(match[2])]));
+
 /** One word of a systemd command line or setting: quoted when it needs to be, its specifiers (%) and variables ($)
  *  escaped, as systemd.syntax(7) reads them. */
 export const systemdWord = (word) => {
@@ -102,6 +106,14 @@ WantedBy=default.target
 /** The command and arguments a unit made by unitText runs. */
 export const unitArgs = (text) => systemdWords(/^ExecStart=(.*)$/m.exec(text)?.[1] ?? "");
 
+/** The variables a unit made by unitText sets. */
+export const unitEnv = (text) =>
+  Object.fromEntries([...text.matchAll(/^Environment=(.*)$/gm)].map((match) => systemdWords(match[1])[0] ?? "").map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+
+/** The variables `service install --env` sets: a local model's (AGENT_MODEL_BASE_URL in front of a gateway such as
+ *  Ollama's). Never a key: a unit file is plain text, and keys are sealed in the console. */
+export const MODEL_ENV = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_PRICE"];
+
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /** The service manager of this platform, driven through `exec` (spawnSync's shape). */
@@ -133,6 +145,7 @@ export function managerOf({ platform, home, uid, user, env, exec, fail }) {
       name: `launchd ${target}`,
       text: plistText,
       args: plistArgs,
+      env: plistEnv,
       available: () => (run("launchctl", ["print", domain], { ok: true }).status === 0 ? undefined : `this user has no launchd session (${domain}): a login over ssh has none; log in at the Mac`),
       install() {
         if (loaded()) run("launchctl", ["bootout", target], { ok: true });
@@ -160,6 +173,7 @@ export function managerOf({ platform, home, uid, user, env, exec, fail }) {
       name: `systemd --user ${UNIT}`,
       text: unitText,
       args: unitArgs,
+      env: unitEnv,
       available() {
         const result = run("systemctl", ["--user", "show-environment"], { ok: true });
         if (result.error?.code === "ENOENT") return "this machine has no systemd";
@@ -292,15 +306,29 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
   }
 
   return {
-    async install({ data, port, tailscale }) {
+    async install({ data, port, tailscale, env: sets = [] }) {
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
+      const changes = sets.map((pair) => {
+        const at = pair.indexOf("=");
+        if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
+        const key = pair.slice(0, at);
+        if (!MODEL_ENV.includes(key)) throw fail(2, `--env takes ${MODEL_ENV.slice(0, -1).join(", ")} or ${MODEL_ENV.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
+        if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
+        return [key, pair.slice(at + 1)];
+      });
       need();
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      // --tailscale or --no-tailscale on an installed service changes its sharing only: its data folder and port stay
+      // An installed service keeps its local model's variables; --env KEY=VALUE sets one, KEY= removes it.
+      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => MODEL_ENV.includes(key))) : {};
+      for (const [key, value] of changes) {
+        if (value === "") delete model[key];
+        else model[key] = value;
+      }
+      // --tailscale, --no-tailscale or --env on an installed service changes that only: its data folder and port stay
       // unless named (the installer passes the flag alone).
-      if (tailscale !== undefined && installed()) {
+      if ((tailscale !== undefined || changes.length > 0) && installed()) {
         const now = argsNow();
         const option = (name) => (now.includes(name) ? now[now.indexOf(name) + 1] : undefined);
         data ??= option("--data");
@@ -317,7 +345,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       // The server knows the address people open: its host check takes the name, and its setup takes the printed code.
       const at = share ? tailnet.address(targetOf(served)) : undefined;
       const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : [])];
-      const vars = at ? { AGENTRUN_PUBLIC_URL: at.url, AGENTRUN_TRUSTED_PROXIES: "loopback" } : {};
+      const vars = { ...model, ...(at ? { AGENTRUN_PUBLIC_URL: at.url, AGENTRUN_TRUSTED_PROXIES: "loopback" } : {}) };
       mkdirSync(join(root, "logs"), { recursive: true, mode: 0o700 });
       mkdirSync(join(manager.file, ".."), { recursive: true });
       writeFileSync(manager.file, manager.text({ program, args, path: env.PATH ?? "/usr/bin:/bin", log, env: vars }));
@@ -461,7 +489,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"]], { port: { type: "string" }, tailscale: { type: "boolean" } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), kept until KEY= removes it; repeatable`]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],
