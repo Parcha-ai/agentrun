@@ -57,6 +57,10 @@ export async function demonstrateWorkflows({ runtime, createBackend,
     onProgress({ stage, state: 'completed' });
     return result;
   };
+  // An SDK run is given every committed workflow its README does not hold (pending) or retire: the server reads the
+  // learning folder, not the promotion record (packages/serve/src/sdk/runs.ts selectedWorkflows). So a draft the
+  // compile just committed is offered while its check runs (`checking`); the fresh run's receipt below proves it was.
+  const offered = workflow => !['pending', 'retired'].includes(workflow.status) && workflow.run;
   try {
     await run('teach', on, teachReleaseTask('demo-api'), 'demo-api');
     let learned;
@@ -68,10 +72,10 @@ export async function demonstrateWorkflows({ runtime, createBackend,
       learned = await client.learning.get(agentId);
       if (learned.workflows.some(workflow => workflow.status === 'pending'))
         throw new Error('A workflow needs owner review. Inspect Learning Dojo; the demo never auto-approves it.');
-      if (learned.workflows.some(workflow => workflow.status === 'active' && workflow.run)) break;
+      if (learned.workflows.some(offered)) break;
     }
-    const accepted = learned.workflows.filter(workflow => workflow.status === 'active' && workflow.run);
-    assert.ok(accepted.length, 'No checked workflow was accepted after the ordinary practice cadence. Inspect Learning Dojo before running more paid tasks.');
+    const accepted = learned.workflows.filter(offered);
+    assert.ok(accepted.length, 'No workflow was committed and offered after the ordinary practice cadence. Inspect Learning Dojo before running more paid tasks.');
     const workflowFiles = [];
     for (const item of accepted) {
       const response = await client.learning.read(agentId, item.file);

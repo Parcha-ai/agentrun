@@ -33,8 +33,9 @@ machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGK
 after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
-first stops the AgentRun it started in the background itself, whatever version that is. Until the owner's password is
-set, it ends by opening the setup page in this machine's browser with the setup code filled in, or, where no browser
+first stops the AgentRun it started in the background itself, whatever version that is. An older version does not start on
+a store a later one has upgraded: its server says so and exits, and the store is left as it was. Until the owner's
+password is set, it ends by opening the setup page in this machine's browser with the setup code filled in, or, where no browser
 opens (a remote machine), by printing that link.
 
 `agentrun open` does the same at any time: the setup page with a code that is still good (it asks the server for a new

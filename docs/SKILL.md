@@ -143,7 +143,7 @@ instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private 
 
 ### A hosted service
 
-- **Railway:** they open https://railway.com/deploy/agentrun and deploy it from their own Railway account with one
+- **Railway:** they open https://railway.com/deploy/agentrun-1 and deploy it from their own Railway account with one
   click. The template sets up the image, a volume at `/data` and a public domain, and makes the API token and the seal
   key for them. Never create the service yourself with a Railway CLI.
 - **Render:** they open https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun and confirm the plan
