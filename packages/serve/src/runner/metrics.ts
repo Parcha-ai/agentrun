@@ -22,7 +22,43 @@ import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
  *  its runner.request's model, "" for one that names none). `free`: it booked requests, every one on a free model (its
  *  runner.turn's `free`: its known price $0 for every token), so its $0 says why. A reader that joins sessions, or says
  *  what is known of an unknown cost, takes the parts through costOfParts, never `usd` and `known` alone. */
-export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly bounded: number; readonly unpriced: number; readonly atMost: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly free?: true };
+/** `priced`: of its requests with a known figure (a plan's aside, which cost no dollars), how many the provider or its
+ *  gateway priced (`reported`: the proxy's reportedCostOf or usageCostOf, its runner.turn keeping the table's figure beside
+ *  it as `tableUsd`) and how many a price table did (`estimated`: its runner.turn's `estimated`, or a cut request's hold).
+ *  A figure that is neither ($0 for a request refused or never sent, a charge settled through the cap) counts in neither. */
+export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly bounded: number; readonly unpriced: number; readonly atMost: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly priced: { readonly reported: number; readonly estimated: number }; readonly free?: true };
+
+/** How a run's cost was reached, by how its model requests were priced: `reported` when every request priced had the
+ *  provider's or its gateway's own figure (LiteLLM's `x-litellm-response-cost`, OpenRouter's usage `cost`); `estimate`
+ *  when any was priced from a price table (the catalog, AGENT_MODEL_PRICE, a cut request's hold); `unpriced` when no
+ *  request was priced (none was sent, or none had a figure). The run's cost block (`cost.basis`), its stored metrics
+ *  (`costBasis`) and the sums over runs (GET /stats, GET /usage) say it in these words. */
+export const COST_BASES = ["reported", "estimate", "unpriced"] as const;
+export type CostBasis = (typeof COST_BASES)[number];
+
+/** The basis of a booking's model requests (bookedSpend "model"): COST_BASES. */
+export const costBasisOf = (spend: Pick<BookedSpend, "priced">): CostBasis => (spend.priced.estimated > 0 ? "estimate" : spend.priced.reported > 0 ? "reported" : "unpriced");
+
+/** The basis of a sum of costs: `estimate` when any is, else `reported` when any is, else `unpriced`. */
+export function joinedBasis(bases: Iterable<CostBasis>): CostBasis {
+  let reported = false;
+  for (const basis of bases) {
+    if (basis === "estimate") return "estimate";
+    if (basis === "reported") reported = true;
+  }
+  return reported ? "reported" : "unpriced";
+}
+
+/** A run's basis as its end stored it (its metrics' `costBasis`); an imported run's catalog estimate (import.ts stores
+ *  `costBasis: "catalog"` beside `costUsdEst`, the figure store-reads/runs.ts costOfRun reads) is an `estimate`, at $0 too;
+ *  a run that stored none (one that ended before the end stored it, a workflow's, a native, SDK or imported run's: their
+ *  figures are the harness's) is an `estimate` when it cost anything, else `unpriced`. */
+export function storedBasisOf(metrics: unknown, usd: number | null | undefined): CostBasis {
+  const stored = (metrics as { costBasis?: unknown } | null | undefined)?.costBasis;
+  if ((COST_BASES as readonly unknown[]).includes(stored)) return stored as CostBasis;
+  if (stored === "catalog" && typeof usd === "number") return "estimate";
+  return typeof usd === "number" && usd > 0 ? "estimate" : "unpriced";
+}
 
 /** The conversation each of the run's sessions books in, by its key: the first `agentrun.session.key` entry naming it. */
 function sessionConversations(entries: readonly EntryLike[]): Map<string, number> {
@@ -71,6 +107,8 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   let unmetered = 0;
   let free = 0;
   let atMost = 0;
+  let reported = 0;
+  let estimated = 0;
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   // Each request is booked once, as the kernel's sessionSpendOf reads it: a second runner.turn of a turn already booked
   // (two bookings of one session that each read it open, a cut written twice) counts no money and no request again.
@@ -86,7 +124,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
     if (rebooked(booked, typeof (e.data as { turn?: unknown } | undefined)?.turn === "number" ? turnOf(e) : undefined)) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; cut?: unknown; atMost?: unknown; givenBack?: unknown; unsent?: unknown; free?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; cut?: unknown; atMost?: unknown; givenBack?: unknown; unsent?: unknown; free?: unknown; billing?: unknown; estimated?: unknown; tableUsd?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
     if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
     count(e);
@@ -98,11 +136,17 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     if (own.usd === null) unpriced += 1;
     else if (own.atMost) (bounded += own.usd), (atMost += 1);
     else known += own.usd;
+    // How its figure was reached (costBasisOf): a price table's (the proxy's `estimated`, or a hold), or the provider's own
+    // (the proxy keeps the table's figure beside a reported one, `tableUsd`). A plan's request costs no dollars: neither.
+    if (own.usd !== null && d.billing !== "plan") {
+      if (own.atMost || d.estimated === true) estimated += 1;
+      else if (d.tableUsd !== undefined) reported += 1;
+    }
     // The booking keeps a request's usage only when it reported some (runner.ts tokensOf): one with none is unmetered.
     if (d.usage === undefined) unmetered += 1;
     for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
   }
-  return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
+  return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, priced: { reported, estimated }, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
 }
 
 /** A sum of charges with its float noise rounded off, nothing more (as the decisions row rounds, decision-rows.ts): a
@@ -251,7 +295,7 @@ const recordsIn = (entries: readonly EntryLike[], conversation: number): Session
 
 /** A run's metrics as the end commit writes them (the StoredMetrics JSON on the run row): the timeline's count, with the
  *  effort the run ran at and, on a harness other than pi, the model its revision named. */
-export type RunMetricsStored = RunMetrics & { effort?: string; model?: string };
+export type RunMetricsStored = RunMetrics & { effort?: string; model?: string; costBasis?: CostBasis };
 
 /** `counted` with each tool `catalog` names (an MCP tool's hashed wire name: store-reads/journal.ts hashedMcpOf) counted
  *  under its catalog name, `mcp:<server>/<tool>`, as the run's timeline names its calls; the analytics' top tools read

@@ -80,6 +80,7 @@ __all__ = [
     "ConnectorsResource",
     "Cost",
     "CostPlan",
+    "CostTokens",
     "CreateAgentBody",
     "CreateAgentResponse",
     "CreateFileBody",
@@ -2425,7 +2426,7 @@ RunState: TypeAlias = "Literal[\"working\", \"waiting\", \"idle\"]"
 
 class _CostRequired(TypedDict):
     usd: float | None
-    basis: Literal["charge", "estimate"]
+    basis: Literal["charge", "estimate", "reported", "unpriced"]
 
 
 class Cost(_CostRequired, total=False):
@@ -2435,9 +2436,22 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
+    tokens: CostTokens
     learning_usd: float | None
     all_in_usd: float | None
     plan: CostPlan
+
+
+class _CostTokensRequired(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class CostTokens(_CostTokensRequired, total=False):
+    requests: int
+    unmetered: int
 
 
 class CostPlan(TypedDict):
@@ -6173,7 +6187,7 @@ class GetStatsResponsePerAgentItem(TypedDict):
 
 class GetStatsResponseCost(TypedDict):
     usd: float | None
-    basis: Literal["estimate"] | None
+    basis: Literal["reported", "estimate", "unpriced"] | None
     unknown_runs: int
 
 
@@ -8452,7 +8466,7 @@ class UpdateTriggerResponseComposio(TypedDict):
 GetUsageResponse: TypeAlias = "Usage"
 
 
-_UsageRequired = TypedDict("_UsageRequired", {"from": "Timestamp", "to": "Timestamp", "currency": "Literal[\"USD\"]", "basis": "Literal[\"charge\", \"estimate\"]", "group_by": "Literal[\"meter\", \"agent\", \"key\", \"day\", \"region\"]", "total_usd": "float | None", "lines": "list[UsageLine]", "account": "UsageAccount | None"})
+_UsageRequired = TypedDict("_UsageRequired", {"from": "Timestamp", "to": "Timestamp", "currency": "Literal[\"USD\"]", "basis": "Literal[\"charge\", \"estimate\", \"reported\", \"unpriced\"]", "group_by": "Literal[\"meter\", \"agent\", \"key\", \"day\", \"region\"]", "total_usd": "float | None", "lines": "list[UsageLine]", "account": "UsageAccount | None"})
 _UsageOptional = TypedDict("_UsageOptional", {"unpriced_runs": "int"}, total=False)
 
 

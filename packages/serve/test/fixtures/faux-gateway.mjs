@@ -29,16 +29,18 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
 
 /**
  * Starts the gateway on 127.0.0.1, on a port of its own.
- * @param {{ text?: string | ((request: GatewayRequest) => string), call?: (request: GatewayRequest) => { name: string, input: unknown } | undefined, refuse?: (request: GatewayRequest) => { status?: number, message: string } | undefined, usage?: { input?: number, output?: number, cacheRead?: number, cacheWrite?: number }, port?: number }} [options]
+ * @param {{ text?: string | ((request: GatewayRequest) => string), call?: (request: GatewayRequest) => { name: string, input: unknown } | undefined, refuse?: (request: GatewayRequest) => { status?: number, message: string } | undefined, usage?: { input?: number, output?: number, cacheRead?: number, cacheWrite?: number }, headers?: Record<string, string>, port?: number }} [options]
  *   `text`: what every answer says (or a function of the request); `call`: a tool call to answer with instead, when it
  *   returns one (Messages' tool_use, Responses' function_call; not on Chat Completions); `refuse`: a refusal to answer
  *   with instead, when it returns one (its status, default 400, and `{ error: { message } }`, as OpenRouter refuses a
  *   request its model can't take; the request is still recorded); `usage`: the input and output
  *   tokens every answer reports (default 10 in, 2 out), and on Messages the prompt cache's reads and writes
- *   (`cache_read_input_tokens`, `cache_creation_input_tokens`; default 0); `port`: the port to listen on (default: one the
- *   system picks); `grader`: what a grader request (learn/promote.ts GRADER_PROMPT) is answered with, as a function of
- *   the request (default: the faux grader's verdict, fixtures/faux-grader.mjs), before `text`; `hang`: a request it
- *   records and never answers, when it returns true (its connection stays open until the client drops it or close()).
+ *   (`cache_read_input_tokens`, `cache_creation_input_tokens`; default 0); `headers`: headers every answer carries beside
+ *   its content type (a gateway's own figure for what it cost, LiteLLM's `x-litellm-response-cost`); `port`: the port to
+ *   listen on (default: one the system picks); `grader`: what a grader request (learn/promote.ts GRADER_PROMPT) is
+ *   answered with, as a function of the request (default: the faux grader's verdict, fixtures/faux-grader.mjs), before
+ *   `text`; `hang`: a request it records and never answers, when it returns true (its connection stays open until the
+ *   client drops it or close()).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -51,6 +53,7 @@ export async function startFauxGateway(options = {}) {
     if (verdict !== undefined) return options.grader ? options.grader(request) : verdict;
     return typeof options.text === "function" ? options.text(request) : options.text ?? "ok";
   };
+  const extra = options.headers ?? {};
   const server = createServer((req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -71,6 +74,9 @@ export async function startFauxGateway(options = {}) {
       const request = { method: req.method ?? "", path, query: rest.join("?"), headers: Object.fromEntries(RECORDED_HEADERS.map((name) => [name, req.headers[name]])), body };
       requests.push(request);
       const stream = body?.stream === true;
+      // Every answer carries the gateway's own headers (`headers`), an error's as well as a model's.
+      const writeHead = res.writeHead.bind(res);
+      res.writeHead = (status, headers) => writeHead(status, { ...headers, ...extra });
       if (req.method !== "POST") return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
       // A request the test holds open: recorded, never answered (close() ends its connection).
       if (options.hang?.(request)) return;

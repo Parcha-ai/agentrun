@@ -50,7 +50,7 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
+import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, runLearningEnd, servedViewOf, usedOnly } from "./store-reads/learning.js";
@@ -242,6 +242,9 @@ interface StoreRun {
   readonly decisions: BookedSpend | undefined;
   /** Its model requests billed to a ChatGPT plan (metrics.ts planSpend), undefined when it made none. */
   readonly plan: { readonly requests: number; readonly tokens: number } | undefined;
+  /** What its model requests booked (metrics.ts bookedSpend "model": every session but its paid tools' and its
+   *  decisions'): their tokens and how they were priced, for its cost's `tokens` and `basis`. */
+  readonly model: BookedSpend;
   /** An ended run's cost from its booking (metrics.ts runCostOf, the rule its end stored it by), read in the same snapshot
    *  as its state; undefined for a run still going, imported, native, or that booked no request. */
   readonly endCost?: RunCost;
@@ -445,6 +448,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const decisions = booked.requests ? booked : undefined;
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
+  const model = bookedSpend(records.entries as never, "model");
   // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
   // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
   // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
@@ -452,7 +456,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
   const endCost = bookedCost?.requests ? bookedCost : undefined;
   const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, ...(endCost ? { endCost, endSaidCost } : {}) };
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -510,7 +514,31 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const soFar = counted ?? (imported || decisions?.requests ? undefined : freeOf(run.rows, usd));
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
-  return { usd, basis: "estimate", charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}) };
+  const tokens = tokensOfView(run);
+  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
+}
+
+/** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while
+ *  it booked one; else as its end stored it, or, where nothing says, an `estimate` when it cost anything (a native, SDK or
+ *  imported run's figure is its harness's or the catalog's), `unpriced` when nothing was priced. */
+function basisOfView(run: StoreRun, words: { readonly usd: number | null; readonly so_far_usd?: number }): CostBasis {
+  if (run.model.requests > 0) return costBasisOf(run.model);
+  return storedBasisOf(run.row.state === "running" ? undefined : run.runRow.metrics, words.usd ?? words.so_far_usd);
+}
+
+/** A run's tokens as its cost says them: its model requests' input (cached input apart), output, cache reads and writes,
+ *  how many requests it booked, and how many of those reported no tokens (`unmetered`). From its booking while it booked a
+ *  request; else from the metrics its end stored (a native or imported run's); undefined when neither says. */
+function tokensOfView(run: StoreRun): Record<string, number> | undefined {
+  const booked = run.model;
+  if (booked.requests > 0) return { input: booked.tokens.input, output: booked.tokens.output, cache_read: booked.tokens.cacheRead, cache_write: booked.tokens.cacheWrite, requests: booked.requests, unmetered: booked.unmetered };
+  const stored = (run.row.state === "running" ? undefined : run.runRow.metrics) as Partial<Record<"input" | "output" | "cacheRead" | "cacheWrite" | "requests" | "unmetered", unknown>> | null | undefined;
+  const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+  const [input, output] = [count(stored?.input), count(stored?.output)];
+  if (input === undefined || output === undefined) return undefined;
+  const requests = count(stored?.requests);
+  if (requests === 0 && input + output === 0) return undefined;
+  return { input, output, cache_read: count(stored?.cacheRead) ?? 0, cache_write: count(stored?.cacheWrite) ?? 0, ...(requests === undefined ? {} : { requests }), ...(count(stored?.unmetered) === undefined ? {} : { unmetered: count(stored?.unmetered)! }) };
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */

@@ -56,6 +56,7 @@ import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, pe
 import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
+import { COST_BASES } from "./runner/metrics.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
@@ -157,7 +158,7 @@ const STATS = closed({
   cost: closed(
     {
       usd: { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." },
-      basis: { type: ["string", "null"], enum: ["estimate", null], description: "`estimate` (what the runs report: their model requests' cost and their paid tools' charges) when `usd` is a number; null when it is null." },
+      basis: { type: ["string", "null"], enum: [...COST_BASES, null], description: "How the summed costs were reached, by how each run's model requests were priced (a run's `cost.basis`): `reported` when every run summed that priced a request had each priced by its provider or gateway, `estimate` when any run's was priced from a price table (a run that ended before this was recorded, or whose figure is its harness's own, counts as `estimate` when it cost anything), `unpriced` when no run summed priced a request. Null when `usd` is null.", "x-agentrun-serve": "costbasis/1" },
       unknown_runs: COUNT,
     },
     "Over the runs not archived: `usd` sums the cost of each run that ended with one; every other run (running, or ended with no cost) is in `unknown_runs`.",
@@ -3022,6 +3023,20 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Cost: {
     ...SO_FAR,
+    // costbasis/1: a run's tokens beside its cost.
+    tokens: {
+      type: "object", additionalProperties: false, required: ["input", "output", "cache_read", "cache_write"],
+      properties: {
+        input: { type: "integer", minimum: 0, description: "Input tokens, cached input left out: the whole input is `input + cache_read + cache_write`." },
+        output: { type: "integer", minimum: 0, description: "Output tokens, reasoning included." },
+        cache_read: { type: "integer", minimum: 0, description: "Input tokens read from the provider's prompt cache." },
+        cache_write: { type: "integer", minimum: 0, description: "Input tokens written to the provider's prompt cache." },
+        requests: { type: "integer", minimum: 0, description: "The model requests these are the tokens of: every request the run's model proxy booked (its turns, its subagents, its side calls), a plan's included; its paid tool calls and its decisions are not model requests here." },
+        unmetered: { type: "integer", minimum: 0, description: "Of `requests`, those whose tokens are unknown (the provider reported none: a request refused, cut or never answered), in no sum above." },
+      },
+      description: "The run's model requests' tokens, as their provider or gateway reported them in each answer's usage (OpenAI's Responses `usage.input_tokens`/`output_tokens`, Anthropic's Messages `usage` with its cache reads and writes). Absent while the run has booked no model request and stored none (a run still starting, a workflow with no model node).",
+      "x-agentrun-serve": "costbasis/1",
+    },
     learning_usd: { type: ["number", "null"], minimum: 0, description: "On the run read (GET /v2/runs/{run_id}) alone, where `usd` is the run's own spend, the job's: what learning spent for it, on the agent's own model route. Its audit shadow's cost (the agent on its input with learning off) and its share of its workflow revision's learning spend: the compile turn that drafted that revision and its check's replay runs, spread over the first `compile_after` runs the revision serves (GET /agents/{agent_id}/learning/cost `bill.revisions`). A compile turn is never in the `usd` or `learning_usd` of the run whose session asked it: it is its revision's (a recompile's, its recompiled revision's), or, when it kept no draft (every draft failed its checks, or the cap stopped it), on no run (`bill.unattributed_usd`). 0 for a replay or shadow run, whose spend is on the runs it serves. As booked (float noise rounded off at 1e-12, as `usd` is); null while the run or its shadow is at work, or a part is unknown: never $0 for unknown.", "x-agentrun-serve": "allin/1" },
     all_in_usd: { type: ["number", "null"], minimum: 0, description: "On the run read alone: `usd` and `learning_usd` together, what the run cost its owner all in. 0 for a replay or shadow run. Over every run of an agent, these and the cost route's `bill.unattributed_usd` add up to its `bill.booked_usd`. Null when either is, or `usd` is only a bound (`upper_bound`).", "x-agentrun-serve": "allin/1" },
     plan: {
@@ -3913,6 +3928,21 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     fields.push("SignIn.secret");
     signInSchema.required = [...signInSchema.required, ...SIGN_IN_FIELDS_SENT];
   }
+  // costbasis/1: how a run's cost was reached (metrics.ts CostBasis), beside the contract's `charge` and `estimate`, and the
+  // same words on GET /usage.
+  const costBasis = ((schemas.Cost as Json).properties as Record<string, Json>).basis as Json & { enum?: string[] };
+  const usageBasis = ((schemas.Usage as Json).properties as Record<string, Json>).basis as Json & { enum?: string[] };
+  for (const [name, schema] of [["Cost", costBasis], ["Usage", usageBasis]] as const) {
+    if (!Array.isArray(schema.enum)) continue;
+    for (const value of COST_BASES) {
+      if (schema.enum.includes(value)) continue;
+      schema.enum = [...schema.enum, value];
+      fields.push(`${name}.basis.${value}`);
+    }
+    schema["x-agentrun-serve"] = "costbasis/1";
+  }
+  costBasis.description = "How `usd` was reached. `charge`: what the account pays (hosted). On this server, by how the run's model requests were priced: `reported` when every request priced had its provider's or gateway's own figure (LiteLLM's `x-litellm-response-cost` header, OpenRouter's usage `cost`); `estimate` when any was priced from a price table (the model catalog, AGENT_MODEL_PRICE, a cut request counted at its hold; a native, SDK or imported run's figure, its harness's own); `unpriced` when no request was priced (none sent, refused at $0, or none with a known figure). A run's paid tool calls and decisions are charged at their own figures and do not change it. A streamed answer through LiteLLM states no cost in its headers, so such a run reads `estimate`.";
+  usageBasis.description = "How the runs' costs were reached (Cost.basis over the runs in the window): `estimate` when any run's is, else `reported` when any run's is, else `unpriced`. `charge`: hosted.";
   // A workflow run pauses here (POST /runs/{run_id}/pause): its status reads `paused` until it is resumed.
   const runStatus = schemas.RunStatus as Json & { enum?: string[] };
   if (Array.isArray(runStatus.enum) && !runStatus.enum.includes("paused")) {

@@ -100,6 +100,10 @@ describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them
     });
     expect(costLine(v.cost)).toBe("Unknown");
   });
+  it("reads the server's cost basis: a reported sum says reported, one nothing priced says no word", () => {
+    expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "reported", unknown_runs: 0 } }, []).cost)).toBe("$1.50 reported");
+    expect(costLine(missionFrom({ ...stats, cost: { usd: 0, basis: "unpriced", unknown_runs: 0 } }, []).cost)).toBe("$0.0000");
+  });
   it("reads the server's cost basis: an estimate says est.", () => {
     expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "estimate", unknown_runs: 0 } }, []).cost)).toBe("$1.50 est.");
   });

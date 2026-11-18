@@ -1370,7 +1370,7 @@ test("an imported session its source did not price reads the catalog's estimate 
   };
   assert.deepEqual(await costOf(estimated.id), { usd: costUsdEst, basis: "estimate" }, "the catalog's estimate, read as an estimate");
   assert.deepEqual(await costOf(recorded.id), { usd: 0.0421, basis: "estimate" });
-  assert.deepEqual(await costOf(unpriced.id), { usd: null, basis: "estimate" }, "no estimate: unknown, never 0");
+  assert.deepEqual(await costOf(unpriced.id), { usd: null, basis: "unpriced" }, "no estimate: unknown, never 0, and nothing priced it (costbasis/1)");
   const listed = (await api("GET", `/agents/${estimated.agentId}/runs`)).body.runs;
   assert.deepEqual(Object.fromEntries(listed.map((r) => [r.run_id, r.cost.usd])), { [estimated.id]: costUsdEst, [unpriced.id]: null, [recorded.id]: 0.0421 }, "the list reads each run's cost as its read does");
 

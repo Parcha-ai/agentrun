@@ -66,7 +66,7 @@ import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliModelWorked, cliRunMetrics, endCostOf, runCostOf } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics, costBasisOf, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
@@ -769,7 +769,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const metrics = cliRunMetrics(piShaped(entries as never), booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}`, catalog: await hashedMcpOf(deps.store, claim.runId) });
       // Its cost is endCost's, read apart (an unknown one written as null, never left out: a follow-up's end clears the
       // cost an earlier end stored).
-      return { metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never) } };
+      return { metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never), costBasis: costBasisOf(booked) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),
