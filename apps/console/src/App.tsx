@@ -9,6 +9,7 @@ import { AgentPage } from "@/components/AgentPage";
 import { AgentDojo } from "@/components/AgentDojo";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { ChatGPTRow } from "@/components/ChatGPTSignIn";
+import { ClaudeLoginRow } from "@/components/ClaudeLoginRow";
 import { BuildAgent } from "@/components/BuildAgent";
 import { RunsRequest } from "@/components/RunsRequest";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
@@ -724,7 +725,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} />
