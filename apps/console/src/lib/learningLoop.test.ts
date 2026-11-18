@@ -8,7 +8,7 @@ import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 // standings, the check line, and the story.
 
 const at = (h: number) => new Date(Date.UTC(2026, 10, 1) + h * 3_600_000).toISOString();
-const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", digest: path === "agent" ? null : "a".repeat(16), audited: false, cost_usd: 0.1, cost_upper_bound: false, learning_usd: 0, total_usd: 0.1 });
+const run = (n: number, path: CostRun["path"], tookOver = false): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", digest: path === "agent" ? null : "a".repeat(16), took_over: tookOver, audited: false, cost_usd: 0.1, cost_upper_bound: false, learning_usd: 0, total_usd: 0.1 });
 const record = (over: Partial<Promotion>): Promotion => ({ workflow: "sort-invoice", digest: "a".repeat(16), at: at(3), decided: "promote", check: CHECK, reason: "as good as the agent", ...over } as Promotion);
 // The one check a promotion record keeps: n inputs of the agent's own runs, how many it answered alone and how many of those
 // said what the agent said, against the bar (agree_min, alone_min).
@@ -16,8 +16,8 @@ const outcomes = (handedBack: number) => ({ answered: 20 - handedBack, handed_ba
 const CHECK = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1 as const, n: 20, agreed: 17, alone: 18, of: [] as string[], outcomes: outcomes(2) };
 
 describe("markers on the run axis", () => {
-  const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow"));
-  it("puts each record on the first run started at or after it, by its kind; a promotion on the first run its workflow served", () => {
+  const runs = [1, 2, 3, 4, 5, 6].map((n) => run(n, n < 4 ? "agent" : "workflow", n === 4));
+  it("puts each record on the first run started at or after it, by its kind; a promotion on the run the server says its revision took over at", () => {
     const records = [
       record({ decided: "replaying", at: at(1.5) }),
       record({ decided: "promote", at: at(3) }),
@@ -37,12 +37,23 @@ describe("markers on the run axis", () => {
     // Jobs 1-3 by the agent, two replays (no number), then job 4, the first the workflow served: its promotion was written
     // as job 4 was claimed, after it started. A hold written between the replays stands on the next job.
     const replay = (h: number, id: string): CostRun => ({ ...run(0, "replay"), n: null, run_id: id, started_at: at(h) });
-    const series = [run(1, "agent"), run(2, "agent"), run(3, "agent"), replay(3.2, "p1"), replay(3.4, "p2"), run(4, "workflow"), run(5, "workflow")];
+    const series = [run(1, "agent"), run(2, "agent"), run(3, "agent"), replay(3.2, "p1"), replay(3.4, "p2"), run(4, "workflow", true), run(5, "workflow")];
     const records = [record({ decided: "hold", at: at(3.3) }), record({ decided: "promote", at: at(4.1) })];
     expect(markersOf(series, records).map((m) => [m.kind, m.n])).toEqual([["hold", 4], ["promote", 4]]);
   });
+  it("a promotion stands on the run the server says its revision took over at (took_over), never found by time: jobs queued before the promoting claim never move it", () => {
+    // Jobs 4 and 5 were both queued (started_at) before job 4 was claimed and promoted the revision: the record's `at` is
+    // after both starts. The takeover and the bill say job 4, and so does the flag.
+    const queued = [run(1, "agent"), run(2, "agent"), run(3, "agent"), run(4, "workflow", true), run(5, "workflow"), run(6, "workflow")];
+    expect(markersOf(queued, [record({ decided: "promote", at: at(5.5) })]).map((m) => [m.kind, m.n])).toEqual([["promote", 4]]);
+    // A second revision promoted later stands on its own first served run.
+    const next = [...queued, { ...run(7, "workflow", true), digest: "b".repeat(16) }, { ...run(8, "workflow"), digest: "b".repeat(16) }];
+    expect(markersOf(next, [record({ decided: "promote", at: at(5.5) }), record({ decided: "promote", digest: "b".repeat(16), at: at(8.5) })]).map((m) => [m.kind, m.n])).toEqual([["promote", 4], ["promote", 7]]);
+    // Its took-over run older than the runs read (a limited read): no flag, never the first of its runs that was read.
+    expect(markersOf(queued.slice(4), [record({ decided: "promote", at: at(5.5) })])).toEqual([]);
+  });
   it("leaves out a record older than the runs read, and draws nothing without runs", () => {
-    expect(markersOf(runs, [record({ at: at(-5) })])).toEqual([]);
+    expect(markersOf(runs, [record({ decided: "hold", at: at(-5) })])).toEqual([]);
     expect(markersOf([], [record({})])).toEqual([]);
   });
   it("names a kind from its record", () => {
