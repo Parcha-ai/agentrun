@@ -30,7 +30,7 @@ export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, Machine
 export { HostedProvider, type HostedDial, type HostedOptions, type HostedTimeouts, hostedDaemonPath } from "./hosted/provider.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /morph, /orgo,
-// /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
+// /phone-harness, /browserbase, /kernel, /local, /smolcloud: each the provider file's name).
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
@@ -142,6 +142,7 @@ export {
 	PHONE_GROUPS,
 	PHONE_HARNESS,
 	PHONE_IMAGE,
+	SMOLCLOUD,
 } from "./descriptors/index.js";
 // Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
 export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
