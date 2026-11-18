@@ -426,6 +426,8 @@ export type ServeOptions = {
   templateImportApi?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
+  /** The bound on one webhook try, under the 60 s claim it holds its message by (default 15 s: webhooks.ts TIMEOUT_MS). */
+  webhookTimeoutMs?: number;
   /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
    *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
   webhookPrivateTargets?: boolean;
@@ -1508,6 +1510,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
   const webhooks = new Webhooks(store, sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
     ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    ...(options.webhookTimeoutMs ? { timeoutMs: options.webhookTimeoutMs } : {}),
     ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
     privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
   });
