@@ -2634,12 +2634,13 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
+| `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent another system owns](#deleting-an-agent-another-system-owns) (one an inline run made) whole. `204`; an agent made here is `409 agent_not_external`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" | "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
@@ -2719,6 +2720,8 @@ serves these routes alone:
   `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
+- the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
+  the backend whose inline runs made it;
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
@@ -3004,8 +3007,10 @@ typed answers and their probabilities.
 
 ## Archiving
 
-An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes are this server's own, outside the
-`/v2` contract, like `GET /runs` and an agent's revisions; capabilities list them in `features.archive`.
+An agent made here or a run is archived, never deleted: a run's `DELETE` stays `405`, and an agent's is `409
+agent_not_external` (an agent another system owns is [deleted](#deleting-an-agent-another-system-owns), and is never
+archived here). These routes are this server's own, outside the `/v2` contract, like `GET /runs` and an agent's
+revisions; capabilities list them in `features.archive`.
 
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
   `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
@@ -3023,6 +3028,45 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
 - A new run of an archived agent is `409 agent_not_runnable`, saying it is archived (`details.archived_at`); a run
   already going when its agent is archived keeps going.
 - The store keeps an archive as `archived_at` on the agent's or the run's row, null when it is not archived.
+
+## Deleting an agent another system owns
+
+An agent made by an inline run (`POST /v2/runs` with `external`) belongs to the system that sent it, which may have to
+delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in three steps, each done before the next:
+
+1. The agent refuses new runs: its `archived_at` is set (only this delete sets it on such an agent, whose archive route
+   is refused) and its triggers are turned off in the same write, so the refusal outlives a restart. From then a run of
+   it, an inline run of its reference, a trigger's firing, an SDK run and a message that would open one of its finished
+   runs again are `409 agent_not_runnable`, saying it is being deleted; so is a new trigger of it (off too), a trigger
+   moved to it or one of its turned on, and a write to its home or its learning (a home file's write or delete, a note,
+   an eval, a run's grade, a learning batch's create or cancel, a replay). Such a write sent while a `DELETE` runs waits
+   for it, then finds the agent gone (`404`), so none lands after its learning went. Each of its learning batches still
+   running is cancelled, and each of its runs still going, its learning runs included, is cancelled as
+   `POST /runs/{id}/cancel` cancels it, and the delete waits until every one has ended.
+2. Its learning is deleted by the learning module: every file of its learning folder, then its promotions, grades,
+   evals and learning batches. It refuses while learning work of the agent is in flight: `409 learning_busy`, naming
+   that work in `details.runs`.
+3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
+   its own computer, its Archil disk, each run with everything kept of it (its journal, launch record, messages, origin,
+   live view, channel posts, kept learning, files and scratch folders, and the answers kept under its idempotency keys;
+   a request still at work under a key when its run went keeps no answer, so a key never replays a deleted run),
+   its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) kept its folder
+   there, under the agent's own folder: that folder is deleted on the disk, and the disk and everything else on it are
+   kept; a disk Archil says is gone has nothing left to delete. Shared things are kept: MCP servers, keys, paired computers and uploads. What the agent owns elsewhere is
+   deleted there before the record here that names it (a trigger's registration and its settings before its row, a
+   sign-in's object at its vendor before its tombstone, the disk at Archil before it is forgotten, a run's folder on a
+   disk its launch named before its launch record), so a failure or a crash never leaves one with nothing here to reach
+   it.
+
+`204` once it is gone; a second `DELETE`, or one of an unknown agent, is `404`. `409 runs_in_flight` (a run did not end
+within 30 s, or only its application ends it, as an SDK run), `409 learning_busy` and `503 unavailable` leave the agent
+refusing runs: send the `DELETE` again. `503` says which thing it owns elsewhere is not deleted there yet: a trigger's
+registration (Composio failed), a saved sign-in (its vendor failed), its own computer (its provider has not deleted it),
+its Archil disk (Archil failed or was not reached, a run of another agent is on it, or Archil is off on this server
+with a disk still stored on the agent: turn Archil on again first), or a run's folder on a disk its launch named
+(Archil failed, a computer still holds the folder, or Archil is off), or a trigger that reached the agent after the
+delete removed its triggers (the next `DELETE` removes it, its registration upstream first). A delete stopped
+part way (a crash) is finished the same way: every step is safe to do again.
 
 ## The console
 
