@@ -179,6 +179,18 @@ test("a held run released before its start ends cancelled, its agent never run",
   assert.deepEqual(run.looks, [], "the agent never ran");
 });
 
+// The release's row can reach the runner before the pass's wait for the start begins (it is applied once the pass opens,
+// while the pass still reports its live state): the run still ends cancelled, its agent never run. Queued before the claim,
+// the row lands in that window every time.
+test("a held run whose release lands before the pass waits for its start ends cancelled, its agent never run", async (t) => {
+  const world = await setup(t);
+  await sendCommand(world.server, "run-1", { kind: "computer_release" });
+  const run = await world.start();
+  await until(async () => ["ended", "stopped", "failed"].includes((await world.row()).state), "the run ends");
+  const ended = await world.row();
+  assert.deepEqual([ended.state, ended.outcome, run.looks], ["stopped", "cancelled", []], "the agent never ran");
+});
+
 test("the channel: a run that holds nothing takes the owner's calls while its agent works, and a call waits while a person holds the computer", async (t) => {
   const world = await setup(t, { hold: false });
   let letGo;
