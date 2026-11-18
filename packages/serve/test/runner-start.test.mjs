@@ -57,9 +57,28 @@ const PLANT = {
  *  value is in `text`. */
 const plantedIn = (text, plant = {}) => [...Object.entries(PLANT), ...Object.entries(plant), ["AGENTRUN_SEAL_KEY", SEAL]].filter(([, value]) => text.includes(value)).map(([name]) => name);
 
+/** The runner processes each test started, by test: every one is ended (SIGKILL, its exit awaited) before any of the
+ *  test's scratch directories goes. A test's after-hooks run in the order they were added, and a directory is made before
+ *  the runners that write in it, so its hook would otherwise remove it under a live runner (ENOTEMPTY). */
+const children = new WeakMap();
+
+/** `child` (its `exited` the promise of its exit) ended with test `t`: before its scratch directories go, and at its end. */
+function endsWithTest(t, child, exited) {
+  const end = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited;
+  };
+  if (!children.has(t)) children.set(t, new Set());
+  children.get(t).add(end);
+  t.after(end);
+}
+
 function scratch(t, name) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(async () => {
+    await Promise.all([...(children.get(t) ?? [])].map((end) => end()));
+    rmSync(dir, { recursive: true, force: true });
+  });
   return dir;
 }
 
@@ -118,10 +137,7 @@ function runnerChild(t, args, extra = {}, { cwd } = {}) {
   createInterface({ input: child.stdout }).on("line", (line) => (out.push(line), notify()));
   createInterface({ input: child.stderr }).on("line", (line) => (err.push(line), notify()));
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exited;
-  });
+  endsWithTest(t, child, exited);
   /** The first stdout line matching `pattern`, within `ms`. */
   const line = (pattern, ms = 30_000) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no line ${pattern} within ${ms} ms: ${JSON.stringify({ out, err })}`)), ms);
@@ -254,10 +270,7 @@ test("a SIGTERM during the runner's start (it already claims runs) is its own st
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exiting = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
   // A child a regression keeps alive is ended with the test, its pipes closed.
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exiting;
-  });
+  endsWithTest(t, child, exiting);
   const out = [];
   createInterface({ input: child.stdout }).on("line", (line) => out.push(line));
   const exited = await exiting;
@@ -388,10 +401,7 @@ test("started without its launcher (node dist/cli.js runner), a runner reads AGE
   const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
   const child = spawn(process.execPath, [cli, "runner", "--data", dir], { env, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
-  t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await exited;
-  });
+  endsWithTest(t, child, exited);
   const err = [];
   createInterface({ input: child.stderr }).on("line", (line) => err.push(line));
   const ready = await new Promise((resolve, reject) => {
