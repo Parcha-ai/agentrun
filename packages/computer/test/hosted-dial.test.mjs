@@ -223,6 +223,63 @@ test("a machine whose dial the server refused ends create at once in the server'
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
+// The refusal read never holds the hub check back: a token store that stalls on refused() costs no machine that attached
+// meanwhile, no abort waits on it, and it never holds create past createMs.
+const stalling = (tokens, refused = () => new Promise(() => {})) => ({ mint: (machine, mint) => tokens.mint(machine, mint), revoke: (machine) => tokens.revoke(machine), refused });
+
+test("a machine that attaches while the token store stalls on its refusal read is returned as it attaches, and kept", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup();
+	let reads = 0;
+	let attached = false;
+	const refused = () => {
+		if (reads++ === 0) setTimeout(() => (attached = true), 200);
+		return new Promise(() => {});
+	};
+	// The hub as the provider sees it: the machine's socket is there 200 ms into the first read, which never answers.
+	const seen = { connection: (name) => (attached ? hub.connection(name) : undefined), revoke: (name, why) => hub.revoke(name, why) };
+	const createMs = 3_000;
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 6_000, createMs }, dial: { url: PUBLIC_URL, tokens: stalling(tokens, refused), hub: seen } });
+	const started = Date.now();
+	const ref = made(await create(provider));
+	const took = Date.now() - started;
+	assert.ok(took < createMs / 2, `create answered at the attach, not at the read's end: ${took} ms`);
+	assert.equal(reads, 1, "one refusal read in flight at a time");
+	assert.equal(fake.live().length, 1, "the machine was kept");
+	made(await provider.release(ref, "delete"));
+});
+
+test("an abort while the token store stalls on a refusal read ends create at once as aborted, and the machine is deleted", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const abort = new AbortController();
+	const refused = () => {
+		setTimeout(() => abort.abort(), 100);
+		return new Promise(() => {});
+	};
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 3_000, createMs: 4_000 }, dial: { url: PUBLIC_URL, tokens: stalling(tokens, refused), hub } });
+	const started = Date.now();
+	const aborted = await provider.create(SPEC, { requestId: `dial-${++requests}`, signal: abort.signal });
+	const took = Date.now() - started;
+	assert.equal(aborted.ok, false);
+	assert.equal(aborted.error.code, "aborted", aborted.error.message);
+	assert.ok(took < 1_000, `create ended at the abort, not at the read's requestMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
+test("a refusal read the token store never answers holds create no later than createMs: it fails timeout then, and the machine is deleted", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const createMs = 100;
+	// pollMs 50: a poll of 500 ms, longer than createMs, so a pause past the time left shows too.
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 5_000, createMs, pollMs: 50 }, dial: { url: PUBLIC_URL, tokens: stalling(tokens), hub } });
+	const started = Date.now();
+	const failed = await create(provider);
+	const took = Date.now() - started;
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "timeout", failed.error.message);
+	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach within 0\.1 s/);
+	assert.ok(took < 400, `create ended at createMs, not at the read's requestMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
 // A provider is given no dial in a runner apart from the server (serve's runner subcommand, and the container image's
 // default server-and-runner): the refusal names the one-line fix in the words a paired computer's refusal gives
 // (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
