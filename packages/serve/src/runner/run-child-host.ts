@@ -54,6 +54,8 @@ import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
 import { placeRunInputs } from "../uploads.js";
 import { withAudit } from "./audit.js";
+import { compareEndOfRun } from "./compare-end.js";
+import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
@@ -98,12 +100,19 @@ export class RunIsolationRefused extends Error {
   override name = "RunIsolationRefused";
 }
 
+/** The helper run once: its exit code and output, never a rejection. A spawn error Node throws from execFile itself
+ *  (EPERM, say, where a platform forbids the helper's file capabilities; only EACCES, EAGAIN, EMFILE, ENFILE and ENOENT
+ *  come to the callback) is `code` -1 with the error's words as `stderr`, so every caller reads it as the failure it is. */
 const execText = (file: string, args: readonly string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, encoding: "utf8" }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !stderr ? error.message : "")) });
-    });
+    try {
+      execFile(file, args, { timeout: timeoutMs, encoding: "utf8" }, (error, stdout, stderr) => {
+        const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
+        resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !stderr ? error.message : "")) });
+      });
+    } catch (error) {
+      resolve({ code: -1, stdout: "", stderr: (error as Error)?.message ?? String(error) });
+    }
   });
 
 /** This host's isolation for `loops` runs at once, by `env` and the helper: the helper's own check that it can switch
@@ -811,8 +820,17 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.
-      // A replay run or an audit's shadow run asks nothing at its end, as the run's spec says (adapter-run-spec.ts).
-      if (launch.replay || launch.audit) return undefined;
+      // A replay run or an audit's shadow run learns nothing at its end, as the run's spec says (adapter-run-spec.ts): it
+      // compares its answer with the other one through its grader, handed in by the run's process (runner/compare-end.ts).
+      // This runner reads both answers and the learning ledger, which no run's process may.
+      if (launch.replay || launch.audit) {
+        const compare = compareEndOfRun(launch, { store, revisionId: run.revisionId, folder: await folderNow(), log, redact: cut });
+        const grade = input.grade;
+        const rows = compare && grade && typeof input.grader === "string"
+          ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, grade: (request) => grade(request), ask: input.ask, signal: input.signal })
+          : undefined;
+        return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
+      }
       const made = await archilOf();
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));

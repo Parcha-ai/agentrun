@@ -19,6 +19,7 @@
 //   await gateway.close();
 // `path` is without its query string, which `query` holds ("" for none): Claude's CLI asks `/v1/messages?beta=true`.
 import { createServer } from "node:http";
+import { graderAnswerOfBody } from "./faux-grader.mjs";
 import { stranger } from "./stranger.mjs";
 
 /** The routes answered, by the end of the request's path. */
@@ -35,7 +36,9 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
  *   request its model can't take; the request is still recorded); `usage`: the input and output
  *   tokens every answer reports (default 10 in, 2 out), and on Messages the prompt cache's reads and writes
  *   (`cache_read_input_tokens`, `cache_creation_input_tokens`; default 0); `port`: the port to listen on (default: one the
- *   system picks).
+ *   system picks); `grader`: what a grader request (learn/promote.ts GRADER_PROMPT) is answered with, as a function of
+ *   the request (default: the faux grader's verdict, fixtures/faux-grader.mjs), before `text`; `hang`: a request it
+ *   records and never answers, when it returns true (its connection stays open until the client drops it or close()).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -43,7 +46,11 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
 export async function startFauxGateway(options = {}) {
   const requests = [];
   const usage = { input: options.usage?.input ?? 10, output: options.usage?.output ?? 2, cacheRead: options.usage?.cacheRead ?? 0, cacheWrite: options.usage?.cacheWrite ?? 0 };
-  const textOf = (request) => (typeof options.text === "function" ? options.text(request) : options.text ?? "ok");
+  const textOf = (request) => {
+    const verdict = graderAnswerOfBody(request.body);
+    if (verdict !== undefined) return options.grader ? options.grader(request) : verdict;
+    return typeof options.text === "function" ? options.text(request) : options.text ?? "ok";
+  };
   const server = createServer((req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -65,6 +72,8 @@ export async function startFauxGateway(options = {}) {
       requests.push(request);
       const stream = body?.stream === true;
       if (req.method !== "POST") return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
+      // A request the test holds open: recorded, never answered (close() ends its connection).
+      if (options.hang?.(request)) return;
       const refused = options.refuse?.(request);
       if (refused) return void res.writeHead(refused.status ?? 400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: refused.message } }));
       const call = options.call?.(request);

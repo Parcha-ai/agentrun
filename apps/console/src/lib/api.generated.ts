@@ -450,6 +450,7 @@ export interface components {
       compile_after?: number;
       agree_min?: number;
       alone_min?: number;
+      agree_on?: string[];
       audit_every?: number;
       audit_every_later?: number;
       audit_later_after?: number;
@@ -930,6 +931,14 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1135,6 +1144,14 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   SecretMeta: {
     name: string;
@@ -3362,7 +3379,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];
@@ -3636,6 +3653,8 @@ export interface operations {
           agree_min: number;
           alone_min: number;
           attempt: 1 | 2;
+          agree_on?: string[];
+          grader?: string;
           n?: number;
           agreed?: number;
           alone?: number;
@@ -3660,6 +3679,7 @@ export interface operations {
             draft?: string;
             escalated?: string;
             failed?: true;
+            differs_on?: string;
           }[];
           stopped?: true;
         };
@@ -3719,6 +3739,8 @@ export interface operations {
             agree_min: number;
             alone_min: number;
             attempt: 1 | 2;
+            agree_on?: string[];
+            grader?: string;
             n?: number;
             agreed?: number;
             alone?: number;
@@ -3743,6 +3765,7 @@ export interface operations {
               draft?: string;
               escalated?: string;
               failed?: true;
+              differs_on?: string;
             }[];
             stopped?: true;
           } | null;
@@ -3929,7 +3952,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];

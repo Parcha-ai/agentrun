@@ -75,9 +75,17 @@ describe("a revision's standing and numbers", () => {
     expect(standingOf(record({ digest: "b".repeat(16) }), { serving: "b".repeat(16), stopped: "a".repeat(16) }).word).toBe("Serving");
   });
   it("puts the check's numbers in one line, or the reason when no input was checked", () => {
-    expect(replayLine(record({}))).toBe("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
+    expect(replayLine(record({}))).toBe("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
     expect(replayLine(record({ decided: "hold", check: { ...CHECK, n: 0, agreed: 0, alone: 0, outcomes: undefined, stopped: true }, reason: "nothing to check it on: it stops" }))).toBe("nothing to check it on: it stops");
     expect(replayLine(record({ check: undefined, reason: "held on its served runs" }))).toBe("held on its served runs");
+  });
+  it("names the answer fields a check compared on (learning.agree_on), or says it compared the whole answer", () => {
+    expect(replayLine(record({ check: { ...CHECK, agree_on: ["mcc", "riskTier"] } }))).toBe("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said on mcc and riskTier (94%, 80% needed), 2 handed back");
+    expect(replayLine(record({ check: { ...CHECK, agree_on: ["verdict.decision", "verdict.risk", "flagged"] } }))).toContain("said what the agent said on verdict.decision, verdict.risk and flagged (94%, 80% needed), 2");
+    expect(replayLine(record({ check: { ...CHECK, agree_on: undefined } }))).toContain("17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
+  });
+  it("says a check with no agree_on was compared by the fast model when its grader ran (check.grader)", () => {
+    expect(replayLine(record({ check: { ...CHECK, agree_on: undefined, grader: "claude-haiku-5-5" } }))).toContain("17 of those said what the agent said (94%, 80% needed; compared by the fast model), 2 handed back");
   });
   it("says what a promotion was decided on: checked on n inputs and how many alone, nothing for a check that ran on none; only a checked one is proven", () => {
     const checked = record({ check: { ...CHECK, n: 18, alone: 9 } });
@@ -105,7 +113,7 @@ describe("the story", () => {
     const one = storyOf({ ...base, ...took, promotions: [champion, replaying], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: "b".repeat(16), state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([one.value, one.detail, one.state]).toEqual(["Run 2", "revision aaaaaaa serves; revision bbbbbbb is checked on the inputs of its agent's own runs before it serves", "done"]);
     const two = storyOf({ ...base, ...took, promotions: [champion, replaying, held], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
-    expect([two.detail, two.state]).toEqual(["revision aaaaaaa serves; revision bbbbbbb was held: Checked on 20 inputs of the agent's own runs: 10 answered alone (50%, 70% needed), 7 of those said what the agent said (70%, 80% needed), 2 handed back", "done"]);
+    expect([two.detail, two.state]).toEqual(["revision aaaaaaa serves; revision bbbbbbb was held: Checked on 20 inputs of the agent's own runs: 10 answered alone (50%, 70% needed), 7 of those said what the agent said (70%, 80% needed; compared the whole answer), 2 handed back", "done"]);
     // Before any run of it in the cost series: the stage says it serves.
     const three = storyOf({ ...base, corrections: 3, promotions: [champion, replaying], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: "b".repeat(16), state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([three.value, three.state]).toEqual(["Serving", "done"]);

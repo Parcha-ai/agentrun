@@ -78,14 +78,14 @@ function standInScript(script) {
 
 /** The adapter loop for the suite's setup: claude-agent as the runner's harnesses give it, on the stand-in CLI. */
 export function claudeAgentSpec(setup) {
-  strictOptions("claudeAgentSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
-  const { script, tools, hooks, agentId } = setup;
+  strictOptions("claudeAgentSpec's setup", setup, ["script", "tools", "hooks", "agentId", "received"]);
+  const { script, tools, hooks, agentId, received } = setup;
   const harness = resolveHarness("claude-agent");
   return async (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
     adapter: tracked(await harness.adapter(
       { run, model: MODEL, provider: { origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir: SESSIONS },
-      { standIn: { command: process.execPath }, sdk: fakeSdk({ mirrorLagMs: 10, ...standInScript(script) }) },
+      { standIn: { command: process.execPath }, sdk: fakeSdk({ mirrorLagMs: 10, ...standInScript(script), ...(received ? { onMessage: ({ text, priority }) => received({ text, ...(priority ? { priority } : {}) }) } : {}) }) },
     )),
     record: harness.record,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },

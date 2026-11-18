@@ -261,6 +261,7 @@ export type DefinitionInput = {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
+    agree_on?: Array<string>;
     audit_every?: number;
     audit_every_later?: number;
     audit_later_after?: number;
@@ -458,6 +459,14 @@ export type RunSummary = {
     id: string;
     firing_key: string;
   } | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -747,6 +756,14 @@ export type Run = {
   } | null;
   audit_of?: string | null;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunResult = {
@@ -1477,6 +1494,8 @@ export type ListLearningPromotionsResponse = {
       agree_min: number;
       alone_min: number;
       attempt: 1 | 2;
+      agree_on?: Array<string>;
+      grader?: string;
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1501,6 +1520,7 @@ export type ListLearningPromotionsResponse = {
         draft?: string;
         escalated?: string;
         failed?: true;
+        differs_on?: string;
       }>;
       stopped?: true;
     };
@@ -1560,6 +1580,8 @@ export type ListLearningPromotionsResponse = {
         agree_min: number;
         alone_min: number;
         attempt: 1 | 2;
+        agree_on?: Array<string>;
+        grader?: string;
         n?: number;
         agreed?: number;
         alone?: number;
@@ -1584,6 +1606,7 @@ export type ListLearningPromotionsResponse = {
           draft?: string;
           escalated?: string;
           failed?: true;
+          differs_on?: string;
         }>;
         stopped?: true;
       } | null;
@@ -3878,7 +3901,7 @@ export type ImportTemplateResponse = {
     budget: {
       per_run_usd: number;
     } | null;
-    learning: boolean;
+    learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
     triggers: Array<Record<string, unknown>>;
     skills: Array<string>;
@@ -3970,7 +3993,7 @@ export type ListTemplatesResponse = {
     budget: {
       per_run_usd: number;
     } | null;
-    learning: boolean;
+    learning: boolean | Record<string, unknown>;
     approvals_default: "ask" | "never";
     triggers: Array<Record<string, unknown>>;
     skills: Array<string>;

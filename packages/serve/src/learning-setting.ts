@@ -11,12 +11,17 @@
 //   hold_window, hold_disagree: it stops serving (a hold) when its last hold_window audit rows hold at least
 //     hold_disagree disagreements;
 //   stop_window: a second hold within this many served runs of the first stops it for good.
+// Both compare two answers (learn/promote.ts sameAnswer) on agree_on, the definition's dotted paths into the answer's
+// JSON object that say the decision (`verdict.decision`); absent, the whole answer. Nothing is read off the output
+// schema: its enum can be an echo of the owner's setting, not the decision, and a wrong field that promotes is worse than
+// none.
 
-/** The loop's numbers as a definition may set them (each optional: its default stands in). */
+/** The loop's settings as a definition may set them (each optional: its default stands in). */
 export interface LearningLoop {
   readonly compile_after?: number;
   readonly agree_min?: number;
   readonly alone_min?: number;
+  readonly agree_on?: readonly string[];
   readonly audit_every?: number;
   readonly audit_every_later?: number;
   readonly audit_later_after?: number;
@@ -24,8 +29,9 @@ export interface LearningLoop {
   readonly hold_disagree?: number;
   readonly stop_window?: number;
 }
-/** The check's numbers (runner/promotion.ts): what a check record keeps of the loop. */
-export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min" | "alone_min">>;
+/** The check's numbers (runner/promotion.ts): what a check record keeps of the loop, with the paths it compares on (the
+ *  definition's agree_on; absent, the whole answer). */
+export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min" | "alone_min">> & Pick<LearningLoop, "agree_on">;
 /** The audit's numbers (runner/audit.ts). */
 export type AuditLoop = Required<Pick<LearningLoop, "audit_every" | "audit_every_later" | "audit_later_after" | "hold_window" | "hold_disagree" | "stop_window">>;
 /** A definition's `learning`, as kept on an agentic revision. */
@@ -41,7 +47,21 @@ export const AUDIT_DEFAULTS: AuditLoop = { audit_every: 10, audit_every_later: 2
 export const AUDIT_MAX = 1_000;
 
 const AUDIT_KEYS = ["audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"] as const;
-const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", ...AUDIT_KEYS] as const;
+const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", "agree_on", ...AUDIT_KEYS] as const;
+/** The most paths agree_on names, the most characters of each, and the most segments of each. */
+export const AGREE_ON_MAX = 16;
+export const AGREE_ON_PATH_MAX = 128;
+export const AGREE_ON_SEGMENTS_MAX = 8;
+/** An agree_on path's segments: each a key of an object, from the answer's top level down (a dot always splits). */
+export const pathSegments = (path: string): string[] => path.split(".");
+/** What is wrong with one agree_on path, in words, or undefined. */
+function pathIssue(path: string): string | undefined {
+  if (path.length > AGREE_ON_PATH_MAX) return `over ${AGREE_ON_PATH_MAX} characters`;
+  const segments = pathSegments(path);
+  if (segments.some((segment) => !segment)) return "an empty segment";
+  if (segments.length > AGREE_ON_SEGMENTS_MAX) return `more than ${AGREE_ON_SEGMENTS_MAX} segments`;
+  return undefined;
+}
 /** Each audit number's words, for its 422. */
 const AUDIT_WORDS: Record<(typeof AUDIT_KEYS)[number], string> = {
   audit_every: "audits 1 in this many served runs",
@@ -57,13 +77,19 @@ const isLoop = (value: unknown): value is LearningLoop => value !== null && type
 /** Whether `learning` has the agent's runs learn (true, or an object): never false or absent. */
 export const learnsOf = (learning: unknown): boolean => learning === true || isLoop(learning);
 
-/** The loop's numbers for a revision's `learning`: its object's, each one it leaves out at its default. */
+/** The paths a revision's two answers are compared on: its `learning.agree_on`; undefined, the whole answer. */
+export const agreeOnOf = (learning: unknown): readonly string[] | undefined => (isLoop(learning) && learning.agree_on?.length ? [...learning.agree_on] : undefined);
+
+/** The loop's numbers for a revision's `learning`: its object's, each one it leaves out at its default, with its
+ *  agree_on when set. */
 export function loopOf(learning: unknown): CheckLoop {
   const set = isLoop(learning) ? learning : {};
+  const on = agreeOnOf(learning);
   return {
     compile_after: set.compile_after ?? COMPILE_AFTER_DEFAULT,
     agree_min: set.agree_min ?? AGREE_MIN_DEFAULT,
     alone_min: set.alone_min ?? ALONE_MIN_DEFAULT,
+    ...(on ? { agree_on: on } : {}),
   };
 }
 
@@ -80,6 +106,14 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
   if (!isLoop(value)) return `${at} is true, false or an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}, on with those set)`;
   const other = Object.keys(value).find((key) => !(LOOP_KEYS as readonly string[]).includes(key));
   if (other !== undefined) return `${at}.${other} is not one of the loop's numbers: ${LOOP_KEYS.join(", ")}`;
+  const on = (value as Record<string, unknown>).agree_on;
+  if (on !== undefined) {
+    if (!(Array.isArray(on) && on.length >= 1 && on.length <= AGREE_ON_MAX && on.every((one) => typeof one === "string") && new Set(on).size === on.length)) return `${at}.agree_on is a list of 1 to ${AGREE_ON_MAX} distinct dotted paths into the answer's JSON object (e.g. verdict.decision)`;
+    for (const [i, path] of (on as string[]).entries()) {
+      const why = pathIssue(path);
+      if (why) return `${at}.agree_on[${i}] is not a dotted path into the answer's JSON object (e.g. verdict.decision): ${why}`;
+    }
+  }
   const { compile_after: after, agree_min: agree, alone_min: alone } = value as Record<string, unknown>;
   if (after !== undefined && !(Number.isInteger(after) && (after as number) >= 1 && (after as number) <= COMPILE_AFTER_MAX)) return `${at}.compile_after is a whole number of completed runs from 1 to ${COMPILE_AFTER_MAX}`;
   for (const [key, share] of [["agree_min", agree], ["alone_min", alone]] as const) {
@@ -94,9 +128,9 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
   return undefined;
 }
 
-/** A valid `learning` as a revision keeps it: an object's numbers in one order, so two definitions that say the same are
- *  one body. */
+/** A valid `learning` as a revision keeps it: an object's keys in one order, so two definitions that say the same are
+ *  one body (agree_on's list as its owner gave it: its order is theirs). */
 export function learningSettingOf(value: LearningSetting): LearningSetting {
   if (!isLoop(value)) return value;
-  return Object.fromEntries(LOOP_KEYS.flatMap((key) => (value[key] !== undefined ? [[key, value[key]]] : []))) as LearningLoop;
+  return Object.fromEntries(LOOP_KEYS.flatMap((key) => (value[key] !== undefined ? [[key, key === "agree_on" ? [...value.agree_on!] : value[key]]] : []))) as LearningLoop;
 }

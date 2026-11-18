@@ -9,6 +9,7 @@
 // its turn for up to --drain-timeout (default AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT), then every loop left is stopped where it can resume
 // and its run handed back for another runner (a loop that never stops is given up when its claim would run out, and its
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
+// A run isolation it cannot give (run-child-host.ts runIsolationOf) is said, and it stays up claiming nothing until a stop: 0.
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -527,8 +528,11 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     isolation = await runIsolationOf(env, told ? holds.loops : undefined, (line) => void console.error(`agentrun-serve runner: ${line}`));
   } catch (error) {
     if (!(error instanceof RunIsolationRefused)) throw error;
+    // Said, then up and claiming nothing until a stop: in the image's server-and-runner either process's exit stops the
+    // container, which a platform that restarts it (Render, Railway) would loop on, the refusal lost in the restarts.
     console.error(`agentrun-serve runner: ${error.message}`);
-    return 2;
+    await untilSignalled(RUNNER_SIGNALS);
+    return 0;
   }
   if (isolation.kind === "uid" && holds.loops > isolation.slots) console.error(`agentrun-serve runner: each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
   holds = { ...holds, loops: isolationLoops(isolation, holds.loops) };
@@ -594,6 +598,20 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
 
 /** The signals that stop a runner process. */
 const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
+
+/** Holds the process up, with nothing else to do, until one of `signals`. */
+function untilSignalled(signals: readonly NodeJS.Signals[]): Promise<void> {
+  return new Promise<void>((resolve) => {
+    // A signal's listener alone does not keep Node's loop alive.
+    const alive = setInterval(() => {}, 2 ** 30);
+    const onSignal = () => {
+      for (const signal of signals) process.off(signal, onSignal);
+      clearInterval(alive);
+      resolve();
+    };
+    for (const signal of signals) process.on(signal, onSignal);
+  });
+}
 
 /** A test's hooks into runnerMain: `started`, awaited once the runner has started claiming and before its stop handlers
  *  take over from the ones its start listened on (the window a stop must not fall through). */

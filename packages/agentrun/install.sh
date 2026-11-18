@@ -479,6 +479,8 @@ start_background() {
   say "AgentRun is running at $url"
   say "It runs in the background until this machine or container stops. $(shown_shim) stop stops it; its log is $log."
   [ -z "$public" ] || tailnet serve 7340 "$public" || exit 1
+  # With no owner yet, its setup page in the browser, the code filled in (or the link, where no browser opens).
+  "$shim" open --setup-only || true
 }
 
 # tailscale.mjs of the version installed, on its Node: `address PORT`, `serve PORT URL` or `off`.

@@ -122,8 +122,11 @@ Each row: entry point, then what makes it pass.
 21. **Run trace**: after a run that calls a tool, `GET /v2/runs/{id}/trace` → `model_requests` (`priced` on pi,
     `not_recorded` on a CLI harness, `tokens_only` for a workflow run) and `spans[]`: on pi, one `model` span per
     request with `tokens` and `usd`, whose `usd` sum to the run's `cost.usd`, and one `tool` span per call whose
-    `parent_id` is the request that made it. In the console the run's Dev tools tab lists the same spans; a row opens
-    its panel.
+    `parent_id` is the request that made it. In the console the run's Dev tools tab lists the same spans, each with
+    its bar on the time axis; a row opens its panel. The table is one stop for the Tab key: the arrow keys move from
+    row to row, Enter opens a row's panel, Tab goes into it and Escape closes it, from the table or the panel, and
+    returns to the row. Zoom in lists
+    only the calls that ran in the part of the run that shows, and says how many.
 
 ## Subsystems
 

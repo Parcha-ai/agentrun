@@ -175,6 +175,25 @@ for (const [what, told] of [["the store's write of it fails", "queued"], ["the o
   });
 }
 
+test("a trigger.failed names the agent its trigger runs as: a start_run's agent, or the agent of the run a message_run names, each with its name", async (t) => {
+  const told = [];
+  const refused = () => Promise.reject(new ApiError("agent_not_runnable", "archived"));
+  const { store, triggers } = await engine(t, { start: refused, message: refused, notify: (failed) => (told.push(failed), "queued") });
+  // Names that differ from the ids, so a message that sent the id in the name's place fails.
+  await store.agents.create({ id: "digest", name: "Nightly digest" }, { id: "rev-digest", kind: "agentic", body: {} });
+  await store.agents.create({ id: "inbox", name: "Inbox helper" }, { id: "rev-inbox", kind: "agentic", body: {} });
+  await store.runs.create({ id: "run-inbox", agentId: "inbox", revisionId: "rev-inbox" });
+  const started = await triggers.create({ ...body({ every_s: 600 }), target: { kind: "start_run", agent_id: "digest", input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  const messaged = await triggers.create({ name: "to-run", source: { kind: "webhook" }, target: { kind: "message_run", run_id: "run-inbox", input: { content: "Hello." } } });
+  assert.equal((await triggers.fire(started.id, "one")).firing.status, "failed");
+  assert.equal((await triggers.fire(messaged.id, "one")).firing.status, "failed");
+  await until(() => told.length === 2, "both trigger.failed messages");
+  const of = (id) => told.find((failed) => failed.trigger_id === id);
+  assert.deepEqual([of(started.id).agent_id, of(started.id).agent_name], ["digest", "Nightly digest"]);
+  assert.deepEqual([of(messaged.id).agent_id, of(messaged.id).agent_name], ["inbox", "Inbox helper"]);
+  assert.deepEqual(Object.keys(of(started.id)).sort(), ["agent_id", "agent_name", "auto_paused", "error", "firing_key", "name", "nominal_at", "trigger_id"], "no input or output beside them");
+});
+
 test("an every-minute schedule down a year and a day, with a window that long, starts in a bounded number of steps: its latest time fires, and the rest are one missed row of 10000 or more", { timeout: 300_000 }, async (t) => {
   const first = await engine(t, {});
   const made = await first.triggers.create({ ...body({ cron: "* * * * *" }), catchup_window_s: 366 * 86_400 });
