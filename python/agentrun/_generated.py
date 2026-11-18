@@ -752,6 +752,7 @@ __all__ = [
     "RunErrorDetails",
     "RunFile",
     "RunFileList",
+    "RunHandedBack",
     "RunImportedFrom",
     "RunLearning",
     "RunLearningWorkflowsItem",
@@ -774,9 +775,11 @@ __all__ = [
     "RunReview",
     "RunSdk",
     "RunSdkUsage",
+    "RunServed",
     "RunState",
     "RunStatus",
     "RunSummary",
+    "RunSummaryHandedBack",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningWorkflowsItem",
@@ -794,6 +797,7 @@ __all__ = [
     "RunSummaryReview",
     "RunSummarySdk",
     "RunSummarySdkUsage",
+    "RunSummaryServed",
     "RunSummaryTrigger",
     "RunTrigger",
     "RunsResource",
@@ -2214,6 +2218,7 @@ class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
 
 class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
     agree_on: list[str]
+    grader: str
     n: int
     agreed: int
     alone: int
@@ -2249,6 +2254,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     draft: str
     escalated: str
     failed: Literal[True]
+    differs_on: str
 
 
 class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
@@ -2329,6 +2335,7 @@ class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict)
 
 class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
     agree_on: list[str]
+    grader: str
     n: int
     agreed: int
     alone: int
@@ -2364,6 +2371,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
     draft: str
     escalated: str
     failed: Literal[True]
+    differs_on: str
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -2402,6 +2410,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | RunSummaryPending6 | None
     imported_from: RunSummaryImportedFrom | None
     trigger: RunSummaryTrigger | None
+    served: RunSummaryServed
+    handed_back: RunSummaryHandedBack
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -2624,6 +2634,16 @@ class RunSummaryImportedFrom(TypedDict):
 class RunSummaryTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunSummaryServed(TypedDict):
+    workflow: str | None
+    digest: str | None
+
+
+class RunSummaryHandedBack(TypedDict):
+    workflow: str | None
+    digest: str | None
 
 
 UnarchiveAgentResponse: TypeAlias = "dict[str, Any]"
@@ -4830,6 +4850,8 @@ class Run(_RunRequired, total=False):
     trigger: RunTrigger | None
     audit_of: str | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
+    served: RunServed
+    handed_back: RunHandedBack
 
 
 class _RunResultRequired(TypedDict):
@@ -5036,6 +5058,16 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunServed(TypedDict):
+    workflow: str | None
+    digest: str | None
+
+
+class RunHandedBack(TypedDict):
+    workflow: str | None
+    digest: str | None
 
 
 ListRunFilesResponse: TypeAlias = "RunFileList"

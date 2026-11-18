@@ -53,7 +53,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { laidOf, runLearningEnd, servedViewOf, usedOnly } from "./store-reads/learning.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
@@ -65,7 +65,7 @@ import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-com
 import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
-import { FINAL_STATES, type RunListing, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
+import { FINAL_STATES, type KeptListing, type RunListing, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
@@ -614,6 +614,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     cost: costOfView(run),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
+    // The learned workflow that answered it alone (`served`) or ran first and handed it back (`handed_back`), as its record
+    // keeps its path, the read the cost per run makes (store-reads/learning.ts servedViewOf); neither on any other run.
+    ...servedViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
@@ -649,6 +652,9 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
     ...(effort ? { effort } : {}),
     created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
+    // Read off the run's record, so a list carries it with no read of the run's journal.
+    ...(view.served ? { served: view.served } : {}),
+    ...(view.handed_back ? { handed_back: view.handed_back } : {}),
   };
 }
 
@@ -674,6 +680,7 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   return {
     item: { ...summary, console_url: null, archived_at: null },
     cut,
+    format: LISTING_FORMAT,
     status,
     live: run.live,
     until: expiries.length ? Math.min(...expiries) : null,
@@ -681,17 +688,24 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
-/** Whether `listing` was cut of the server's secrets as they are now. A list builds one cut of others again before it
- *  shows it (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads
- *  [redacted]), which cutting the built item again could not do. */
-export function cutOfNow(listing: { readonly cut: string }, serverSecrets: readonly string[]): boolean {
-  return listing.cut === secretsDigest(serverSecrets);
+/** The format of a listing's item (listingOverStore, summaryOfView): moved whenever what a list item holds changes (2:
+ *  `served` and `handed_back`). A run's row is current by its mark and its clock alone (Runs.behind), which an upgrade moves
+ *  neither of, so a row the server built under another format, or under none, is built again by the next list that reads
+ *  it (builtOfNow), once, and is current after. */
+export const LISTING_FORMAT = 2;
+
+/** Whether `listing` is one this server would build now: of this listing format (LISTING_FORMAT), and cut of the server's
+ *  secrets as they are now. A list builds any other again before it shows it (server.ts runsPage): the run's view cuts a
+ *  value whole where it holds a secret (a note's name reads [redacted]), which cutting the built item again could not do,
+ *  and an item of another format lacks what this one's view says. */
+export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
+  return listing.format === LISTING_FORMAT && listing.cut === secretsDigest(serverSecrets);
 }
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now
  *  (`archivedAt`, ms, the run's or its agent's), and, when the server's secrets moved between its build and this (within
  *  one list), every string in it cut again of them (redactedOutput), so a secret saved since never shows. */
-export function listedItem(listing: { readonly item: Record<string, unknown>; readonly cut: string }, origin: string, archivedAt: number | null, serverSecrets: readonly string[]): Record<string, unknown> {
+export function listedItem(listing: KeptListing, origin: string, archivedAt: number | null, serverSecrets: readonly string[]): Record<string, unknown> {
   const item = { ...listing.item, console_url: runLink(origin, String(listing.item.run_id)), archived_at: archivedAt === null ? null : iso(archivedAt) };
   return listing.cut === secretsDigest(serverSecrets) ? item : (redactedOutput(item, [...serverSecrets]) as Record<string, unknown>);
 }

@@ -470,9 +470,16 @@ if (!values["no-runner"] && askedAt === undefined) {
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
     runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
   } catch (error) {
-    console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
-    await serve.close();
-    process.exit(1);
+    // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
+    // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped
+    // container would otherwise loop on it.
+    const { RunIsolationRefused } = await import("./runner/run-child-host.js");
+    if (!(error instanceof RunIsolationRefused)) {
+      console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
+      await serve.close();
+      process.exit(1);
+    }
+    console.error(`agentrun-serve: ${error.message}`);
   }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
@@ -484,9 +491,11 @@ if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.s
 // The notice of the anonymous counts, once, on stderr: the npx command passes stderr through and keeps stdout to itself.
 if (telemetry.notice) console.error(telemetry.notice);
 // The console's page, once the server listens: never its sign-in link, whose token would sit in the opener's arguments
-// and the browser's history.
+// and the browser's history. With no owner yet, the setup page instead, its code filled in when setup takes one: the
+// first visit sets the password with nothing to look up. That code works once and for 30 minutes, unlike the token, so
+// the opener's arguments and the browser's history hold nothing that outlasts the setup.
 // API-only: there is no console, so nothing to open.
-if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [`${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
 const record = join(resolve(data), SERVER_FILE);
 // The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
 // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once

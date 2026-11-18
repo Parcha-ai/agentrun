@@ -561,6 +561,17 @@ Route: `GET /observations`.
 - `--days INTEGER` (integer): UTC calendar days including today; session details remain visible for their full retention period.
 - `--session-id STRING` (string)
 
+## open
+
+### `agentrun open`
+
+Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link).
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory of the AgentRun to open (default ~/.agentrun)
+- `--setup-only` (boolean, this CLI's own): open nothing once the owner's password is set (the installer's last step)
+
 ## revisions
 
 ### `agentrun revisions list AGENT_ID`

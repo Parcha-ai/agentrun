@@ -156,7 +156,7 @@ test("off with Tailscale stopped keeps its record and says to run again; with Ta
 });
 
 /** serviceOf on Linux with a fake systemd that "starts" a server by writing its record, and the fake tailscale. */
-function serviceBox(mode = "ok") {
+function serviceBox(mode = "ok", { env = { PATH: "/usr/bin" }, get = async () => ({ ok: true, status: 200, json: async () => ({ status: "ok" }) }) } = {}) {
   const box = machine(mode);
   const execed = [];
   const exec = (command, args, options) => {
@@ -174,11 +174,24 @@ function serviceBox(mode = "ok") {
   };
   const out = [];
   const io = { stdout: { write: (text) => out.push(text) }, stderr: { write: (text) => out.push(text) } };
-  const get = async () => ({ ok: true, status: 200, json: async () => ({ status: "ok" }) });
-  const service = serviceOf({ platform: "linux", home: box.home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const launch = async (command, args) => (execed.push([command, ...args].join(" ")), true);
+  const service = serviceOf({ platform: "linux", home: box.home, uid: 1000, user: "a", env, exec, io, fail, get, waitMs: 5_000, launch });
   const unit = () => readFileSync(join(box.home, ".config", "systemd", "user", UNIT), "utf8");
   return { ...box, service, unit, said: () => out.join(""), execed };
 }
+
+// The setup link a server on the tailnet prints names its tailnet address, which answers only once serve is on: the
+// page opens after serve, never before it.
+test("service install --tailscale on a server with no owner opens its setup page once serve is on", async () => {
+  const session = { accounts: true, password_set: false, signed_in: false, setup_code: true };
+  const get = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith("/auth/session") ? session : url.endsWith("/setup/code") ? { printed: false } : { status: "ok" }) });
+  const box = serviceBox("ok", { env: { PATH: "/usr/bin", DISPLAY: ":0" }, get });
+  mkdirSync(join(box.root, "logs"), { recursive: true });
+  writeFileSync(join(box.root, "logs", "agentrun.log"), `Set up this server: https://${HOST}/setup#code=CODE1 (or paste AGENTRUN_TOKEN)\n`);
+  assert.equal(await box.service.install({ tailscale: true }), 0);
+  const order = box.execed.filter((call) => call.startsWith("tailscale serve --bg") || call.startsWith("xdg-open"));
+  assert.deepEqual(order, ["tailscale serve --bg --https=443 http://127.0.0.1:7340", `xdg-open https://${HOST}/setup#code=CODE1`]);
+});
 
 test("service install --tailscale: the unit names the https address and the fixed port, and serve follows the start", async () => {
   const box = serviceBox();

@@ -34,7 +34,7 @@ export { COST_WINDOW };
 import { KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 import { endedIn, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
-import { type CostStop, sameAnswer } from "../learn/promote.js";
+import { type Compared, comparedOf, type CostStop, sameAnswer } from "../learn/promote.js";
 import type { Skipped } from "../learn/replay-calls.js";
 
 /** The root entry a run served workflow-first keeps, once the workflow's call ended: which workflow, at which learned
@@ -294,9 +294,12 @@ export function servedOf(entries: readonly { readonly kind: string; readonly dat
  *  which its grade keeps), and `not_auditable` when a trigger started it (never audited); and from its root `entries`,
  *  each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second pass), when one ran. learning-cost reads path
  *  and workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; not_auditable?: true; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> } {
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; not_auditable?: true; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> & { readonly compared?: Compared } } {
+  // The grader's verdict its end-of-run step kept (runner/compare-end.ts), for a replay run and a shadow.
+  const compared = comparedOf(entries.findLast((entry) => entry.kind === KINDS.compared)?.data);
+  const verdict = compared ? { compared } : {};
   // A shadow run (runner/audit.ts): path `audit` and the run it audits, whatever it did: no learning, no money rule.
-  if (launch.audit) return { path: "audit", audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } };
+  if (launch.audit) return { path: "audit", audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...verdict } };
   if (!launch.learning) return {};
   const { path, workflow, digest, promotion } = classified ?? { path: "agent" as const, workflow: null };
   const loops = loopsOf(entries);
@@ -311,7 +314,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
     // evidence. Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run.
     const skipped = replaySkippedIn(entries);
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
-    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, replay: { of, outcome, ...(skipped ? { skipped } : {}) } };
+    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, replay: { of, outcome, ...(skipped ? { skipped } : {}), ...verdict } };
   }
   // A served run a trigger started (learn/audit.ts auditableLaunch) is never audited: counted on the promotions read.
   const notAuditable = SERVED_PATHS.includes(path) && !auditableLaunch(launch);
@@ -319,7 +322,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
-export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: Skipped };
+export type ReplayMetrics = { readonly of: string; readonly outcome: ReplayOutcome; readonly skipped?: Skipped; readonly compared?: Compared };
 /** How a replay run's workflow ended on its input: `skipped_write`, stopped at a write the graded run's recording does not
  *  have (learn/replay-calls.ts SKIPPED_WRITE), never run. */
 export type ReplayOutcome = "answered" | "handed_back" | "failed" | "skipped_write";

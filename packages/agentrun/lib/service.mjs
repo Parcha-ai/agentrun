@@ -5,7 +5,7 @@
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
 // (tailscale.mjs); with --env, on a local model (MODEL_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -232,11 +232,28 @@ async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
   try {
     const response = await get(`${record.base_url.replace(/\/+$/, "")}/health`, { signal: AbortSignal.timeout(3_000) });
     const body = await response.json().catch(() => ({}));
-    return { url, health: response.ok && body?.status === "ok" ? "ok" : `${response.status} ${body?.status ?? ""}`.trim(), checks: body?.checks };
+    return { url, answered: true, health: response.ok && body?.status === "ok" ? "ok" : `${response.status} ${body?.status ?? ""}`.trim(), checks: body?.checks };
   } catch (error) {
-    return { url, health: `not answering (${error?.cause?.code ?? error?.name})` };
+    return { url, answered: false, health: `not answering (${error?.cause?.code ?? error?.name})` };
   }
 }
+
+/** Whether a browser can be opened here: not in CI, and on Linux or FreeBSD only with a display (serve's host.ts canOpen). */
+export const canOpen = (env, platform) => !env.CI && (platform === "darwin" || (["linux", "freebsd"].includes(platform) && Boolean(env.DISPLAY || env.WAYLAND_DISPLAY)));
+/** Starts `command` on `args` for the browser and leaves it running: an opener can stay in the foreground until the
+ *  browser it starts closes, so nothing waits for its exit (serve's --open spawns it the same way). True once it started,
+ *  false when it could not (no such command). */
+export const launchOpener = (command, args, env) => new Promise((done) => {
+  const child = spawn(command, args, { env, stdio: "ignore", detached: true });
+  child.once("error", () => done(false));
+  child.once("spawn", () => {
+    child.unref();
+    done(true);
+  });
+});
+/** The newest setup link a server printed to `log` (`Set up this server: <link> ...`), or undefined. */
+export const SETUP_LINE = /^Set up this server: (https?:\/\/\S+\/setup#code=[A-Za-z0-9_-]+)/;
+const SETUP_TAIL = 2_000;
 
 /** The last `count` lines of a file, read back from its end only as far as they go: the log is appended to forever. */
 const tailOf = (file, count) => {
@@ -266,7 +283,7 @@ const tailOf = (file, count) => {
 };
 
 /** Every service command, given what it runs on; the entries below bind it to this machine. */
-export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS }) {
+export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS, launch = launchOpener }) {
   exec ??= (command, args, options = {}) => spawnSync(command, args, { encoding: "utf8", ...options });
   const root = join(home, ".agentrun");
   const program = join(root, "bin", "agentrun");
@@ -284,9 +301,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
   };
   const argsNow = () => manager.args(readFileSync(manager.file, "utf8")).slice(1);
 
-  /** Waits for the server started at `since` to answer /health ok, then says where it is; exit 0, or 1 with the log's
-   *  last lines. */
-  async function started(since, data) {
+  /** Waits for the server started at `since` to answer /health ok, then says where it is, runs `ready` and opens its
+   *  setup page while it has no owner; exit 0, or 1 with the log's last lines. */
+  async function started(since, data, ready = () => {}) {
     const deadline = Date.now() + waitMs;
     let last = {};
     while (Date.now() < deadline) {
@@ -295,6 +312,10 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         say(`AgentRun is running at ${last.url} (${manager.name}).`);
         say(`Logs: ${log}`);
         for (const note of manager.notes()) say(note);
+        // The tailnet's serve entry first: the setup link names that address.
+        ready();
+        // A server with no owner yet: its setup page, open in the browser with the code filled in.
+        await openPage(data, { setupOnly: true, url: last.url });
         return 0;
       }
       await new Promise((done) => setTimeout(done, 500));
@@ -305,7 +326,83 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     return 1;
   }
 
+  /** The newest setup link in the service's log. */
+  const newestSetup = () => {
+    for (const line of tailOf(log, SETUP_TAIL).reverse()) {
+      const found = SETUP_LINE.exec(line);
+      if (found) return found[1];
+    }
+    return undefined;
+  };
+
+  /** `agentrun open`, and the end of a start: the page to open first, in this machine's browser. With no owner yet, the
+   *  setup page: its code filled in when setup takes one (a code still good is kept; an expired or spent one is replaced
+   *  first, as the page's Get a new code does), or `/setup` where setup takes none. With an owner, the console, unless
+   *  `setupOnly`. The link is printed for the person at this terminal as well, for when no browser opens (an opener can
+   *  start and still find none): theirs to open, and a setup code works once and for 30 minutes, unlike the API token,
+   *  which never leaves its file. The code comes from the log the service (or the installer's background start) writes,
+   *  so only for the data folder that log is for: another server prints its own elsewhere. Exit 0, or 1 when no server
+   *  answers. */
+  async function openPage(data, { setupOnly = false, url = undefined } = {}) {
+    let unwell;
+    if (url === undefined) {
+      // A record a crash or a forced stop left behind names an address no server answers. A server that answers with a
+      // failed check (low disk is a 503) still serves its console and its setup page: it opens, and the check is said.
+      const now = await healthOf(data, { fetch: get });
+      if (now.answered) url = now.url;
+      if (now.answered && now.health !== "ok") {
+        const failing = Object.entries(now.checks ?? {}).filter(([, value]) => value !== "ok").map(([name, value]) => `${name}: ${value}`);
+        unwell = failing.length ? `${now.health} (${failing.join(", ")})` : now.health;
+      }
+    }
+    if (!url) {
+      if (setupOnly) return 0;
+      io.stderr.write(`No AgentRun answers for ${data}: start it with agentrun service start, or agentrun.\n`);
+      return 1;
+    }
+    const record = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
+    const api = record.base_url.replace(/\/+$/, "");
+    const ask = async (path, init) => {
+      try {
+        const response = await get(`${api}${path}`, { ...init, signal: AbortSignal.timeout(5_000) });
+        return response.ok ? await response.json().catch(() => ({})) : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    if (unwell) say(`Its health check answers ${unwell}; agentrun service status says more.`);
+    const logged = resolve(data) === (installed() ? dataOf(argsNow(), home) : resolve(root));
+    const session = await ask("/auth/session");
+    let link;
+    let coded = false;
+    if (session?.accounts !== false && session?.password_set === false) {
+      if (session.setup_code) {
+        const before = logged ? newestSetup() : undefined;
+        const renewed = await ask("/setup/code", { method: "POST" });
+        // A new code goes to the log as the answer is sent: wait for its line.
+        for (let waited = 0; logged && renewed?.printed && newestSetup() === before && waited < 3_000; waited += 100) await new Promise((done) => setTimeout(done, 100));
+        link = logged ? newestSetup() : undefined;
+        coded = link !== undefined;
+        if (!link) {
+          link = url;
+          say(`Its setup code is in the log of the terminal or service AgentRun runs in: the newest line "Set up this server:".`);
+        }
+      } else link = `${url}setup`;
+    } else if (setupOnly) return 0;
+    else link = url;
+    const opener = platform === "darwin" ? "open" : "xdg-open";
+    const opened = canOpen(env, platform) && (await launch(opener, [link], env));
+    const setup = !(link === url && session?.password_set !== false);
+    if (opened) {
+      say(setup ? "Opened the setup page in your browser: set the owner password there." : "Opened the console in your browser.");
+      say(`If no browser opened, open ${link}`);
+    } else say(setup ? `Set the owner password at the setup page: ${link}` : `The console: ${link}`);
+    if (coded) say("Its setup code works once and for 30 minutes; agentrun open gives a new one after that.");
+    return 0;
+  }
+
   return {
+    open: ({ data, "setup-only": setupOnly }) => openPage(resolve(data ?? root), { setupOnly }),
     async install({ data, port, tailscale, env: sets = [] }) {
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
       const changes = sets.map((pair) => {
@@ -352,9 +449,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       const since = Date.now();
       manager.install();
       say(`Installed AgentRun's service (${manager.file}): it keeps running after this terminal closes, and starts again at login.`);
-      const code = await started(since, dataOf(args, home));
-      if (code === 0 && at) tailnet.serve(served, at.host);
-      return code;
+      return started(since, dataOf(args, home), () => {
+        if (at) tailnet.serve(served, at.host);
+      });
     },
     async status() {
       need();
@@ -508,6 +605,16 @@ export const SERVICE = VERBS.map(([verb, summary, help, options]) => ({
   options,
   run: ({ values, io, env, cli }) => serviceOf({ env, io, fail: cli.fail })[verb](values),
 }));
+
+/** `agentrun open` (cli.mjs LOCAL). */
+export const OPEN = {
+  command: ["open"],
+  pathParams: [],
+  summary: "Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link)",
+  help: [["--data DIR", "the data directory of the AgentRun to open (default ~/.agentrun)"], ["--setup-only", "open nothing once the owner's password is set (the installer's last step)"]],
+  options: { "setup-only": { type: "boolean" } },
+  run: ({ values, io, env, cli }) => serviceOf({ env, io, fail: cli.fail }).open(values),
+};
 
 /** `agentrun stop` (cli.mjs LOCAL). */
 export const STOP = {

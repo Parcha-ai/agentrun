@@ -57,7 +57,9 @@ import { placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { compareEndOfRun, GRADER_LABEL, GRADER_ROUTE, withGrader } from "./compare-end.js";
+import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
@@ -263,6 +265,35 @@ export function modelRetryOf(routes: Iterable<Pick<ModelRoute, "like">>): Pick<A
 const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
+
+/** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
+ *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
+ *  provider's than the run's own, whose key claimSecrets never opened: so its route reads every model key the server
+ *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone. A run with its
+ *  own model key carries that key, and no saved key is read. Undefined when there is no fast model, the revision names
+ *  agree_on, or no route can be made (logged: the pair is then compared whole). */
+export async function graderRouteOf(
+  body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
+  keyed: boolean,
+  runKey: ClaimModelKey | undefined,
+  claimed: NodeJS.ProcessEnv,
+  cut: HeldRedact,
+  log: (line: string) => void,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  holds: readonly HeldRedact[] = [cut],
+): Promise<ModelRoute | undefined> {
+  if (agreeOnOf(body.learning)?.length) return undefined;
+  const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
+  for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
+  const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey);
+  if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
+  try {
+    return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
+  } catch (error) {
+    log(`learning: no grader route (${error instanceof Error ? error.message : String(error)}): the answers are compared whole`);
+    return undefined;
+  }
+}
 
 /** The revision's body, as the fields the spec reads of it (agentic runs only reach here; a workflow run is dispatched to
  *  the workflow loop). */
@@ -728,6 +759,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     holdClaimed(cut, learnedKeys);
     Object.assign(toolEnv, learnedKeys);
   }
+  // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
+  // session's booking under the run's one cap. None: the pair is compared whole, in words saying so.
+  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps) : undefined;
+  if (graderRoute) tierRoutes.set(GRADER_ROUTE, graderRoute);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
@@ -749,7 +784,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const handTools = tools.hostTools(withKindTools(granted, tools), results);
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
-  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier)).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
+  const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier) && tier !== GRADER_ROUTE).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
   // The gate asks a learned_workflow call about its workflow's MCP nodes (adapterRunGate).
   gate.learn(workflows);
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
@@ -821,10 +856,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // (adapter-loop.ts stepOf). Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the
   // data directory, Mode 2 the agent's folder on THIS claim's Archil disk (the draft is checked against the seed on the disk, never this machine's
   // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
-  // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  // A replay run or an audit's shadow run learns nothing at its end: it is the promotion's, never the agent's to learn
+  // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
+  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, revisionId: runRow.revisionId, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER_LABEL, GRADER_ROUTE) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),

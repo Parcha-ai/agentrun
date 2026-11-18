@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { fold } from './changes.mjs';
-import { changelogSection, highlights, installLines, MAX_BODY, releaseNotes, releaseVersions } from './release-notes.mjs';
+import { changelogSection, installLines, MAX_BODY, releaseNotes, releaseVersions } from './release-notes.mjs';
 
 const exec = promisify(execFile);
 
@@ -85,7 +85,6 @@ test('the section the notes and the post read carries no fragment marker: a mark
     assert.doesNotMatch(section, /<!--|-->/, version);
     assert.equal(section, changelogSection(changelog, version), `${version} reads as it did before the markers`);
   }
-  assert.equal(highlights(changelogSection(marked, '0.1.0-beta.41')).lines[0], 'Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners.');
   assert.doesNotMatch(releaseNotes({ section: changelogSection(marked, '0.1.0-beta.43'), install: '## Install\n\n- x', tag: 'v0.1.0-beta.43', repository: 'o/r' }), /<!--/);
 });
 
@@ -147,25 +146,6 @@ test('the notes are the section, then the install lines; a body over GitHub\'s l
   // CHANGELOG.md at the tag has no section for this version (the fold is not committed); the tag's changes/ fragments are its notes.
   assert.match(cut, /\n- Entry \d+ x+\n\nThe rest of this release's changes are in \[its fragments in changes\/ at v0\.1\.0-beta\.43\]\(https:\/\/github\.com\/o\/r\/tree\/v0\.1\.0-beta\.43\/changes\)\.\n\n## Install\n\n- x\n$/);
   assert.equal(cut.match(/\]\((https:[^)]+)\)/)[1], 'https://github.com/o/r/tree/v0.1.0-beta.43/changes', 'the cut body\'s link is the tag\'s changes/ folder');
-});
-
-test('the highlights are the first lines of the upgrading block when the release has one, else of the section', () => {
-  assert.deepEqual(highlights(changelogSection(changelog, '0.1.0-beta.41')), {
-    label: 'Upgrading and going back',
-    lines: [
-      'Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners.',
-      'SQLite keeps schema version 11: the server adds the nullable `runs.labels` column.',
-      'Postgres goes from schema version 14 to 16 at the server\'s start.',
-    ],
-    more: 1,
-  });
-  assert.deepEqual(highlights(changelogSection(changelog, '0.1.0-beta.43'), 2), {
-    label: null,
-    lines: ['The old learning promotion loop is gone. A learned workflow has one path to serving.', 'The Cloudflare relay no longer answers a create with a bare 500 when its container is slow to start.'],
-    more: 3,
-  });
-  const long = highlights(`- ${'word '.repeat(200)}`);
-  assert.ok(long.lines[0].length <= 300 && long.lines[0].endsWith('…'), 'a long first line is cut');
 });
 
 test('the command writes the notes from a folded changelog and this checkout\'s versions', async (t) => {

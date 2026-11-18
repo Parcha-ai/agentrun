@@ -34,7 +34,13 @@ after 45 seconds). Either way the installer returns once AgentRun answers, and p
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
 first stops the AgentRun it started in the background itself, whatever version that is. An older version does not start on
-a store a later one has upgraded: its server says so and exits, and the store is left as it was.
+a store a later one has upgraded: its server says so and exits, and the store is left as it was. Until the owner's
+password is set, it ends by opening the setup page in this machine's browser with the setup code filled in, or, where no browser
+opens (a remote machine), by printing that link.
+
+`agentrun open` does the same at any time: the setup page with a code that is still good (it asks the server for a new
+one when the last has run out) until the password is set, the console after. It reads the code from the service's log,
+`~/.agentrun/logs/agentrun.log`.
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and

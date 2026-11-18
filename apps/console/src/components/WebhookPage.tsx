@@ -4,6 +4,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
@@ -17,8 +18,9 @@ const SIGNING: Record<Exclude<Extract<Webhook, { configured: true }>["signing"],
 
 /** Settings → Webhook (GET, PUT and DELETE /v2/settings/webhook, a serve extension): the URL run notices are POSTed to,
  *  signed by the Standard Webhooks spec; whether its secret signs here; why it is off; the secret, shown only on the
- *  save that made it and never kept in the page after; a test send; and the last attempts (GET .../deliveries), newest
- *  first, with the receiver's answer or why each failed, and a redelivery of any (POST .../redeliver). */
+ *  save that made it, copied with one press, and never kept in the page after; a test send; and the last attempts
+ *  (GET .../deliveries), newest first, with the receiver's answer or why each failed, and a redelivery of any (POST
+ *  .../redeliver). */
 export function WebhookPage({ v2 }: { v2: Client }) {
   const [webhook, setWebhook] = useState<Webhook | null>(null);
   const [attempts, setAttempts] = useState<WebhookAttempt[]>([]);
@@ -77,7 +79,7 @@ export function WebhookPage({ v2 }: { v2: Client }) {
           {secret && (
             <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Webhook secret">
               <p className="caps text-small font-semibold text-warning-text">The signing secret, shown this once</p>
-              <p className="mt-2 break-all font-mono text-body">{secret}</p>
+              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-body">{secret}</code><CopyButton text={secret} label="Copy secret" /></div>
               <p className="mt-2 text-body text-muted-foreground">Keep it where the receiver checks <span className="font-mono">webhook-signature</span>. This server never shows it again.</p>
               <Button type="button" variant="outline" className="mt-3" onClick={() => setSecret(null)}>Done</Button>
             </section>

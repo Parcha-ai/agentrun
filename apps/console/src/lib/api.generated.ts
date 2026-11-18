@@ -931,6 +931,14 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1136,6 +1144,14 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   SecretMeta: {
     name: string;
@@ -3638,6 +3654,7 @@ export interface operations {
           alone_min: number;
           attempt: 1 | 2;
           agree_on?: string[];
+          grader?: string;
           n?: number;
           agreed?: number;
           alone?: number;
@@ -3662,6 +3679,7 @@ export interface operations {
             draft?: string;
             escalated?: string;
             failed?: true;
+            differs_on?: string;
           }[];
           stopped?: true;
         };
@@ -3722,6 +3740,7 @@ export interface operations {
             alone_min: number;
             attempt: 1 | 2;
             agree_on?: string[];
+            grader?: string;
             n?: number;
             agreed?: number;
             alone?: number;
@@ -3746,6 +3765,7 @@ export interface operations {
               draft?: string;
               escalated?: string;
               failed?: true;
+              differs_on?: string;
             }[];
             stopped?: true;
           } | null;
