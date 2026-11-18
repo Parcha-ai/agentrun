@@ -117,10 +117,13 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
   } catch (error) {
     if (!(error instanceof SchemaVersionUnknown)) throw error;
     const { found, known } = error;
+    // A store the server of this release upgrades in place (Postgres at an earlier version) waits for that server's start.
     throw new RunnerRefused(
       found === null
         ? `The store in ${where} is not set up yet: start the server on ${on} first, then the runner.`
-        : `The store in ${where} is at schema version ${found}, and this runner knows ${known}: run a runner of the same release as the server.`,
+        : error.upgradesInPlace
+          ? `The store in ${where} is at schema version ${found}, and this runner knows ${known}: start the server first, which upgrades the store in place, then the runner.`
+          : `The store in ${where} is at schema version ${found}, and this runner knows ${known}: run a runner of the same release as the server.`,
       { cause: error },
     );
   }

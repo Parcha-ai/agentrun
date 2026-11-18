@@ -285,7 +285,9 @@ the server, which reaches the runner's viewer. Each runner names the host the se
 (`AGENTRUN_RUNNER_LIVE_HOST`; its viewers listen there, or on `AGENTRUN_RUNNER_LIVE_BIND`), and the server dials only
 the hosts in its `AGENTRUN_RUNNER_HOSTS`. Every request the server makes of a runner's viewer is signed with a key
 derived from the seal key, and a runner takes no other. The hop is plain HTTP: keep the server and its runners on a
-private network of their own, as this stack does. With neither setting, viewers stay on loopback, which is right when
+private network of their own, as this stack does. The attach relay's `ws://` hop, from the server to the runner that
+made a dial computer, carries that machine's bearer token over the same private network, so the same rule covers it.
+With neither setting, viewers stay on loopback, which is right when
 the server and its runner share a machine (the default image's command).
 
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:

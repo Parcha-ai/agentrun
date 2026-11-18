@@ -340,7 +340,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       await connection.write([...DDL.map((sql) => ({ sql })), { sql: "INSERT INTO store_meta (singleton, schema_version) VALUES (1, ?) ON CONFLICT (singleton) DO NOTHING", params: [SCHEMA_VERSION] }], { full: true });
       found = await versionOf(connection);
     }
-    // Version 11 (0.1.0-beta.43 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
+    // Version 11 (0.1.0-beta.44 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
     // in one durable write once the columns an earlier build of 11 lacked are in, every run behind until its lister builds
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). A runner refuses 11 and 12 until that server has.
