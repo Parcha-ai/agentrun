@@ -56,7 +56,7 @@ test("check on live-shaped answers: same mcc and riskTier, other rationale, evid
   assert.equal(whole.record.decided, "hold", "today's whole-answer rule stands with no agree_on");
   assert.equal(whole.stored.check.agreed, 0);
   assert.equal(whole.stored.check.agree_on, undefined);
-  assert.match(whole.record.reason, /0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held; its answers never matched the agent's word for word; name the fields that carry the decision \(learning\.agree_on\); the agent's next run recompiles/);
+  assert.match(whole.record.reason, /0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held; its answers never matched the agent's word for word, and no fast model compared their decisions \(a learning agent with no agree_on wants one: AGENT_MODEL_FAST, or its model_tiers\.fast\); name the fields that carry the decision \(learning\.agree_on\); the agent's next run recompiles/);
 });
 
 test("check on dotted paths: verdict.decision agrees though the rationale differs; a draft that differs on it disagrees, counted per input", async () => {
