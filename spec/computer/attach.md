@@ -97,8 +97,31 @@ until the owner removes it.
 
 `computerd` is the driver on Linux: `computerd init` serves the protocol on its socket, `computerd pair` trades the
 code for the token, and `computerd attach` dials. A box with an X display (`DISPLAY` set for init) pairs as a
-`desktop`, with its shell and files. A box with none says `linux`, which pairing refuses: serve can't give a run's
-folder to a paired computer yet, and a sandbox needs one.
+`desktop`, with its shell and files. A box with none says `linux` and pairs as a `sandbox`, which holds a run's folder
+as a synced folder in its `/workspace` (Mode 2; Mode 1 runs a sandbox only on Docker):
+
+- **`/workspace`** is a directory of init's user's own, mode `0700`, never a link. Make it once, as root, with a
+  tmpfiles.d line, which makes the directory with that owner and mode, sets them again on one that is there, and makes
+  it again at each boot:
+
+  ```
+  # /etc/tmpfiles.d/agentrun.conf
+  d /workspace 0700 ada ada -
+  ```
+
+  then `systemd-tmpfiles --create /etc/tmpfiles.d/agentrun.conf`. A claim reads it from inside, as init's user, and
+  refuses a box whose `/workspace` is missing, a link, not a directory, another user's, or open to its group or others,
+  in words naming this fix. The box is let go, and nothing is written.
+- **Each claim** empties `/workspace` of what an earlier run left (each entry removed, a link never followed), then
+  pushes the run's folder in. Each change goes back to the run's folder before the call that made it answers, and once
+  more at release, through the claim's epoch fence: a run that has lost the box can't write the folder. The next run
+  on the box finds its folder as the run's folder holds it, never as the box was left.
+- **Only under `/workspace`.** On a person's own machine the synced folder writes only under its workspace directory,
+  never through a link. Init extracts a push opening each name `O_NOFOLLOW` from `/workspace` down, and refuses an
+  entry with a link or a file on its way (`entry "escape/x" is outside the target directory: a symlink or a file is on
+  its way`). A link the run's folder holds is made as a link, and never followed.
+- **Its network** is `open`, the box's own. A sandbox setting with network `none` or an allow list is refused, as for
+  every paired computer.
 
 1. **Init.** As the box's user, with an empty capability bounding set, which init needs to start as a user who can't
    empty it (a system unit's `CapabilityBoundingSet=`; a user unit can't set it): `computerd init --deadline
@@ -165,7 +188,9 @@ RestartPreventExitStatus=2 3 4 5
 WantedBy=graphical.target
 ```
 
-Start the first, run `computerd pair` as `ada` with the same `AGENTRUN_COMPUTERD_SOCKET`, then enable the second.
+On a box with no display, leave out `After=display-manager.service`, `DISPLAY` and `XAUTHORITY`, and want both from
+`multi-user.target`. Start the first, run `computerd pair` as `ada` with the same `AGENTRUN_COMPUTERD_SOCKET`, then
+enable the second.
 Attach's exits 2 to 5 (a missing or refused token file, a removed computer, a `hello` it wasn't paired as, another
 protocol version) wait for a person; any other exit dials again.
 
@@ -243,9 +268,11 @@ The server maps an attached computer to a provider so a run takes it like any ot
   connection: one run holds the computer at a time, so its refs and states are that run's.
 - **A provider per paired computer.** `attachedProvider(paired, hub)` is a `ComputerProvider` with id `attached`. Its
   capabilities are the computer's kind and os as it paired, the groups of its live `hello`, network as the machine has
-  it, and isolation `machine`. Its daemon mode is `none`: no `computerd init` runs on the machine, so none of init's promises about programs hold, and
-  `exec` and `files` are groups it may declare but not Core, and an attached Mac declares them only by its owner's
-  grant ([`kinds.md`](kinds.md)).
+  it, and isolation `machine`. A desktop's or a phone's daemon mode is `none`: no `computerd init` runs on the machine,
+  so none of init's promises about programs hold, and `exec` and `files` are groups it may declare but not Core, and an
+  attached Mac declares them only by its owner's grant ([`kinds.md`](kinds.md)). A Linux box's is `child` (init runs
+  there, under its service manager), with no vendor agent ports (attach dials out) and the synced folder as its one
+  mount, read back as `{ kind: "sync", epoch }` under the run's claim epoch ([A Linux box](#a-linux-box)).
 - **Claim, not make.** `create` claims the computer for a run, with the run's labels: refused `gone` while it is not
   attached, `refused` while another run holds it. `release` with `delete` ends the run's hold and deletes nothing;
   `stop` is refused. A person's machine is never made, stopped or deleted by a run. A run's hold ends at its

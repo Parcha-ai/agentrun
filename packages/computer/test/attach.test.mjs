@@ -3,7 +3,7 @@
 // hello that is not what the computer paired as is closed with its code; one run holds the computer at a time.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -461,6 +461,86 @@ test("a run's hold on an attached computer ends at its lifetime, released or not
 	assert.equal(agent.ok, true, JSON.stringify(agent));
 	assert.equal(hub.deadline(paired.id), undefined, "an agent's hold has no deadline");
 	driver.close();
+});
+
+/** What computerd init says on a Linux box with no display: a sandbox's machine. */
+const LINUX = { protocol: PROTOCOL_VERSION, version: "0.2.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
+/** A run's create on it, its folder a synced folder, under the run's claim epoch 3. */
+const SYNCED = { image: "attached", lifetimeMs: 60_000, network: "open", mount: { kind: "sync" }, labels: { "agentrun.run": "r1", "agentrun.epoch": "3" } };
+
+/** A Linux box's computerd on `computer`'s end, scripted: it runs as uid 1000, its /workspace is `box.workspace` ({ type,
+ *  uid, mode }, or none), holding the names in `box.entries`; each files call is recorded with its path. */
+function linuxBox(computer, box) {
+	computer.onText((text) => {
+		const { id, method, params } = JSON.parse(text);
+		if (id === undefined) return;
+		if (method.startsWith("files.")) box.calls.push(`${method} ${params.path}${params.recursive ? " recursive" : ""}`);
+		const reply = (result) => computer.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+		const refuse = (kind, message) => computer.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message, data: { kind } } }));
+		if (method === "hello") return reply(LINUX);
+		if (method === "files.read" && params.path === "/proc/self/status") return reply({ data: Buffer.from("Name:\tcomputerd\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n").toString("base64"), eof: true, size: 0 });
+		if (method === "files.stat" && params.path === "/workspace") return box.workspace ? reply({ size: 0, mtimeMs: 0, gid: 1000, ...box.workspace }) : refuse("not_found", "stat /workspace: no such file or directory");
+		if (method === "files.list") return reply({ entries: box.entries.map((name) => ({ path: `/workspace/${name}`, type: "file", size: 0, mode: 0o644, mtimeMs: 0, uid: 1000, gid: 1000 })), truncated: false });
+		if (method === "files.remove") {
+			box.entries = box.entries.filter((name) => `/workspace/${name}` !== params.path);
+			return reply({});
+		}
+		return reply({});
+	});
+}
+
+test("a paired Linux box is a sandbox that takes the run's folder as a synced folder in its own /workspace: one that is missing, a link, another user's or open to others is refused naming the fix and the hold let go; an earlier run's folder is emptied; the folder reads back under the claim epoch, from inside", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const { kind, daemon, mount, vendorAgentPorts } = provider.capabilities();
+	assert.deepEqual({ kind, daemon, mount, vendorAgentPorts }, { kind: "linux", daemon: "child", mount: ["sync"], vendorAgentPorts: [] }, "computerd init runs there, a child of its service manager, and attach dials out");
+	const fields = (spec) => provider.check(spec).map((refusal) => refusal.field);
+	assert.deepEqual(fields(SYNCED), []);
+	assert.deepEqual(fields({ ...SYNCED, mount: { kind: "bind", path: "/srv/runs/r1" } }), ["mount"], "a synced folder alone");
+	assert.deepEqual(fields({ ...SYNCED, mount: { kind: "archil", disk: "d", region: "r", folder: "f", token: "not-a-secret" } }), ["mount"]);
+	assert.deepEqual(fields({ ...SYNCED, labels: { "agentrun.run": "r1" } }), ["labels"], "read back under the run's claim epoch");
+	const mac = attachedProvider(pairedFor(new Mac(), "c-mac"), hub);
+	assert.equal(mac.capabilities().mount, undefined, "a desktop takes no mount");
+	assert.match(mac.check(SYNCED).find((refusal) => refusal.field === "mount")?.message ?? "", /declares no mount kind/);
+
+	const [serve, computer] = socketPair();
+	const box = { workspace: undefined, entries: ["old.txt"], calls: [] };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const fix = "make /workspace a directory of computerd's user's own, mode 0700, as root: the tmpfiles.d line in spec/computer/attach.md, A Linux box (d /workspace 0700 <user> <user> -), then systemd-tmpfiles --create";
+	for (const [workspace, words] of [
+		[undefined, `lab has no /workspace, where a run's synced folder goes: ${fix}`],
+		[{ type: "symlink", uid: 1000, mode: 0o777, target: "/home/ada" }, `/workspace on lab is a link, and a run's synced folder is never written through one: remove it, then ${fix}`],
+		[{ type: "file", uid: 1000, mode: 0o600 }, `/workspace on lab is a file, where a run's synced folder needs a directory: remove it, then ${fix}`],
+		[{ type: "dir", uid: 0, mode: 0o700 }, `/workspace on lab is uid 0's, not uid 1000's, the user computerd runs as: ${fix}`],
+		[{ type: "dir", uid: 1000, mode: 0o755 }, `/workspace on lab is open to its group or others (mode 0755): ${fix}`],
+	]) {
+		box.workspace = workspace;
+		const refused = await provider.create(SYNCED, req());
+		assert.deepEqual(refused.error, { code: "refused", message: words });
+		assert.equal(hub.claimed(paired.id), undefined, "the hold is let go");
+	}
+	assert.deepEqual(box.calls.filter((call) => !call.startsWith("files.read") && !call.startsWith("files.stat")), [], "nothing is listed or removed in a /workspace that is not the box's own");
+
+	box.workspace = { type: "dir", uid: 1000, mode: 0o700 };
+	box.calls.length = 0;
+	const held = (await provider.create(SYNCED, req())).value;
+	assert.deepEqual(box.calls, ["files.read /proc/self/status", "files.stat /workspace", "files.list /workspace", "files.remove /workspace/old.txt recursive"], "an earlier run's folder is emptied before the push");
+	assert.deepEqual((await provider.attach({ id: held.id })).value.spec.mount, { kind: "sync", epoch: 3 });
+	assert.deepEqual((await provider.list({ "agentrun.run": "r1" })).value.map((one) => one.mount), [{ kind: "sync", epoch: 3 }]);
+	// Swapped for a link while the run holds it: the read-back says so, and the claim's check refuses it.
+	box.workspace = { type: "symlink", uid: 1000, mode: 0o777, target: "/home/ada" };
+	assert.deepEqual((await provider.attach({ id: held.id })).value.spec.mount, { other: `/workspace on lab is a link, and a run's synced folder is never written through one: remove it, then ${fix}` });
+	assert.equal((await provider.release(held, "delete")).ok, true);
+	assert.equal((await provider.attach({ id: held.id })).error?.code, "gone");
+
+	// A run that takes no folder there: nothing is read on the box, and nothing read back.
+	box.calls.length = 0;
+	const plain = (await provider.create({ ...SYNCED, mount: undefined }, req())).value;
+	assert.equal((await provider.attach({ id: plain.id })).value.spec.mount, undefined);
+	assert.deepEqual(box.calls, []);
+	hub.revoke(paired.id, "the test is over");
 });
 
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {

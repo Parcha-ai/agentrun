@@ -7,6 +7,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { PassThrough, type Readable, Writable } from "node:stream";
 import { DaemonClient } from "./client.js";
 import { kindServed } from "./kinds.js";
+import { EPOCH_LABEL, epochOf } from "./labels.js";
+import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
 import { type ComputerClient, type ComputerKind, type ComputerOs, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerRef, checkLifetime, kindRefusals, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
@@ -469,22 +471,67 @@ export class AttachHub {
 
 const ATTACHED_NOTE = "an attached computer is a person's own machine: release ends the run's hold on it, and deletes nothing";
 
+/** How a person makes a Linux box's /workspace, in the words a refusal names it by (attach.md, A Linux box). */
+const WORKSPACE_FIX = `make ${WORKSPACE} a directory of computerd's user's own, mode 0700, as root: the tmpfiles.d line in spec/computer/attach.md, A Linux box (d ${WORKSPACE} 0700 <user> <user> -), then systemd-tmpfiles --create`;
+
+/**
+ * Why the paired Linux box `name`'s /workspace can't hold a run's synced folder, in words naming the fix, or undefined
+ * when it can: a directory, never a link (a push follows /workspace itself, then writes only under it, opening each name
+ * with O_NOFOLLOW), of the user computerd runs as (the effective uid its /proc/self/status says), with no access for its
+ * group or others. Read through `client` (computerd's), which runs nothing on the box.
+ */
+async function pairedWorkspaceWhy(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<string | undefined>> {
+	const options = signal ? { signal } : {};
+	const status = await client.call("files.read", { path: "/proc/self/status" }, options);
+	if (!status.ok) return fail(status.error.code, `reading the user computerd runs as on ${name}: ${status.error.message}`);
+	const uid = /^Uid:\s+\d+\s+(\d+)/m.exec(Buffer.from(status.value.data, "base64").toString("utf8"))?.[1];
+	if (uid === undefined) return fail("invalid", `${name}'s /proc/self/status names no user computerd runs as`);
+	const folder = await client.call("files.stat", { path: WORKSPACE, follow: false }, options);
+	if (!folder.ok) return folder.error.code === "not_found" ? ok(`${name} has no ${WORKSPACE}, where a run's synced folder goes: ${WORKSPACE_FIX}`) : fail(folder.error.code, `reading ${WORKSPACE} on ${name}: ${folder.error.message}`);
+	const { type, uid: owner, mode } = folder.value;
+	if (type === "symlink") return ok(`${WORKSPACE} on ${name} is a link, and a run's synced folder is never written through one: remove it, then ${WORKSPACE_FIX}`);
+	if (type !== "dir") return ok(`${WORKSPACE} on ${name} is a ${type}, where a run's synced folder needs a directory: remove it, then ${WORKSPACE_FIX}`);
+	if (String(owner) !== uid) return ok(`${WORKSPACE} on ${name} is uid ${owner}'s, not uid ${uid}'s, the user computerd runs as: ${WORKSPACE_FIX}`);
+	if ((mode & 0o077) !== 0) return ok(`${WORKSPACE} on ${name} is open to its group or others (mode ${(mode & 0o7777).toString(8).padStart(4, "0")}): ${WORKSPACE_FIX}`);
+	return ok(undefined);
+}
+
+/** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
+ *  level, a directory with what it holds, a link removed and never followed (files.remove). */
+async function emptyWorkspace(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
+	const options = signal ? { signal } : {};
+	for (;;) {
+		const listed = await client.call("files.list", { path: WORKSPACE }, options);
+		if (!listed.ok) return fail(listed.error.code, `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${listed.error.message}`);
+		for (const entry of listed.value.entries) {
+			const removed = await client.call("files.remove", { path: entry.path, recursive: true }, options);
+			if (!removed.ok && removed.error.code !== "not_found") return fail(removed.error.code, `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${removed.error.message}`);
+		}
+		if (!listed.value.truncated) return ok(undefined);
+	}
+}
+
 /**
  * One paired computer as a provider, id "attached": its capabilities are what it paired as. create claims it for a
  * run (refused while it is offline or another run holds it) and release ends the claim; a person's machine is never
- * made, stopped or deleted by a run. It has no init of ours, so its daemon mode is none.
+ * made, stopped or deleted by a run. A desktop or a phone has no init of ours, so its daemon mode is none; a Linux box
+ * (kind linux, a sandbox) runs computerd init, a child of its service manager, and takes the run's folder as a synced
+ * folder in its /workspace (pairedWorkspaceWhy), read back under the run's claim epoch.
  */
 export function attachedProvider(paired: PairedComputer, hub: AttachHub): ComputerProvider {
 	/** What the computer says now: its live hello while attached (an update may add groups), else what it paired as. */
 	const now = () => hub.hello(paired.id) ?? paired.hello;
+	const box = paired.hello.kind === "linux";
 	const capabilities = (): ComputerCapabilities => ({
 		kind: paired.hello.kind,
 		lifetime: "vendor",
 		network: ["open"],
 		isolation: "machine",
 		os: paired.hello.os,
-		daemon: "none",
+		daemon: box ? "child" : "none",
 		groups: [...now().groups],
+		// computerd attach dials out, so no agent of ours listens on the box's TCP ports.
+		...(box ? { mount: ["sync" as const], vendorAgentPorts: [] } : {}),
 		maxLifetimeMs: 24 * 60 * 60_000,
 		release: ["delete"],
 	});
@@ -513,6 +560,32 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	/** Why a network other than open is refused: a run never narrows a person's own machine's network. */
 	const networkRefusal = (asked: unknown) =>
 		`${paired.name} is a person's own machine on its own network, which a run cannot block or limit: network ${JSON.stringify(asked)} is refused; ask for network "open"`;
+	/** The hold whose create took the run's folder as a synced folder (one run holds the machine at a time). */
+	let syncedHold: string | undefined;
+	/** The synced folder as the hold's labels record it: under the run's claim epoch. */
+	const recorded = (): MountReadBack => {
+		const epoch = epochOf(hub.claimed(paired.id));
+		return epoch.ok ? { kind: "sync", epoch: epoch.value } : { other: `a synced folder with no epoch to read it back under (${epoch.error.message})` };
+	};
+	/** The synced folder read back from inside the box: its /workspace as pairedWorkspaceWhy holds it, else in words.
+	 *  `empty`: what an earlier run left in it is removed first (each entry, a link removed and never followed), so the
+	 *  run's push goes into an empty folder, as into a hosted computer's new one. */
+	const folder = async (signal?: AbortSignal, empty = false): Promise<Result<MountReadBack>> => {
+		const connection = hub.connection(paired.id);
+		if (connection === undefined) return offline();
+		try {
+			const why = await pairedWorkspaceWhy(connection.client, paired.name, signal);
+			if (!why.ok) return why;
+			if (why.value !== undefined) return ok({ other: why.value });
+			if (empty) {
+				const emptied = await emptyWorkspace(connection.client, paired.name, signal);
+				if (!emptied.ok) return emptied;
+			}
+			return ok(recorded());
+		} finally {
+			await connection.close();
+		}
+	};
 	return {
 		id: "attached",
 		// The driver's version is the computer's, whatever it is: the provider never refuses a newer or older build of one
@@ -525,6 +598,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			...kindRefusals(capabilities()),
 			...(spec.owner === undefined ? checkLifetime(spec.lifetimeMs, capabilities()) : []),
 			...(spec.network === "open" ? [] : [{ field: "network", message: networkRefusal(spec.network) }]),
+			// A Linux box takes the run's folder as a synced folder alone; a desktop or a phone takes none.
+			...checkMount(spec.mount, capabilities().mount),
+			...(spec.mount?.kind === "sync" && !epochOf(spec.labels).ok ? [{ field: "labels", message: `a synced folder is made under the run's claim epoch: the label ${EPOCH_LABEL} is required` }] : []),
 		],
 		async create(spec, context) {
 			const refusals = this.check(spec);
@@ -547,10 +623,20 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			const deadline = spec.owner === undefined ? new Date(Date.now() + runLifetimeMs(spec)) : undefined;
 			const hold = hub.claim(paired.id, spec.labels ?? {}, deadline);
 			if (hold === undefined) return fail("refused", `${paired.name} is held by another run: one run at a time`);
+			// The run's synced folder goes in the box's /workspace, which must be computerd's user's own directory before
+			// anything is pushed there, and is emptied of an earlier run's: one that is not lets the hold go, in words.
+			if (spec.mount?.kind === "sync") {
+				const read = await folder(context.signal, true);
+				if (!read.ok || "other" in read.value) {
+					hub.unclaim(paired.id, hold);
+					return read.ok ? fail("refused", (read.value as { other: string }).other) : read;
+				}
+				syncedHold = hold;
+			}
 			holdsBy.set(context.requestId, hold);
 			return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
 		},
-		async attach(asked) {
+		async attach(asked, context) {
 			if ("id" in asked) {
 				const which = named(asked);
 				if (which === undefined) return unknown(asked.id);
@@ -558,12 +644,17 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			} else if (!holds({ ...paired.labels, ...hub.claimed(paired.id) }, asked.labels)) return unknown(JSON.stringify(asked.labels));
 			const deadline = hub.deadline(paired.id);
 			const found = "id" in asked ? { id: asked.id, name: paired.name } : heldRef();
-			return ok({ ...found, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind, ...(deadline === undefined ? {} : { deadline }) } });
+			// A hold that took the run's folder reads it back from inside the box, as a hosted computer's is.
+			const mounted = syncedHold !== undefined && hub.hold(paired.id) === syncedHold ? await folder(context?.signal) : undefined;
+			if (mounted !== undefined && !mounted.ok) return mounted;
+			return ok({ ...found, spec: { image: "attached", user: "the person's own", network: { other: "the machine's own network" }, kind: paired.hello.kind, ...(deadline === undefined ? {} : { deadline }), ...(mounted === undefined ? {} : { mount: mounted.value }) } });
 		},
 		async list(labels) {
 			const have = { ...paired.labels, ...hub.claimed(paired.id) };
 			if (!holds(have, labels)) return ok([]);
-			return ok([{ ref: heldRef(), labels: have, deadline: hub.deadline(paired.id), state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" } }]);
+			// list runs nothing on the box: a hold's synced folder is the one its labels record.
+			const mount = syncedHold !== undefined && hub.hold(paired.id) === syncedHold ? { mount: recorded() } : {};
+			return ok([{ ref: heldRef(), labels: have, deadline: hub.deadline(paired.id), state: hub.online(paired.id) ? ("running" as const) : ("stopped" as const), network: { other: "the machine's own network" }, ...mount }]);
 		},
 		async network(asked, policy) {
 			if (!mine(asked)) return unknown(asked.id);
