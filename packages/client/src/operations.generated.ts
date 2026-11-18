@@ -3767,6 +3767,7 @@ export type ApplyTemplateBody = {
   parameters?: Record<string, unknown>;
   servers?: Record<string, string>;
   grants?: Array<string>;
+  agent_id?: string;
   overrides?: {
     model?: string;
     choice?: string;
@@ -3986,7 +3987,7 @@ export type ListToolKeysResponse = {
     kind: "tool" | "model";
     label: string;
     unlocks: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     fields: Array<{
       name: string;
       set: boolean;

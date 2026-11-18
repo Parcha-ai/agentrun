@@ -20,14 +20,17 @@ const launch = (extra = {}) => ({
   ...extra,
 });
 
-test("runner harnesses: pi keeps its own record; each CLI's (claude-agent, codex, opencode) is the loop's; an unknown harness has none", () => {
+test("runner harnesses: pi keeps its own record; each CLI's (claude-agent, codex, opencode, goose) is the loop's; an unknown harness has none", () => {
   assert.equal(resolveHarness("pi").record, undefined);
   assert.equal(resolveHarness("claude-agent").record, "loop");
   assert.equal(resolveHarness("codex").record, "loop");
   assert.equal(resolveHarness("opencode").record, "loop");
+  assert.equal(resolveHarness("goose").record, "loop");
   assert.equal(resolveHarness("no-such-harness"), undefined);
   assert.equal(resolveHarness("__proto__"), undefined, "a name is looked up as data, never through the prototype");
-  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "codex", "opencode", "pi"]);
+  // The runner's static table: goose is in it wherever its package is beside serve (here, always), installed or not.
+  // Whether a server lists Goose is the harness table's (harnessIds), read once its binary is installed and verified.
+  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "codex", "goose", "opencode", "pi"]);
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {

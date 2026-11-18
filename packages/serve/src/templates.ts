@@ -1017,12 +1017,14 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model?, choice?, approvals?}}`), checked
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?}`), checked
  *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
  *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
  *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals } {
-  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides"]);
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string } {
+  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id"]);
+  // The agent an update writes onto (the server checks it was made from this package): text, else a 422 with the rest.
+  if (body.agent_id !== undefined && !(typeof body.agent_id === "string" && body.agent_id.trim())) issues.push({ field: "agent_id", reason: "wrong_type", message: `agent_id is the id of an agent the ${p.name} template made: the apply writes a new revision of it in place of making another` });
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
   if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by the package's own names (mcp:<toolkit>/<tool>), the owner allows" });
@@ -1063,7 +1065,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
     else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`

@@ -1304,6 +1304,7 @@ export interface operations {
       parameters?: Record<string, unknown>;
       servers?: Record<string, string>;
       grants?: string[];
+      agent_id?: string;
       overrides?: {
         model?: string;
         choice?: string;
@@ -3944,7 +3945,7 @@ export interface operations {
         kind: "tool" | "model";
         label: string;
         unlocks: string[];
-        harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+        harnesses: string[];
         fields: {
           name: string;
           set: boolean;

@@ -14,6 +14,7 @@ import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 import { agent, call, client, cookieOf, FAUX, follow, harnessData, printed, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -147,6 +148,12 @@ test("each key unlocks only what capabilities bind, a tool or a decision provide
   // Bound later: once capabilities list web_search, the key table's own name shows it.
   const later = [{ name: "web_fetch", harnesses: ["pi", "claude-agent", "codex"] }, { name: "web_search", harnesses: ["pi"] }];
   assert.deepEqual(unlockedBy(TOOL_KEYS[0].unlocks, later, [{ id: "jev" }]), { unlocks: ["web_fetch", "web_search"], harnesses: ["pi", "claude-agent", "codex"] }, "no parallel provider, no decisions.parallel");
+  // A harness the server lists beyond the built-in ones (Goose, once installed) is named where its tools run on it, after
+  // them; a catalog source's row, whose tools run on every harness, names it too.
+  const withGoose = [{ name: "web_fetch", harnesses: ["goose", "pi", "claude-agent"] }, { name: "web_search", harnesses: ["pi"] }];
+  assert.deepEqual(unlockedBy(["web_fetch"], withGoose, []).harnesses, ["pi", "claude-agent", "goose"], "the tool's harnesses, goose after the built-in ones");
+  assert.deepEqual(unlockedBy(["web_search"], withGoose, []).harnesses, ["pi"], "a tool goose does not run names no goose");
+  assert.deepEqual(unlockedBy(["monid:*"], withGoose, []).harnesses, ["pi", "claude-agent", "codex", "opencode", "goose"], "a catalog source's tools run on every harness listed");
   // A key of another kind (a model's; none yet) unlocks no tool, and is for the harnesses this server offers.
   const offers = [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: false }];
   assert.deepEqual(rowUnlocks({ kind: "model", unlocks: [] }, later, [], offers), { unlocks: [], harnesses: ["pi", "claude-agent"] });
@@ -197,6 +204,28 @@ test("before any model key is saved, a model key's row names every harness the k
       await meetsDocument(api, view);
     });
   }
+});
+
+test("Goose installed and verified, Anthropic's and OpenRouter's rows name it among the harnesses their key runs; the rest never do", { skip: needsGoose, timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
+  const { api } = await serve(t, { data: installGoose(join(await scratch(t), "agents")), harnesses: true });
+  const caps = (await api("GET", "/capabilities")).body;
+  const goose = caps.harnesses.find((offer) => offer.id === "goose");
+  assert.equal(goose?.available, false, "listed, and runs nothing for want of a model key");
+  const view = (await api("GET", "/settings/tool-keys")).body;
+  // The rows of an uninstalled Goose (OWN, the case above), with goose last where its key runs it.
+  assert.deepEqual(Object.fromEntries(view.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses])), { ...OWN, anthropic: [...OWN.anthropic, "goose"], openrouter: [...OWN.openrouter, "goose"] }, JSON.stringify(goose));
+  // A tool row names the harnesses its tools run on as capabilities list them, goose among them: the host tools run on it,
+  // so Monid's row (a catalog source, whose tools are host tools) names it, last.
+  const tools = new Map(caps.tools.map((tool) => [tool.name, tool]));
+  assert.ok(tools.get("web_fetch").harnesses.includes("goose"), `a host tool runs on Goose: ${JSON.stringify(tools.get("web_fetch").harnesses)}`);
+  for (const key of view.keys.filter((row) => row.kind === "tool")) {
+    const run = new Set(key.unlocks.flatMap((name) => (name.endsWith(":*") ? tools.get("web_fetch").harnesses : tools.get(name)?.harnesses ?? [])));
+    assert.deepEqual([...key.harnesses].sort(), [...run].sort(), `${key.id}: the harnesses of the tools it unlocks`);
+  }
+  assert.equal(view.keys.find((key) => key.id === "monid").harnesses.at(-1), "goose", "Monid's row names Goose, after the built-in ones");
+  await meetsDocument(api, view);
 });
 
 test("PUT refuses with 422 an unknown key or field, an empty value, a control character, over 1 KiB, or another body field, and keeps nothing; no answer holds the value", async (t) => {
