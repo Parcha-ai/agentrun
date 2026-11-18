@@ -1408,9 +1408,10 @@ test("an imported agent runs as imported: a project with no instructions file ge
   // What a run's start checks (runnable.ts), on a server with OpenRouter's key alone: nothing keeps either from running.
   const { blockersOf } = await import("../dist/runnable.js");
   for (const body of [built, await current(docs)]) {
-    const blockers = await blockersOf({ PATH: "/usr/bin", HOME: at, OPENROUTER_API_KEY: "sk-or-v1-test" }, { kind: "agentic", ...body });
+    const blockers = await blockersOf({ PATH: "/usr/bin", HOME: at, OPENROUTER_API_KEY: "fake-test-key" }, { kind: "agentic", ...body });
     assert.deepEqual(blockers.map((b) => b.message), [], JSON.stringify(body));
-  }  // The CLI says which model it did not keep, for which project, in a fresh data directory.
+  }
+  // The CLI says which model it did not keep, for which project, in a fresh data directory.
   const lines = [];
   assert.equal(await importCommand(["--data", join(root, "again"), "--all"], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
   assert.deepEqual(lines.filter((line) => line.startsWith("model not kept: ")), [`model not kept: ${build} (codex) ran on openai/gpt-6.1-codex, which no model catalog here lists; its agent runs on the server's default model until you pick one`]);

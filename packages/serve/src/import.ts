@@ -1120,7 +1120,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   const held = await importedIn(store);
   // Whether a model catalog here lists a session's model ("provider/model id"), keys aside: one none lists is no model to pin.
   let models: Promise<Awaited<ReturnType<typeof providerModels>>> | undefined;
-  const listed = async (ref: string): Promise<boolean> => {
+  const inCatalog = async (ref: string): Promise<boolean> => {
     const at = ref.indexOf("/");
     return at > 0 && (await (models ??= providerModels(options.env))).getModel(ref.slice(0, at), ref.slice(at + 1)) !== undefined;
   };
@@ -1145,7 +1145,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     const toWrite: NewRevision[] = [];
     for (const source of order) {
       const model = byStart.findLast((s) => s.source === source && s.model)?.model;
-      const pinned = model && (await listed(model)) ? model : undefined;
+      const pinned = model && (await inCatalog(model)) ? model : undefined;
       const resolved = await revisionFor(store, project.agentId, source, files, pinned, keptName(project, text), text);
       if (resolved.create && model && !pinned) (report.modelsLeftOut ??= []).push({ cwd: project.cwd, source, model });
       revisions.set(source, resolved.id);
