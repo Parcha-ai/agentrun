@@ -5150,8 +5150,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const url = urlOf(server, host);
-  // Listening on every address with no public one: the setup link is printed for this machine's addresses too, which
-  // another machine opens (127.0.0.1 there is that machine's own).
   owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port));
   webhooks.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's

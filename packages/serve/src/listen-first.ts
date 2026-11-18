@@ -48,24 +48,25 @@ export async function listenOn(server: Server, host: string, first: number, next
   }
 }
 
+const everyAddress = (host: string) => host === "0.0.0.0" || host === "::";
+
 // A container network's bridge (Docker's, a VM's) is this machine's alone: no other machine reaches it there.
 const BRIDGES = /^(docker|br-|veth|virbr|cni|flannel|vmnet|bridge\d)/;
 const inContainer = () => existsSync("/.dockerenv") || existsSync("/run/.containerenv");
 
 /** Where a server listening on every address (`host` 0.0.0.0 or ::) at `port` is reached from another machine: this
  *  machine's own IPv4 addresses, loopback, link-local and container bridges left out, at most three. None for a server on one address, and
- *  none in a container, whose addresses are its own network's, not the ones its host publishes the port on. The
- *  addresses are read (`interfaces`) only for a server that prints them, and one whose machine cannot list them prints
- *  none: the links are a convenience, never a reason not to start. */
+ *  none in a container, whose addresses are its own network's, not the ones its host publishes the port on. None on a
+ *  machine that cannot list its addresses: the links are a convenience, never a reason not to start. `interfaces` and
+ *  `container` are the tests'. */
 export function elsewhereOf(
   host: string,
   port: number,
   { interfaces = networkInterfaces, container = inContainer }: { interfaces?: () => ReturnType<typeof networkInterfaces>; container?: () => boolean } = {},
 ): string[] {
-  if (host !== "0.0.0.0" && host !== "::") return [];
+  if (!everyAddress(host) || container()) return [];
   let found: ReturnType<typeof networkInterfaces>;
   try {
-    if (container()) return [];
     found = interfaces();
   } catch {
     return [];
@@ -76,7 +77,7 @@ export function elsewhereOf(
 
 /** The URL a listening `server` on `host` is reached at on this machine: an address of every interface at its loopback one. */
 export function urlOf(server: Server, host: string): string {
-  const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const shown = everyAddress(host) ? "127.0.0.1" : host;
   return `http://${shown.includes(":") ? `[${shown}]` : shown}:${(server.address() as AddressInfo).port}`;
 }
 

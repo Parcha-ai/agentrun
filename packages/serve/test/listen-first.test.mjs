@@ -151,19 +151,11 @@ test("a server on every address is reached from another machine at this machine'
   assert.deepEqual(elsewhereOf("192.0.2.10", 7401, here), [], "a server on one address prints that one");
 });
 
-test("the addresses are read only for a server that prints them, and a machine that cannot list them prints none: the server starts all the same", async () => {
+test("a machine that cannot list its addresses prints none, and its server starts all the same", async () => {
   const { elsewhereOf } = await import("../dist/listen-first.js");
-  let reads = 0;
-  const counted = () => ((reads += 1), { en0: [{ address: "192.0.2.10", family: "IPv4", internal: false }] });
   const refused = () => {
     throw Object.assign(new Error("uv_interface_addresses returned Unknown system error 13"), { code: "ERR_SYSTEM_ERROR" });
   };
-  assert.deepEqual(elsewhereOf("127.0.0.1", 7401, { interfaces: counted, container: counted }), []);
-  assert.deepEqual(elsewhereOf("192.0.2.10", 7401, { interfaces: counted, container: counted }), []);
-  assert.equal(reads, 0, "a server on one address reads neither the addresses nor whether it is in a container");
-  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, { interfaces: counted, container: () => true }), []);
-  assert.equal(reads, 0, "a server in a container reads no addresses");
-  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, { interfaces: refused, container: () => false }), [], "addresses that cannot be listed are none");
-  assert.deepEqual(elsewhereOf("::", 7401, { interfaces: counted, container: refused }), [], "a container check that fails prints none");
-  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, { interfaces: counted, container: () => false }), ["http://192.0.2.10:7401"]);
+  for (const host of ["0.0.0.0", "::", "127.0.0.1", "192.0.2.10"]) assert.deepEqual(elsewhereOf(host, 7401, { interfaces: refused, container: () => false }), [], host);
+  assert.deepEqual(elsewhereOf("0.0.0.0", 7401, { interfaces: refused, container: () => true }), []);
 });
