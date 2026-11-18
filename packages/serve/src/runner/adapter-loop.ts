@@ -2548,14 +2548,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // (a new claim's, or a restart's after a fault: closeSession let the last one go) is not the one an open hold held,
         // nor has what the owner set up on it: the run ends in those words.
         heldNow = undefined;
+        // This pass's hold began waiting for the start: an owner's row may move it on (start, release) as soon as the pass
+        // opens, before the wait below begins, so a release there still ends the run before its agent runs.
+        let heldBeforeStart = false;
         if (spec.held) {
           const [journalOf, rootOf] = [harness, root];
           heldNow = journalHeld(spec.held, (entries) => journalOf.commit(async (tx) => {
             for (const entry of entries) await tx.appendEntry(rootOf.id, { kind: entry.kind, data: entry.data as unknown as JsonValue });
           }, context), now);
-          if ((await heldNow.up(await entriesOf(gate.journal, root.id, context))) === "lost") {
-            return await writeEnd(harness, root, gate, { state: "failed", summary: heldWords.lost }, []);
-          }
+          const up = await heldNow.up(await entriesOf(gate.journal, root.id, context));
+          if (up === "lost") return await writeEnd(harness, root, gate, { state: "failed", summary: heldWords.lost }, []);
+          heldBeforeStart = up === "held";
         }
         // The cap a raise left the run at, before any request of this claim, through the one reader the run view and its
         // budget card read too (capNowOf: the newest raise entry, else the launch's cap): a claim that takes over a raised
@@ -2625,7 +2628,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A held computer waits for its owner's start before the agent's first input; the owner's calls set the task up
         // meanwhile. A release, or no call for the hold's minutes, ends the run before its agent ever ran. A stop ends it
         // stopped, and a lost claim leaves it for the next claim.
-        if (heldNow?.state() === "waiting") {
+        if (heldNow && (heldNow.state() === "waiting" || (heldBeforeStart && heldNow.state() === "released"))) {
           const aborted = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
           const waited = await heldNow.untilStarted(Promise.race([stopping, aborted, harness.closed]));
           // Set by stop() during the wait: read past the narrowing TypeScript did before it.

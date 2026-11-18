@@ -4,7 +4,7 @@
 // call that starts or reaches into a container, so the relay creates, lists and deletes them, and computerd dials the
 // server's attach route.
 import { defineProvider } from "../descriptor.js";
-import { SANDBOX } from "./shared.js";
+import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
 /** The relay's routes and rows this package speaks: the relay template's RELAY_VERSION; testConnection refuses another. */
 export const CLOUDFLARE_RELAY_VERSION = 1;
@@ -25,8 +25,10 @@ export const CLOUDFLARE = defineProvider({
 	// one way out is init's egress proxy (hosted/network.ts). The container itself always reaches out (enableInternet): it
 	// fetches its daemon from the server and dials it.
 	network: ["none", "open", "allow"],
-	// A linux computer alone: agentrun-dial starts init with no display.
-	capabilities: [SANDBOX],
+	// A linux computer, or a desktop: the box image's X server and xfwm4, started through computerd over the socket the
+	// container dialed. A desktop's size is the sandbox's, the adapter's default of 2 vCPUs and 4 GiB, which takes
+	// standard-3 (2 vCPUs, 8 GiB, 16 GB of disk; cloudflare.ts).
+	capabilities: [SANDBOX, { ...LINUX_DESKTOP, options: { kind: "desktop" } }],
 	// No default image: every computer starts from the box image the relay was deployed with, which prepareImage() reads.
 	prepareImage: true,
 	load: () => import("../cloudflare.js"),

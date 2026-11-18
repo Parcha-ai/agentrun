@@ -103,6 +103,15 @@ describe("Field", () => {
     expect(host.querySelector("label")).toBeNull();
     expect(host.querySelector("span")!.textContent).toBe("Range");
   });
+  it("a picker inside a Field is described by the note and the error, so a screen reader says them with it", () => {
+    const options = [{ value: "a", label: "Opus 5.5" }, { value: "b", label: "Sonnet 5.5" }];
+    const host = mount(<Field label="Model" note="The agent's model." error="This harness can't run it."><Picker label="Model" value="a" onChange={() => {}} options={options} /></Field>);
+    const button = host.querySelector("button")!;
+    expect(host.querySelector("label")!.htmlFor).toBe(button.id);
+    const described = (button.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent);
+    expect(described).toEqual(["The agent's model.", "This harness can't run it."]);
+    expect(button.getAttribute("aria-invalid")).toBe("true");
+  });
   it("a control outside a Field takes its own props", () => {
     expect(html(<Input id="q" aria-describedby="hint" />)).toMatch(/id="q"[^>]*aria-describedby="hint"|aria-describedby="hint"[^>]*id="q"/);
   });

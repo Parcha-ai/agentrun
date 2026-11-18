@@ -8,7 +8,7 @@ export const E2B = defineProvider({
 	label: "E2B",
 	keys: [{ name: "E2B_API_KEY", option: "apiKey", required: true }],
 	// How the server reaches its machines: exec (the provider's default, when the server's settings name none), a bridge
-	// through envd per connection, or dial, the machine dials the server (a sandbox only).
+	// through envd per connection, or dial, the machine dials the server (a sandbox or a desktop, as on exec).
 	settings: [{ name: "e2bConnect", option: "connect" }],
 	connect: "either",
 	metered: true,

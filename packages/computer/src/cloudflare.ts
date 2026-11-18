@@ -25,7 +25,8 @@ interface RelayRow {
 	why?: string;
 }
 
-export interface CloudflareProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs"> {
+/** The Cloudflare provider's options: the relay's address and token, then the shared adapter's (HostedOptions), kind among them. */
+export interface CloudflareProviderOptions extends Omit<HostedOptions, "desktop" | "maxLifetimeMs"> {
 	/** The relay Worker's https address, as `wrangler deploy` printed it. */
 	relayUrl: string;
 	/** The relay's RELAY_TOKEN (`wrangler secret put RELAY_TOKEN`). The caller passes it; this provider reads no environment. */
@@ -89,6 +90,8 @@ class CloudflareHost implements MachineHost {
 		arch: "amd64",
 		// No page names an agent of Cloudflare's inside the container (unverified).
 		vendorAgentPorts: [],
+		// The relay's image is FROM the box image (relays/cloudflare/Dockerfile), which has xfwm4 (box/install.sh's desktop step).
+		windowManager: true,
 		// Its descriptor's (connectOf): the container dials the server.
 		connect: CLOUDFLARE.connect,
 	};
@@ -186,7 +189,8 @@ export const conformance = () => import("./conformance/cloudflare.js");
 
 /**
  * Computers that are Cloudflare Containers, through the operator's relay, each dialing the server that made it: a server
- * with no public https address (AGENTRUN_PUBLIC_URL) refuses a create in words before the relay is called. Kind linux.
+ * with no public https address (AGENTRUN_PUBLIC_URL) refuses a create in words before the relay is called. Kind linux
+ * (default) or desktop, whose X server and window manager start through computerd over the socket the container dialed.
  */
 export class CloudflareProvider extends HostedProvider {
 	readonly #relay: CloudflareHost;
@@ -197,7 +201,7 @@ export class CloudflareProvider extends HostedProvider {
 		if (typeof relayUrl !== "string" || !URL.canParse(relayUrl) || new URL(relayUrl).protocol !== "https:") throw new Error(`options.relayUrl is the relay Worker's https address, as wrangler deploy printed it, not ${JSON.stringify(relayUrl)}`);
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		const host = new CloudflareHost({ relayUrl, relayToken, fetch: fetcher });
-		super(host, { ...rest, kind: "linux", timeouts: { ...CLOUDFLARE_TIMEOUTS, ...timeouts } });
+		super(host, { ...rest, timeouts: { ...CLOUDFLARE_TIMEOUTS, ...timeouts } });
 		this.#relay = host;
 	}
 

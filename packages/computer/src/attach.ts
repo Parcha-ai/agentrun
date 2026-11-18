@@ -246,11 +246,14 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 	if (missing.length > 0) {
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} answered a protocol ${PROTOCOL_VERSION} hello without ${missing.join(", ")}: ${update}` };
 	}
-	if (paired.minted && (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os || hello.arch !== paired.hello.arch)) {
-		const was = paired.hello;
-		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} was made a ${was.os} ${was.kind} on ${was.arch} and says ${hello.os} ${hello.kind} on ${hello.arch}: its token is that machine's alone` };
-	}
-	if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
+	if (paired.minted) {
+		// A minted desktop says linux until its display answers: its create starts the X server over this socket (desktop.ts).
+		const kind = hello.kind === paired.hello.kind || (paired.hello.kind === "desktop" && hello.kind === "linux");
+		if (!kind || hello.os !== paired.hello.os || hello.arch !== paired.hello.arch) {
+			const was = paired.hello;
+			return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} was made a ${was.os} ${was.kind} on ${was.arch} and says ${hello.os} ${hello.kind} on ${hello.arch}: its token is that machine's alone` };
+		}
+	} else if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
 		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
 	}
 	// A computer that lacks a group its kind needs can't be given to an agent: refused at connect, in the hello's own

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { auditLinesOf, billWords, checkLineWords, checkWords, tierWords } from "./learningBill";
+import { auditLinesOf, billWords, checkLineWords, checkWords, learningPerRun, tierWords } from "./learningBill";
 import { BILL, hour } from "./learningBill.fixture";
 import type { AuditRow, Bill, Serving } from "./v2";
 
@@ -30,6 +30,10 @@ describe("the bill in words", () => {
   it("names the runs on neither line", () => {
     expect(billWords({ ...BILL, withheld: 2 }).headline).toContain("2 runs of unknown cost on neither line");
   });
+  it("says what learning booked a run: the bill's learning over its runs, none before a run", () => {
+    expect(learningPerRun({ ...BILL, learning_usd: 0.9 })).toBeCloseTo(0.1, 12);
+    expect(learningPerRun({ ...BILL, points: [], learning_usd: 0 })).toBeNull();
+  });
 });
 
 
@@ -37,14 +41,23 @@ describe("the audit line", () => {
   const rows: AuditRow[] = Array.from({ length: 16 }, (_, i) => ({ run: `run-${i}`, shadow_run: `audit.run-${i}`, workflow: "answer", digest: "d".repeat(16), promoted_at: hour(4), source: "shadow", agreed: i === 3 || i === 9 ? false : i === 15 ? null : true, served_cost: 0.1, shadow_cost: 0.4, at: hour(5) }));
   const serving: Serving[] = [{ workflow: "answer", digest: "d".repeat(16), replaying: null, state: "serving", check: { n: 10, agreed: 9, alone: 9, attempt: 1 }, audit: { window: 20, disagree: 3, rows: 12, disagreed: 1 }, audits_off: null, not_auditable: 0, champion: null }];
   it("reads the hold window from the serving read and all time from the ledger, rows with no verdict left out", () => {
-    expect(auditLinesOf(serving, rows)).toEqual([{ workflow: "answer", recent: { rows: 12, agreed: 11, window: 20, disagree: 3 }, all: { rows: 15, agreed: 13 }, off: null }]);
+    expect(auditLinesOf(serving, rows)).toEqual([{ workflow: "answer", recent: { rows: 12, agreed: 11, window: 20, disagree: 3 }, all: { rows: 15, agreed: 13 }, off: null, pending: 0 }]);
   });
   it("says why nothing is audited", () => {
-    expect(auditLinesOf([{ ...serving[0]!, audit: null, audits_off: "audits off: send_email can write" }], [])).toEqual([{ workflow: "answer", recent: null, all: { rows: 0, agreed: 0 }, off: "audits off: send_email can write" }]);
+    expect(auditLinesOf([{ ...serving[0]!, audit: null, audits_off: "audits off: send_email can write" }], [])).toEqual([{ workflow: "answer", recent: null, all: { rows: 0, agreed: 0 }, off: "audits off: send_email can write", pending: 0 }]);
   });
   it("has no all-time figure while the ledger is unread: never 0 of 0", () => {
     expect(auditLinesOf(serving, "loading")[0]!.all).toBeNull();
     expect(auditLinesOf(serving, "failed")[0]!.all).toBeNull();
+    expect(auditLinesOf(serving, "loading")[0]!.pending).toBeNull();
+  });
+  it("counts the audited runs the ledger has no row of yet: the card and the runs a shadow was charged to agree", () => {
+    // 17 served runs with a shadow started: 16 have a row; the newest is scored at a later run's start.
+    const runs = Array.from({ length: 17 }, (_, i) => ({ run_id: `run-${i}`, workflow: "answer", audited: true }));
+    const other = { run_id: "run-x", workflow: "other", audited: true };
+    const plain = { run_id: "run-y", workflow: "answer", audited: false };
+    expect(auditLinesOf(serving, rows, [...runs, other, plain])[0]!.pending).toBe(1);
+    expect(auditLinesOf(serving, rows, runs.slice(0, 16))[0]!.pending).toBe(0);
   });
 });
 

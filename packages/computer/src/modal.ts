@@ -15,7 +15,7 @@ import { type HostCall, HostError, type HostFacts, type Machine, type MachineHos
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
 import { AGENTRUN_DIAL, PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
 import { connectOf } from "./descriptor.js";
-import { isWhole } from "./hosted/values.js";
+import { execDesktopRefusal, isWhole } from "./hosted/values.js";
 import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
@@ -26,8 +26,11 @@ import { type ComputerErrorCode, ok, type Result } from "./result.js";
 export type ModalSdk = object;
 type SdkClient = ModalClient;
 
-/** The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions). */
-export interface ModalProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs"> {
+/**
+ * The Modal provider's options: the client and the app, then the shared adapter's (HostedOptions), kind among them: a
+ * desktop on connect dial alone.
+ */
+export interface ModalProviderOptions extends Omit<HostedOptions, "desktop" | "maxLifetimeMs"> {
 	/** The host's Modal client. */
 	sdk: ModalSdk;
 	/** The Modal App the sandboxes live in; made when missing. */
@@ -199,6 +202,8 @@ class ModalHost implements MachineHost {
 			arch: "amd64",
 			// No listener of Modal's own inside a sandbox is documented, so none is declared.
 			vendorAgentPorts: [],
+			// The box image has xfwm4 (box/install.sh's desktop step), for a desktop (connect dial alone).
+			windowManager: true,
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
 			user: ["uid"],
 			labels: { count: MAX_TAGS, bytes: MAX_TAG_BYTES },
@@ -412,6 +417,8 @@ export class ModalProvider extends HostedProvider {
 		].filter(([, fn]) => typeof fn !== "function");
 		if (lacks.length > 0) throw new Error(`options.sdk must be a Modal client; it lacks ${lacks.map(([name]) => name).join(", ")}`);
 		if (typeof app !== "string" || app.trim() === "") throw new Error("options.app, the Modal app's name, is required");
-		super(new ModalHost(sdk as SdkClient, app, connectOf(MODAL, { connect })), { ...rest, kind: "linux", timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
+		const via = connectOf(MODAL, { connect });
+		if (rest.kind === "desktop" && via === "exec") throw new Error(execDesktopRefusal("Modal", "the box image"));
+		super(new ModalHost(sdk as SdkClient, app, via), { ...rest, timeouts: { ...MODAL_TIMEOUTS, ...timeouts } });
 	}
 }

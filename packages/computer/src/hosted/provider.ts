@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ATTACH_PATH, type AttachHub, DAEMON_PATH, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { syncs } from "../descriptor.js";
-import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
+import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import { BACKSTOP_MARGIN_MS, type HostCall, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "../host.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
@@ -170,6 +170,8 @@ const USER = /^(\d+):(\d+)$/;
 /** A spec's user, where the host takes one: a uid, or uid:gid, in numbers (a uid alone is its own gid). */
 const SPEC_USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
+/** The calls of a desktop's display (DESKTOP_GROUPS): screen, input, apps and ui. */
+const DISPLAY_METHOD = /^(screen|input|apps|ui)\./;
 const DEFAULTS: HostedTimeouts = {
 	requestMs: 30_000,
 	createMs: 120_000,
@@ -351,11 +353,8 @@ export class HostedProvider implements ComputerProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
-		if (host.facts.connect === "dial") {
-			// Every connection goes over the socket the machine dials: nothing reaches into it from here.
-			if (host.exec || host.upload) throw new Error(`${label}'s machines dial this server (facts.connect "dial"), so its host has no exec and no upload: leave them out`);
-			if (kind === "desktop") throw new Error(`${label}'s machines dial this server (facts.connect "dial"), and agentrun-dial starts init with no display: make it kind linux`);
-		}
+		// Every connection of a dial host's machine goes over the socket it dials: nothing reaches into it from here.
+		if (host.facts.connect === "dial" && (host.exec || host.upload)) throw new Error(`${label}'s machines dial this server (facts.connect "dial"), so its host has no exec and no upload: leave them out`);
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
@@ -885,6 +884,8 @@ export class HostedProvider implements ComputerProvider {
 			AGENTRUN_DAEMON_URL: dialed.daemon,
 			AGENTRUN_DAEMON_SHA256: sha256,
 			AGENTRUN_INIT_ARGS: initFlags(init).join(" "),
+			// A desktop's init gets its display as the exec path's start gives it: DISPLAY, which agentrun-dial passes on.
+			...(this.#desktop === undefined ? {} : { DISPLAY: this.#desktop.display }),
 		});
 	}
 
@@ -1159,7 +1160,14 @@ export class HostedProvider implements ComputerProvider {
 			// calls in flight gone, and the first call after a redial is refused gone (attach.ts, AttachHub.connection).
 			const connection = this.#dial?.hub.connection(ref.name);
 			if (connection === undefined) return this.#fail("gone", `${ref.name} is not attached to this server now: its computerd dials back on its own, so try again shortly`);
-			return ok(deletedSaid(this.host, ref, this.#label, requestMs, connection));
+			// The hub holds the hello of the machine's dial; a desktop's display answered after it, so each open asks again,
+			// as a bridge's open does.
+			const hello = await connection.client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bounded(helloMs, signal) });
+			if (!hello.ok) {
+				await connection.close();
+				return hello.error.code === "aborted" && !signal?.aborted ? this.#fail("timeout", `the daemon in ${ref.name} did not answer hello within ${seconds(helloMs)}`) : hello;
+			}
+			return ok(deletedSaid(this.host, ref, this.#label, requestMs, { ...connection, hello: hello.value }));
 		}
 		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
 		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;
@@ -1286,10 +1294,15 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a linux computer has no screen. */
 	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
-		return daemonWatch(this, ref, handlers, options);
+		return daemonWatch({ connect: (one) => this.#connect(one, "screen.watch") }, ref, handlers, options);
 	}
 
-	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
+		return this.#connect(ref);
+	}
+
+	/** connect; `watching`, a watch's: a dial desktop whose display isn't up yet refuses it in words, as its client does. */
+	async #connect(ref: ComputerRef, watching?: "screen.watch"): Promise<Result<ComputerConnection>> {
 		const problem = this.#refProblem(ref);
 		if (problem) return this.#fail("invalid", problem);
 		const found = await this.#own(ref);
@@ -1300,7 +1313,20 @@ export class HostedProvider implements ComputerProvider {
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.host.facts.arch, fence: true });
+		// A dial desktop says linux until its display answers (attach.ts helloMismatch), and until a hello says desktop it is
+		// a linux computer: its screen, input, apps and ui calls are refused here in words, never sent.
+		const dark = this.#dialing && kind === "desktop" && opened.value.hello?.kind === "linux";
+		const expected = dark ? { kind: "linux" as const, groups: groups.filter((group) => !(DESKTOP_GROUPS as readonly string[]).includes(group)) } : { kind, groups };
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, ...expected, arch: this.host.facts.arch, fence: true });
+		const notUp = (method: string) => this.#fail("unsupported", `${ref.name}'s display isn't up yet: ${method} was not sent, and it is a linux computer until its daemon's hello says desktop`);
+		if (drifted.length === 0 && dark && watching) {
+			await opened.value.close();
+			return notUp(watching);
+		}
+		if (drifted.length === 0 && dark) {
+			const client = opened.value.client;
+			return ok({ ...opened.value, client: { call: (method, params, options) => (DISPLAY_METHOD.test(method) ? Promise.resolve(notUp(method)) : client.call(method, params, options)), close: () => client.close() } });
+		}
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers. A synced
 		// folder's sync is its runner's (the sink is serve's), which wraps the client itself.
 		if (drifted.length === 0) return recordedFolder(found.value.labels)?.mount?.kind !== "archil" ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client, archilSync(opened.value.client)) });
