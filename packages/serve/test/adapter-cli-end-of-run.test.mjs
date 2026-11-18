@@ -8,12 +8,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// One claim per runner: a lease no stall of a loaded machine outlasts. A short one was lost to a stall between a turn's
+// answer and its commit, and the claim that retook it asked that turn again, so a count of sends read the takeover's.
+// The case that wants a takeover kills its runner and moves the store's clock past the lease.
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const INPUT = "Find it.";
 
@@ -221,7 +224,7 @@ test("a CLI feedback round whose runner died mid end-of-run turn: the next claim
   await until(async () => log.sent.some((text) => /graded/.test(text)), "the round's end-of-run turn was sent", 10_000);
   first.kill();
   // The first claim's lease runs out for the next runner at once.
-  opened.clock.skewMs += 60_000;
+  opened.clock.skewMs += TIMING.leaseMs * 2;
   second = startRunner({ store: opened.runners[1], createLoop, name: "runner-b", ...TIMING });
   await until(async () => {
     const now = await opened.server.runs.get("run-1");

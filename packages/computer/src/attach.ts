@@ -142,6 +142,9 @@ export interface MachineMint {
 	arch: string;
 	/** The machine's backstopAt: past it the token is refused, whatever else holds. */
 	expiresAt: Date;
+	/** The run the machine works for, as its create's labels name it (RUN_LABEL): what a server's words about its dial
+	 *  name. Absent for a computer of no run. */
+	run?: string;
 }
 
 /**
@@ -157,6 +160,10 @@ export interface MachineTokens {
 	mint(machine: string, mint: MachineMint): Promise<string>;
 	/** The machine's token refused from now on; a machine with none is done. */
 	revoke(machine: string): Promise<void>;
+	/** Why the server refused the machine's dial, in its words (a relay to the runner that minted the token, serve's
+	 *  dial-relay.ts, that it could not make): they name the machine's run, then the machine, and never its token.
+	 *  Undefined while none was refused. A create waiting for the machine's socket ends in these words. */
+	refused(machine: string): Promise<string | undefined>;
 }
 
 const sha256 = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -180,6 +187,11 @@ export class MemoryMachineTokens implements MachineTokens {
 
 	async revoke(machine: string): Promise<void> {
 		this.#drop(machine);
+	}
+
+	// One process: its own attach route takes every dial, and no relay to a runner apart is refused.
+	async refused(_machine: string): Promise<string | undefined> {
+		return undefined;
 	}
 
 	#drop(machine: string): void {

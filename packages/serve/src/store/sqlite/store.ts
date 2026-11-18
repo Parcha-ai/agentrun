@@ -11,7 +11,7 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -21,7 +21,7 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
-  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
+  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type RunnerRelayRow, type RunnerRelays, type SecureRewrite,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -210,8 +210,10 @@ const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider:
 type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
-type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number };
-const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at });
+type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number; runner: string | null; incarnation: string | null; run: string | null; refused: string | null };
+const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at, runner: r.runner, incarnation: r.incarnation, run: r.run, refused: r.refused });
+type RelayRecord = { runner: string; incarnation: string; host: string; port: number; seen_at: number };
+const relayOf = (r: RelayRecord): RunnerRelayRow => ({ runner: r.runner, incarnation: r.incarnation, host: r.host, port: Number(r.port), seenAt: Number(r.seen_at) });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -340,8 +342,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     }
     // Version 11 (0.1.0-beta.43 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
     // in one durable write once the columns an earlier build of 11 lacked are in, every run behind until its lister builds
-    // it. A runner refuses 11 until that server has.
-    const upgrading = found === SCHEMA_VERSION - 1;
+    // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
+    // (schema.ts relayUpgrade). A runner refuses 11 and 12 until that server has.
+    const upgrading = found === SCHEMA_VERSION - 2 || found === SCHEMA_VERSION - 1;
     if (upgrading && role === "runner") throw new Error(`Start the AgentRun server to bring this store from version ${found} to ${SCHEMA_VERSION} before opening a runner. The runner does not upgrade this store.`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
@@ -397,9 +400,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       await backfillNativeCommandOwners(connection);
-      if (upgrading) {
+      if (found === SCHEMA_VERSION - 2) {
         const present = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
         await connection.write(listingUpgrade(present).map((sql) => ({ sql })), { full: true });
+      }
+      if (upgrading) {
+        const minted = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('minted_tokens')")).map((column) => column.name));
+        await connection.write(relayUpgrade(minted).map((sql) => ({ sql })), { full: true });
       }
     }
   } catch (error) {
@@ -522,6 +529,7 @@ class SqliteStore implements Store {
   readonly computerLedger: ComputerLedger;
   readonly pairedComputers: PairedComputers;
   readonly mintedTokens: MintedTokens;
+  readonly runnerRelays: RunnerRelays;
   readonly importedTemplates: ImportedTemplates;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
@@ -1686,16 +1694,16 @@ class SqliteStore implements Store {
       },
     };
 
-    const MINTED = "SELECT machine, kind, os, arch, expires_at, revoked_at, created_at FROM minted_tokens";
+    const MINTED = "SELECT machine, kind, os, arch, expires_at, revoked_at, created_at, runner, incarnation, run, refused FROM minted_tokens";
     this.mintedTokens = {
       // A mint for a machine that has one replaces it: its older token dials no more.
-      mint: async ({ machine, tokenSha256, kind, os, arch, expiresAt }) => {
+      mint: async ({ machine, tokenSha256, kind, os, arch, expiresAt, runner, incarnation, run }) => {
         const at = now();
         await db.write([
           { sql: "DELETE FROM minted_tokens WHERE expires_at <= ?", params: [at] },
           {
-            sql: "INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (machine) DO UPDATE SET token_sha256 = excluded.token_sha256, kind = excluded.kind, os = excluded.os, arch = excluded.arch, expires_at = excluded.expires_at, revoked_at = NULL, created_at = excluded.created_at",
-            params: [machine, tokenSha256, kind, os, arch, expiresAt, at],
+            sql: "INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, created_at, runner, incarnation, run) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (machine) DO UPDATE SET token_sha256 = excluded.token_sha256, kind = excluded.kind, os = excluded.os, arch = excluded.arch, expires_at = excluded.expires_at, revoked_at = NULL, created_at = excluded.created_at, runner = excluded.runner, incarnation = excluded.incarnation, run = excluded.run, refused = NULL",
+            params: [machine, tokenSha256, kind, os, arch, expiresAt, at, runner ?? null, incarnation ?? null, run ?? null],
           },
         ]);
       },
@@ -1710,6 +1718,31 @@ class SqliteStore implements Store {
       revoke: async (machine) => {
         const [result] = await db.write([{ sql: "UPDATE minted_tokens SET revoked_at = ? WHERE machine = ? AND revoked_at IS NULL", params: [now(), machine] }]);
         return (result?.changes ?? 0) === 1;
+      },
+      refuse: async (tokenSha256, words) => {
+        await db.write([{ sql: "UPDATE minted_tokens SET refused = ? WHERE token_sha256 = ?", params: [words, tokenSha256] }]);
+      },
+    };
+
+    const RELAYS = "SELECT runner, incarnation, host, port, seen_at FROM runner_relays";
+    this.runnerRelays = {
+      put: async ({ runner, incarnation, host, port }) => {
+        await db.write([{
+          sql: "INSERT INTO runner_relays (runner, incarnation, host, port, seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at",
+          params: [runner, incarnation, host, port, now()],
+        }]);
+      },
+      seen: async (runner, incarnation) => {
+        const [result] = await db.write([{ sql: "UPDATE runner_relays SET seen_at = ? WHERE runner = ? AND incarnation = ?", params: [now(), runner, incarnation] }]);
+        return (result?.changes ?? 0) === 1;
+      },
+      get: async (runner) => {
+        const row = await db.get<RelayRecord>(`${RELAYS} WHERE runner = ?`, runner);
+        return row === undefined ? undefined : relayOf(row);
+      },
+      list: async () => (await db.all<RelayRecord>(`${RELAYS} ORDER BY runner`)).map(relayOf),
+      remove: async (runner, incarnation) => {
+        await db.write([{ sql: "DELETE FROM runner_relays WHERE runner = ? AND incarnation = ?", params: [runner, incarnation] }]);
       },
     };
 

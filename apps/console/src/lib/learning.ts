@@ -39,8 +39,13 @@ export type RunLearningResultData = NonNullable<RunLearning> & {
 };
 /** A workflow draft the agent learned, as GET .../learning lists it: its name, its workflow.json (`file`), its README
  *  (`readme`, the file an approval, a retire or a restore names), what it is for, whether it waits for the owner's OK or
- *  a person retired it (no later run is given it), the run that kept it, its size, and the README's version (`etag`). */
-export type LearnedItem = { name: string; file: string; readme: string; description: string; status: "active" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
+ *  a person retired it (no later run is given it), the run that kept it, its size, and the README's version (`etag`).
+ *  `status` is one word: `pending` or `retired` as its README says, else where it stands as the promotions read says it
+ *  (`serving`, `checking`, `held`, `stopped`). */
+export type LearnedItem = { name: string; file: string; readme: string; description: string; status: "serving" | "checking" | "held" | "stopped" | "pending" | "retired"; run: string | null; bytes: number; etag: string; retired?: Retired; last_change?: LastChange };
+/** A workflow later runs are given: neither waiting for the owner's OK nor retired (whether it serves first is its status:
+ *  `serving`, else the agent takes the runs it fits). */
+export const givenToRuns = (status: string): boolean => status !== "pending" && status !== "retired";
 /** When and by whom a draft was retired, and `from`, the status its restore gives back: `active`, or `pending` (it goes
  *  back to waiting for your OK); or, for a draft whose README can't be read (its front matter reads no way), that no one
  *  did: the host could not read it (`by: "host"`, `why: "unreadable"`, no `from`). */

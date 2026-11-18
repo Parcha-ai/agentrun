@@ -12,7 +12,7 @@ let host: HTMLDivElement;
 const agent = (id: string, learning: Agent["definition"]["learning"] = true): Agent => ({ agent_id: id, kind: "agentic", revision: "v1", revisions: 1, archived_at: null, definition: { version: 1, name: id, learning, harness: "pi", instructions: "Research a topic.", tools: [], skills: [] } });
 /** corrections.md with n lines under # Learned. */
 const lines = (n: number) => ["# Learned", ...Array.from({ length: n }, (_, i) => `- Correction ${i + 1}.`)].join("\n");
-const draft = (name: string, status: LearnedItem["status"] = "active", run = "run-one"): LearnedItem => ({ name, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md`, description: name, status, run, bytes: 1, etag: "one" });
+const draft = (name: string, status: LearnedItem["status"] = "serving", run = "run-one"): LearnedItem => ({ name, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md`, description: name, status, run, bytes: 1, etag: "one" });
 const view = (id: string, fields: Partial<AgentLearning> = {}): AgentLearning => ({ agent: id, main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null, ...fields });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 type Call = { path: string; query: URLSearchParams; method: string };
@@ -187,7 +187,7 @@ describe("Learning Dojo", () => {
     let lists = 0, reads = 0;
     let finishList!: (response: Response) => void, finishRead!: (response: Response) => void;
     const saved = view("alpha", { corrections: lines(2),
-      workflows: [draft("review", "active", "before"), draft("pending", "pending", "before")],
+      workflows: [draft("review", "serving", "before"), draft("pending", "pending", "before")],
       counts: { merged: 3, dropped: { empty: 1 }, in_progress: 2 },
       log: { items: [{ by: { run: "before" }, commit: "old", at: "2026-11-05T10:00:00Z", reason: "Saved learning", files: ["corrections.md"] }], total: 1, next_cursor: null } });
     const renamed = { ...agent("alpha"), revision: "v2", definition: { ...agent("alpha").definition, name: "Renamed alpha", learning: false } };

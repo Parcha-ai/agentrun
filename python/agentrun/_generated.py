@@ -3217,7 +3217,7 @@ class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
     file: str
     readme: str
     description: str
-    status: Literal["active", "pending", "retired"]
+    status: Literal["serving", "checking", "held", "stopped", "pending", "retired"]
     run: str | None
     bytes: int
     etag: str

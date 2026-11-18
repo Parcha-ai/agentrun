@@ -3,6 +3,7 @@
 // it handed back. The arithmetic here reads the server's records only (GET .../learning/cost, .../promotions,
 // .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
 import { timesOf } from "./costPerRun";
+import { givenToRuns } from "./learning";
 import type { CostRun, LearningCost, LearningLoop, Promotion, Serving } from "./v2";
 
 /** When a job compiles into a workflow (serve learning-setting.ts COMPILE_AFTER_DEFAULT): at this many completed runs
@@ -133,7 +134,7 @@ export function storyOf(input: {
   compileAfter?: number;
 }): Stage[] {
   const { corrections, runs, workflows, cost, promotions, serving, loop, execution = "hosted", compileAfter = COMPILE_AFTER_DEFAULT } = input;
-  const active = workflows.filter((w) => w.status === "active");
+  const active = workflows.filter((w) => givenToRuns(w.status));
   const failedCompile = loop?.compiles.find((c) => c.digest === null && (c.draft_errors.length > 0 || c.attempts.length > 0));
   // The newest compile that wrote a workflow the checks passed (a later refused draft says so in the feed).
   const lastCompile = loop?.compiles.find((c) => c.digest !== null);

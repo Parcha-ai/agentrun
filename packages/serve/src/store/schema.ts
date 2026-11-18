@@ -31,8 +31,10 @@
 // journals.
 
 // Version 12 keeps each run's listing on its row (RUN_LISTING_COLUMNS): what a runs list shows of it, so a list reads rows
-// alone. It is the one version a server upgrades in place (listingUpgrade, from 11, at its open); a runner waits for it.
-export const SCHEMA_VERSION = 12;
+// alone. Version 13 names the runner in a process of its own that minted a hosted machine's token (minted_tokens.runner,
+// .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
+// such runner takes the dials the server relays to it (runner_relays, dial-relay.ts). The server upgrades these two in place at its open (listingUpgrade from 11, then relayUpgrade from 12); a runner waits for it.
+export const SCHEMA_VERSION = 13;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -84,8 +86,13 @@ export const IMPORTED_TEMPLATES = `CREATE TABLE IF NOT EXISTS imported_templates
 /** A hosted machine's minted token (a dial provider's create, spec/computer/attach.md): its computerd dials the attach
  *  socket and fetches the daemon with it. By the machine (its name, from its create's request id): the token's SHA-256
  *  alone (hex), what the machine must say it is at hello (kind, os, arch), and when the token ends (`expires_at`, the
- *  machine's backstop) or was revoked (its delete). A row past its end goes at the next mint. In STORE_DDL, and added at
- *  a server open to a store an earlier build of this version made. */
+ *  machine's backstop) or was revoked (its delete). A row past its end goes at the next mint. `runner` and `incarnation`
+ *  (version 13): the runner in a process of its own that minted it, and its incarnation, to which the server relays the
+ *  machine's socket (dial-relay.ts); null for the server's own process. `run` (version 13): the run the machine works for,
+ *  as its create named it, which the words about its dial say; null for a machine of no run. `refused` (version 13): why
+ *  the server refused to relay its dial, in its 503's words (never the token), which the minting runner's create reads to
+ *  end its wait; null while none was, and again at a mint. In STORE_DDL, and added at a server open to a store an earlier
+ *  build of this version made. */
 export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
     machine TEXT PRIMARY KEY,
     token_sha256 TEXT NOT NULL UNIQUE,
@@ -94,8 +101,33 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
     arch TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked_at INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    runner TEXT,
+    incarnation TEXT,
+    run TEXT,
+    refused TEXT
   ) STRICT`;
+
+/** Where each runner in a process of its own takes the dials the server relays to it (version 13, dial-relay.ts): its
+ *  attach listener's host and port under its name, with its incarnation and when it last said it was there. */
+export const RUNNER_RELAYS = `CREATE TABLE IF NOT EXISTS runner_relays (
+    runner TEXT PRIMARY KEY,
+    incarnation TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    seen_at INTEGER NOT NULL
+  ) STRICT`;
+
+/** Version 12 → 13 on SQLite (the server's open, sqlite/store.ts), given minted_tokens' columns now: the minting runner,
+ *  its incarnation, the machine's run and a refused relay's words on each token's row (none of the rows there has one: the
+ *  server's own process minted them, naming no run), the runners' relays, and the version, in one durable write. */
+export function relayUpgrade(mintedColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...["runner", "incarnation", "run", "refused"].filter((column) => !mintedColumns.has(column)).map((column) => `ALTER TABLE minted_tokens ADD COLUMN ${column} TEXT`),
+    RUNNER_RELAYS,
+    "UPDATE store_meta SET schema_version = 13 WHERE singleton = 1",
+  ];
+}
 
 /** A run's listing on its row (version 12): what a runs list shows of the run, so a list reads rows alone and never builds
  *  a run's view. `list_mark` moves (+1) in the transaction of every write that can change what the run's view shows: its
@@ -529,6 +561,7 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
+  RUNNER_RELAYS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

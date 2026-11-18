@@ -2074,7 +2074,7 @@ export interface operations {
         file: string;
         readme: string;
         description: string;
-        status: "active" | "pending" | "retired";
+        status: "serving" | "checking" | "held" | "stopped" | "pending" | "retired";
         run: string | null;
         bytes: number;
         etag: string;

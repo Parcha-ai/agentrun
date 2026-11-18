@@ -144,7 +144,10 @@ test("server-and-runner starts the server with --no-runner, then a runner on its
   const at = await scratch(t);
   const port = await freePort();
   // NUL-separated pairs, as the launcher writes them, with a space, a newline and a non-ASCII byte in a value.
-  const secrets = Buffer.from("AGENTRUN_TOKEN=tok-1234567890abcdef1234567890abcdef\0OPENAI_API_KEY=a b\ncé\0", "utf8");
+  // The server's own three among them, which the runner is not handed; the seal key, the store's URL and a provider's key
+  // it is (and a name that only starts like the token's).
+  const secrets = Buffer.from("AGENTRUN_TOKEN=tok-1234567890abcdef1234567890abcdef\0AGENTRUN_SEAL_KEY=c2VhbA==\0OPENAI_API_KEY=a b\ncé\0AGENTRUN_TOKENS=id:tok-abcdef1234567890abcdef1234567890\0AGENTRUN_STORE_URL=postgres://u:p@h/db\0AGENTRUN_API_KEY=api-1234\0AGENTRUN_TOKEN_X=kept\0", "utf8");
+  const runnerSecrets = Buffer.from("AGENTRUN_SEAL_KEY=c2VhbA==\0OPENAI_API_KEY=a b\ncé\0AGENTRUN_STORE_URL=postgres://u:p@h/db\0AGENTRUN_TOKEN_X=kept\0", "utf8");
   const options = ["--data", "/data", "--harness-module", "/walk/one harness.mjs", "--listen", "0.0.0.0", "--port", String(port), "--drain-timeout", "6s", "--max-runs", "3", "--faux=/walk/faux.mjs", "--faux-browser", "/walk/browser.mjs", "--harness-module=/walk/two.mjs"];
   const run = start(at, ["server-and-runner", ...options], { secrets, env: { STUB_RUNNER_DRAIN_MS: "700" } });
   const server = await until("the server starts", () => up(at.log, "server"));
@@ -156,7 +159,7 @@ test("server-and-runner starts the server with --no-runner, then a runner on its
     "the runner takes the server's data, drain, run limit, faux, fake browser and each harness module, in order",
   );
   assert.equal(server.secrets, secrets.toString("hex"), "the server got the launcher's secrets, byte for byte");
-  assert.equal(runner.secrets, secrets.toString("hex"), "the runner got the same bytes over a pipe of its own");
+  assert.equal(runner.secrets, runnerSecrets.toString("hex"), "the runner got the same bytes less the server's own three, over a pipe of its own");
   assert.notEqual(server.pid, runner.pid);
   assert.ok(alive(server.pid) && alive(runner.pid), "both run");
   await until("both outputs reach the script's", () => ["server", "runner"].every((role) => run.seen.out.includes(`${role} says on stdout`) && run.seen.err.includes(`${role} says on stderr`)));

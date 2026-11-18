@@ -8,7 +8,7 @@ import { ProblemCard } from "./Problem";
 import { ListSkeleton } from "./Skeleton";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import { type Agent, learningOn } from "@/lib/agentForm";
-import { type AgentLearning, correctionLines } from "@/lib/learning";
+import { type AgentLearning, correctionLines, givenToRuns } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -18,13 +18,13 @@ type Row = { agent: Agent; view?: AgentLearning; stale?: boolean; error?: Proble
 type Measure = { value: number; exact: boolean };
 const AGENT_PAGES = 100;
 const WORKERS = 4;
-const count = (items: { status: string }[] | undefined, status: string): number => items?.filter((item) => item.status === status).length ?? 0;
+const count = (items: { status: string }[] | undefined, is: (status: string) => boolean): number => items?.filter((item) => is(item.status)).length ?? 0;
 const learningHref = (agent: Agent) => `#/agents/${encodeURIComponent(agent.agent_id)}/learning`;
 const shown = (n: number) => n.toLocaleString("en-US");
 const measures: { label: string; of: (r: Row) => Measure | null }[] = [
   { label: "Corrections", of: (r) => r.view ? { value: correctionLines(r.view.corrections).length, exact: true } : null },
-  { label: "Workflow drafts", of: (r) => r.view ? { value: count(r.view.workflows, "active"), exact: true } : null },
-  { label: "Pending review", of: (r) => r.view ? { value: count(r.view.workflows, "pending"), exact: true } : null },
+  { label: "Workflow drafts", of: (r) => r.view ? { value: count(r.view.workflows, givenToRuns), exact: true } : null },
+  { label: "Pending review", of: (r) => r.view ? { value: count(r.view.workflows, (status) => status === "pending"), exact: true } : null },
   { label: "In progress", of: (r) => r.view ? { value: r.view.counts.in_progress, exact: true } : null },
 ];
 /** Unknown or incomplete histories never turn into an exact zero. */

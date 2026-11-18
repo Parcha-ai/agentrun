@@ -1,5 +1,5 @@
 // Settings → Computers and the owner's Archil settings on a served server, as the switch wires them (server.ts): under
-// --faux (every served test's), the registry is faux-computers.ts's three providers. GET /v2/computers lists them, a
+// --faux (every served test's), the registry is faux-computers.ts's four providers. GET /v2/computers lists them, a
 // saved key makes faux-sandbox ready, faux-broken's test says why, capabilities.features.computers names the offered
 // kinds, the Archil routes turn Mode 2 on and off, and the run's desktop view refuses an unknown run. No provider is
 // called.
@@ -20,11 +20,11 @@ async function serve(t, options) {
   return served(t, { ...options, accounts: true, openSetup: true });
 }
 
-test("served under --faux: the three faux providers, a key that makes faux-sandbox ready, faux-broken's words", async (t) => {
+test("served under --faux: the four faux providers, a key that makes faux-sandbox ready, faux-broken's words", async (t) => {
   const { api } = await serve(t, { runner: false });
   const listed = await api("GET", "/computers");
   assert.equal(listed.status, 200);
-  assert.deepEqual(listed.body.kinds.flatMap((kind) => kind.providers.map((one) => `${kind.kind}:${one.id}`)), ["sandbox:faux-sandbox", "sandbox:faux-broken", "desktop:faux-desktop"]);
+  assert.deepEqual(listed.body.kinds.flatMap((kind) => kind.providers.map((one) => `${kind.kind}:${one.id}`)), ["sandbox:faux-sandbox", "sandbox:faux-broken", "desktop:faux-desktop", "desktop:faux-dial"]);
   const saved = await api("PUT", "/computers/faux-sandbox/keys", { FAUX_SANDBOX_KEY: "any-value-1" });
   assert.equal(saved.status, 200);
   assert.deepEqual([saved.body.ready, saved.body.secrets[0].name, saved.body.secrets[0].set, saved.body.secrets[0].source], [true, "computer:faux-sandbox:FAUX_SANDBOX_KEY", true, "console"]);
