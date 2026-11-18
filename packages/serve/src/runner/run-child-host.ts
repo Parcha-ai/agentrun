@@ -958,13 +958,18 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  connectors, whose rows are the server's. */
 export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native);
 
-/** Whether run `runId` stays in its runner's process: runsInRunner's, and the two whose agent works on what the server's
- *  user alone reads, which no slot's user is given. A workflow run on a server with a documents directory (launch
- *  .documents): its reads and its writes (a pdf_pages call's pages) are rooted there, a folder the server's user holds.
- *  A run on Claude Code's login on this machine (claude-login.ts loginForRun): its CLI reads and refreshes the login in
- *  the server's own folder. A run its caller handed a model key (model_key) runs on that key and never on the login
+/** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
+export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+
+/** Whether run `runId` stays in its runner's process: runsInRunner's, and a workflow run on a server with a documents
+ *  directory (launch.documents), whose reads and writes (a pdf_pages call's pages) are rooted in a folder the server's
+ *  user holds and no slot's user is given; its nodes run the server's own tools alone, no agent's code. A run on Claude
+ *  Code's login on this machine (claude-login.ts loginForRun) needs the login in the server's own folder, which its CLI
+ *  reads and refreshes: where runs are the runner's own user (`process`) it stays in the runner; where each run is a user
+ *  of its own (`uid`) it is refused at its claim (ClaimRefused, the run failed in words naming the setting), never run as
+ *  the server's user. A run its caller handed a model key (model_key) runs on that key and never on the login
  *  (cli-run-spec.ts), so it is a process of its own like any other. */
-export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string): Promise<boolean> {
+export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
   if (runsInRunner(harness, launch)) return true;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
@@ -972,7 +977,9 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
     if (revision && isWorkflowRevision(revision)) return true;
   }
   if ((await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place)) === undefined) return false;
-  return (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) === undefined;
+  if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return false;
+  if (isolation.kind === "uid") throw new ClaimRefused(LOGIN_NEEDS_SERVER_USER);
+  return true;
 }
 
 /** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in
@@ -985,7 +992,7 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
     launchOf: (runId) => options.deps.store.runs.launch(runId),
-    resolve: async (harness, launch, runId) => ((await staysInRunner(options.deps, harness, launch, runId)) ? here(harness, launch, runId) : own),
+    resolve: async (harness, launch, runId) => ((await staysInRunner(options.deps, harness, launch, runId, options.isolation)) ? here(harness, launch, runId) : own),
   });
 }
 

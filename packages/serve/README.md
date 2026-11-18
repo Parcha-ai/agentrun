@@ -1230,7 +1230,9 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
 switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
-sandbox, or on another machine, uses the keys.
+sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
+user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
+login fails at its claim and says so. Set `AGENTRUN_RUN_USER=same`, or give the run a `model_key`.
 
 The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
 bound to any other address, such as all interfaces in a container or on a hosting service, has it off
