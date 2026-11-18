@@ -239,6 +239,17 @@ Revoke a source connector and stop its outstanding commands.
 
 Route: `DELETE /connectors/{connector_id}`.
 
+## doctor
+
+### `agentrun doctor`
+
+Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering).
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory whose server it checks (default ~/.agentrun)
+- `--json` (boolean, this CLI's own): print the checks as JSON: {exit, server, checks: [{id, status, summary, fix, docs}]}
+
 ## files
 
 ### `agentrun files create`

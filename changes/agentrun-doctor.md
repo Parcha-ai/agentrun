@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun
+kind: feature
+---
+`agentrun doctor` (`npx @parcha/agentrun doctor`) checks how this AgentRun is set up and prints each problem with what to change and a link to its documentation: the Node.js it runs on against the package's floor (the installer named as the fix), whether a server answers `/v2/health` for the data directory (`--data`, default `~/.agentrun`) and its version, the launchd or systemd service (installed, running, the `sudo loginctl enable-linger` line when lingering is off), whether a server on loopback can be opened from a remote session (an SSH tunnel, `tailscale serve --bg <port>` on your tailnet, never Funnel, or `AGENTRUN_PUBLIC_URL` / `--allow-host`), whether the console's password is set (and where the setup link is, never the code), whether a model is ready (Settings → Model keys, or a gateway through `AGENT_MODEL_BASE_URL`), which harnesses are ready, the server's start-time switches where capabilities list them, and Docker for the boxes.
+- It is read-only: it writes no file, starts and stops nothing, and sends only GET requests. Capabilities are read with the server's own token from `DIR/.token`; no token, key or setup code is ever printed.
+- Exit 0 when nothing failed (warnings allowed), 1 when a check failed, 3 when no server answers for the data directory; `--json` prints the checks (`{exit, server, checks: [{id, status, summary, fix, docs}]}`) for agents. It takes no `--base-url`: it checks the AgentRun on this machine.
