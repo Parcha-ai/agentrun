@@ -796,6 +796,8 @@ export interface Runs {
    *  by that write) keeps the row as that write left it, behind, so the next build writes what the run shows now. True
    *  when it was written. */
   putListing(runId: string, mark: number, listing: RunListing): Promise<boolean>;
+  /** Run `runId`'s list_mark now (the mark a build of its listing starts from), or undefined when there is no such run. */
+  listMark(runId: string): Promise<number | undefined>;
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
    *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
   relist(options: { flags: number; agentId?: string }): Promise<number>;

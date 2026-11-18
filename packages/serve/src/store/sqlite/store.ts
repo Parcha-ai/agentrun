@@ -1080,6 +1080,10 @@ class SqliteStore implements Store {
         }]);
         return (result?.rows.length ?? 0) > 0;
       },
+      listMark: async (runId) => {
+        const row = await db.get<{ list_mark: number }>("SELECT list_mark FROM runs WHERE id = ?", runId);
+        return row === undefined ? undefined : Number(row.list_mark);
+      },
       relist: async ({ flags, agentId }) => {
         const [result] = await db.write([{
           sql: `UPDATE runs SET list_mark = list_mark + 1 WHERE listing_flags <> 0 AND (listing_flags & ?) <> 0${agentId === undefined ? "" : " AND agent_id = ?"} RETURNING id`,

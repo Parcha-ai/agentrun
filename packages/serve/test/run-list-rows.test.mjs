@@ -260,6 +260,32 @@ test("a listing built before a write that settled its run is never written over 
   assert.deepEqual((await store.runs.listed({ archived: false, status: "completed", limit: 50 })).rows.map(({ row }) => row.id), ["run-1"], "status=completed finds it");
 });
 
+test("a status filter lists a run still going that a write moved while the filter built it: the build is made again over the write, never left off", { timeout: 60_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  // run-0000 completed, run-0001 failed, run-0002 claimed and working; no listing built (no lister runs here).
+  await storeOf(data, 3, 2);
+  const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+  t.after(() => server.close());
+  // Once the filter has read the runs still going whose listings are behind (the read whose WHERE holds the settled-status
+  // CASE), a write to the working run's row lands before the filter builds it: its mark moves past the one read.
+  const all = Connection.prototype.all;
+  let moved = false;
+  Connection.prototype.all = function (sql, ...params) {
+    const result = all.call(this, sql, ...params);
+    if (moved || !/FROM runs JOIN agents/.test(sql) || !/THEN 'completed'/.test(sql)) return result;
+    moved = true;
+    return result.then(async (rows) => (await this.write([{ sql: "UPDATE runs SET cost_usd = 0.5 WHERE id = 'run-0002'" }]), rows));
+  };
+  t.after(() => (Connection.prototype.all = all));
+  const api = client(server.baseUrl, server.token);
+  const working = await everyItem(api, "/runs?status=working");
+  assert.ok(moved, "the write landed between the filter's read and its build");
+  assert.deepEqual(working.map((item) => item.run_id), ["run-0002"], "status=working lists the run the write moved");
+  await sameAsViews(api, working, "the run is listed as its read shows it after the write");
+});
+
 /** Counts the store calls each GET of a runs list makes, and the rows its reads hand back: every call on a store connection
  *  made while that request is handled (its async context), none of the server's own background work. */
 function storeCallsPerList(t) {

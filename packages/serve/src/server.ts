@@ -946,6 +946,8 @@ function cursorOf(value: string | null): number {
 /** How many runs still going whose listing is behind a status-filtered list reads at once before it builds them all and
  *  reads its page (runsPage). */
 const UNLISTED_AT_ONCE = 50;
+/** Most builds of one run's listing a list makes when writes keep moving its mark (runsPage listNow). */
+const LIST_TRIES = 3;
 const nextCursor = (offset: number, total: number) => (offset < total ? Buffer.from(String(offset)).toString("base64url") : null);
 function limitOf(value: string | null): number {
   if (value === null) return 20;
@@ -2996,10 +2998,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // then any row of the page. With nothing running, none is behind: two reads, whatever the runs. The runs still going
     // are all a filter builds beside its page, and the lister builds them too, so only a list soon after an upgrade
     // builds many.
-    const listNow = async (runId: string, mark: number) => {
-      const listing = await listingOverStore(store, runId, vd);
-      if (listing) await store.runs.putListing(runId, mark, listing);
-      return listing;
+    // A write that lands while a listing is built moves the run's mark, so the listing is not written (Runs.putListing),
+    // and a run still going is left with no status on its row: the build is made again from the mark that write left, up
+    // to LIST_TRIES builds, so a filter never leaves off a run because a write met its build.
+    const listNow = async (runId: string, read: number) => {
+      for (let mark: number | undefined = read, tries = 1; ; tries++) {
+        const listing = await listingOverStore(store, runId, vd);
+        if (!listing || (await store.runs.putListing(runId, mark, listing)) || tries === LIST_TRIES) return listing;
+        if ((mark = await store.runs.listMark(runId)) === undefined) return listing;
+      }
     };
     if (status !== null) {
       const going: { id: string; mark: number }[] = [];

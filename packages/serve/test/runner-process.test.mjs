@@ -86,4 +86,8 @@ test("a runner's arguments: --data D [--loops N], and nothing else", () => {
   assert.deepEqual(runnerArgs(["--data", "/d", "--faux", "/t/faux.mjs"]), { dataDir: "/d", faux: "/t/faux.mjs" });
   assert.deepEqual(runnerArgs(["--data", "/d", "--faux=/t/faux.mjs"]), { dataDir: "/d", faux: "/t/faux.mjs" });
   assert.throws(() => runnerArgs(["--data", "/d", "--faux"]), /--faux needs a value/);
+  // The fake browser, as the server's --faux-browser: with --faux only.
+  assert.deepEqual(runnerArgs(["--data", "/d", "--faux", "/t/faux.mjs", "--faux-browser", "/t/browser.mjs"]), { dataDir: "/d", faux: "/t/faux.mjs", fauxBrowser: "/t/browser.mjs" });
+  assert.deepEqual(runnerArgs(["--data", "/d", "--faux-browser=/t/browser.mjs", "--faux=/t/faux.mjs"]), { dataDir: "/d", faux: "/t/faux.mjs", fauxBrowser: "/t/browser.mjs" });
+  assert.throws(() => runnerArgs(["--data", "/d", "--faux-browser", "/t/browser.mjs"]), /--faux-browser goes with --faux/);
 });

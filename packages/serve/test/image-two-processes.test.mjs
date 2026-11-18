@@ -25,6 +25,16 @@ import { createServer } from "node:http";
 const args = process.argv.slice(2);
 const role = args[0] === "runner" ? "runner" : "server";
 const log = (line) => appendFileSync(process.env.STUB_LOG, role + " " + line + "\n");
+const upper = role.toUpperCase();
+// Handled before the "up" line: a test that reads it may send SIGTERM at once, as a real server and runner handle it
+// before they say they are ready.
+process.on("SIGTERM", () => {
+  log("term");
+  setTimeout(() => {
+    log("drained");
+    process.exit(0);
+  }, Number(process.env["STUB_" + upper + "_DRAIN_MS"] ?? 50));
+});
 let secrets = "none";
 if (process.env.AGENTRUN_SECRETS_FD !== undefined) {
   const length = Number(process.env.AGENTRUN_SECRETS_LEN);
@@ -39,7 +49,6 @@ if (process.env.AGENTRUN_SECRETS_FD !== undefined) {
 log("up " + JSON.stringify({ pid: process.pid, ppid: process.ppid, args, secrets }));
 process.stdout.write(role + " says on stdout\n");
 process.stderr.write(role + " says on stderr\n");
-const upper = role.toUpperCase();
 let server;
 if (role === "server" && process.env.STUB_HEALTH !== "never") {
   const port = Number(args[args.indexOf("--port") + 1]);
@@ -54,13 +63,6 @@ if (role === "server" && process.env.STUB_HEALTH !== "never") {
   }).listen(port, "127.0.0.1");
 }
 const keep = setInterval(() => {}, 1000);
-process.on("SIGTERM", () => {
-  log("term");
-  setTimeout(() => {
-    log("drained");
-    process.exit(0);
-  }, Number(process.env["STUB_" + upper + "_DRAIN_MS"] ?? 50));
-});
 const exit = process.env["STUB_" + upper + "_EXIT"];
 if (exit !== undefined) setTimeout(() => { log("exits " + exit); server?.close(); clearInterval(keep); process.exit(Number(exit)); }, 300);
 `;
@@ -143,15 +145,15 @@ test("server-and-runner starts the server with --no-runner, then a runner on its
   const port = await freePort();
   // NUL-separated pairs, as the launcher writes them, with a space, a newline and a non-ASCII byte in a value.
   const secrets = Buffer.from("AGENTRUN_TOKEN=tok-1234567890abcdef1234567890abcdef\0OPENAI_API_KEY=a b\ncé\0", "utf8");
-  const options = ["--data", "/data", "--harness-module", "/walk/one harness.mjs", "--listen", "0.0.0.0", "--port", String(port), "--drain-timeout", "6s", "--max-runs", "3", "--faux=/walk/faux.mjs", "--harness-module=/walk/two.mjs"];
+  const options = ["--data", "/data", "--harness-module", "/walk/one harness.mjs", "--listen", "0.0.0.0", "--port", String(port), "--drain-timeout", "6s", "--max-runs", "3", "--faux=/walk/faux.mjs", "--faux-browser", "/walk/browser.mjs", "--harness-module=/walk/two.mjs"];
   const run = start(at, ["server-and-runner", ...options], { secrets, env: { STUB_RUNNER_DRAIN_MS: "700" } });
   const server = await until("the server starts", () => up(at.log, "server"));
   const runner = await until("the runner starts", () => up(at.log, "runner"));
   assert.deepEqual(server.args, [...options, "--no-runner"], "the server takes the options and --no-runner");
   assert.deepEqual(
     runner.args,
-    ["runner", "--data", "/data", "--drain-timeout", "6s", "--loops", "3", "--faux", "/walk/faux.mjs", "--harness-module", "/walk/one harness.mjs", "--harness-module", "/walk/two.mjs"],
-    "the runner takes the server's data, drain, run limit, faux and each harness module, in order",
+    ["runner", "--data", "/data", "--drain-timeout", "6s", "--loops", "3", "--faux", "/walk/faux.mjs", "--faux-browser", "/walk/browser.mjs", "--harness-module", "/walk/one harness.mjs", "--harness-module", "/walk/two.mjs"],
+    "the runner takes the server's data, drain, run limit, faux, fake browser and each harness module, in order",
   );
   assert.equal(server.secrets, secrets.toString("hex"), "the server got the launcher's secrets, byte for byte");
   assert.equal(runner.secrets, secrets.toString("hex"), "the runner got the same bytes over a pipe of its own");

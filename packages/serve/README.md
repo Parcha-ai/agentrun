@@ -236,7 +236,9 @@ two processes in the container: the server with `--no-runner`, and one runner on
 `GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
 stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
 `runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
-its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+its runner in its own process, which a [paired computer](#a-persons-own-computer) needs, and so does a computer
+provider whose machines dial the server (Fly, Cloudflare, and E2B, Daytona or Modal set to dial): a runner apart refuses
+its create, naming that fix.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s

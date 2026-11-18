@@ -10,9 +10,10 @@
 # Why two processes: a runner in the server's process shares the server's store handle, and its journal writes queue the
 # API's reads behind them. Apart, each has its own.
 #
-# server-and-runner needs --data D and --port N among the options. The runner takes the server's --data, its --faux, its
-# --drain-timeout, its --max-runs (as --loops) and each --harness-module. With --no-runner among them the server starts alone. The runner never
-# sets the store up and refuses one the server has not, so it starts once the server answers GET /v2/health on its
+# server-and-runner needs --data D and --port N among the options. The runner takes the server's --data, its --faux and
+# --faux-browser, its --drain-timeout, its --max-runs (as --loops) and each --harness-module. With --no-runner among them
+# the server starts alone. The runner never sets the store up and refuses one the server has not, so it starts once the
+# server answers GET /v2/health on its
 # --port (on loopback when --listen is 0.0.0.0, ::, or not given; else at the --listen address); a server that has not
 # answered in 300 s ends the container.
 #
@@ -35,7 +36,7 @@ say() { printf 'agentrun-serve: %s\n' "$*" >&2; }
 [ "${1-}" = server-and-runner ] || exec node "$cli" "$@"
 shift
 
-data= port= listen= faux= loops= drain= alone=
+data= port= listen= faux= browser= loops= drain= alone=
 want=
 for arg in "$@"; do
   if [ -n "$want" ]; then
@@ -52,6 +53,8 @@ for arg in "$@"; do
     --listen=*) listen=${arg#*=} ;;
     --faux) want=faux ;;
     --faux=*) faux=${arg#*=} ;;
+    --faux-browser) want=browser ;;
+    --faux-browser=*) browser=${arg#*=} ;;
     --max-runs) want=loops ;;
     --max-runs=*) loops=${arg#*=} ;;
     --drain-timeout) want=drain ;;
@@ -153,6 +156,7 @@ start_runner() {
       --harness-module=*) set -- "$@" --harness-module "${arg#*=}" ;;
     esac
   done
+  [ -z "$browser" ] || set -- --faux-browser "$browser" "$@"
   [ -z "$faux" ] || set -- --faux "$faux" "$@"
   [ -z "$loops" ] || set -- --loops "$loops" "$@"
   [ -z "$drain" ] || set -- --drain-timeout "$drain" "$@"
