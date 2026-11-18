@@ -130,6 +130,9 @@ test("only the owner's session saves, removes or tests the gateway: the API toke
   for (const [method, path, sent] of [["PUT", "/settings/model-gateway", body], ["DELETE", "/settings/model-gateway", undefined], ["POST", "/settings/model-gateway/test", { base_url: "https://gateway.example", api_key: CANARY }]]) {
     const refused = await server.api(method, path, sent, asToken);
     assert.equal(refused.status, 403, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+    // Where to do it instead: Settings → Model keys, the gateway's row (secret-writes.ts registerSecretPage).
+    assert.match(refused.body.error?.details?.console_url ?? "", /\/#\/settings\/keys$/, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+    assert.equal(JSON.stringify(refused.body).includes(CANARY), false, "the refusal never echoes the key");
   }
   const read = await server.api("GET", "/settings/model-gateway", undefined, asToken);
   assert.deepEqual([read.status, read.body.source], [200, null], "nothing was saved");

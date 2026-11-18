@@ -32,7 +32,7 @@ import { gatewayBase, HarnessUnavailable } from "./provider.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { envValue, type KeyEnv } from "./key-meta.js";
 import { GATEWAY_KEY_ENV, type Tier, TIERS } from "./model.js";
-import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { getSealedKey, putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { SealedKeys, Settings } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -40,6 +40,8 @@ import { isObject, unknownFields } from "./validate.js";
 // Saving, removing and testing the gateway are the owner's session's alone (secret-writes.ts): each may carry its key, and
 // its address says where every model request, and the key, goes. Reading it is not: no answer holds the key.
 for (const operation of ["saveModelGateway", "deleteModelGateway", "testModelGateway"]) registerSecretWrite(operation, () => true);
+// A refusal of any of them links to where the owner does it: Settings → Model keys, where the gateway's row is.
+registerSecretPage(["saveModelGateway", "deleteModelGateway", "testModelGateway"], "/#/settings/keys");
 
 /** The routes, by their operation names. */
 export const MODEL_GATEWAY_ROUTES: ReadonlySet<string> = new Set(["getModelGateway", "saveModelGateway", "deleteModelGateway", "testModelGateway"]);
