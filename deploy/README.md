@@ -105,8 +105,8 @@ Its agents get a shell in Docker sandboxes, and it stays private. In order, it:
    it. With no Docker, it installs Docker Engine and the compose plugin from Docker's apt repository, as
    [Docker's install guide](https://docs.docker.com/engine/install/ubuntu/) does.
 3. Writes `/opt/agentrun` (mode 700): `compose.yaml`, written again on every run, and `.env` (mode 600), whose
-   `AGENTRUN_TOKEN` and `AGENTRUN_SEAL_KEY` it makes once with `openssl rand` and then keeps. Lines you add to `.env` (a
-   model key, `AGENTRUN_BOX_ALLOW`) stay, and so does a `compose.override.yaml` of your own beside it.
+   `AGENTRUN_TOKEN` and `AGENTRUN_SEAL_KEY` it makes once with `openssl rand` and then keeps. Lines you add to `.env`
+   (a model key, a price, `AGENTRUN_BOX_ALLOW`) stay and reach the server. A `compose.override.yaml` of your own stays too.
 4. Starts it with `docker compose up` and waits for its health check. If the first visit would not ask for the setup
    code, it stops the server and says so.
 5. Prints the address, the setup link with its code, and the line that reads the code again later:

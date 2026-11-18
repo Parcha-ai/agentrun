@@ -41,7 +41,7 @@ said() { grep -qF -- "$2" "$1" || die "the installer did not say: $2"; }
 piped_install() {
   local bound=$1 out=$2
   shift 2
-  timeout "$bound" bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
+  timeout "$bound" bash -o pipefail -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
     cat "$out"
     die "the installer did not return 0 within $bound s"
   }
@@ -125,7 +125,10 @@ services:
     volumes:
       - $here/test:/walk:ro
 EOF
+echo "VPS_WALK_LINE=kept" >> "$dir/.env"
 piped_install 600 "$logs/3.log" --vps "${image[@]}"
+[ "$(setting VPS_WALK_LINE)" = kept ] || die "the line added to .env is gone"
+[ "$(dc exec -T agentrun printenv VPS_WALK_LINE)" = kept ] || die "the line added to .env did not reach the server"
 [ "$(secrets)" = "$first" ] || die "the token or the seal key changed"
 [ "$(container)" != "$before" ] || die "the container was not made again"
 [ ${#image[@]} -eq 0 ] || [ "$(docker inspect -f '{{.Config.Image}}' "$(dc ps -q agentrun)")" = agentrun-vps:local ] || die "the container does not run agentrun-vps:local"
@@ -202,8 +205,8 @@ cat "$logs/setup.json"
 echo
 [ "$answer" = 201 ] || die "the printed setup code answered $answer"
 
-step "6. again without --public: back to private, and the owner said"
-piped_install 600 "$logs/6.log" --vps "${image[@]}"
+step "6. again without --public, the --public settings exported in the shell: back to private, and the owner said"
+AGENTRUN_BIND=$everywhere COMPOSE_PROJECT_NAME=elsewhere piped_install 600 "$logs/6.log" --vps "${image[@]}"
 said "$logs/6.log" "This server has its owner: sign in at https://$name/"
 [ "$(bound)" = 127.0.0.1:7340 ] || die "the port is published at $(bound)"
 [ "$(secrets)" = "$first" ] || die "the token or the seal key changed"

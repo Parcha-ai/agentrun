@@ -689,7 +689,8 @@ vps_apt() {
   fi
 }
 
-vps_compose() { (cd "$vps_dir" && docker compose "$@"); }
+# Compose reads the shell's variables before .env: those it reads here come from .env alone, and its files from here.
+vps_compose() { (cd "$vps_dir" && unset AGENTRUN_IMAGE AGENTRUN_BIND DOCKER_GID AGENTRUN_SEAL_KEY AGENTRUN_TOKEN AGENTRUN_PUBLIC_URL AGENTRUN_TRUSTED_PROXIES COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES && docker compose "$@"); }
 
 # lib/tailscale.mjs of the image, run in it as root with this server's tailscale and its socket: `address`, or `serve URL
 # LOG`. Its record of the serve entry is kept in $vps_dir/tailscale.
@@ -770,23 +771,13 @@ services:
       retries: 3
       start_period: 60s
       start_interval: 2s
+    # Every line of .env reaches the server: the installer's, and a model key, a price or AGENTRUN_BOX_ALLOW you add.
+    env_file: .env
     environment:
       AGENTRUN_BOXES: docker
-      AGENTRUN_BOX_ALLOW: ${AGENTRUN_BOX_ALLOW:-}
-      AGENTRUN_DOCKER_HOST_ADDRESSES: ${AGENTRUN_DOCKER_HOST_ADDRESSES:-}
       AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?run the installer again}
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:?run the installer again}
-      AGENTRUN_TRUSTED_PROXIES: ${AGENTRUN_TRUSTED_PROXIES:-}
       AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:?run the installer again}
-      AGENT_MODEL: ${AGENT_MODEL:-}
-      AGENT_MODEL_FAST: ${AGENT_MODEL_FAST:-}
-      AGENT_MODEL_STRONG: ${AGENT_MODEL_STRONG:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      PARTICLE_API_KEY: ${PARTICLE_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
-      AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
     restart: unless-stopped
     stop_grace_period: 15s
 volumes:
