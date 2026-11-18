@@ -259,10 +259,8 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, g
 export type StartedComputer = {
   readonly computer: RunComputer | undefined;
   release(): Promise<void>;
-  /** A synced folder's, where the computer holds one: `sync`, a delta now (a park lands it before the computer is kept);
-   *  `pull`, the whole folder read back through `client`, another connection to the same computer (a kept one's end,
-   *  before it is deleted), throwing in words where it fails. */
-  readonly synced?: { sync(): Promise<Result<void>>; pull(client: ComputerClient): Promise<void> };
+  /** A synced folder's delta now, where the computer holds one (a park lands it before the computer is kept). */
+  readonly sync?: () => Promise<Result<void>>;
 };
 
 /** A setting resolved: its kind and provider, whether the run's folder is mounted, the ports, and how to start it. */
@@ -499,14 +497,13 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
       }
-      if (!sync || !store) return { computer, release: () => launched.release() };
+      if (!sync) return { computer, release: () => launched.release() };
       const final = sync;
-      const kept = store;
       // A synced folder's release: a final delta (what a background program wrote since the last change), then the
       // computer goes, whatever the delta answered; a failed one is said in archilRelease's words.
       return {
         computer,
-        synced: { sync: final, pull: async (client) => void (await pullFolder(kept, client)) },
+        sync: final,
         async release() {
           const synced = await final();
           await launched.release();

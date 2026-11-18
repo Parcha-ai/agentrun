@@ -394,6 +394,16 @@ const text = (bytes) => (bytes === undefined ? undefined : Buffer.from(bytes).to
 async function syncedServer() {
   const disk = new FakeArchilDisk();
   const one = await server({ setting: { kind: "sandbox", provider: "daytona" }, mode: 2, groups: ["exec", "files", "processes"], keys: { DAYTONA_API_KEY: "fake-test-key" }, workspace: archilWorkspace(disk, RUN_ROOT) });
+  // The fake computer has no tar: a push into a new one is taken as landed (every computer of the account is one host
+  // folder, which already holds what the disk does).
+  const connect = one.account.provider.connect;
+  one.account.provider.connect = async (ref) => {
+    const connected = await connect(ref);
+    if (!connected.ok) return connected;
+    const client = connected.value.client;
+    const call = (method, params, options) => (method.startsWith("tar.push.") ? Promise.resolve({ ok: true, value: method === "tar.push.begin" ? { id: "push-1" } : {} }) : client.call(method, params, options));
+    return { ok: true, value: { ...connected.value, client: Object.assign(Object.create(client), { call }) } };
+  };
   return { ...one, disk };
 }
 
@@ -426,6 +436,49 @@ test("a synced folder's park lands its delta on the disk before the computer is 
   } finally {
     t.mock.timers.reset();
   }
+});
+
+/** Where in the vendor's calls `verb` of `id` (with `how`) first is. */
+const callAt = (account, verb, id, how) => account.calls.findIndex(([v, i, h]) => v === verb && i === id && h === how);
+
+test("a claim that comes while the keep's end reads the synced folder back waits for that end: its new sandbox is made once the old one is read back and deleted", async (t) => {
+  const one = await syncedServer();
+  const first = await one.claim(3);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    assert.equal(await first.park("approval"), true);
+    one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
+    let letGo;
+    one.disk.hold = new Promise((resolve) => { letGo = resolve; });
+    t.mock.timers.tick(KEEP_MS);
+    t.mock.timers.reset();
+    await until(() => one.store.settings.rows.get(keptKeyOf("run-1"))?.ending === true, "its end began");
+    one.clock.now = T0 + KEEP_MS;
+    const resuming = one.claim(5, { hadComputer: async () => true });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(creates(one.account), ["c1"], "nothing made while the end reads the folder back");
+    one.disk.hold = undefined;
+    letGo();
+    const resumed = await resuming;
+    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n");
+    assert.ok(callAt(one.account, "release", "c1", "delete") < callAt(one.account, "create", "c2"), "the old one deleted before the new one is made");
+    assert.equal(resumed.replaced?.lapsed, true);
+    await resumed.release();
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("a claim after a synced keep's time whose end never began (the parking runner gone) ends it itself: read back, deleted, then its new sandbox made", async () => {
+  const one = await syncedServer();
+  assert.equal(await (await one.claim(3)).park("approval"), true);
+  one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
+  one.clock.now = T0 + KEEP_MS;
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n");
+  assert.ok(callAt(one.account, "release", "c1", "delete") < callAt(one.account, "create", "c2"), "the old one deleted before the new one is made");
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true, "its row ended, so no timer reads it back after");
+  await resumed.release();
 });
 
 test("a synced folder's park whose delta does not land keeps nothing: the computer goes as at the run's end, saying writes may be lost, no row", async () => {
