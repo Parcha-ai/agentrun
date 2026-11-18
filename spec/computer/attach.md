@@ -211,7 +211,9 @@ provider's, made and deleted by runs; only the transport is this binding's.
   minted socket goes to the hub under the computer's name, a paired computer of its mint (`mintedComputer`); a `hello`
   of another kind, os or arch is closed `4400` (its token is that machine's alone), and one of another build `4400`.
 - **Delete.** `release` with `delete`, the provider's own failed create and a machine that never dials within
-  `createMs` (create fails `timeout`, naming the URL it was given) all revoke the token and close the socket.
+  `createMs` (create fails `timeout`, naming the URL it was given) all revoke the token and close the socket. So does
+  one whose dial the server refused in words it kept for the token (`MachineTokens.refused`; serve keeps a relay it
+  could not make to the runner that minted the token): create fails `refused` in them at once.
 - **Never logged.** The token sits in the machine's env and in the `Authorization` header. Neither serve nor `computerd`
   writes it to a log, a URL or an error.
 

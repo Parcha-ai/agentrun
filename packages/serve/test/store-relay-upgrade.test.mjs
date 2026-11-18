@@ -46,9 +46,18 @@ test("a minted token's row names the runner and incarnation that minted it, or n
   assert.deepEqual([runner?.machine, runner?.runner, runner?.incarnation, runner?.run], ["m-runner", "runner-a", "inc-1", "run-1"]);
   const server = await store.mintedTokens.get("m-server");
   assert.deepEqual([server?.runner, server?.incarnation, server?.run], [null, null, null]);
-  // A mint again for the machine replaces its run with the new mint's.
+  assert.deepEqual([runner?.refused, server?.refused], [null, null], "no dial of either was refused");
+  // The server's refusal to relay a dial is kept on its token's row, by the token; another token's refusal moves nothing.
+  await store.mintedTokens.refuse("b".repeat(64), "a dial for run run-1 (machine m-runner): runner runner-a, which made it, is not running now");
+  await store.mintedTokens.refuse("e".repeat(64), "no row has this token");
+  assert.equal((await store.mintedTokens.get("m-runner"))?.refused, "a dial for run run-1 (machine m-runner): runner runner-a, which made it, is not running now");
+  assert.equal((await store.mintedTokens.get("m-server"))?.refused, null);
+  // A mint again for the machine replaces its run with the new mint's, and clears the refusal of its earlier token.
   await store.mintedTokens.mint({ machine: "m-runner", tokenSha256: "d".repeat(64), kind: "desktop", os: "linux", arch: "amd64", expiresAt: FAR, runner: "runner-a", incarnation: "inc-1" });
-  assert.equal((await store.mintedTokens.get("m-runner"))?.run, null);
+  assert.deepEqual([(await store.mintedTokens.get("m-runner"))?.run, (await store.mintedTokens.get("m-runner"))?.refused], [null, null]);
+  // A refusal under the replaced token's SHA-256 does not reach the new token's row.
+  await store.mintedTokens.refuse("b".repeat(64), "late words about the earlier token");
+  assert.equal((await store.mintedTokens.get("m-runner"))?.refused, null);
 });
 
 test("a runner's relay row: put, renewed only under its incarnation, read and listed, replaced by a restart, and removed only under its incarnation", async (t) => {
@@ -83,7 +92,7 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   const old = new DatabaseSync(file);
   try {
     old.exec("DROP TABLE runner_relays");
-    for (const column of ["runner", "incarnation", "run"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
+    for (const column of ["runner", "incarnation", "run", "refused"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
     old.exec("UPDATE store_meta SET schema_version = 12 WHERE singleton = 1");
     old.prepare("INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, revoked_at, created_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)").run("m-old", SHA, "desktop", "linux", "amd64", FAR, T);
   } finally {
@@ -109,9 +118,9 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   try {
     const after = read();
     assert.deepEqual([after.version, after.relays], [SCHEMA_VERSION, 1]);
-    assert.deepEqual(after.minted.slice(-3), ["runner", "incarnation", "run"]);
+    assert.deepEqual(after.minted.slice(-4), ["runner", "incarnation", "run", "refused"]);
     const row = await store.mintedTokens.byToken(SHA);
-    assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run], ["m-old", null, null, null], "the earlier release's token is the server's own, of no run");
+    assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run, row?.refused], ["m-old", null, null, null, null], "the earlier release's token is the server's own, of no run, none refused");
   } finally {
     await store.close();
   }
@@ -143,5 +152,5 @@ test("Postgres: a store at 0017 takes 0018, its minted rows the server's own", p
   assert.ok(migrationsIn().some((m) => m.version === 18), "0018 ships");
   assert.equal(await tables(), 1);
   const row = await store.mintedTokens.byToken(SHA);
-  assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run], ["m-old", null, null, null], "the earlier release's token is the server's own, of no run");
+  assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run, row?.refused], ["m-old", null, null, null, null], "the earlier release's token is the server's own, of no run, none refused");
 });

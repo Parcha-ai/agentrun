@@ -281,7 +281,9 @@ or for kind `desktop` (the machine's init has no display), in words.
   true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
   machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
   dial at once. Then it waits up to `createMs` for the machine's socket in the hub; one that
-  never dials is deleted, its token revoked, and create fails `timeout`, naming the address.
+  never dials is deleted, its token revoked, and create fails `timeout`, naming the address. One whose dial the server
+  refused in words (`MachineTokens.refused`: a relay to a runner in a process of its own it could not make) is deleted
+  at the next poll, and create fails `refused` in those words.
 - Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
   holds by the daemon's SHA-256, which the machine checks before it runs it.
 - `connect` goes over the machine's socket, by the attach binding's rules: a drop fails `gone`. `release` with

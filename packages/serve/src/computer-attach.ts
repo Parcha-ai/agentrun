@@ -434,6 +434,11 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       hub.revoke(machine, machineGone(machine));
       log("machine_token_revoked", { machine });
     },
+    // The server's relay refusal of this machine's dial, kept on its token's row (relayDial): the minting runner's
+    // create, waiting on its own hub, ends in these words at once.
+    async refused(machine) {
+      return (await minted.get(machine))?.refused ?? undefined;
+    },
   };
 
   /** Who dials the attach socket, as the hub takes it: a paired computer by its id, or a minted machine by its name (its
@@ -478,6 +483,8 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const refuse = (why: string) => {
       const words = `${dialOf(row)}: ${why}`;
       log("machine_relay_refused", { ...named, why: words });
+      // Kept on the token's row, where the runner's create waiting for this machine reads it (MachineTokens refused).
+      void minted.refuse(sha256Hex(bearer), words).catch((error: unknown) => log("machine_relay_refusal_unkept", { ...named, error: error instanceof Error ? error.message : String(error) }));
       deny("503 Service Unavailable", words);
     };
     if (options.relay === undefined) return refuse(`runner ${runner} made it, and this server relays no dial to a runner`);

@@ -528,6 +528,23 @@ export class HostedProvider implements ComputerProvider {
 		}
 	}
 
+	/**
+	 * The server's words for a refusal of the machine's dial (MachineTokens refused), or undefined: while none is kept, and
+	 * when the token store errs or does not answer within requestMs (the wait goes on to createMs as before).
+	 */
+	async #dialRefused(name: string): Promise<string | undefined> {
+		const dial = this.#dial;
+		if (dial === undefined) return undefined;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([dial.tokens.refused(name), new Promise<undefined>((done) => (timer = setTimeout(done, this.#timeouts.requestMs, undefined)))]);
+		} catch {
+			return undefined;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	/** Whether the host takes a spec's user (facts.user): then a computer's daemon runs as the one a spec names. */
 	get #takesUser(): boolean {
 		return this.host.facts.user !== undefined;
@@ -1161,7 +1178,8 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * A dial machine's first connection: its socket waited for in the hub, from its start, within createMs. One that never
 	 * dials (a server it cannot reach, a daemon whose sha256 it refused, a hello the hub refused) fails timeout, naming the
-	 * address it was given; create then deletes it.
+	 * address it was given. One the server refused in words (a relay to this runner it could not make, MachineTokens
+	 * refused) fails refused in those words at the next poll. Create then deletes it.
 	 */
 	async #whenDialed(ref: ComputerRef, signal?: AbortSignal): Promise<Opened> {
 		const { createMs } = this.#timeouts;
@@ -1169,6 +1187,8 @@ export class HostedProvider implements ComputerProvider {
 		for (;;) {
 			const opened = await this.#open(ref, signal);
 			if (opened.ok) return opened;
+			const refused = await this.#dialRefused(ref.name);
+			if (refused !== undefined) return this.#fail("refused", `the server refused ${refused}`);
 			if (Date.now() + this.#startPollMs() >= until) {
 				const dialed = this.#dialed();
 				const to = "problem" in dialed ? "this server" : dialed.attach;

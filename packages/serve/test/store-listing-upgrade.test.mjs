@@ -71,7 +71,7 @@ test("SQLite: a version 11 store comes to this version at its server's open, nev
     for (const column of COLUMNS) old.exec(`ALTER TABLE runs DROP COLUMN ${column}`);
     // Nor does it keep version 13's relay: no runner on a token's row, no runners' listeners.
     old.exec("DROP TABLE runner_relays");
-    for (const column of ["runner", "incarnation"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
+    for (const column of ["runner", "incarnation", "run", "refused"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
     old.exec("UPDATE store_meta SET schema_version = 11 WHERE singleton = 1");
     for (const sql of ROWS) old.exec(sql);
   } finally {
