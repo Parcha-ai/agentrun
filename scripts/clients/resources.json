@@ -68,6 +68,7 @@
     "archiveRun": ["runs", "archive"],
     "unarchiveRun": ["runs", "unarchive"],
     "getRunGraph": ["runs", "graph"],
+    "getRunTrace": ["runs", "trace"],
     "listRunFiles": ["runs", "files"],
     "readRunFile": ["runs", "read-file"],
     "getRunLearning": ["runs", "learning"],

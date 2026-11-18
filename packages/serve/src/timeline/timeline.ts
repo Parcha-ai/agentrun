@@ -1509,3 +1509,19 @@ export function timelineReducer(options: TimelineOptions = {}) {
     isLive: (id: string) => liveIds.has(id),
   };
 }
+
+/** The run's model requests that an answer of pi's carries, in log order: each `pi.assistant` entry the usage row counts
+ *  as a request (createMeter's "answer"). A request the cap or the proxy refused before it left, a continuation of the
+ *  answer before it and a call the loop's record kept (`recordedCall`) are none. An entry seen twice counts once. */
+export function answeredRequests(entries: readonly EntryLike[]): EntryLike[] {
+  const meter = createMeter();
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (entry.id !== undefined) {
+      const key = `${entry.conversationId ?? 0}:${entry.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+    }
+    return meter.push(entry) === "answer";
+  });
+}

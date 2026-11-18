@@ -2805,6 +2805,28 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "trace"
+    ],
+    "operationId": "getRunTrace",
+    "method": "GET",
+    "path": "/runs/{run_id}/trace",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A run's trace: each model request and tool call, with its time, tokens and cost"
+  },
+  {
+    "command": [
+      "runs",
       "unarchive"
     ],
     "operationId": "unarchiveRun",

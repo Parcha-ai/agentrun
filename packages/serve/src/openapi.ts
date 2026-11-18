@@ -226,6 +226,46 @@ const RUN_GRAPH = {
     },
   },
 };
+/** GET /runs/{run_id}/trace's answer (run-trace.ts). */
+const RUN_TRACE = {
+  type: "object", additionalProperties: false, required: ["run_id", "model_requests", "spans", "dropped"],
+  properties: {
+    run_id: ref("schemas/Id"),
+    model_requests: { enum: ["priced", "tokens_only", "not_recorded"], description: "What the run's record keeps of its model requests. `priced`: each is a span with its tokens and its cost. `tokens_only`: a workflow run. Each model node's request is a span with its tokens and no cost, since the run's cost is its booking's; each decision (a judge's, a route's, a verify's request) is a span with its own cost. `not_recorded`: the harness's record keeps no request (a CLI harness), so the spans are its tool calls alone; the run's cost and request count are on its Timeline's usage row." },
+    spans: {
+      type: "array", description: "Each model request that answered (a workflow's decisions among them) and each tool call, in the order they started.",
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["id", "kind", "parent_id", "name", "agent_label", "started_at", "ended_at", "status", "stop_reason", "tokens", "usd", "decision", "charged", "not_metered", "tool_use_id", "input_preview", "result_preview", "result_size_bytes"],
+        properties: {
+          id: { type: "string", description: "The span's id in this trace, the same on every read of the run." },
+          kind: { enum: ["model", "tool"] },
+          parent_id: { type: ["string", "null"], description: "The span this one ran under: for a tool call, the model request that called it, or the call it nested in; for a subagent's model request, the call that started the subagent. Null at the top." },
+          name: { type: "string", description: "A model request's model, as its answer names it (a decision's, the model its provider answered with, else the provider); a tool call's tool, as its Timeline rows name it." },
+          agent_label: { type: ["string", "null"], description: "The subagent the span ran in, as the Timeline labels it; a workflow decision's node." },
+          started_at: ref("schemas/Timestamp"),
+          ended_at: { type: ["string", "null"], format: "date-time", description: "Null while a tool call runs or waits, and for a span whose end the record does not keep: a model request with no duration, a call cut with no result." },
+          status: { enum: ["ok", "failed", "refused", "interrupted", "waiting", "running"], description: "`waiting`: a tool call held for its owner's approval, which has not run. `running`: a tool call with no result yet. `refused`: a call refused before it ran (a deny). `interrupted`: a request or a call cut before its end, or a call whose approval was withdrawn with its run. A model request is a span once it answered, so it is never waiting or running." },
+          stop_reason: { type: ["string", "null"], description: "A model request's stop reason, as pi names it (`stop`, `toolUse`, `length`, `error`, `aborted`, `deferred`, `pending`). Null on a tool call." },
+          tokens: {
+            type: ["object", "null"], additionalProperties: false, required: ["input", "cache_read", "cache_write", "output"],
+            description: "A model request's tokens. Null when its answer reported none (a request cut before its end), and on a tool call.",
+            properties: { input: { type: "integer", description: "Input tokens not read from cache. A decision's receipt keeps its input whole, so all of it is here." }, cache_read: { type: "integer" }, cache_write: { type: "integer" }, output: { type: "integer" }, reasoning: { type: "integer", description: "The thinking tokens among `output`, where the provider reports them." } },
+          },
+          usd: { type: ["number", "null"], description: "A model request's cost; for a tool call, the sum of the charges booked under it (a browser session's time, a paid tool's fee). Null when it is not known (a request cut before its end, a charge of an unknown amount, a request of a run whose `model_requests` is `tokens_only`), and on a call nothing was charged under (`charged`). A computer's own time is its provider's to bill and is in no span." },
+          decision: { type: "boolean", description: "A workflow decision's request (a judge's, a route's, a verify's), which has a cost of its own whatever `model_requests` says of the run's other requests. False on every other span." },
+          charged: { type: "boolean", description: "Whether anything was charged under a tool call (a browser session's time, a paid tool's fee): `usd` is their sum. False on a model request." },
+          not_metered: { type: "boolean", description: "A tool call whose tool has no price set: it ran outside the run's cost." },
+          tool_use_id: { type: ["string", "null"], description: "A tool call's id, as its Timeline rows carry it. Null on a model request." },
+          input_preview: { type: ["string", "null"], description: "A tool call's arguments, as its Timeline row shows them." },
+          result_preview: { type: ["string", "null"], description: "A tool call's output's head, as its Timeline row shows it." },
+          result_size_bytes: { type: ["integer", "null"], description: "The size of a tool call's whole output." },
+        },
+      },
+    },
+    dropped: { type: "integer", description: "Spans left out past the 2,000 one read serves: the run's first 2,000 are served." },
+  },
+};
 /** POST /workflows/validate's answer: the DSL's validateWorkflow (code not run), and what a save would refuse. */
 const VALIDATED = {
   type: "object", additionalProperties: false, required: ["ok", "issues", "warnings"],
@@ -1810,6 +1850,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run. 403 `forbidden` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): what its nodes said could repeat the sign-in's pointer, so none of it is served until the sign-in opens again.",
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 403, 404, 429, 500) },
+    },
+  },
+  "/runs/{run_id}/trace": {
+    get: {
+      operationId: "getRunTrace", tags: ["runs"], summary: "A run's trace: each model request and tool call, with its time, tokens and cost",
+      description: "Each model request that answered and each tool call of the run as one span: when it started and ended, how it ended, a request's model, tokens (input, cache read, cache write, output) and cost, and a call's tool, the head of its arguments and output, and what was charged under it. Readable while the run goes: read it again to see new spans. Its words are the run's Timeline's, cut the same way. 403 `forbidden` while this server can't read the browser sign-in the run was handed, as its graph answers. A trace says only what the run's record keeps: see `model_requests`.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "200": json(RUN_TRACE, "The run's spans as they stand."), ...errors(401, 403, 404, 429, 500) },
     },
   },
   "/runs/{run_id}/browser": {
