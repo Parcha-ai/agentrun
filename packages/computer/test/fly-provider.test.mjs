@@ -1,12 +1,15 @@
 // FlyProvider's host on a fake Machines API (the REST shapes of docs.fly.io/machines/api/machines-resource, as a fetch):
 // create's body (the boot env, the labels as metadata, restart "no" and auto_destroy), get and list with their states,
 // the metadata filter, a forced delete, extend's one metadata key, and the error codes in Fly's words. The adapter's dial
-// lifecycle is tested once over the fake dial host (hosted-dial.test.mjs); Fly's own is proven live, from
+// lifecycle is tested once over the fake dial host (hosted-dial.test.mjs), and Fly's desktop once through it to its X
+// server, on a Machines API that keeps what it makes (bootDial); Fly's own is proven live, from
 // packages/serve/scripts/dial-conformance.mjs.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 
@@ -184,6 +187,38 @@ test("kind desktop: the desktop's groups and the window manager, and DISPLAY bes
 		assert.equal(env.DISPLAY, kind === "desktop" ? ":0" : undefined);
 		assert.deepEqual(guest, { cpu_kind: "shared", cpus: 2, memory_mb: 4096 }, "a desktop's size is the sandbox's");
 	}
+});
+
+test("Fly's desktop configuration, as serve builds it, makes a desktop over dial: the machine boots from config.env, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const machines = new Map();
+	let booted;
+	// A Machines API that keeps what it makes: the machine boots from the config.env it was posted (bootDial).
+	const fly = fakeFly((method, url, body) => {
+		const id = url.pathname.split("/")[5];
+		if (method === "POST" && url.href === BASE) {
+			const machine = flyMachine(`m${machines.size + 1}`, "started", body.config.metadata, { name: body.name, config: body.config });
+			machines.set(machine.id, machine);
+			booted = bootDial(body.config.env, dial, { daemon: readFileSync(daemonPath) });
+			return { json: machine };
+		}
+		if (method === "GET" && id === undefined) {
+			const wanted = [...url.searchParams].map(([key, value]) => [key.replace(/^metadata\./, ""), value]);
+			return { json: [...machines.values()].filter(({ config }) => wanted.every(([key, value]) => config.metadata[key] === value)) };
+		}
+		if (method === "GET" && machines.has(id)) return { json: machines.get(id) };
+		if (method === "DELETE" && machines.has(id)) {
+			machines.get(id).state = "destroyed";
+			return { json: { ok: true } };
+		}
+		return undefined;
+	});
+	const { options } = registry.descriptorOf("fly").capabilities.find(({ kind }) => kind === "desktop");
+	const made = provider(fly, { ...options, dial, daemonPath });
+	assert.equal(made.capabilities().kind, "desktop");
+	await desktopOverDial(made, dial, () => booted, { image: "ghcr.io/parcha-ai/agentrun-box:0123456789ab", lifetimeMs: 600_000, network: "none" });
+	assert.equal([...machines.values()][0].state, "destroyed");
 });
 
 test("check holds a size to Fly's shared CPUs and their memory, and an image to a registry path", () => {

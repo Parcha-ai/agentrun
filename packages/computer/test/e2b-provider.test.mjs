@@ -15,6 +15,7 @@ import test from "node:test";
 import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
 import { fakeObjects } from "./fake-archil.mjs";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeEnvd } from "./fake-envd.mjs";
 
 const e2b = await import("../dist/e2b.js");
@@ -723,6 +724,31 @@ test("connect dial: a desktop's launch gives agentrun-dial DISPLAY beside the bo
 	const [[, { request }]] = calls.filter(([what]) => what === "rpc.start");
 	assert.deepEqual(Object.keys(request.process.envs).sort(), [...BOOT_NAMES, "DISPLAY", "PATH"].sort());
 	assert.equal(request.process.envs.DISPLAY, ":0");
+});
+
+test("E2B's desktop configuration, as serve builds it on connect dial, makes a desktop over dial: agentrun-dial boots from the envs envd started it with, dials, and its X server and xfwm4 start over that socket", async () => {
+	const { calls, Sandbox } = dialSandbox();
+	const dial = dialServer();
+	let booted;
+	// The sandbox's envd starts agentrun-dial with the boot env (rpc.start's envs): that machine boots and dials (bootDial).
+	const make = Sandbox.create;
+	Sandbox.create = async (...args) => {
+		const sandbox = await make(...args);
+		const start = sandbox.commands.rpc.start;
+		sandbox.commands.rpc.start = (request, options) => {
+			const { envs } = request.process;
+			if (envs.AGENTRUN_ATTACH_TOKEN !== undefined) booted = bootDial(envs, dial, { daemon: readFileSync(DAEMON_PATH) });
+			return start(request, options);
+		};
+		return sandbox;
+	};
+	const { options } = registry.descriptorOf("e2b").capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (e2bConnect dial), then the configuration's (none).
+	const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "dial", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	await desktopOverDial(provider, dial, () => booted, { ...SPEC, image: BOX_TEMPLATE });
+	assert.equal(calls.find(([what]) => what === "Sandbox.create")[1], BOX_TEMPLATE, "made from the box template");
+	assert.ok(calls.some(([what, id]) => what === "Sandbox.kill" && id === "sbx-dial"), "release killed the sandbox");
 });
 
 test("connect dial takes a desktop, its default as on exec, or kind linux, no Archil mount and no value but exec or dial, in words; exec stays the default", () => {

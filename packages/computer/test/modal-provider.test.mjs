@@ -3,7 +3,8 @@
 // refuses, the conformance module's names), each read from options or from what the SDK slice is handed. The adapter's
 // lifecycle is tested once, against its one fake host (hosted-provider.test.mjs); Modal's own lifecycle is proven live
 // (test/modal). The SDK slice here only records what it is given and answers nothing that makes a sandbox: no sandbox
-// exists, no Modal client is constructed unless a test says so, and nothing reaches the network.
+// exists, no Modal client is constructed unless a test says so, and nothing reaches the network. One test, the desktop
+// over dial, gives the slice sandboxes it keeps, each booted from its env (fake-dial-host.mjs bootDial).
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,6 +15,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
@@ -870,6 +872,44 @@ test("kind desktop on connect dial: the desktop's groups, no GPU, the window man
 		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: a Modal desktop is made on connect "dial" alone, from the box image, its X server started over the socket its machine dials: connect "exec" makes kind linux$/);
 	}
 	assert.equal(setup({ kind: "linux" }).provider.capabilities().kind, "linux");
+});
+
+test("Modal's desktop configuration, as serve builds it over connect exec, makes a desktop over dial: the sandbox boots from its env, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const sandboxes = new Map();
+	let booted;
+	// The SDK's slice keeping what it makes: a sandbox boots from the env it was given (bootDial), runs until terminated.
+	const rec = recorder();
+	const sandboxOf = (id, params) => {
+		let finished = null;
+		return { sandboxId: id, params, poll: async () => finished, getTags: async () => ({ ...params.tags }), terminate: async () => void (finished = 0) };
+	};
+	rec.sdk.sandboxes = {
+		create: async (app, image, params) => {
+			const sandbox = sandboxOf(`sb-${sandboxes.size + 1}`, params);
+			sandboxes.set(sandbox.sandboxId, sandbox);
+			booted = bootDial(params.env, dial, { daemon: readFileSync(DAEMON_PATH) });
+			return sandbox;
+		},
+		fromId: async (id) => {
+			if (!sandboxes.has(id)) throw Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" });
+			return sandboxes.get(id);
+		},
+		list: ({ tags }) => ({
+			async *[Symbol.asyncIterator]() {
+				yield* [...sandboxes.values()].filter(({ params }) => Object.entries(tags).every(([key, value]) => params.tags[key] === value));
+			},
+		}),
+	};
+	const { options } = MODAL.capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (modalConnect exec), then the configuration's.
+	const provider = new ModalProvider({ sdk: rec.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "exec", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	assert.equal(provider.host.facts.connect, "dial");
+	await desktopOverDial(provider, dial, () => booted, { image: BOX_IMAGE, lifetimeMs: 600_000, network: "none" });
+	const [sandbox] = sandboxes.values();
+	assert.deepEqual([sandbox.params.runtime, sandbox.params.cpuLimit, sandbox.params.memoryLimitMiB, sandbox.params.gpu], ["vm", 1, 4096, undefined], "2 CPUs (1 physical core) and 4 GiB on the VM runtime, no GPU");
+	assert.equal(await sandbox.poll(), 0, "release terminated the sandbox");
 });
 
 test("the conformance module reads COMPUTER_MODAL_CONNECT as connect, and its dialKit refuses in words: this process is no public server", async () => {

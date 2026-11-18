@@ -1,12 +1,15 @@
 // CloudflareProvider's host on a fake relay (the routes of relays/cloudflare/src/index.ts, as a fetch): create's body
 // (the boot env, the labels, the instance its size picks, backstopAt, and nothing to run), get and list, delete, the
 // relay's version and image read from /v1/health, the size refusals, and the error codes in the relay's words. The
-// adapter's dial lifecycle is tested once over the fake dial host (hosted-dial.test.mjs); Cloudflare's is proven live, from
+// adapter's dial lifecycle is tested once over the fake dial host (hosted-dial.test.mjs), and Cloudflare's desktop once
+// through it to its X server, on a relay that keeps what it makes (bootDial); Cloudflare's is proven live, from
 // packages/serve/scripts/dial-conformance.mjs.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 
@@ -150,6 +153,36 @@ test("kind desktop: the desktop's groups and the window manager, and DISPLAY bes
 		assert.equal(env.DISPLAY, kind === "desktop" ? ":0" : undefined);
 		assert.equal(instance, "standard-3", "a desktop's size is the sandbox's: 2 vCPUs, 8 GiB");
 	}
+});
+
+test("Cloudflare's desktop configuration, as serve builds it, makes a desktop over dial: the container boots from the env the relay was given, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const rows = new Map();
+	let booted;
+	// A relay that keeps what it makes: the container boots from the env it was posted (bootDial).
+	const relay = fakeRelay((method, url, body) => {
+		const name = url.pathname.split("/")[3];
+		if (url.pathname === "/v1/health") return { json: { version: CLOUDFLARE_RELAY_VERSION, image: BOX } };
+		if (method === "POST" && url.pathname === "/v1/computers") {
+			rows.set(body.name, { ...row("running"), name: body.name, labels: body.labels, image: body.image });
+			booted = bootDial(body.env, dial, { daemon: readFileSync(daemonPath) });
+			return { status: 201, json: rows.get(body.name) };
+		}
+		if (method === "GET" && url.pathname === "/v1/computers") return { json: { computers: [...rows.values()].filter(({ labels }) => [...url.searchParams].every(([key, value]) => labels[key] === value)) } };
+		if (method === "GET" && rows.has(name)) return { json: rows.get(name) };
+		if (method === "DELETE" && rows.has(name)) {
+			rows.delete(name);
+			return { status: 204 };
+		}
+		return undefined;
+	});
+	const { options } = registry.descriptorOf("cloudflare").capabilities.find(({ kind }) => kind === "desktop");
+	const made = provider(relay, { ...options, dial, daemonPath });
+	assert.equal(made.capabilities().kind, "desktop");
+	await desktopOverDial(made, dial, () => booted, { image: BOX, lifetimeMs: 600_000, network: "none" });
+	assert.equal(relay.calls.find(({ method }) => method === "POST").body.instance, "standard-3");
+	assert.equal(rows.size, 0, "release deleted the container");
 });
 
 test("the constructor refuses a relay URL that is not https and a missing token, never echoing the token", () => {
