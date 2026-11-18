@@ -1026,6 +1026,33 @@ describe("the Screen tab plays a finished run's recording", () => {
     expect(video!.style.height).toBe(`${600 - 150 - 32}px`);
   });
 
+  it("a live phone whose run ends in its recording fits the player, not the frame it replaced, and refits it", async () => {
+    let paneHeight = 600;
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "IFRAME") return rect(350, 0);
+      if (this.tagName === "VIDEO") return rect(300, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, paneHeight);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? paneHeight : 0; });
+    const phone = { computer: { kind: "phone", provider: "phone-harness", state: "ready" }, recordings: [rec("recordings/phone.mp4")] };
+    const props = (run: Run) => ({ run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: async () => ({ state: "live", kind: "phone", viewer: VIEWER, hold: "agent" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF }) as never;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, props({ ...working, ...phone } as Run))); });
+    await settle();
+    expect((host.querySelector("iframe") as HTMLIFrameElement).style.height).toBe(`${600 - 150 - 32}px`);
+    await act(async () => { root!.render(createElement(RunDetail, props({ ...done, ...phone } as Run))); });
+    await settle();
+    const video = () => host.querySelector("video") as HTMLVideoElement;
+    expect(host.querySelector("iframe")).toBeNull();
+    expect(video().style.height).toBe(`${600 - 100 - 32}px`);
+    paneHeight = 650;
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(video().style.height).toBe(`${650 - 100 - 32}px`);
+  });
+
   it("with several recordings, a picker in the header plays the one picked; every Export stays", async () => {
     const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4")]), closedDesktop);
     expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));

@@ -209,10 +209,11 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
   // screen at once, its bottom (the keyboard, the nav bar) never under the composer. Its recording's player is sized so too.
   const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
-  const sized = showing || !!reel;
+  // Which of the two is up: a live view that ends in its recording is a new element to measure.
+  const sized = showing ? "frame" : reel ? "player" : null;
   useLayoutEffect(() => {
-    const el = frame.current ?? player.current;
-    if (kind !== "phone" || full || !sized || !el) return;
+    const el = sized === "frame" ? frame.current : sized === "player" ? player.current : null;
+    if (kind !== "phone" || full || !el) return;
     const pane = el.closest<HTMLElement>("[data-scroll-pane]");
     const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
     fit();
