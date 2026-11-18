@@ -80,7 +80,8 @@ export default {
         const tip = card.locator('[tabindex="0"] > .shadow-float');
         await tip.waitFor({ timeout: 5000 }).catch(async (e) => { if (shots) await page.screenshot({ path: join(shots, "failed.png"), fullPage: true }); throw e; });
         const said = await tip.textContent();
-        check(/^Run \d+\$[\d.]+ all-in/.test(said ?? "") && /Learned revision [0-9a-f]{7}/.test(said ?? ""), `${theme} ${width}px: the hover says ${said}`);
+        // Two thirds in, a served run: its job's number and the workflow revision that ran it (a replay, unnumbered, says so).
+        check(/^(Run \d+|Replay run)\$[\d.]+ all-in/.test(said ?? "") && /Workflow revision [0-9a-f]{7}/.test(said ?? ""), `${theme} ${width}px: the hover says ${said}`);
         if (shots) await card.screenshot({ path: join(shots, `cost-per-run-${theme}-${width}-hover.png`) });
         await page.mouse.move(0, 0);
         // The execution mix: inside the card, and a block's hover names its runs and what each path took.

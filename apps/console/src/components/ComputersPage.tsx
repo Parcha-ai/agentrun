@@ -236,6 +236,7 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
             {live
               ? <p className="text-body">Type both into the driver on the computer. The code pairs one computer, once, in the next <span data-countdown className="font-mono">{countdown}</span>.</p>
               : <p role="status" className="text-body text-muted-foreground">This code has expired. Make a new one.</p>}
+            {pairing.code.runs_refused && <p data-runs-refused role="status" className="text-small text-warning-text">{pairing.code.runs_refused}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={() => void make()} disabled={making}>{making ? "Making…" : "New code"}</Button>
               <Button size="sm" variant="ghost" onClick={() => setPairing(null)}>Done</Button>
@@ -254,8 +255,10 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
                       {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
                       {computer.unserved && <Chip tone="warning">No agent can use it</Chip>}
+                      {computer.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
                     </p>
                     {computer.unserved && <p data-unserved role="status" className="mt-1.5 text-small text-warning-text">{computer.unserved}</p>}
+                    {computer.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{computer.runs_refused}</p>}
                     {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
                     {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
                     <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
@@ -328,9 +331,12 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
           <p className="flex flex-wrap items-center gap-2">
             <span data-provider className="font-mono text-prose font-semibold">{p.name}</span>
             {p.ready ? <Chip tone="success">Ready</Chip> : <Chip>Not ready</Chip>}
+            {p.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
             {p.metered && <span data-metered className="text-small text-muted-foreground">Metered</span>}
           </p>
           {!p.ready && p.why && <p className="mt-1.5 font-mono text-small text-muted-foreground">{p.why}</p>}
+          {/* A server whose runner runs apart: the server's words, with the fix (a dial provider's machines). */}
+          {p.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{p.runs_refused}</p>}
           {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-small text-muted-foreground">{METERED}</p>}
           {p.secrets.length > 0 && (
             <ul className="mt-3 space-y-1.5">

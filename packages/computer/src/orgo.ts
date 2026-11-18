@@ -392,7 +392,7 @@ export class OrgoProvider implements ComputerProvider {
 			const bad = entries === undefined ? "labels must map names to strings" : entries.map(([key, value]) => labelProblem(key, value)).find(Boolean);
 			if (bad) refuse("labels", bad);
 		}
-		refusals.push(...checkMount(mount, ORGO.mounts));
+		refusals.push(...checkMount(mount, ORGO.mounts, ORGO.unmounted));
 		refusals.push(...checkGpu(given.gpu, this.capabilities()));
 		for (const [field, value] of Object.entries(given)) {
 			if (SPEC_FIELDS.has(field) || field === "mount" || field === "owner" || value === undefined) continue;

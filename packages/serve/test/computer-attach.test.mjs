@@ -136,7 +136,7 @@ test("a paired computer is listed as its hello says, the live one's while attach
   const liveSince = new Date(7000);
   const hub = (attached, holder) => ({ online: () => attached, since: () => (attached ? liveSince : undefined), hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
-    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
+    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
     driver: "0.2.0", online: false, held_by_run: null, held_until: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);

@@ -14,6 +14,7 @@ import type { ToolBinding, ToolHost } from "../tools.js";
 import { isObject } from "../validate.js";
 import { openCalendar, scrubAddress } from "./address.js";
 import { CALENDAR_ANSWER_MAX_CHARS, CALENDAR_DESCRIPTION, CALENDAR_ERROR_MAX_CHARS, CALENDAR_EVENTS, NAME_MAX, NO_CALENDAR } from "./names.js";
+import { held } from "../runner/held.js";
 
 /** An answer: the calendar's name and time zone, the window read (ISO, in that zone), its events, and whether there were
  *  more than it holds. */
@@ -71,8 +72,10 @@ function calendarTool(host: ToolHost): ToolRegistration {
     } as unknown as TSchema,
     replay: "safe",
     execute: async (args, _api, context) => {
-      if (!host.store || !host.sealKey) return forModel(`${CALENDAR_EVENTS}: the calendar is read on the runner, which this run is not on.`, { isError: true });
-      const saved = await openCalendar(host.store, host.sealKey);
+      // A run's own process holds no seal key: its runner opens the calendar for a run its revision grants it (held.ts).
+      const atRunner = host.sealKey ? undefined : held();
+      if (!host.store || (!host.sealKey && !atRunner)) return forModel(`${CALENDAR_EVENTS}: the calendar is read on the runner, which this run is not on.`, { isError: true });
+      const saved = host.sealKey ? await openCalendar(host.store, host.sealKey) : await atRunner!.calendar();
       if (!saved) return forModel(`${CALENDAR_EVENTS}: ${NO_CALENDAR}`, { isError: true });
       // The saved address, and once read every address it was redirected to: each cut from the answer and the calendar's texts.
       let secret: string[] = [saved.url];

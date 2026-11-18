@@ -711,9 +711,6 @@ const LEARNING_COUNTS = closed({
 const IMPACT_SIDE = (side: "before" | "after") => closed({
   runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first learned item (a correction or a workflow)." : "The completed runs that started from at least one learned item: a correction in corrections.md, or a learned workflow their learned_workflow tool could run." },
   median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before its end-of-run step (a run that does not learn: to its end)." },
-  median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is." },
-  cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
-  median_learning_usd: { type: ["number", "null"], minimum: 0, description: "The median of what learning itself cost a run, its compile turn, over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off)." },
 });
 /** A workflow draft the agent learned, as the agent's learning lists it (learning-routes.ts workflowView). */
 const LEARNED_WORKFLOW = {
@@ -809,6 +806,8 @@ const COMPUTER_PROVIDER_GPU = closedWith({
   fence: { enum: ["netns", "userns-netns"], description: "How the computer's daemon holds a GPU computer's programs off its network, where it is not the plain network namespace: `userns-netns`, one made inside a user namespace (Modal's gVisor, where root may not make one itself). Either way the programs reach their own loopback alone." },
   why: { type: "string", description: "Why a run on this server cannot have its GPUs: its GPU computers take no mount of this server's folder mode." },
 });
+/** `runs_refused` of a provider in Settings → Computers (computers.ts ProviderView; attached-computers.ts dialApartWords). */
+const PROVIDER_RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use this provider's computers, and the one-line fix: start the image with the server options alone, without `server-and-runner`. Said for a provider whose machines dial this server (Fly Machines and Cloudflare), whose sockets the server's process takes and its runner never reaches, and for a paired computer; its test (POST /computers/{provider}/test) fails in the same words. Null where this server's runs can use it." };
 /** A provider in Settings → Computers (computers.ts ProviderView). */
 const COMPUTER_PROVIDER = closedWith({
   id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
@@ -817,6 +816,7 @@ const COMPUTER_PROVIDER = closedWith({
   secrets: { type: "array", items: SECRET_ITEM("\"computer:<provider>:<KEY>\": KEY is the name PUT /computers/{provider}/keys takes, and the environment variable that sets it."), description: "Each key the provider declares, as its SecretMeta: never a value." },
   required: { type: "array", items: { type: "string" }, description: "The names of the secrets the provider needs; any other may stay unset." },
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
+  runs_refused: PROVIDER_RUNS_REFUSED,
   shell: CHOICE_SHELL,
   host_tools: CHOICE_HOST_TOOLS,
 }, {
@@ -831,6 +831,8 @@ const COMPUTER_PROVIDER = closedWith({
     description: "Present where an agent's computer of this kind can be kept between its runs (`computer.persistent: true`): its provider keeps one for an agent (Orgo's Linux desktop, which its suspend keeps with its memory). Absent where none can.",
   },
 });
+/** `runs_refused` of a pairing code, the pair answer and a paired computer (attached-computers.ts RUNNER_APART_WORDS). */
+const RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use a paired computer, and the one-line fix: start the image with the server options alone, without `server-and-runner`. A computer still pairs and attaches. Null where this server's runs can use it." };
 /** A paired computer in GET /computers' `paired` (computer-attach.ts PairedView). */
 const PAIRED_COMPUTER = closed({
   id: { type: "string", description: "Its id: an agent's `computer.provider` names it (`{kind: \"desktop\", provider: <id>}`), and DELETE /computers/{computer_id} removes it." },
@@ -838,6 +840,7 @@ const PAIRED_COMPUTER = closed({
   kind: { type: "string", description: "The machine kind it paired as (its hello's `kind`, such as `desktop` or `android`)." },
   serves: { type: "array", items: COMPUTER_KIND, description: "The kinds of an agent's computer setting it serves, from its driver's last hello: an agent's `computer` names it under one of these." },
   unserved: { type: ["string", "null"], description: "When it serves no kind (`serves` is empty), why, naming what its driver lacks and to update the driver: \"desk-1's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on desk-1\". Its driver's next hello after an update counts. Null when it serves a kind." },
+  runs_refused: RUNS_REFUSED,
   os: { type: "string", description: "Its OS, as its hello said it." },
   os_version: { type: ["string", "null"], description: "Its OS's version as its driver says it, with a build where the driver knows one; null where it says none." },
   device: { oneOf: [closed({ maker: { type: "string" }, model: { type: "string" } }), { type: "null" }], description: "The machine, as its driver says it (`maker`, `model`); null where it says none." },
@@ -858,6 +861,7 @@ const PAIRING = closed({
   id: { type: "string", description: "Names this pairing, not its code: the computer the code makes carries it as `pairing` in GET /computers' `paired`, so the page that made the code can tell its own code was used, and by which computer." },
   code: { type: "string", pattern: PAIRING_CODE_PATTERN.source, description: "The code to type into the driver, such as K7PD-W3QX." },
   expires_at: { type: "string", format: "date-time", description: "When it stops pairing; it is good once before then." },
+  runs_refused: RUNS_REFUSED,
 });
 /** POST /computers/pair's body: the driver's. */
 const PAIR_REQUEST = closedWith({
@@ -881,6 +885,7 @@ const PAIR_REQUEST = closedWith({
 const PAIRED_TOKEN = closed({
   computer: { type: "string", description: "The paired computer's id." },
   token: { type: "string", description: "The computer's token (`art_` and 32 random bytes): shown only here; the driver keeps it in the OS's keychain." },
+  runs_refused: RUNS_REFUSED,
 });
 /** GET /computers' answer (computers.ts view). */
 const COMPUTERS_VIEW = closed({
@@ -1277,12 +1282,14 @@ const WRITE_DESCRIPTION = "As a person: one host commit on main in the agent's q
 const COST_USD = (description: string) => ({ type: ["number", "null"], minimum: 0, description: `${description} As booked (its float noise rounded off at 1e-12, the precision of a run's own cost): a decision's sub-micro-dollar cost is in it; null when unknown, never 0 for unknown.` });
 const COST_MEAN = (description: string) => ({ oneOf: [closed({ runs: { ...COUNT, minimum: 1, description: "How many runs the mean is over." }, mean_usd: { type: "number", minimum: 0, description: "Their mean, rounded to 1e-6." } }), { type: "null" }], description });
 const COST_RUN = closed({
-  n: { type: "integer", minimum: 1, description: "The run's number among the agent's runs counted here, oldest first: 1 is its first." },
+  n: { type: ["integer", "null"], minimum: 1, description: "The run's place among the agent's runs that do a job (`agent`, `workflow` and `handed_back`), oldest first, as `bill.points` number them: 1 is its first. Null for a `replay`: it checks a revision and does no job." },
   run_id: { type: "string" },
   started_at: DATE_TIME,
   path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run); `audit`, never a row here: a shadow run auditing a served run is no run of the series, its cost that run's `learning_usd`." },
   workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
-  learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
+  digest: { ...NULL_STRING, description: "The learned workflow revision that ran it, as its run record names it (the bill's `revisions[].digest`): the first 16 hex characters of its workflow.json's sha256, one value for as long as one revision serves. Null when no learned workflow ran." },
+  took_over: { type: "boolean", description: "The first run its revision (`workflow` at `digest`) served (`path` `workflow` or `handed_back`), over every run of the series, `limit` aside: where that revision took over, the run its promotion record (GET .../learning/promotions) first bore on. The first such run is `summary.takeover` and `bill.promoted` (a learned workflow that ran first always names its revision). False for a `replay` and for a run no revision ran (`digest` null)." },
+  audited: { type: "boolean", description: "An audit's shadow run was started for it (the agent definition's `learning.audit_every`): the shadow's cost is in `learning_usd`, and its verdict is a row of GET /agents/{agent_id}/learning/audits once scored, at a later run's start." },
   cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before its compile turn; for a run that was asked none, its whole cost."),
   cost_upper_bound: { type: "boolean", description: "The run's stored cost is only a bound (its row's `costAtMostUsd`: a model request cut at its cap hold): `cost_usd` and `total_usd` are null, never a known cost. `summary` counts such a run as `at_most`, not `unknown`." },
   learning_usd: COST_USD("What learning cost for the run: its compile turn. 0 for a run that does not learn or was not asked one. An audit's shadow run of it is its learning too: null while that shadow is queued or running, never $0."),
@@ -1290,7 +1297,7 @@ const COST_RUN = closed({
 });
 const LEARNING_COST = closed({
   agent: { type: "string" },
-  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number. A run still at work, an imported or archived run, a workflow revision's run and a run whose path is not known (`unknown_path_runs`) are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
+  runs: { type: "array", items: COST_RUN, description: "The agent's agentic runs that ended (completed, stopped or failed), oldest first: the last `limit` of them, each keeping its number (a replay has none). A run still at work, an imported or archived run, a workflow revision's run and a run whose path is not known (`unknown_path_runs`) are left out; a run's grade is no run here, and its cost is that run's `learning_usd`." },
   total_runs: { ...COUNT, description: "How many runs the series counts in all, `limit` aside." },
   unknown_cost_runs: { ...COUNT, description: "How many of them have no known all-in cost (`total_usd` null)." },
   unknown_path_runs: { ...COUNT, description: "How many runs that learn ended with no path on their record (their end could not read their cost and path in time, or no runner wrote their end): left out of `runs`, `total_runs` and `summary`, never counted as `agent` runs at $0." },
@@ -1303,7 +1310,7 @@ const LEARNING_COST = closed({
     unknown_cost_runs: { ...COUNT, description: "How many runs `served` and `by_hand` would have read have no known all-in cost: left out of their means, never read as 0." },
   }), description: "Each learned workflow that has run first on one of these runs, at its newest version, and where it stands against the money rule: it runs first while its cost a run stays under the agent's by hand. It does not catch a workflow that answers wrong with confidence." },
   summary: closed({
-    takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow finished alone (`path` `workflow`); null before one." },
+    takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow served (`path` `workflow` or `handed_back`), numbered as `runs` number it: the bill's `promoted`. Null before one." },
     before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known exactly (never `cost_upper_bound`); null when there is none."),
     after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of the runs a learned workflow served from the takeover on (`path` `workflow` or `handed_back`; never a `replay`, which checks a revision and serves no one, nor an `agent` run) whose total is known exactly (never `cost_upper_bound`); null when there is none, and `after_state` says why."),
     after_state: { enum: [...AFTER_STATES], description: "Why `after` is what it is: `priced`, it is the mean of the served runs whose cost is known; `no_served_runs`, no learned workflow has taken over yet (replays are not served runs), so there is no after side; `cost_unknown`, runs were served but no served run's all-in cost is known exactly. A reader says these in words, never as a figure." },
@@ -1321,8 +1328,9 @@ const LEARNING_COST = closed({
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
   bill: closed({
-    baseline: COST_MEAN("The agent for one run: the mean own cost (`cost_usd`, learning left out) of the `agent` runs started before the agent's first run on a served path (`workflow`, `handed_back`, or an audit's shadow run), read from the run records (every one with none yet), each known exactly; null when there is none."),
-    promoted: { oneOf: [closed({ n: { type: "integer", minimum: 1, description: "Its place on the bill's index." }, run_id: { type: "string" }, at: DATE_TIME }), { type: "null" }], description: "The first run that does a job started at or after the agent's first run on a served path (`at`: when that run started); null before one." },
+    baseline: COST_MEAN("The agent for one run: the mean own cost (`cost_usd`, learning left out) of the `agent` runs started before the first run a learned workflow served (every one with none yet), each known exactly; null when there is none."),
+    promoted: { oneOf: [closed({ n: { type: "integer", minimum: 1, description: "Its place on the bill's index." }, run_id: { type: "string" }, at: DATE_TIME }), { type: "null" }], description: "The first run a learned workflow served (`path` `workflow` or `handed_back`: `summary.takeover`; `at`, when it started); null before one." },
+    learning_usd: { type: "number", minimum: 0, description: "What learning cost in all: `booked_usd` less every priced job's own cost (`cost_usd`): compile turns, audit shadow runs and replay runs. As booked (float noise rounded off at 1e-12)." },
     points: { type: "array", items: closed({
       n: { type: "integer", minimum: 1, description: "The run's place among the agent's runs that do a job (`agent`, `workflow` and `handed_back`), oldest first: a `replay` checks a revision and a shadow audits a run, so neither is on the index." },
       run_id: { type: "string" },
@@ -1340,7 +1348,7 @@ const LEARNING_COST = closed({
       check_usd: COST_USD("What its check cost: its replay runs (the first draft's check or the one recompile's, each revision its own)."),
       spend_usd: COST_USD("Its learning spend: `compile_usd` and `check_usd` together."),
       k: { type: "integer", minimum: 1, description: "The served runs its spend is spread over: its check's `compile_after`." },
-      served: { ...COUNT, description: "How many of those it has served (`workflow` or `handed_back` at this digest), at most `k`." },
+      served: { ...COUNT, description: "How many runs it has served (`workflow` or `handed_back` at this digest), every one: its first `k` carry its spend." },
       attributed_usd: COST_USD("What they carry: spend over k each in whole micro-dollars (a micro-dollar more on the first ones, and the sub-micro-dollar rest on the k-th, so the split is exact), on their GET /runs/{id} `cost.learning_usd`."),
       unattributed_usd: COST_USD("The rest: on no run until it serves `k` runs; for a `stopped` revision, on none ever."),
       state: { enum: ["checking", "serving", "stopped"], description: "`checking`: its check is at work; `serving`: it is its workflow's champion; `stopped`: held or replaced, so nothing more will carry it." },
@@ -2020,7 +2028,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/computers/{provider}/test": {
     post: {
       operationId: "testComputer", tags: ["local"], summary: "Test a computer provider's account with its saved keys",
-      description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key.",
+      description: "One account-level read with the provider's saved keys (a list by label, the vendor's own check): it never makes a computer, so it never spends. ok with what it read; else why, in plain words naming what to check (a key not saved, a key the vendor refused, a vendor not reached), never a key. A provider whose row says `runs_refused` (its machines dial this server, and this server's runner runs in a process of its own) fails in those words, with no call to the vendor.",
       parameters: [PROVIDER_PARAM],
       responses: { "200": json(ACCOUNT_TEST, "The test's answer."), ...errors(401, 404, 429, 500) },
       ...COMPUTER_MARK,
@@ -3400,6 +3408,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["names", "handoff", "condition", "limit"],
       properties: { names: { type: "array", items: { type: "string" } }, handoff: { enum: ["pipe"] }, condition: { type: "string" }, limit: { type: "string" } },
       description: "How this server holds its secrets: the names it treats as secrets, handed over a pipe, the condition that rests on, and what it does not cover.",
+      "x-agentrun-serve": "serve/1",
+    },
+    run_isolation: {
+      enum: ["uid", "process"],
+      description: "How this host keeps one run from another: each run is a process of its own under the runner, and with `uid` each runs as a user of its own (the image's helper, a uid from 1001 per slot), so a run's tools read no other run's folder or memory, nor the data directory's store. `process`: every run as the runner's own user, where the host has no helper (a local install) or `AGENTRUN_RUN_USER=same` says so.",
       "x-agentrun-serve": "serve/1",
     },
   },

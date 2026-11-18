@@ -26,7 +26,7 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { peerKey } from "./owner.js";
 import { registerNotSecretWrite } from "./secret-writes.js";
 import type { MintedTokenRow, MintedTokens, PairedComputerRow, PairedComputers } from "./store/index.js";
-import { pairedOf, PAIRED_ID_PREFIX, servesNoKind } from "./workspace/attached-computers.js";
+import { pairedOf, PAIRED_ID_PREFIX, RUNNER_APART_WORDS, servesNoKind } from "./workspace/attached-computers.js";
 
 // Routes under /computers, where a provider's keys are a secret write (computers.ts): these three write none of the
 // owner's secrets, so the API token may call them as the console's session does.
@@ -182,6 +182,9 @@ export type PairedView = {
   serves: string[];
   /** When it serves no kind, why, naming what its driver lacks (servesNoKind); null when it serves one. */
   unserved: string | null;
+  /** On a server whose runner runs in a process of its own, why no run here can use it and how to start the server
+   *  instead (RUNNER_APART_WORDS); null where its runs can. */
+  runs_refused: string | null;
   os: string;
   os_version: string | null;
   device: { maker: string; model: string } | null;
@@ -207,7 +210,7 @@ function featuresOf(features: unknown): Record<string, true | { off: string }> {
   return Object.fromEntries(Object.entries(features).flatMap(([name, value]): [string, true | { off: string }][] => (value === true ? [[name, true]] : isObject(value) && typeof value.off === "string" ? [[name, { off: value.off }]] : [])));
 }
 
-export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "since" | "hello" | "claimed" | "deadline">, serves: readonly string[]): PairedView {
+export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online" | "since" | "hello" | "claimed" | "deadline">, serves: readonly string[], runnerApart = false): PairedView {
   const paired = row.hello as Partial<HelloResult>;
   // Kind and os stay what it paired as (another is refused at hello); the rest follows its driver's live hello.
   const hello: Partial<HelloResult> = hub.hello(row.id) ?? paired;
@@ -222,6 +225,7 @@ export function pairedView(row: PairedComputerRow, hub: Pick<AttachHub, "online"
     kind: String(paired.kind ?? ""),
     serves: [...serves],
     unserved: serves.length === 0 ? (servesNoKind(row.name, paired) ?? null) : null,
+    runs_refused: runnerApart ? RUNNER_APART_WORDS : null,
     os: String(paired.os ?? ""),
     os_version: typeof hello.osVersion === "string" ? hello.osVersion : null,
     device: hello.device && typeof hello.device.maker === "string" && typeof hello.device.model === "string" ? { maker: hello.device.maker, model: hello.device.model } : null,
@@ -293,6 +297,9 @@ export interface AttachRoutesOptions {
   /** An API-only server's (api-only.ts): the socket takes a hosted machine's minted token alone, and a paired computer's
    *  (the console's) is 401 as one it does not know. */
   readonly machinesOnly?: boolean;
+  /** No runner in this server's process (ServeOptions.runnerApart): a pairing code and the pair answer say no run here
+   *  can use a paired computer, and how to start the server so one can (RUNNER_APART_WORDS). */
+  readonly runnerApart?: boolean;
   /** The socket's liveness timing: the protocol's unless a test gives its own. */
   readonly timing?: AttachTiming;
   readonly now?: () => number;
@@ -316,6 +323,7 @@ const machineGone = (machine: string): string => `${machine} was deleted: its to
  *  provider mints. */
 export function createAttachRoutes(options: AttachRoutesOptions) {
   const { store, hub, log = () => {}, now = Date.now } = options;
+  const runsRefused = options.runnerApart === true ? RUNNER_APART_WORDS : null;
   const paired = store.pairedComputers;
   const minted = store.mintedTokens;
   const tries = pairTries(now);
@@ -325,16 +333,16 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: () => ATTACH_SUBPROTOCOL });
 
   /** POST /v2/computers/pairings: a new code, good once until it expires. The store keeps its hash. */
-  async function createPairing(): Promise<{ id: string; code: string; expires_at: string }> {
+  async function createPairing(): Promise<{ id: string; code: string; expires_at: string; runs_refused: string | null }> {
     const code = newPairingCode();
     const id = `pairing-${randomBytes(9).toString("base64url")}`;
     const expiresAt = now() + PAIRING_CODE_TTL_MS;
     await paired.addCode(id, sha256Hex(code), expiresAt);
-    return { id, code, expires_at: new Date(expiresAt).toISOString() };
+    return { id, code, expires_at: new Date(expiresAt).toISOString(), runs_refused: runsRefused };
   }
 
   /** POST /v2/computers/pair: the code traded for the computer's id and token, once; `address` the try's source. */
-  async function pair(body: unknown, address: string): Promise<{ computer: string; token: string }> {
+  async function pair(body: unknown, address: string): Promise<{ computer: string; token: string; runs_refused: string | null }> {
     const allowed = tries.allow(address);
     if (!allowed.ok) throw limited("too many pairing tries from this address", allowed.retryAfterMs);
     const { code, name, hello } = pairBodyOf(body);
@@ -348,7 +356,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const made = await paired.pair(sha256Hex(code), { id, name, hello: hello as unknown as Record<string, unknown>, labels: {}, tokenSha256: sha256Hex(token) });
     if (!made) throw new ApiError("not_found", "no such pairing code: make a new one on the console's Computers page");
     log("computer_paired", { computer: id, kind: hello.kind, os: hello.os, driver: hello.version });
-    return { computer: id, token };
+    return { computer: id, token, runs_refused: runsRefused };
   }
 
   /** DELETE /v2/computers/{id}: its token revoked, a run's hold on it ended, its socket closed with 4401. */

@@ -1058,7 +1058,7 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     {
       const allowed = KIND_KEYS[(node as any).node];
       const extraneous = Object.keys(node).filter((key) => !allowed.has(key));
-      if (extraneous.length) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
+      if (extraneous.length) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): unknown key(s) for ${/^[aeiou]/.test((node as any).node) ? "an" : "a"} ${(node as any).node} node: ${extraneous.join(", ")}`);
       // State keys that hold a `$` are engine-owned (`$host`, and a typed question's `<as>$answers` and `<as>$verify`): no node
       // may write one, wherever the `$` is. A label is the state key whenever `as` is omitted, so labels are held to the same rule.
       if (typeof (node as any).as === "string" && holdsDollar((node as any).as)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);

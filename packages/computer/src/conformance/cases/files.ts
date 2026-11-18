@@ -4,13 +4,19 @@ import { createHash, randomBytes } from "node:crypto";
 import type { ComputerClient } from "../../protocol.js";
 import { pullTar, pullTarStream, pushTar, readFile, writeFile } from "../../files.js";
 import { type FileEntry, MAX_LIST_ENTRIES } from "../../protocol.js";
-import { describeEntry, type TarEntry, tarOf, untar } from "../tar.js";
+import { type TarEntry, tarOf, untar } from "../../tar.js";
 import type { Capability, Case, CaseContext } from "../types.js";
 import { b64, decode, delay } from "./util.js";
 
 // Most cases work in t.dir(), which finds HOME through exec.run: they need exec as well as files.
 const files = (name: string, run: Case["run"], needs: Capability[] = ["files", "exec"]): Case => ({ id: `files.${name}`, level: "core", group: "files", needs, run });
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+/** An entry as one comparable line: its name without "./" or a trailing "/", type, mode, and content hash or target. */
+const describeEntry = (entry: TarEntry) => {
+	const name = entry.name.replace(/^\.\//, "").replace(/\/$/, "");
+	const what = entry.type === "file" ? sha256(entry.body ?? new Uint8Array()) : entry.type === "symlink" ? `-> ${entry.link}` : "";
+	return `${name} ${entry.type} ${entry.mode.toString(8)} ${what}`.trimEnd();
+};
 const sorted = (entries: TarEntry[]) =>
 	entries
 		.filter((entry) => !["", ".", "./"].includes(entry.name))

@@ -21,10 +21,16 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
 import { startServe } from "../dist/index.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerDepsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
+import { computerDepsFrom as depsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 import { withEnv } from "./support.mjs";
+
+/** The composer with this machine's Docker answering up, unless a test gives its own. A failed Docker launch asks the
+ *  daemon, and one that does not answer within DAEMON_ASK_MS is told as no Docker at all (docker-daemon.ts), which would
+ *  stand in for the refusal a test reads; a loaded CI host's Docker answers late. No Docker is docker-daemon.test.mjs's
+ *  and workspace-resolve-computer.test.mjs's. */
+const computerDepsFrom = (options) => depsFrom({ daemon: async () => ({ up: true }), ...options });
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -469,7 +475,8 @@ test("each provider's default image comes from the computer package's registry (
   // Any other kind with no default image: refused, naming the provider.
   assert.throws(() => spec({ ...entryOf("e2b"), prepareImage: undefined, defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/x@sha256:" + "b".repeat(64) })(entryOf("docker"), "desktop", {}).image, "example.org/x@sha256:" + "b".repeat(64), "the image the owner named");
-  // Through the claim: refused before anything is made, computer_unavailable in those words.
+  // Through the claim: refused before anything is made, computer_unavailable in those words (on a machine whose Docker
+  // answers: computerDepsFrom above).
   const root = scratch();
   const sealKey = randomBytes(32);
   const store = await savedKeysStore(sealKey);

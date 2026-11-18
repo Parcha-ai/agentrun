@@ -181,11 +181,17 @@ test("a token store that never answers a revoke holds a delete back no longer th
 	assert.deepEqual(notes, ["its machine token could not be revoked (the token store did not answer within 0.3 s): it is refused past the machine's backstop either way"]);
 });
 
-test("a dial host's provider given no dial refuses create in its own words, of the process, before the vendor is called", async () => {
+// A provider is given no dial in a runner apart from the server (serve's runner subcommand, and the container image's
+// default server-and-runner): the refusal names the one-line fix in the words a paired computer's refusal gives
+// (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
+test("a dial host's provider given no dial refuses create in its own words, of the process and its fix, before the vendor is called", async () => {
 	const { fake } = fakeDialHost({ daemon: DAEMON_BYTES });
 	const refused = await create(new HostedProvider(fake.host, { daemonPath: DAEMON_PATH }));
 	assert.equal(refused.error?.code, "refused");
-	assert.equal(refused.error.message, "Fakehost machines dial in to this server, and this process has no attach hub: start them from serve's own process");
+	assert.equal(
+		refused.error.message,
+		"Fakehost machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)",
+	);
 	assert.equal(fake.creates(), 0);
 });
 
@@ -243,9 +249,9 @@ test("a machine whose daemon's sha256 is not the server's never dials, and creat
 	assert.deepEqual(fake.live(), []);
 });
 
-test("a dial host takes no Archil mount, in words, and declares none", async () => {
+test("a dial host takes no Archil mount, in words, and declares a synced folder alone", async () => {
 	const { fake, provider } = setup();
-	assert.deepEqual(provider.capabilities().mount, []);
+	assert.deepEqual(provider.capabilities().mount, ["sync"]);
 	const refused = await create(provider, { ...SPEC, mount: { kind: "archil", disk: "dsk-0123456789abcdef", region: "aws-us-east-1", folder: "agents/a/runs/r/work" } });
 	assert.equal(refused.ok, false);
 	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount yet/);

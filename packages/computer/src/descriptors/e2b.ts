@@ -10,6 +10,7 @@ export const E2B = defineProvider({
 	// How the server reaches its machines: exec (the provider's default, when the server's settings name none), a bridge
 	// through envd per connection, or dial, the machine dials the server (a sandbox only).
 	settings: [{ name: "e2bConnect", option: "connect" }],
+	connect: "either",
 	metered: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with

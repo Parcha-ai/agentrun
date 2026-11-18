@@ -23,7 +23,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -287,8 +287,9 @@ export async function npmInstall(entry: HarnessInstallEntry, dir: string, pins: 
     const old = existsSync(dir) ? `${staging}-old` : undefined;
     if (old) await rename(dir, old);
     await rename(staging, dir);
-    // Read-only once in place: a write into it by mistake fails. (The server's own uid could change that back; each CLI's
-    // sha256 is checked at every run.)
+    // Read-only once in place, and readable by every user: a write into it by mistake fails, and a run's process (a slot's
+    // user of its own, run-child-host.ts) loads it. (The server's own uid could change that back; each CLI's sha256 is
+    // checked at every run.)
     await writable(dir, false);
     // The install is in: the one it replaced goes now if it can, else it stays aside (its name the sweep's) for later.
     if (old) await removeLeftover(old);
@@ -318,16 +319,27 @@ export async function sweepLeftovers(dir: string): Promise<void> {
 }
 
 
-/** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone. */
+/** Every file and directory under `dir` (no link followed) made writable by its owner, or read-only for everyone and
+ *  readable by everyone: a folder entered and listed, a file read, one its owner may run run by all. */
 export async function writable(dir: string, on: boolean): Promise<void> {
   const walk = async (path: string): Promise<void> => {
     const st = await lstat(path).catch(() => undefined);
     if (!st || st.isSymbolicLink()) return;
     if (on) await chmod(path, st.mode | 0o200);
     if (st.isDirectory()) for (const name of await readdir(path)) await walk(join(path, name));
-    if (!on) await chmod(path, st.mode & ~0o222);
+    if (!on) await chmod(path, (st.mode & ~0o222) | 0o444 | (st.isDirectory() || st.mode & 0o100 ? 0o111 : 0));
   };
   await walk(dir);
+}
+
+/** An installed harness at `dir` (a link to it followed) made readable by every user, never writable: what an install
+ *  from before installs were shared left its owner's alone (its top folder 0500, as its staging was made). Once its top
+ *  folder is readable by all, it is taken as shared and not walked again. None there: nothing to do. */
+export async function shareInstall(dir: string): Promise<void> {
+  const at = await realpath(dir).catch(() => undefined);
+  const st = at === undefined ? undefined : await lstat(at).catch(() => undefined);
+  if (!at || !st?.isDirectory() || (st.mode & 0o555) === 0o555) return;
+  await writable(at, false);
 }
 
 /** How long npm has to exit after a SIGTERM before it gets SIGKILL. Once npm writes (its reify), a SIGTERM only marks

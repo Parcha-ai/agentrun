@@ -146,9 +146,9 @@ test("a provider that declares no mount kind skips both run-folder cases in word
 });
 
 test("a provider that declares every kind has nothing for mount.undeclared-kind to refuse: it skips in words", async () => {
-	const report = await run({ mount: ["bind", "archil"] });
+	const report = await run({ mount: ["bind", "archil", "sync"] });
 	assert.deepEqual(statuses(report), { "mount.run-folder-bind": "pass", "mount.run-folder-archil": "pass", "mount.undeclared-kind": "skip" }, JSON.stringify(reasons(report)));
-	assert.equal(reasons(report)["mount.undeclared-kind"], "the provider declares every mount kind (bind, archil)");
+	assert.equal(reasons(report)["mount.undeclared-kind"], "the provider declares every mount kind (bind, archil, sync)");
 });
 
 test("a run given no run folders skips the run-folder case in words: the provider's conformance module supplies mountFor", async () => {

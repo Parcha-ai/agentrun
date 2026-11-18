@@ -46,8 +46,10 @@ export const ORGO = defineProvider({
 		{ name: "ORGO_WORKSPACE_ID", option: "workspaceId", required: false, picked: true },
 	],
 	metered: true,
-	// None yet: an Archil mount needs an Orgo template that bakes the helper.
+	// None yet: an Archil mount needs an Orgo template that bakes the helper, and a synced folder a /workspace its create
+	// makes, which the shared hosted adapter's does and Orgo's own does not.
 	mounts: [],
+	unmounted: { sync: "Orgo's provider makes no /workspace for a synced folder yet" },
 	// The Linux desktop's: none (computerd holds its programs to loopback). Not open or a list: Orgo's own adapter starts
 	// no egress proxy, the one way out of that loopback the shared hosted adapter has (hosted/network.ts).
 	network: ["none"],

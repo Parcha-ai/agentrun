@@ -67,12 +67,13 @@ import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, 
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
 import { readKept } from "./workspace/computer-kept.js";
-import { liveReachOf } from "./live-reach.js";
+import { liveReachOf, reachForRun } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { factsOverStore, momentOverStore, settledStatusOf, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { cutOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunTrace } from "./run-trace.js";
@@ -364,6 +365,13 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
+   *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
+  listerIdleMs?: number;
+  /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
+   *  computer's socket is held here, where no run reaches it, so a pairing code, the pair answer and each paired computer
+   *  say so and how to start the server instead (attached-computers.ts RUNNER_APART_WORDS). */
+  runnerApart?: boolean;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -429,7 +437,7 @@ export type ServeOptions = {
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxMountinfo", FAUX_MOUNTINFO_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
 
 /** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
  *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
@@ -440,6 +448,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
+  // The mountinfo the server itself reads (fauxMountinfo in serve), also when its own environment names it: a CLI server
+  // in a container hands it to the runner beside it, whose environment drops every faux variable it inherited.
+  const mountinfo = options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV];
+  if (mountinfo) env[FAUX_MOUNTINFO_ENV] = resolve(mountinfo);
   return env;
 }
 
@@ -469,7 +481,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  never reach this server, as its own reads never do. */
   own: readonly string[];
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
-  stopping(): { runs: number; boundMs: number } };
+  stopping(): { runs: number; boundMs: number };
+  /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
+  listingSettled(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -825,7 +839,7 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
  *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
  *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process") {
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
@@ -839,6 +853,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     /** What runs a run here (the contract's `runtimes`, informational): this server's runners, over its one store. */
     runtimes: ["runner"],
+    /** How a run is kept from another here (run-child-host.ts runIsolationOf): each a process of its own, and `uid`, each
+     *  a user of its own too. */
+    run_isolation: isolation,
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
     harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
@@ -940,6 +957,11 @@ function cursorOf(value: string | null): number {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError("bad_request", "cursor is not one this server gave");
   return offset;
 }
+/** How many runs still going whose listing is behind a status-filtered list reads at once before it builds them all and
+ *  reads its page (runsPage). */
+const UNLISTED_AT_ONCE = 50;
+/** Most builds of one run's listing a list makes when writes keep moving its mark (runsPage listNow). */
+const LIST_TRIES = 3;
 const nextCursor = (offset: number, total: number) => (offset < total ? Buffer.from(String(offset)).toString("base64url") : null);
 function limitOf(value: string | null): number {
   if (value === null) return 20;
@@ -1096,7 +1118,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
-  const attach = createAttachRoutes({ store, hub: attachHub, machinesOnly: options.apiOnly === true, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
+  const attach = createAttachRoutes({ store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1202,7 +1224,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // With accounts off no one can answer an ask (the answer route takes the owner's session alone): each tool ask is
   // offered for says it needs the password sign-in, as learning's approve does.
   const askNeeds = (made: ReturnType<typeof capabilitiesWith>) => (options.accounts ? made : { ...made, tools: made.tools.map((tool) => (tool.permissions.includes("ask") ? { ...tool, ask_needs: "password" as const } : tool)) });
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell));
+  // How this host keeps runs apart, as its runners decide it from the same setting and helper: `uid` where the helper can
+  // switch and AGENTRUN_RUN_USER is not `same`. A helper that cannot switch is a runner that refuses to start, in words
+  // naming the setting; no run here is then a user of its own, so `process`. Imported here, as the runner beside it
+  // imports it (runner/beside.ts): its module reaches the runner's, which reach back to this one's.
+  const { runIsolationName, runIsolationOf } = await import("./runner/run-child-host.js");
+  const isolation = await runIsolationOf(base, 1, () => {}).then(runIsolationName, () => "process" as const);
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -1221,9 +1249,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
   let needsAsked = 0;
+  // The runs' listings' builder (run-listing.ts): each run's listing, built from its view once per change, so a runs list
+  // reads rows alone. A list builds a listing it finds behind through it too (runsPage). Its own passes start once this
+  // server listens and knows its own address (ownOriginOf, below). Its items keep no console link (a list adds the one for
+  // the address its request reached), so the origin here is never served.
+  const lister = createLister(store, () => viewDepsFor(ownOriginOf()), {
+    log: (what, error) => log?.(logLine(what, { error: error.message })),
+    ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
+  });
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), so a key change needs no cache invalidation here.
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (cutOfNow). A failed run's error words
+    // name a refused key by the keys and settings, so those listings are built again.
+    await lister.keysChanged();
     env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
     const mine = ++needsAsked;
     const next = await needsOf(env);
@@ -1290,7 +1328,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
   const reach = liveReachOf(env, sealKey);
-  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
+  // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
+  const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1330,7 +1369,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A provider's key set where the server starts is one of its secrets, held off process.env (secrets.ts): read by name
     // from what the server was started with, as computerReady below reads it.
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: withSecrets(process.env, "own"),
-    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves) },
+    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
+    runnerApart: options.runnerApart === true,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1632,7 +1672,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -2171,12 +2211,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const learning = await learningOfAgent(entry);
     const native = nativeOf(entry.revision?.body);
     const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
-    const runs = (await listRunsOverStore(store, { agent: entry.agent.id }, ctx)).filter((run) => !isShadowRun(run.id));
+    // Counted in the store, one read per agent: no run is read for it.
+    const runs = await store.runs.counts(entry.agent.id);
     return {
       ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
       ...(learning ? { learning } : {}),
-      runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
+      runs: { count: runs.count, live: runs.live },
       // The agent's own computer (a persistent setting), as this server records it: the view's own_computer.
       ownComputer: agentComputerView(await agentComputerOf(store, entry.agent.id)),
     };
@@ -3019,17 +3060,53 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
     const vd = viewDepsFor(origin);
-    // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
-    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
+    // The page from the runs' rows alone (store/schema.ts RUN_LISTING_COLUMNS): filtered (`status` on the listing's status),
+    // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
+    // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
+    // run's. A run's archive is its own or its agent's.
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), archived };
+    // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
+    // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
+    // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
+    // list_status may say what it was, or nothing; a settled run's says what it is, from the write that settled it), all
+    // of them read before any is built, UNLISTED_AT_ONCE to a read, so the page's offset counts the rows as they now stand;
+    // then any row of the page. With nothing running, none is behind: two reads, whatever the runs. The runs still going
+    // are all a filter builds beside its page, and the lister builds them too, so only a list soon after an upgrade
+    // builds many.
+    // A write that lands while a listing is built moves the run's mark, so the listing is not written (Runs.putListing),
+    // and a run still going is left with no status on its row: the build is made again from the mark that write left, up
+    // to LIST_TRIES builds, so a filter never leaves off a run because a write met its build. Each is the lister's build
+    // (Lister.build), so a held listing built here has its agent's learning folder read by the lister's passes after it.
+    const listNow = async (runId: string, read: number) => {
+      for (let mark: number | undefined = read, tries = 1; ; tries++) {
+        const { listing, written } = await lister.build(runId, mark, vd);
+        if (!listing || written || tries === LIST_TRIES) return listing;
+        if ((mark = await store.runs.listMark(runId)) === undefined) return listing;
+      }
+    };
     if (status !== null) {
-      // The v2 status is the run view's (store-view over the journal), per row; a settled run's is its row's (settledStatusOf),
-      // so only the runs still going are read over their journals.
-      const statuses = await Promise.all(rows.map((row) => settledStatusOf(row.state) ?? viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
-      rows = rows.filter((_, i) => statuses[i] === (status as Status));
+      const going: { id: string; mark: number }[] = [];
+      // Each read starts after the last row read (ListedFilter.after), never at an offset: the lister may build a row read
+      // before the next read, which would shift an offset past a row not read yet.
+      for (let after: { startedAt: number; id: string } | undefined; ; ) {
+        const read = await store.runs.listed({ ...where, going: true, limit: UNLISTED_AT_ONCE, ...(after ? { after } : {}) });
+        going.push(...read.rows.map(({ row, listMark }) => ({ id: row.id, mark: listMark })));
+        const last = read.rows.at(-1)?.row;
+        if (!read.more || !last) break;
+        after = { startedAt: last.startedAt, id: last.id };
+      }
+      for (const { id, mark } of going) await listNow(id, mark);
     }
-    // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => summaryOverStore(store, row.id, vd)));
-    return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
+    const page = await store.runs.listed({ ...where, ...(status !== null ? { status } : {}), limit, offset });
+    const secrets = serverSecrets();
+    const runs: Record<string, unknown>[] = [];
+    for (const { row, agentArchivedAt, listing, listMark, behind } of page.rows) {
+      // One cut of other secrets (a secret saved since, or the server's own keys at another start) is built again too.
+      const kept = listing === null || behind || !cutOfNow(listing, secrets) ? await listNow(row.id, listMark) : listing;
+      // A run whose status moved between the two reads is left off this page, never shown under a status it has left.
+      if (kept && (status === null || kept.item.status === status)) runs.push(listedItem(kept, origin, row.archivedAt ?? agentArchivedAt, secrets));
+    }
+    return { runs, next_cursor: nextCursor(offset + limit, offset + limit + (page.more ? 1 : 0)) };
   }
 
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
@@ -3958,10 +4035,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id, answers);
+              const link = await liveViewerLink(store, sealKey, run.id, answers(run.id));
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id, answers);
+            return computerViewerLink(store, sealKey, run.id, answers(run.id));
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
@@ -4520,6 +4597,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const action = found.name === "approveLearningFile" ? "approve" : found.name === "restoreLearningFile" ? "restore" : "retire";
         // A change to a workflow is a write to the agent's learning: in its delete turn (agentWrite).
         const written = await agentWrite(id, () => changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id) }));
+        // A run's list row that read a workflow held for the owner's OK says what the folder says now, at the next list.
+        await lister.learningChanged(id);
         return sendText(res, written.status, { ...written, text: secretsShown(refuse).text(written.text) });
       }
       case "startLearnedWorkflowReplay": {
@@ -4813,7 +4892,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reachForRun(reach, run!.id));
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   };
   // The CLI's early listener answers with this server's routes from here on, where a new one would start to listen.
@@ -4849,6 +4928,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise<void>((done) => server.close(() => done()));
     throw error;
   });
+  // The lister's own passes (above), once this server listens and knows its own address (ownOriginOf).
+  lister.start();
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
@@ -5115,6 +5196,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // --faux-github's fake GitHub API, once nothing asks it anything.
     await fauxGitHub?.close();
+    // The listings' builder ends its pass before the store it reads and writes closes.
+    await lister.stop();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -5140,5 +5223,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     close: () => (stopped ??= stop()),
     // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
     stopping: () => ({ runs: 0, boundMs: 0 }),
+    listingSettled: () => lister.settled(),
   };
 }

@@ -67,7 +67,7 @@ await backend.provider.release(session);
 EOF
 ```
 
-It prints the page's accessibility tree, the same text `snapshot` gives a model:
+It prints the page's accessibility tree, the same text that `snapshot` gives a model:
 
 ```
 [0] main

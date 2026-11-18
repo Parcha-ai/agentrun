@@ -249,6 +249,7 @@ export interface components {
       condition: string;
       limit: string;
     };
+    run_isolation?: "uid" | "process";
   };
   CommitSha: string;
   Cost: {
@@ -1482,6 +1483,7 @@ export interface operations {
       id: string;
       code: string;
       expires_at: string;
+      runs_refused: string | null;
     };
   };
   createQuote: {
@@ -2111,16 +2113,10 @@ export interface operations {
         before: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
-          median_learning_usd: number | null;
         };
         after: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
-          median_learning_usd: number | null;
         };
       } | null;
     };
@@ -2266,12 +2262,14 @@ export interface operations {
     answer: {
       agent: string;
       runs: {
-        n: number;
+        n: number | null;
         run_id: string;
         started_at: string;
         path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
-        learned_revision: string | null;
+        digest: string | null;
+        took_over: boolean;
+        audited: boolean;
         cost_usd: number | null;
         cost_upper_bound: boolean;
         learning_usd: number | null;
@@ -2337,6 +2335,7 @@ export interface operations {
           run_id: string;
           at: string;
         } | null;
+        learning_usd: number;
         points: {
           n: number;
           run_id: string;
@@ -3458,6 +3457,7 @@ export interface operations {
         kind: string;
         serves: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
         unserved: string | null;
+        runs_refused: string | null;
         os: string;
         os_version: string | null;
         device: {
@@ -3499,6 +3499,7 @@ export interface operations {
           }[];
           required: string[];
           ready: boolean;
+          runs_refused: string | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -4215,6 +4216,7 @@ export interface operations {
     answer: {
       computer: string;
       token: string;
+      runs_refused: string | null;
     };
   };
   pauseRun: {
@@ -4840,6 +4842,7 @@ export interface operations {
       }[];
       required: string[];
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;

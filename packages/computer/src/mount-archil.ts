@@ -3,13 +3,15 @@
 // root through its own exec (its ArchilRoot), never through computerd; computerd runs every tool as the tool user, which
 // has no way to root and never holds the disk's token. What each provider shares lives here: the spec rule, the steps
 // at create, the syncing client, the read-back, the mount's label and the release. Only the root channel is a
-// provider's own.
+// provider's own. A synced folder's record and read-back live here beside Archil's, as the syncing client does, which
+// takes either kind's sync.
 //
 // The token reaches only the helper's fd 0 (ArchilRoot.run's stdin, for mount and revoke): never an argument, a label,
 // a read-back or an error. Whatever a computer prints is scrubbed of it before it reaches an error's words.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { unanswered } from "./client.js";
+import { WORK } from "./drift.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL, runProblem } from "./labels.js";
 import { type MountReadBack, type MountSpec, readBackOf, WORKSPACE } from "./mount.js";
 import type { ComputerClient, DaemonMethod, DaemonMethods } from "./protocol.js";
@@ -27,11 +29,21 @@ export const ARCHIL_TOOL_UID = 2510;
 export const ARCHIL_SYNC_SOCKET = "/run/agentrun-archil/archil.sock";
 /** The archil client the image pins, the version the live checks ran. */
 export const ARCHIL_VERSION = "0.10.1-1793222256";
-/** The label (Daytona) or metadata (E2B) an Archil computer carries its mount in: never the token (archilLabels). */
-export const ARCHIL_MOUNT_LABEL = "agentrun.mount";
 
 /** An Archil mount, as a spec gives it. */
 export type ArchilMount = Extract<MountSpec, { kind: "archil" }>;
+
+/**
+ * The label a remote computer carries its mount in, as JSON and never a token, so a kept computer is reattached as what
+ * it records: an Archil mount's source (archilLabels), or a synced folder's kind alone (SYNC_LABELS).
+ */
+export const MOUNT_LABEL = "agentrun.mount";
+
+/** A synced folder's labels: its kind alone, since the computer holds nothing else of it. */
+export const SYNC_LABELS: Readonly<Record<string, string>> = Object.freeze({ [MOUNT_LABEL]: JSON.stringify({ kind: "sync" }) });
+
+/** A mount as a computer's label records it (MOUNT_LABEL): an Archil mount's source, never the token, or a synced folder. */
+export type RecordedSource = Omit<ArchilMount, "token"> | { kind: "sync" };
 
 /**
  * A provider's own root channel into one of its computers: Daytona's toolbox exec, Modal's exec, E2B's commands as
@@ -296,6 +308,20 @@ export async function archilMount({ root, mount, self: computer, releaseOlder, t
 	return ok(undefined);
 }
 
+/** An Archil computer's sync, for syncingClient: computerd's mount.sync, which asks the resident serve to sync. */
+export function archilSync(client: ComputerClient): () => Promise<Result<void>> {
+	return async () => {
+		try {
+			const synced = await client.call("mount.sync", {});
+			if (!synced.ok) return fail(synced.error.code, synced.error.message);
+			if (synced.value.exitCode !== 0) return fail("refused", `archil sync exited ${synced.value.exitCode}`);
+			return ok(undefined);
+		} catch (error) {
+			return fail("refused", `archil sync could not be asked: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
+}
+
 /** The computerd calls that may change the folder: each syncs before it answers. */
 const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remove", "files.mkdir", "tar.push.begin", "tar.push.end", "exec.run", "process.start", "process.write", "process.signal", "process.wait"]);
 
@@ -304,27 +330,21 @@ const MUTATING = new Set<DaemonMethod>(["files.write", "files.move", "files.remo
  * which makes the destination and the folders above it, so a push never ended leaves none unsynced; tar.push.end, and
  * a tar.push.write that failed, which ends the push with no tar.push.end once its extraction stops; exec.run;
  * process.start, which makes its log and the folders above it; process.write and signal; a process seen
- * ended, by process.wait or a process.read that says so) syncs before it answers, through mount.sync, coalesced: a
- * call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
+ * ended, by process.wait or a process.read that says so) syncs before it answers, through `sync` (an Archil computer's
+ * archilSync, a synced folder's delta), coalesced: a call during a sync in flight waits for it, then shares one more. A failed sync fails the call in words; a call that
  * failed still syncs, and answers its own error (one the client timed out with no answer from the daemon does so at
  * once, not waiting for the sync, which rides the same transport; a timeout the daemon answered waits). A caller whose signal fires stops waiting, answered "aborted" in words
  * (or its own error), while the shared sync goes on for every other caller. A tar.push.begin answered with such an error
  * instead of its id first ends the push it began, so no push slot is held by a push its caller cannot name.
  */
-export function syncingClient(client: ComputerClient): ComputerClient {
+export function syncingClient(client: ComputerClient, once: () => Promise<Result<void>>): ComputerClient {
 	// At most one sync in flight, and at most one follower shared by every call that comes during it. The hand-over from a
 	// run to its follower happens in one step, inside the run's own settling, so no call can land between them.
 	let running: Promise<Result<void>> | undefined;
 	let follower: { promise: Promise<Result<void>>; resolve: (run: Promise<Result<void>>) => void } | undefined;
-	const once = async (): Promise<Result<void>> => {
-		const synced = await client.call("mount.sync", {});
-		if (!synced.ok) return fail(synced.error.code, synced.error.message);
-		if (synced.value.exitCode !== 0) return fail("refused", `archil sync exited ${synced.value.exitCode}`);
-		return ok(undefined);
-	};
 	const start = (): Promise<Result<void>> => {
 		const now = once()
-			.catch((error: unknown) => fail("refused", `archil sync could not be asked: ${error instanceof Error ? error.message : String(error)}`))
+			.catch((error: unknown) => fail("refused", `the run's folder's sync could not be asked: ${error instanceof Error ? error.message : String(error)}`))
 			.then((result) => {
 				const next = follower;
 				follower = undefined;
@@ -395,15 +415,19 @@ export function syncingClient(client: ComputerClient): ComputerClient {
  * The folder's run is the computer's agentrun.run label (check holds them equal), so the label does not repeat it.
  */
 export function archilLabels(mount: ArchilMount): Record<string, string> {
-	return { [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: mount.disk, region: mount.region, agent: FOLDER.exec(mount.folder)?.[1] ?? "" }) };
+	return { [MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: mount.disk, region: mount.region, agent: FOLDER.exec(mount.folder)?.[1] ?? "" }) };
 }
 
-/** The mount a computer's labels record, its folder from the agent and agentrun.run; undefined when there is none, or it is not one. */
-export function recordedMount(labels: Record<string, string> | undefined): Omit<ArchilMount, "token"> | undefined {
-	const text = labels?.[ARCHIL_MOUNT_LABEL];
+/**
+ * The mount a computer's labels record: a synced folder (SYNC_LABELS), or an Archil mount, its folder from the
+ * agent and agentrun.run; undefined when there is none, or it is not one.
+ */
+export function recordedMount(labels: Record<string, string> | undefined): RecordedSource | undefined {
+	const text = labels?.[MOUNT_LABEL];
 	if (text === undefined) return undefined;
 	try {
 		const { kind, disk, region, agent, ...rest } = (JSON.parse(text) ?? {}) as Record<string, unknown>;
+		if (kind === "sync") return disk === undefined && region === undefined && agent === undefined && Object.keys(rest).length === 0 ? { kind } : undefined;
 		const run = labels?.[RUN_LABEL];
 		const folder = `agents/${String(agent)}/runs/${String(run)}/work`;
 		if (kind !== "archil" || typeof disk !== "string" || typeof region !== "string" || typeof agent !== "string" || typeof run !== "string" || Object.keys(rest).length > 0 || !FOLDER.test(folder)) return undefined;
@@ -465,10 +489,10 @@ export async function archilRelease({ root, client, timeoutMs, signal }: { root:
 	return fail(checkin.ok ? "refused" : checkin.error.code, `the run's folder was not let go cleanly: ${words.join("; ")}`);
 }
 
-/** An Archil mount a computer records (a label, a tag), and what it must read back as under its epoch label. */
-export interface RecordedArchil {
+/** A mount a computer records (a label, a tag), and what it must read back as under its epoch label. */
+export interface RecordedFolder {
 	/** The source as recorded; none when what is recorded is not a mount this provider makes. */
-	mount?: Omit<ArchilMount, "token">;
+	mount?: RecordedSource;
 	/** The computer's agentrun.epoch label, when it reads as one. */
 	epoch?: number;
 	/** What the mount must read back as: readBackOf under the label's epoch, or a mount in words. */
@@ -476,51 +500,58 @@ export interface RecordedArchil {
 }
 
 /**
- * The Archil mount a computer records, from what its provider read of it (`recorded`: the mount, and words when what is
+ * The mount a computer records, from what its provider read of it (`recorded`: the mount, and words when what is
  * recorded is not one this provider makes, or not under the label's epoch; undefined for none at all), under the epoch
  * of its `labels`.
  */
-export function recordedArchil(labels: Record<string, string> | undefined, recorded: { mount?: Omit<ArchilMount, "token">; other?: string } | undefined): RecordedArchil | undefined {
+export function recordedFolder(labels: Record<string, string> | undefined, recorded: { mount?: RecordedSource; other?: string } | undefined): RecordedFolder | undefined {
 	if (recorded === undefined) return undefined;
 	const read = epochOf(labels);
 	const epoch = read.ok ? { epoch: read.value } : {};
 	const mount = recorded.mount === undefined ? {} : { mount: recorded.mount };
 	if (recorded.other !== undefined || recorded.mount === undefined) return { ...mount, ...epoch, expected: { other: recorded.other ?? "a mount this provider never makes" } };
-	return { mount: recorded.mount, ...epoch, expected: readBackOf({ ...recorded.mount, token: "" }, epoch.epoch) };
+	return { mount: recorded.mount, ...epoch, expected: readBackOf(recorded.mount.kind === "sync" ? recorded.mount : { ...recorded.mount, token: "" }, epoch.epoch) };
 }
 
 /** A mount read-back in words. */
 export function mountWords(mount: MountReadBack): string {
 	if ("other" in mount) return mount.other;
 	if (mount.kind === "bind") return `a bind of ${mount.path}`;
+	if (mount.kind === "sync") return `a synced folder, epoch ${mount.epoch}`;
 	return `archil ${mount.disk}:/${mount.folder} in ${mount.region}, ${mount.exclusive ? "exclusive" : "not exclusive"}, epoch ${mount.epoch}`;
+}
+
+/** Whether two read-backs of a mount are the same mount. */
+function sameMount(read: MountReadBack, expected: MountReadBack): boolean {
+	if ("other" in read || "other" in expected || read.kind !== expected.kind) return false;
+	if (read.kind === "bind") return expected.kind === "bind" && read.path === expected.path;
+	if (read.kind === "sync") return expected.kind === "sync" && read.epoch === expected.epoch;
+	return (
+		expected.kind === "archil" &&
+		read.disk === expected.disk &&
+		read.region === expected.region &&
+		read.folder === expected.folder &&
+		read.exclusive === expected.exclusive &&
+		read.epoch === expected.epoch
+	);
 }
 
 /** How the mount read back from inside (undefined: nothing at /workspace) differs from the one expected, in words. */
 export function mountDrift(expected: MountReadBack, read: MountReadBack | undefined): string[] {
 	if ("other" in expected) return [`mount: ${expected.other}`];
 	if (read === undefined) return [`mount: declared ${mountWords(expected)}, yet nothing is mounted at ${WORKSPACE}`];
-	const same =
-		!("other" in read) &&
-		read.kind === expected.kind &&
-		(read.kind === "bind"
-			? expected.kind === "bind" && read.path === expected.path
-			: expected.kind === "archil" &&
-				read.disk === expected.disk &&
-				read.region === expected.region &&
-				read.folder === expected.folder &&
-				read.exclusive === expected.exclusive &&
-				read.epoch === expected.epoch);
-	return same ? [] : [`mount: declared ${mountWords(expected)}, read back ${mountWords(read)}`];
+	return sameMount(read, expected) ? [] : [`mount: declared ${mountWords(expected)}, read back ${mountWords(read)}`];
 }
 
 /**
- * What a computer mounts at /workspace, read back through its computerd: its mount table, then whether the resident
- * serve answers a sync (exclusive), under `epoch`, the computer's label; each call bounded by timeoutMs and the signal.
+ * What a computer holds at /workspace, read back through its computerd, under `epoch`, the computer's label, each call
+ * bounded by timeoutMs and the signal: its mount table first. For a recorded synced folder, nothing may be mounted
+ * there, and /workspace must be a directory (never a link) of the computer's user, the owner of its home (WORK); else
+ * it is one in words. For any other, whether the resident serve answers a sync (an Archil mount's exclusive).
  */
-export async function readArchilMount(
+export async function readMount(
 	client: ComputerClient,
-	{ mount, epoch }: Pick<RecordedArchil, "mount" | "epoch">,
+	{ mount, epoch }: Pick<RecordedFolder, "mount" | "epoch">,
 	{ name, timeoutMs, signal }: { name: string; timeoutMs: number; signal?: AbortSignal },
 ): Promise<Result<MountReadBack | undefined>> {
 	const bounded = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs));
@@ -529,9 +560,21 @@ export async function readArchilMount(
 		if (signal?.aborted) return fail("aborted", `reading the mount table in ${name} was aborted`);
 		return fail(table.error.code === "aborted" ? "timeout" : table.error.code, `reading the mount table in ${name}: ${table.error.message}`);
 	}
+	const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
+	if (mount?.kind === "sync") {
+		const mounted = archilReadBack({ mounts, epoch, served: false });
+		if (mounted !== undefined) return ok({ other: `${mountWords(mounted)}, where a synced folder has nothing mounted` });
+		const [folder, home] = [await client.call("files.stat", { path: WORKSPACE }, { signal: bounded() }), await client.call("files.stat", { path: WORK }, { signal: bounded() })];
+		if (signal?.aborted) return fail("aborted", `reading ${WORKSPACE} in ${name} was aborted`);
+		if (!home.ok) return fail(home.error.code, `reading ${WORK} in ${name}: ${home.error.message}`);
+		if (!folder.ok) return folder.error.code === "not_found" ? ok({ other: `no ${WORKSPACE} for a synced folder` }) : fail(folder.error.code, `reading ${WORKSPACE} in ${name}: ${folder.error.message}`);
+		if (folder.value.type !== "dir") return ok({ other: `a ${folder.value.type} at ${WORKSPACE}, where a synced folder is a directory` });
+		const [owner, user] = [`${folder.value.uid}:${folder.value.gid}`, `${home.value.uid}:${home.value.gid}`];
+		if (owner !== user) return ok({ other: `${WORKSPACE} owned by ${owner}, not by the computer's user ${user}` });
+		return ok(readBackOf(mount, epoch));
+	}
 	const synced = await client.call("mount.sync", {}, { signal: bounded() });
 	if (signal?.aborted) return fail("aborted", `the sync in ${name} was aborted`);
-	const mounts = Buffer.from(table.value.data, "base64").toString("utf8");
 	return ok(archilReadBack({ mounts, epoch, served: synced.ok && synced.value.exitCode === 0, ...(mount === undefined ? {} : { recorded: mount }) }));
 }
 

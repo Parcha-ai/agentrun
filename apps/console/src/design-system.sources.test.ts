@@ -26,8 +26,11 @@ const RULES: Rule[] = [
   { id: "numbered-layer", says: "A layer has a name.", fix: "z-raised, z-sticky, z-overlay, z-dialog, z-popover, z-toast",
     find: /(?<![\w-])-?z-(?:\d+|\[)/ },
   { id: "rounded", says: "Rounded corners belong to action buttons, the active sidebar item and the build composer.", fix: "use Button, buttonVariants or NavItem; keep fields and surfaces square", find: /(?<![\w-])rounded(?![\w(]|-none\b)(?:-[a-z0-9[\]]+)*(?=[\s"'`])/ },
+  // A bare `shadow` is a class only in a string that is a class list (lower case, no sentence's capitals or apostrophes;
+  // an apostrophe after a letter opens no string): "an audit's shadow run" in a title or a readout is the learning
+  // words, not a class.
   { id: "shadow", says: "There is one shadow, under what floats over the page.", fix: "shadow-float; for a halo round a mark, ring-*",
-    find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?<![\w-])shadow(?=[\s"'`])(?=[^<>]*")/ },
+    find: /(?<![\w-])shadow-(?:sm|md|lg|xl|2xl|inner|\[)|(?:["`]|(?<![A-Za-z])')[a-z0-9\s:[\]/.!_-]*(?<![\w-])shadow(?=[\s"'`])[a-z0-9\s:[\]/.!_-]*["'`]/ },
   { id: "off-scale-motion", says: "A duration and an easing are tokens.", fix: "duration-fast, duration-base, duration-slow; ease-standard",
     find: /\bduration-(?:\d+|\[)|\bease-(?:in|out|in-out)\b|\bdelay-(?:\d+|\[)/ },
   { id: "caps-by-hand", says: "Mono caps is the .caps class.", fix: "caps", find: /(?<![\w-])uppercase\b(?=[\s"'`])/, skip: (path) => path === "components/ui/tip.tsx" },
@@ -53,6 +56,7 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "focus-removed", file: "components/ui/field.tsx", has: "bareFieldClass", why: "A bare control sits in a fieldBoxClass box, which draws the ring while the control has the focus." },
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },
   { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
+  { rule: "shadow", file: "lib/learningBill.ts", has: 'row.source === "shadow"', why: "An audit ledger row's source, the API's word for an audit's shadow run, not a class." },
 ];
 
 /** A source with its comments turned to spaces of the same shape, so every line number stays what it was. A `//` or
@@ -170,6 +174,13 @@ describe("the console's sources follow the design system", () => {
     expect(found("token-by-hand", 'className="w-[var(--button-width)] [--anchor-gap:2px]"')).toBe(0);
     for (const c of ["z-0", "z-10", "-z-1", "z-[5]"]) expect(found("numbered-layer", `className="${c}"`), c).toBe(1);
     expect(found("numbered-layer", 'className="z-popover"')).toBe(0);
+  });
+  it("reads a shadow in a class list, never the word in a sentence", () => {
+    const shadow = RULES.find((r) => r.id === "shadow")!;
+    const found = (source: string) => lineHits(shadow, source.split("\n")).length;
+    for (const c of ['className="border shadow p-2"', 'className={cn("shadow", on && "bg-card")}', 'const card = "p-2 shadow";', 'className="shadow-lg"', 'className="hover:shadow-md"']) expect(found(c), c).toBe(1);
+    // An audit's shadow run is the learning words S3c ships: a title, a readout line, a sentence in JSX.
+    for (const c of ['<span title="An audit\'s shadow run of the agent checked it">', 'const said = ["Audited: a shadow run of the agent checked it"];', "<p>its audit&apos;s shadow run, with each replay</p>", 'className="shadow-float"']) expect(found(c), c).toBe(0);
   });
   it("every exception still names a line that needs it", () => {
     const stale = ALLOWED.filter((a) => !hits.some((h) => h.rule === a.rule && h.file === a.file && h.text.includes(a.has))).map((a) => `${a.rule} ${a.file} "${a.has}"`);

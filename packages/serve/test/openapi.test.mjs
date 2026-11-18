@@ -601,7 +601,9 @@ test("what a run learned and what learning changed for its agent are described: 
   assert.notDeepEqual(schemaProblems(doc, whole, { ...merged, learned: [{ file: "a.md", name: "A" }] }), [], "learned is no field any more");
   assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, detail: merged.detail, at: merged.at }), [], "a list has no time");
   assert.notDeepEqual(schemaProblems(doc, short, { state: "merged", reason: null, detail: "x".repeat(141) }), [], "a list's detail is short");
-  assert.notDeepEqual(schemaProblems(doc, agentView, { ...agentLearning, impact: { ...agentLearning.impact, after: { runs: 2, median_duration_s: 1 } } }), []);
+  assert.notDeepEqual(schemaProblems(doc, agentView, { ...agentLearning, impact: { ...agentLearning.impact, after: { runs: 2 } } }), [], "a side has its time");
+  // A run's cost is the cost read's all-in, never a second median here: the side is closed to it.
+  assert.notDeepEqual(schemaProblems(doc, agentView, { ...agentLearning, impact: { ...agentLearning.impact, after: { runs: 2, median_duration_s: 1, median_cost_usd: 0.1 } } }), [], "median_cost_usd is no field any more");
 });
 
 test("what a person sees and controls of an agent's learning is learning/1: each route marked, its writes' 412 and 428, a refused draft's problems on the error, and precondition_required among the codes", async (t) => {

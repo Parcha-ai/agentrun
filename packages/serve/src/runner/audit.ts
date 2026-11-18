@@ -41,6 +41,7 @@ import { auditRoomOf } from "./learning-end.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { answerOf, answerRowOf } from "./promotion.js";
 import { servedOf, type WorkflowFirst } from "./workflow-first.js";
+import { held, heldEndOfRun } from "./held.js";
 
 /** The least cap a run can take a step under (cap.ts: the next step needs at least a cent): a shadow with less left
  *  is never started. */
@@ -112,6 +113,9 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
 export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
+  // In a run's own process the whole step is its runner's (held.ts endOfRun), the audit's start with it: it reads the
+  // run's journal and writes the ledger and a run, which no run's process may.
+  if (held()) return heldEndOfRun();
   return async (input) => {
     const rows = step ? await step(input) : undefined;
     if (input.cut === undefined) await auditAtEnd(deps, input.runId);
@@ -214,7 +218,8 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
 
 /** The per_run MCP credentials run `from` was handed, sealed for shadow run `id` alone (as a replay run's are). */
 async function handedTo(deps: Pick<AuditDeps, "store" | "sealKey">, from: string, id: string): Promise<Uint8Array | undefined> {
-  if (!deps.sealKey) return undefined;
+  // A run's own process holds no seal key: its runner seals them again, from its own run alone (held.ts handOn).
+  if (!deps.sealKey) return held()?.handOn(from, id);
   const sealed = await deps.store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
   const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, from, sealed);
   return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
