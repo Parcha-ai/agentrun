@@ -390,7 +390,7 @@ test("a dial desktop boots init with DISPLAY, starts the X server and the window
 const LINUX_HELLO = { protocol: mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" }).hello.protocol, version: "0.1.0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 const MINTED_WORDS = (kind) => new RegExp(`^computer-5f3a9c1e7b2d was made a linux ${kind} on amd64 and says .*: its token is that machine's alone$`);
 
-test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's arch may change", () => {
+test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired Mac's arch may change", () => {
 	const minted = mintedComputer("computer-5f3a9c1e7b2d", { kind: "linux", os: "linux", arch: "amd64" });
 	assert.equal(helloMismatch(minted, LINUX_HELLO), undefined);
 	for (const other of [{ arch: "arm64" }, { kind: "desktop" }, { os: "windows" }]) {
@@ -422,7 +422,7 @@ test("the linux exception is a minted desktop's alone, on its own os and arch: a
 	const paired = { id: "c-2", name: "Test Box", hello: { ...LINUX_HELLO, kind: "desktop" }, labels: {} };
 	const again = helloMismatch(paired, LINUX_HELLO);
 	assert.equal(again?.code, ATTACH_CLOSE.mismatch);
-	assert.equal(again.message, "Test Box paired as a linux desktop and now says linux linux: pair it again");
+	assert.equal(again.message, "Test Box paired as a linux desktop on amd64 and now says linux linux on amd64: pair it again");
 });
 
 test("a dial desktop whose display isn't up is a linux computer: its screen, input, apps, ui and watch calls are refused in words, never sent", async () => {

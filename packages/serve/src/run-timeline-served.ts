@@ -16,7 +16,7 @@ import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
 import { heldNumber, redacted } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
-import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
+import { answersOf, asksOf, type SignInReader, shownOf, stopAsked, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
 import { launchOf } from "./handed-values.js";
 import { capNowOf } from "./runner/journal-kinds.js";
 import { journalRecords } from "./runner/journal-reader.js";
@@ -55,7 +55,6 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const run = await snapshot.runs.get(runId);
       const ended = run ? FINAL_STATES.includes(run.state) : false;
       const records = await journalRecords(snapshot.readJournal(runId), context);
-      const final = run?.state === "stopped" || run?.state === "failed" ? run.state : undefined;
       // A question the agent asked (ask_person) and waits on: its waiting row after the call's result (run-view.ts withAsks), as
       // the run's view carries it and main's served Timeline did, so the console's "The agent asks" box reads that question,
       // never an earlier wait's words.
@@ -65,6 +64,9 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // Over is not final: an agentic run a person stopped is final in the store but reads running in its view (readRun: its
       // turn is over, the run can go on), and its usage row says what it has cost so far there, so here too.
       const view = await readRun(snapshot, runId, context);
+      // And every call still waiting once a stop is asked and not yet taken, as the run's view reads it (stopAsked).
+      const final = run?.state === "stopped" || run?.state === "failed" ? run.state
+        : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
       const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's

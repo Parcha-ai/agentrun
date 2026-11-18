@@ -38,7 +38,7 @@ export const ATTACH_CLOSE = {
 	binary: 1003,
 	/** A frame over maxLineBytes. */
 	tooBig: 1009,
-	/** The computer's hello is not what it paired as (another kind or os): pair again. */
+	/** The computer's hello is not what it paired as (another kind, os or arch): pair again. */
 	mismatch: 4400,
 	/** The token is unknown or was revoked: pair again. */
 	unauthorized: 4401,
@@ -127,7 +127,7 @@ export function socketStreams(socket: AttachSocket): { readable: Readable; writa
 export interface PairedComputer {
 	id: string;
 	name: string;
-	/** What it paired as: its hello at pairing. A later hello of another kind or os is refused (ATTACH_CLOSE.mismatch). */
+	/** What it paired as: its hello at pairing. A later hello of another kind, os or arch is refused (ATTACH_CLOSE.mismatch). */
 	hello: HelloResult;
 	labels: Record<string, string>;
 	/** A hosted machine that dials with a minted token (mintedComputer), not a person's: its hello keeps its arch too. */
@@ -253,8 +253,11 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 			const was = paired.hello;
 			return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} was made a ${was.os} ${was.kind} on ${was.arch} and says ${hello.os} ${hello.kind} on ${hello.arch}: its token is that machine's alone` };
 		}
-	} else if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os) {
-		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${paired.hello.os} ${paired.hello.kind} and now says ${hello.os} ${hello.kind}: pair it again` };
+	} else if (hello.kind !== paired.hello.kind || hello.os !== paired.hello.os || (hello.arch !== paired.hello.arch && paired.hello.os !== "macos")) {
+		// Its arch too, so a token copied to a machine of another arch is refused; but a Mac's: its driver may move from
+		// amd64 (under Rosetta) to arm64 on the same machine.
+		const was = paired.hello;
+		return { code: ATTACH_CLOSE.mismatch, message: `${paired.name} paired as a ${was.os} ${was.kind} on ${was.arch} and now says ${hello.os} ${hello.kind} on ${hello.arch}: pair it again` };
 	}
 	// A computer that lacks a group its kind needs can't be given to an agent: refused at connect, in the hello's own
 	// words for what it is, never at a run's first call.

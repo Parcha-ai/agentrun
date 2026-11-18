@@ -6228,6 +6228,7 @@ class ApplyTemplateBody(TypedDict, total=False):
     parameters: dict[str, Any]
     servers: dict[str, str]
     grants: list[str]
+    agent_id: str
     overrides: ApplyTemplateBodyOverrides
 
 

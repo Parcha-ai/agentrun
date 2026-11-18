@@ -68,11 +68,15 @@ under the code's owner, with its name, its `hello` and the time. The answer:
 - The computer's id is `cmp-` and 16 lowercase letters and digits: an id an agent's computer setting names as its
   provider, `{"kind":"desktop","provider":"cmp-8f2k3jq7m4xw9tnb"}`.
 
-- The token is the machine's long-lived credential: 32 random bytes, prefixed `art_` so a secret scanner knows it. It
-  is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
-  Keystore-backed storage) and never in a file or a log. The server keeps only its SHA-256.
+- The token is the machine's long-lived credential: 32 random bytes in base64url, prefixed `art_` so a secret scanner
+  knows it. It is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
+  Keystore-backed storage), or, on a box with no keychain, a file only its user can read ([A Linux box](#a-linux-box)),
+  and never in a log. The server keeps only its SHA-256.
 - It belongs to this one machine: one token per paired computer, never shared. It has no expiry of its own: a machine
-  in a drawer for a month still dials back. It ends when the owner removes the computer.
+  in a drawer for a month still dials back. It ends when the owner removes the computer. A copy on another machine is
+  refused there when that machine's `hello` says another kind, os or arch (`4400`); a copy on a machine that says the
+  same is not told apart, and each of the two replaces the other's socket (`4409`) until the owner removes the
+  computer.
 - A wrong, used or expired code is refused `404`, with no word about which of the three, so codes cannot be probed.
   Each source address gets 10 tries a minute. With 32^8 codes (about 1.1 trillion) and a 10-minute life, guessing one is
   out of reach.
@@ -88,6 +92,82 @@ console. Its next dial with the old token is refused at the upgrade with `401`.
 
 A machine paired again (a reinstalled app, a wiped keychain) gets a new id and token. Its old entry shows offline
 until the owner removes it.
+
+### A Linux box
+
+`computerd` is the driver on Linux: `computerd init` serves the protocol on its socket, `computerd pair` trades the
+code for the token, and `computerd attach` dials. A box with an X display (`DISPLAY` set for init) pairs as a
+`desktop`, with its shell and files. A box with none says `linux`, which pairing refuses: serve can't give a run's
+folder to a paired computer yet, and a sandbox needs one.
+
+1. **Init.** As the box's user, with an empty capability bounding set, which init needs to start as a user who can't
+   empty it (a system unit's `CapabilityBoundingSet=`; a user unit can't set it): `computerd init --deadline
+   2100-01-01T00:00:00Z`, with `AGENTRUN_COMPUTERD_SOCKET` naming a socket in a directory of that user's alone (0700).
+2. **Pair.** With init running, as the same user: `computerd pair https://agentrun.example.com --name build-box`,
+   and type the code (or pipe it in: never an argument, since the code is a credential too). The name defaults to the
+   hostname. The URL is `https://` (`http://` only on loopback) and pair follows no redirect. One pair runs at a time
+   per user (it locks the token file's directory). Pair sends init's own `hello`, as attach will answer it, and writes
+   the token to `$XDG_CONFIG_HOME/agentrun/computer.token` (`~/.config` by default; root's is
+   `/etc/agentrun/computer.token`):
+   created `0600` from its first byte (a file in the same directory made with `O_EXCL|O_NOFOLLOW`, then renamed into
+   place), in a directory it makes `0700`. It prints the computer's id, the attach URL and the file, never the token.
+   A refused code or `hello` is the server's words, and nothing is written. A box with a token file already is refused
+   before anything is sent: `computerd unpair` first.
+3. **Attach.** `computerd attach` with `AGENTRUN_ATTACH_URL`, the attach URL pair printed. `AGENTRUN_ATTACH_TOKEN`
+   wins when set; else attach reads the file, and refuses, in words, one that is a symbolic link, belongs to another
+   user, or is readable by its group or others (it checks the open file, `O_NOFOLLOW`, so what it reads is what it
+   checked). A `401` or `4401` says "this machine's pairing was removed or revoked: delete <the file> and pair again".
+4. **Unpair.** `computerd unpair` deletes the file. Removing the computer on the server takes the owner's session
+   (**Remove** on the Computers page): the machine's token can't, so unpair says so.
+
+As systemd system units, both running as the box's user, the token passed through its file and never `Environment=`:
+
+```ini
+# /etc/systemd/system/agentrun-computerd.service
+[Unit]
+Description=AgentRun computer daemon (computerd init)
+After=display-manager.service
+
+[Service]
+User=ada
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+RuntimeDirectory=agentrun
+RuntimeDirectoryMode=0700
+Environment=AGENTRUN_COMPUTERD_SOCKET=/run/agentrun/computerd.sock
+Environment=DISPLAY=:0
+# and XAUTHORITY, where that X server asks for one
+ExecStart=/usr/local/bin/computerd init --deadline 2100-01-01T00:00:00Z
+Restart=always
+
+[Install]
+WantedBy=graphical.target
+```
+
+```ini
+# /etc/systemd/system/agentrun-attach.service
+[Unit]
+Description=AgentRun computer attach (computerd attach)
+Requires=agentrun-computerd.service
+After=agentrun-computerd.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=ada
+NoNewPrivileges=yes
+Environment=AGENTRUN_COMPUTERD_SOCKET=/run/agentrun/computerd.sock
+Environment=AGENTRUN_ATTACH_URL=wss://agentrun.example.com/v2/computers/attach
+ExecStart=/usr/local/bin/computerd attach
+Restart=on-failure
+RestartPreventExitStatus=2 3 4 5
+
+[Install]
+WantedBy=graphical.target
+```
+
+Start the first, run `computerd pair` as `ada` with the same `AGENTRUN_COMPUTERD_SOCKET`, then enable the second.
+Attach's exits 2 to 5 (a missing or refused token file, a removed computer, a `hello` it wasn't paired as, another
+protocol version) wait for a person; any other exit dials again.
 
 ## Versions
 
@@ -107,8 +187,8 @@ A person's installed app updates on its own schedule, so it can lag the server. 
   cannot replace, so `attachedProvider`'s `version` is the version of the driver's live `hello`. The drift check then
   compares a version with itself and holds trivially, and the protocol rule above is the only gate.
 - **What a driver offers can change with an update.** An updated driver may declare more groups or features. The
-  provider's capabilities follow the live `hello`, while kind and os stay what the machine paired as (another is
-  `4400`).
+  provider's capabilities follow the live `hello`, while kind, os and arch stay what the machine paired as (another is
+  `4400`). A Mac's arch alone may change: its driver may move from amd64 under Rosetta to arm64 on the same machine.
 
 ## Liveness
 
@@ -134,7 +214,7 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 | `1000` | Closed on purpose. | Dials again. |
 | `1001` | The server is restarting, or the driver is quitting. | Dials again. |
 | `1003`, `1009` | A binary frame; a frame over the limit. | Dials again. |
-| `4400` | Its `hello` is not what it paired as: another kind or os. | Stops: the person pairs it again. |
+| `4400` | Its `hello` is not what it paired as: another kind, os or arch. | Stops: the person pairs it again. |
 | `4401` | Its token is unknown or revoked. | Stops: the person pairs it again. |
 | `4408` | Nothing heard for 60 s. | Dials again. |
 | `4409` | The same computer dialed again. | Dials again (the newer socket is already up). |
@@ -159,7 +239,7 @@ time to at most 60 s, less up to a fifth at random so a fleet that lost the serv
 The server maps an attached computer to a provider so a run takes it like any other computer.
 
 - **One connection.** `AttachHub.accept(paired, socket)` calls `hello` on a new socket and keeps it when the `hello` is
-  what the computer paired as (same kind and os, this protocol version). Every caller in the server shares that one
+  what the computer paired as (same kind, os and arch, this protocol version). Every caller in the server shares that one
   connection: one run holds the computer at a time, so its refs and states are that run's.
 - **A provider per paired computer.** `attachedProvider(paired, hub)` is a `ComputerProvider` with id `attached`. Its
   capabilities are the computer's kind and os as it paired, the groups of its live `hello`, network as the machine has

@@ -13,7 +13,8 @@
 // build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
 // Its monid endpoints are pinned beside them (revisions.monid_pin, REVISIONS_MONID_PIN), added at a server open the same way.
 // A run's cost says whether it is the most the run can have cost (runs.cost_upper_bound, RUNS_COST_UPPER_BOUND), added at a
-// server open the same way. A run's labels (runs.labels, RUNS_LABELS) are added at a server open the same way.
+// server open the same way. A run's labels (runs.labels, RUNS_LABELS) are added at a server open the same way, and so is
+// a trigger's package mark (triggers.template_id, TRIGGERS_TEMPLATE_ID).
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
@@ -63,6 +64,10 @@ export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_B
 /** A run's labels (JSON, null for none): in STORE_DDL, and added at a server open to a store an earlier build of this version
  *  made, as RUNS_COST_UPPER_BOUND is (a run started before reads as given none). */
 export const RUNS_LABELS = `ALTER TABLE runs ADD COLUMN ${json("labels", true)}`;
+/** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
+ *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
+ *  RUNS_LABELS is (a trigger made before reads as no package's). */
+export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id TEXT";
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -391,6 +396,10 @@ export const STORE_DDL: readonly string[] = [
     max_active_runs INTEGER CHECK (max_active_runs IS NULL OR max_active_runs BETWEEN 1 AND 100),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    -- The template package whose apply made or last kept the trigger (TriggerRow.templateId), null for one a person made:
+    -- a template update removes only triggers marked with its own package. Written by the apply alone; a move to another
+    -- agent clears it. Added at a server open to a store an earlier build of this version made (TRIGGERS_TEMPLATE_ID).
+    template_id TEXT,
     UNIQUE (agent_id, name)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS triggers_due ON triggers (enabled, next_at)`,

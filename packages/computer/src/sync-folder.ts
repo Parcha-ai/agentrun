@@ -178,6 +178,33 @@ export class FolderSync {
 	}
 
 	/**
+	 * The manifest of a folder whose copy in the computer may be newer than the sink's, with no manifest of its own (a
+	 * kept computer attached again by a new runner): the sink holds `held` (each path's type), and nothing of the
+	 * computer's copy is known, so the next sync() puts every file the computer holds, removes from the sink what it holds
+	 * beyond them, and writes the modes and links.
+	 */
+	adopt(held: Iterable<readonly [string, "file" | "dir"]>): void {
+		this.#manifest = new Map([...held].map(([path, type]) => [path, { type, size: -1, mtimeMs: -1, mode: -1, settled: true }]));
+		this.#racy.clear();
+		this.#meta = undefined;
+	}
+
+	/**
+	 * The folder's modes and links as the computer lists them now, written to the sink whole, and nothing else: for a
+	 * folder whose mount keeps them itself (an Archil one), so a later claim that holds it as a synced folder has them.
+	 * Over a cap, it fails, kind limit, and writes nothing.
+	 */
+	async recordMeta(options: { signal?: AbortSignal } = {}): Promise<Result<void>> {
+		const listed = await this.#list(options.signal);
+		if (!listed.ok) return listed;
+		const meta = metaOf(listed.value);
+		const wrote = await this.#sink.meta(meta).catch((error: unknown) => fail("refused", error instanceof Error ? error.message : String(error)));
+		if (!wrote.ok) return fail(wrote.error.code, `the folder's modes and links: ${wrote.error.message}`);
+		this.#meta = JSON.stringify(meta);
+		return ok(undefined);
+	}
+
+	/**
 	 * What changed since the last sync, written to the sink: removes for paths whose type changed (deepest first), then
 	 * puts (a new directory's whole tree as one tar.pull, other files by files.read up to MAX_CHUNK_BYTES, a tar.pull of the
 	 * file above it), then empty directories, then, once every put has landed, deletes (deepest first), then the meta when

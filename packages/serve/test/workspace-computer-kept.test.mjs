@@ -14,7 +14,8 @@ import { after, test } from "node:test";
 import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
 import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { getSealedKey, putSealedKey } from "../dist/server-keys.js";
-import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
+import { archilWorkspace, computerForClaim, localWorkspace, runKey } from "../dist/workspace/index.js";
+import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
@@ -50,9 +51,18 @@ function memorySettings() {
 /** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store). */
 function memoryStore() {
   const keys = new Map();
-  const runs = new Map([["run-1", { id: "run-1", state: "parked" }]]);
+  const runs = new Map([["run-1", { id: "run-1", state: "parked", epoch: 0, runner: null }]]);
   return {
-    runs: { get: async (id) => runs.get(id), heldAt: async () => undefined, list: async () => [...runs.values()], set: (id, state) => runs.set(id, { id, state }) },
+    // `take`: a runner's claim of the run, at `epoch` (the store's claim moves the epoch up and names the runner); `end`:
+    // its end, park or release commit (the epoch up by one, no runner).
+    runs: {
+      get: async (id) => runs.get(id),
+      heldAt: async () => undefined,
+      list: async () => [...runs.values()],
+      set: (id, state) => runs.set(id, { ...runs.get(id), id, state }),
+      take: (id, epoch) => runs.set(id, { ...runs.get(id), epoch, runner: `runner-${epoch}` }),
+      end: (id) => runs.set(id, { ...runs.get(id), epoch: runs.get(id).epoch + 1, runner: null }),
+    },
     agents: { revision: async () => undefined },
     settings: memorySettings(),
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
@@ -108,7 +118,7 @@ function vendor(root, groups, machine = "linux") {
       return { ok: true, value: undefined };
     },
   };
-  return { provider, computers, calls };
+  return { provider, computers, calls, computer };
 }
 
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys"];
@@ -118,17 +128,20 @@ const SPEC = () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, netwo
 const T0 = 1_800_000_000_000;
 
 /** One server: its store, a vendor's account, a clock, and its claims of run-1 (each a claim at `epoch`). */
-async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" } } = {}) {
+async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" }, workspace } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const account = vendor(root, groups, machine);
   const clock = { now: T0 };
-  const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness"].map((id) => [id, () => account.provider]));
+  const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0 };
-  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
-  const claim = (epoch, extra = {}) => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
+  const claim = (epoch, extra = {}) => {
+    store.runs.take("run-1", epoch);
+    return computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+  };
   const janitor = () => sweepKeptComputers({ store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now });
   return { store, account, clock, mounts, claim, janitor, sealKey, keys };
 }
@@ -341,7 +354,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   assert.equal(await first.park("approval"), true, "kept");
   assert.deepEqual(deletes(one.account), [], "nothing deleted at the park");
   assert.equal(one.mounts.revoked, 0);
-  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS });
+  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS, folder: "bind" }, "the row says how it holds the run's folder");
 
   one.clock.now = T0 + 60_000;
   const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) });
@@ -385,6 +398,174 @@ test("a server's restart during a sandbox's keep: the janitor leaves it within 1
 test("a sandbox's park hold words and timeout words", () => {
   assert.equal(computerKeptWords("sandbox"), "The sandbox is kept for 10 minutes while you decide.");
   assert.equal(computerLapsedWords("sandbox"), "The sandbox wasn't kept: 10 minutes passed.");
+});
+
+/** A Mode 2 Daytona sandbox with no DAYTONA_ARCHIL_EGRESS (a synced folder), its run's folder on a fake disk. */
+const RUN_ROOT = runKey("acme", "r1");
+const text = (bytes) => (bytes === undefined ? undefined : Buffer.from(bytes).toString());
+async function syncedServer() {
+  const disk = new FakeArchilDisk();
+  const one = await server({ setting: { kind: "sandbox", provider: "daytona" }, mode: 2, groups: ["exec", "files", "processes"], keys: { DAYTONA_API_KEY: "fake-test-key" }, workspace: archilWorkspace(disk, RUN_ROOT) });
+  // The fake computer has no tar: a push into a new one is taken as landed (every computer of the account is one host
+  // folder, which already holds what the disk does).
+  const connect = one.account.provider.connect;
+  one.account.provider.connect = async (ref) => {
+    const connected = await connect(ref);
+    if (!connected.ok) return connected;
+    const client = connected.value.client;
+    const call = (method, params, options) => (method.startsWith("tar.push.") ? Promise.resolve({ ok: true, value: method === "tar.push.begin" ? { id: "push-1" } : {} }) : client.call(method, params, options));
+    return { ok: true, value: { ...connected.value, client: Object.assign(Object.create(client), { call }) } };
+  };
+  return { ...one, disk };
+}
+
+/** Real time until `done()` holds, for what runs after a mocked timer fired. */
+async function until(done, what) {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(done(), what);
+}
+
+test("a synced folder's park lands its delta on the disk before the computer is kept; its end at its time reads the folder back whole, then deletes it", async (t) => {
+  const one = await syncedServer();
+  const first = await one.claim(3);
+  assert.equal(first.keeps, "sandbox");
+  one.account.computer.plant.file("/workspace/before-park.log", "written before the park\n");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    assert.equal(await first.park("approval"), true, "kept");
+    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/before-park.log`)), "written before the park\n", "the park's delta landed");
+    assert.equal((await readKept(one.store.settings, "run-1")).folder, "sync", "the row says it holds a synced folder");
+    // A background program of the run's writes while it is kept: no call of the run's lands it.
+    one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
+    const before = one.account.calls.length;
+    t.mock.timers.tick(KEEP_MS);
+    t.mock.timers.reset();
+    await until(() => deletes(one.account).includes("c1"), "deleted at its time");
+    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n", "read back before the delete");
+    const after = one.account.calls.slice(before).map(([verb, , how]) => (how ? `${verb} ${how}` : verb));
+    assert.deepEqual(after, ["connect", "close", "release delete"], "a connection of its own, closed, then the delete");
+    assert.equal(one.mounts.revoked, 1);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+/** Where in the vendor's calls `verb` of `id` (with `how`) first is. */
+const callAt = (account, verb, id, how) => account.calls.findIndex(([v, i, h]) => v === verb && i === id && h === how);
+
+test("a claim that comes while the keep's end reads the synced folder back waits for that end: its new sandbox is made once the old one is read back and deleted", async (t) => {
+  const one = await syncedServer();
+  const first = await one.claim(3);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    assert.equal(await first.park("approval"), true);
+    one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
+    let letGo;
+    one.disk.hold = new Promise((resolve) => { letGo = resolve; });
+    t.mock.timers.tick(KEEP_MS);
+    t.mock.timers.reset();
+    await until(() => one.store.settings.rows.get(keptKeyOf("run-1"))?.ending === true, "its end began");
+    one.clock.now = T0 + KEEP_MS;
+    const resuming = one.claim(5, { hadComputer: async () => true });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(creates(one.account), ["c1"], "nothing made while the end reads the folder back");
+    one.disk.hold = undefined;
+    letGo();
+    const resumed = await resuming;
+    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n");
+    assert.ok(callAt(one.account, "release", "c1", "delete") < callAt(one.account, "create", "c2"), "the old one deleted before the new one is made");
+    assert.equal(resumed.replaced?.lapsed, true);
+    await resumed.release();
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("a claim after a synced keep's time whose end never began (the parking runner gone) ends it itself: read back, deleted, then its new sandbox made", async () => {
+  const one = await syncedServer();
+  assert.equal(await (await one.claim(3)).park("approval"), true);
+  one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
+  one.clock.now = T0 + KEEP_MS;
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n");
+  assert.ok(callAt(one.account, "release", "c1", "delete") < callAt(one.account, "create", "c2"), "the old one deleted before the new one is made");
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true, "its row ended, so no timer reads it back after");
+  await resumed.release();
+});
+
+test("a synced folder's park whose delta does not land keeps nothing: the computer goes as at the run's end, saying writes may be lost, no row", async () => {
+  const one = await syncedServer();
+  const first = await one.claim(3);
+  one.account.computer.plant.file("/workspace/late.log", "x");
+  one.disk.putObject = async () => { throw new FakeDiskError(503, "ServiceUnavailable", "the disk is away"); };
+  await assert.rejects(first.park("approval"), /^Error: the run's folder was not let go cleanly: the final sync failed \(.*late\.log: .*the disk is away\), so writes since the last sync may be lost$/, "not kept; the runner logs why");
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  assert.equal(await readKept(one.store.settings, "run-1"), undefined);
+  assert.equal(one.mounts.revoked, 1);
+});
+
+test("a runner that lost its claim has its writes to the run's folder refused by the claim epoch: once runner B holds the run, nothing runner A sends reaches the disk, and B's writes land", async () => {
+  const one = await syncedServer();
+  const writes = () => one.disk.calls.filter(({ op }) => op === "putObject" || op === "deleteObject" || op === "appendObject").length;
+  const a = await one.claim(1);
+  const aClient = a.computer.computer.client;
+  one.account.computer.plant.file("/workspace/a1.txt", "A, holding the claim\n");
+  assert.equal((await aClient.call("files.mkdir", { path: "/workspace/d1" })).ok, true);
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/a1.txt`)), "A, holding the claim\n");
+
+  // Runner B claims the run at epoch 2; runner A goes on, not knowing yet.
+  const b = await one.claim(2);
+  const before = writes();
+  one.account.computer.plant.file("/workspace/a2.txt", "A, after B's claim\n");
+  const late = await aClient.call("files.mkdir", { path: "/workspace/d2" });
+  assert.equal(late.ok, false, "A's call answers that its folder was not made durable");
+  assert.match(late.error.message, /^files\.mkdir ran, but the run's folder could not be made durable: .*this runner no longer holds the run's claim/);
+  assert.equal(writes(), before, "nothing A sent reached the disk");
+  assert.equal(one.disk.files.has(`${RUN_ROOT}/a2.txt`), false);
+  assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d2`), false);
+  // A's release: its final delta is refused too (its computer, which B's claim let go, is gone already).
+  await a.release().catch(() => undefined);
+  assert.equal(writes(), before, "nothing of A's final delta reached the disk");
+
+  // B's writes land.
+  one.account.computer.plant.file("/workspace/b.txt", "B\n");
+  assert.equal((await b.computer.computer.client.call("files.mkdir", { path: "/workspace/d3" })).ok, true);
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/b.txt`)), "B\n");
+  assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d3`), true);
+  await b.release();
+
+  // B's run ends (its end commit: the epoch up by one, no runner), so no claim holds the run: A is still refused.
+  one.store.runs.end("run-1");
+  const after = writes();
+  one.account.computer.plant.file("/workspace/a3.txt", "A, after B's end\n");
+  const later = await aClient.call("files.mkdir", { path: "/workspace/d4" });
+  assert.equal(later.ok, false, "a run that a later claim ended is not A's again");
+  assert.match(later.error.message, /this runner no longer holds the run's claim/);
+  assert.equal(writes(), after);
+  assert.equal(one.disk.files.has(`${RUN_ROOT}/a3.txt`), false);
+});
+
+test("a claim's own end or park lets its final writes through: the epoch one past its own with no runner is still the claim's", async () => {
+  const one = await syncedServer();
+  const a = await one.claim(4);
+  // The adapter loop's end commit lands before the final delta: the epoch up by one, no runner.
+  one.store.runs.end("run-1");
+  one.account.computer.plant.file("/workspace/last.txt", "written after the end commit\n");
+  await a.release();
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/last.txt`)), "written after the end commit\n");
+});
+
+test("a kept computer holding the run's folder another way is not taken back: a claim that syncs it deletes it, removes its mount token and makes a new one", async () => {
+  const one = await syncedServer();
+  const made = await one.account.provider.create({ labels: { "agentrun.epoch": "3" }, mount: { kind: "archil", disk: "dsk-1", region: "aws-us-east-1", folder: "acme/r1/work" } });
+  await writeKept(one.store.settings, "run-1", { provider: "daytona", kind: "sandbox", id: made.value.id, name: made.value.name, epoch: 3, until: T0 + KEEP_MS, folder: "archil" });
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept one deleted, never attached");
+  assert.equal(one.account.calls.some(([verb, id]) => verb === "attach" && id === "c1"), false);
+  assert.deepEqual([one.mounts.inherited, one.mounts.revoked], [1, 1], "its Archil token is this claim's, removed at once");
+  assert.equal(resumed.computer.kind, "sandbox");
+  await resumed.release();
 });
 
 test("a park closes the desktop's live view with what the run waits for and until when it is kept, never `ended`", async () => {

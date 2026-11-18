@@ -45,12 +45,17 @@
 // for none. Once attached, the computer syncs the mount after each changing call (the attach contract), so attach adds no
 // sync of its own. Without a region and a token function, both are refused in words. Background programs need a
 // computer: here `process` refuses every call, cause no-computer, as with any workspace that has none.
-import type { MountSpec } from "@parcha/agentrun-computer";
+//
+// A computer that takes no Archil mount holds the root as a synced folder (synced-folder.ts): syncStore() is the root
+// through the file API as the runner keeps it, its files and `dir/` markers, and its modes and links in sync.json beside
+// the root (syncMetaOf), and attach() with check.sync reads back a synced folder under the claim's epoch instead.
+import { type FolderMeta, folderPathProblem, type MountSpec, type Result } from "@parcha/agentrun-computer";
 import { type ArchilDisk, type ArchilImage, type ArchilListPage, DENY_EGRESS, pinnedImage } from "./archil-disk.js";
 import { ArchilEgressRefused, archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, type ExecJob, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
 import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
 import { relativeSegments } from "./paths.js";
+import type { FolderStore, StoredEntry } from "./synced-folder.js";
 import {
   abortError, EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
   type GrepMatch, type GrepOptions, type GrepResult, READ_MAX, type Stat, type Workspace, WorkspaceError,
@@ -689,11 +694,114 @@ class ArchilWorkspace implements Workspace {
   }
 
   async attach(computer: AttachableComputer, check: MountCheck): Promise<Workspace> {
-    // The computer module's read-back never holds the token, so the mount is compared without one.
-    await checkReadBack(computer, this.#mount(""), check);
-    // The computer syncs the mount after each changing call (the attach contract): nothing more to make durable here.
+    // The computer module's read-back never holds the token, so the mount is compared without one. A synced folder
+    // reads back with no source: the runner pushed this folder into it (synced-folder.ts).
+    await checkReadBack(computer, check.sync ? { kind: "sync" } : this.#mount(""), check);
+    // The computer syncs the mount after each changing call (the attach contract), and a synced folder's client lands
+    // the delta here before each answers: nothing more to make durable here.
     return attachedWorkspace(this, computer, { synced: async () => true });
   }
+
+  /** The folder as a synced folder's runner keeps it (synced-folder.ts): its files and directories through the file
+   *  API, each write after this workspace's execs; its modes and links, which the file API keeps no record of, in
+   *  sync.json beside it (syncMetaOf). A failed write answers in words, kind limit where the disk took too much. */
+  syncStore(): FolderStore {
+    const meta = syncMetaOf(this.#root);
+    const wrote = async (path: string, what: string, call: (key: string) => Promise<unknown>): Promise<Result<void>> => {
+      try {
+        const rel = relativeSegments(path).join("/");
+        await this.#write(rel, () => call(this.#key(rel)));
+        return { ok: true, value: undefined };
+      } catch (error) {
+        const why = failed(error, path, what);
+        return { ok: false, error: { code: why.code === "TOO_LARGE" ? "limit" : "refused", message: why.message } };
+      }
+    };
+    return {
+      put: (path, body) => wrote(path, "put", (key) => this.#disk.putObject(key, body)),
+      mkdir: (path) => wrote(path, "mkdir", (key) => this.#disk.putObject(`${key}/`, new Uint8Array(0))),
+      remove: (path, type) => wrote(path, "remove", (key) => this.#disk.deleteObject(type === "dir" ? `${key}/` : key)),
+      meta: async (folder) => {
+        try {
+          await this.#write("", () => this.#disk.putObject(meta, Buffer.from(JSON.stringify(folder))));
+          return { ok: true, value: undefined };
+        } catch (error) {
+          return { ok: false, error: { code: "refused", message: `the folder's sync.json: ${describe(error)}` } };
+        }
+      },
+      entries: () => this.#syncEntries(),
+      read: async (path, size) => {
+        if (size === 0) return new Uint8Array(0);
+        try {
+          const got = await this.#disk.getRange(this.#key(relativeSegments(path).join("/")), `bytes=0-${size - 1}`);
+          return got.status === 416 ? new Uint8Array(0) : got.body;
+        } catch (error) {
+          throw failed(error, path, "read");
+        }
+      },
+      readMeta: async () => {
+        let got: { readonly status: number; readonly body: Uint8Array };
+        try {
+          got = await this.#disk.getRange(meta, `bytes=0-${SYNC_META_MAX - 1}`);
+        } catch (error) {
+          if (statusOf(error) === 404) return undefined;
+          throw failed(error, "", "the folder's sync.json: read");
+        }
+        return got.status === 416 ? undefined : folderMetaOf(got.body);
+      },
+    };
+  }
+
+  /** Every file and directory under the root, each once, a directory before what is in it: a key the relative-path
+   *  rule refuses throws in words. */
+  async *#syncEntries(): AsyncGenerator<StoredEntry> {
+    const prefix = `${this.#root}/`;
+    const seen = new Set<string>();
+    for await (const page of this.#pages(prefix, true)) {
+      for (const [key, size] of [...page.objects.map((object) => [object.key, object.size] as const), ...page.commonPrefixes.map((common) => [common, 0] as const)]) {
+        if (!key.startsWith(prefix)) continue;
+        const dir = key.endsWith("/");
+        const path = key.slice(prefix.length, dir ? -1 : undefined);
+        if (path === "") continue;
+        const problem = folderPathProblem(path);
+        if (problem !== undefined) throw new WorkspaceError("REFUSED", `the run's folder on the disk holds ${JSON.stringify(path)}, which ${problem}, so it can't be synced: rename or remove it`, { path });
+        const parts = path.split("/");
+        for (let cut = 1; cut < parts.length; cut++) {
+          const up = parts.slice(0, cut).join("/");
+          if (seen.has(up)) continue;
+          seen.add(up);
+          yield { path: up, type: "dir", size: 0 };
+        }
+        if (seen.has(path)) continue;
+        seen.add(path);
+        yield { path, type: dir ? "dir" : "file", size: dir ? 0 : size };
+      }
+    }
+  }
+}
+
+/** The most bytes a folder's sync.json is read of. */
+const SYNC_META_MAX = 32 * 1024 * 1024;
+
+/** Where a synced folder's modes and links are kept: beside its root, never inside it, as its spill folder is. A run's
+ *  ".../runs/<run>/work" keeps them in ".../runs/<run>/sync.json"; any other root in "<root>.sync.json". */
+export const syncMetaOf = (root: string): string => (root.endsWith("/work") ? `${root.slice(0, -"/work".length)}/sync.json` : `${root}.sync.json`);
+
+/** sync.json's bytes as a FolderMeta: each mode a whole permission number, each link's target text; anything else in it
+ *  is left out. Bytes that are no JSON object throw in words. */
+function folderMetaOf(bytes: Uint8Array): FolderMeta {
+  let read: unknown;
+  try {
+    read = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch (error) {
+    throw new WorkspaceError("UNAVAILABLE", `the folder's sync.json is not JSON: ${describe(error)}`);
+  }
+  const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+  const { modes, links } = record(read);
+  return {
+    modes: Object.fromEntries(Object.entries(record(modes)).filter((pair): pair is [string, number] => Number.isInteger(pair[1]) && (pair[1] as number) >= 0 && (pair[1] as number) <= 0o7777)),
+    links: Object.fromEntries(Object.entries(record(links)).filter((pair): pair is [string, string] => typeof pair[1] === "string" && !pair[1].includes("\0"))),
+  };
 }
 
 /** A Workspace on folder `root` of Archil disk `disk` (a relative key, e.g. agents/<agent>/runs/<run>/work). */

@@ -203,6 +203,11 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just
   started) and copies bytes both ways until either side ends. With no daemon to reach it says so on stderr and exits 1;
   it never serves on its own.
+- `computerd pair <server URL> [--name <name>]`, `computerd attach` and `computerd unpair` make a Linux box of your own
+  a paired computer: pair reads the console's code from stdin and keeps the token in a file only its user can read,
+  attach dials with it, unpair deletes it ([attach.md, A Linux box](../../spec/computer/attach.md#a-linux-box)). A box
+  with a display pairs as a desktop; one with none (a `linux` hello) is refused at pairing, as serve refuses a paired
+  sandbox.
 - Init is a child subreaper (PID 1 in Docker is one anyway) and reaps every orphan. It also sweeps, on each SIGCHLD and
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by

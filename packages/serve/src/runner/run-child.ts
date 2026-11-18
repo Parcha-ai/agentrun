@@ -161,12 +161,12 @@ async function mirroredHold(remote: ComputerHold): Promise<ComputerHold> {
 }
 
 /** The claim's computer as the runner made it (Held.computer), with what must run here put back: the mount check attach
- *  runs at once (the computer package's read-back, by its epoch) and the person's hold over the computer's port (the
+ *  runs at once (the computer package's read-back, by its epoch, of a synced folder where it is one) and the person's hold over the computer's port (the
  *  runner's hold, mirrored: mirroredHold). */
 async function computerHere(got: ClaimComputer): Promise<ClaimComputer> {
-  const made = got as ClaimComputer & { computer?: { check?: { epoch?: number } } };
+  const made = got as ClaimComputer & { computer?: { check?: { epoch?: number; sync?: true } } };
   const check = made.computer?.check;
-  const computer = made.computer && check ? { ...made.computer, check: { readBackOf, ...(check.epoch !== undefined ? { epoch: check.epoch } : {}) } } : made.computer;
+  const computer = made.computer && check ? { ...made.computer, check: { readBackOf, ...(check.epoch !== undefined ? { epoch: check.epoch } : {}), ...(check.sync ? { sync: true as const } : {}) } } : made.computer;
   const hold = got.held ? await mirroredHold(got.held.hold) : undefined;
   return {
     ...got,

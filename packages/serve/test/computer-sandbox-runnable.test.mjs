@@ -113,57 +113,41 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
-test("Mode 2: a Daytona sandbox, with GPUs or without, is refused at the save and the run's start (409), saying Archil's client hangs on its sandboxes", async (t) => {
+/** A Daytona sandbox ready in Mode 2: warned of nothing at its save, never refused for its computer at its run's start. */
+const ready = (said) => {
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", /Daytona sandbox can't/, JSON.stringify(said));
+};
+
+test("Mode 2: a Daytona sandbox on hosted Daytona (no DAYTONA_ARCHIL_EGRESS), with GPUs or without, holds a synced folder: ready, warned of nothing at its save and never refused for its computer at its run's start", async (t) => {
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
-  // Mode 2's folder is an Archil mount, which Daytona doesn't take: the reason comes before any GPU's.
-  const words = /^A Daytona sandbox can't mount the run's folder from Archil \(Archil mounts don't work on Daytona's hosted cloud, where Archil's client hangs on its sandboxes; a self-hosted Daytona target takes one once its operator sets DAYTONA_ARCHIL_EGRESS\): pick another sandbox for this agent's computer in Settings → Computers\.$/;
-  for (const [name, gpu] of [["no-gpu", undefined], ["gpu", { type: "H100", count: 1 }]]) {
-    const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) } });
-    assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-    assert.match(said.saved[0][2], words);
-    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-    assert.match(said.refused[0][2], words);
-    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
-  }
+  for (const [name, gpu] of [["no-gpu", undefined], ["gpu", { type: "H100", count: 1 }]]) ready(await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) } }));
 });
 
 // A self-hosted Daytona target with an Archil egress relay mounts Archil (a run on one completed in Mode 2, 11-14). With
-// DAYTONA_ARCHIL_EGRESS saved, a Daytona sandbox mounts the run's folder; it starts from the operator's snapshot of
-// box/Dockerfile, which AGENTRUN_DAYTONA_SNAPSHOT names, so with it named the sandbox is ready in Mode 2, and without it
-// it is refused in words naming that setting. A GPU sandbox still takes no mount.
+// DAYTONA_ARCHIL_EGRESS saved, a Daytona sandbox mounts the run's folder where it starts from the operator's snapshot of
+// box/Dockerfile, which AGENTRUN_DAYTONA_SNAPSHOT names; without the snapshot, or on a GPU (no /dev/fuse), it holds a
+// synced folder instead. Ready either way.
 const DAYTONA_KEY = "daytona-fake-key-must-never-be-echoed";
 const EGRESS = "192.0.2.40:18100:42050";
 const SNAPSHOT = "agentrun-archil-0123456789ab";
 
-test("Mode 2: with DAYTONA_ARCHIL_EGRESS saved and AGENTRUN_DAYTONA_SNAPSHOT named, a Daytona sandbox is ready, warned of nothing at its save and never refused for its computer at its run's start; a GPU one is still refused", async (t) => {
-  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
-  const saved = await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY, DAYTONA_ARCHIL_EGRESS: EGRESS });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
-  const said = await saveAndStart(api, "daytona-egress", { computer: { kind: "sandbox", provider: "daytona" } });
-  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
-  assert.doesNotMatch(said.started[2] ?? "", /Daytona sandbox can't/, JSON.stringify(said));
-  // Daytona's GPU host gives no /dev/fuse, so its GPU computers take no mount, egress or not.
-  const gpu = await saveAndStart(api, "daytona-egress-gpu", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
-  assert.deepEqual(gpu.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(gpu));
-  assert.doesNotMatch(gpu.refused[0][2], /hosted cloud/, "a GPU sandbox is refused by its GPU's words");
-  for (const text of [JSON.stringify(said), JSON.stringify(gpu), JSON.stringify(saved.body)]) assert.ok(!text.includes(DAYTONA_KEY), "no key in a save's, a start's or the view's words");
-});
+for (const snapshot of [SNAPSHOT, undefined]) {
+  test(`Mode 2: with DAYTONA_ARCHIL_EGRESS saved and ${snapshot ? "AGENTRUN_DAYTONA_SNAPSHOT named" : "no AGENTRUN_DAYTONA_SNAPSHOT"}, a Daytona sandbox, with GPUs or without, is ready, warned of nothing at its save and never refused for its computer at its run's start`, async (t) => {
+    const api = await server(t, { archil: true, env: snapshot ? { AGENTRUN_DAYTONA_SNAPSHOT: snapshot } : {} });
+    const saved = await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY, DAYTONA_ARCHIL_EGRESS: EGRESS });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+    const said = await saveAndStart(api, "daytona-egress", { computer: { kind: "sandbox", provider: "daytona" } });
+    ready(said);
+    const gpu = await saveAndStart(api, "daytona-egress-gpu", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
+    ready(gpu);
+    for (const text of [JSON.stringify(said), JSON.stringify(gpu), JSON.stringify(saved.body)]) assert.ok(!text.includes(DAYTONA_KEY), "no key in a save's, a start's or the view's words");
+  });
+}
 
-test("Mode 2: with DAYTONA_ARCHIL_EGRESS saved but no AGENTRUN_DAYTONA_SNAPSHOT, a Daytona sandbox is refused at the save and the run's start (409), saying to name a snapshot of box/Dockerfile there", async (t) => {
-  const api = await server(t, { archil: true });
-  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY, DAYTONA_ARCHIL_EGRESS: EGRESS })).status, 200);
-  const words = /^A Daytona sandbox can't start in Mode 2 until this server names Archil's image in your Daytona account: build one from the computer package's box\/Dockerfile and name it in AGENTRUN_DAYTONA_SNAPSHOT, or set this agent's computer to none \(Settings → Computers\)\.?$/;
-  const said = await saveAndStart(api, "daytona-egress-no-snapshot", { computer: { kind: "sandbox", provider: "daytona" } });
-  assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-  assert.match(said.saved[0][2], words);
-  assert.match(said.refused[0][2], words);
-  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
-  assert.ok(!JSON.stringify(said).includes(DAYTONA_KEY));
-});
-
-test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save, so Settings never shows a Daytona sandbox ready that its run's start refuses", async (t) => {
+test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save; Settings and the run's start agree the sandbox is ready, on a synced folder", async (t) => {
   const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
   const blank = await api("PUT", "/computers/daytona/keys", { DAYTONA_ARCHIL_EGRESS: "   " });
@@ -171,18 +155,8 @@ test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save
   assert.match(JSON.stringify(blank.body), /DAYTONA_ARCHIL_EGRESS is a non-empty string/);
   const view = await api("GET", "/computers");
   const daytona = view.body.kinds.find((one) => one.kind === "sandbox").providers.find((one) => one.id === "daytona");
-  assert.deepEqual([daytona.ready, /hosted cloud/.test(daytona.why ?? "")], [false, true], JSON.stringify(daytona));
-  const said = await saveAndStart(api, "daytona-blank-egress", { computer: { kind: "sandbox", provider: "daytona" } });
-  assert.match(said.refused[0]?.[2] ?? "", /hosted cloud/, JSON.stringify(said));
-});
-
-test("Mode 2: AGENTRUN_DAYTONA_SNAPSHOT named but no DAYTONA_ARCHIL_EGRESS (hosted Daytona): a Daytona sandbox is still refused, saying Archil's client hangs on its sandboxes", async (t) => {
-  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
-  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
-  const said = await saveAndStart(api, "daytona-hosted", { computer: { kind: "sandbox", provider: "daytona" } });
-  assert.equal(said.refused.length, 1, JSON.stringify(said));
-  assert.match(said.refused[0][2], /Archil mounts don't work on Daytona's hosted cloud/);
-  assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+  assert.deepEqual([daytona.ready, daytona.why], [true, undefined], JSON.stringify(daytona));
+  ready(await saveAndStart(api, "daytona-blank-egress", { computer: { kind: "sandbox", provider: "daytona" } }));
 });
 
 // A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a

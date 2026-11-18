@@ -1,5 +1,5 @@
--- The store's schema on Postgres, version 18: a dial relayed to the runner that made its machine (dial-relay.ts), as
--- store/schema.ts keeps it on SQLite (version 13). Applied once, after 0017, inside the transaction migrate.ts opens.
+-- The store's schema on Postgres, version 19: a dial relayed to the runner that made its machine (dial-relay.ts), as
+-- store/schema.ts keeps it on SQLite (version 13). Applied once, after 0018, inside the transaction migrate.ts opens.
 -- Never edit this file once applied: a change is a new file.
 --
 -- minted_tokens.runner, .incarnation: the runner in a process of its own that minted the machine's token, and its
@@ -25,4 +25,4 @@ CREATE TABLE IF NOT EXISTS runner_relays (
   seen_at BIGINT NOT NULL
 );
 
-UPDATE store_meta SET schema_version = 18 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 19 WHERE singleton = 1;

@@ -1,7 +1,7 @@
 // The store's relay of a dial to the runner that made its machine (dial-relay.ts): each minted token's row names the
 // runner in a process of its own that minted it and that runner's incarnation (null for the server's own process), and
 // runner_relays keeps where each such runner's attach listener answers. SQLite version 12 comes to 13 at its server's
-// open (schema.ts relayUpgrade), never at a runner's; Postgres 0017 takes 0018 (migrations/0018_runner_relays.sql). The
+// open (schema.ts relayUpgrade), never at a runner's; Postgres 0018 takes 0019 (migrations/0019_runner_relays.sql). The
 // rows an earlier release minted come through as the server's own. On either store: a row's put, its renewal under its
 // incarnation alone, its read, its list and its removal under its incarnation alone.
 import assert from "node:assert/strict";
@@ -129,7 +129,7 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   await (await openSqliteStore({ file, role: "runner" })).close();
 });
 
-test("Postgres: a store at 0017 takes 0018, its minted rows the server's own", postgresOnly("the Postgres migration"), async (t) => {
+test("Postgres: a store at 0018 takes 0019, its minted rows the server's own", postgresOnly("the Postgres migration"), async (t) => {
   const schema = await freshSchema();
   const sql = await client(schema);
   let store;
@@ -141,15 +141,15 @@ test("Postgres: a store at 0017 takes 0018, its minted rows the server's own", p
       await dropSchema(schema);
     }
   });
-  const earlier = migrationsIn().filter((m) => m.version <= 17);
-  assert.equal(earlier.at(-1).version, 17, "the earlier release's last migration");
+  const earlier = migrationsIn().filter((m) => m.version <= 18);
+  assert.equal(earlier.at(-1).version, 18, "the earlier release's last migration");
   await migrate(sql, schema, T, earlier);
   await sql.query("INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, revoked_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)", ["m-old", SHA, "desktop", "linux", "amd64", FAR, T]);
   const tables = async () => (await sql.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'runner_relays'", [schema])).rows.length;
-  assert.equal(await tables(), 0, "0017 keeps no relays");
+  assert.equal(await tables(), 0, "0018 keeps no relays");
   store = await openPostgresStore({ url: PG_URL, schema });
   assert.equal(Number((await sql.query("SELECT schema_version FROM store_meta")).rows[0].schema_version), migrationsIn().at(-1).version);
-  assert.ok(migrationsIn().some((m) => m.version === 18), "0018 ships");
+  assert.ok(migrationsIn().some((m) => m.version === 19), "0019 ships");
   assert.equal(await tables(), 1);
   const row = await store.mintedTokens.byToken(SHA);
   assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run, row?.refused], ["m-old", null, null, null, null], "the earlier release's token is the server's own, of no run, none refused");

@@ -75,6 +75,10 @@ export interface TemplatePackage {
   readonly id: string;
   readonly version: string;
   readonly sha: string | null;
+  /** A keyed digest of the parameters the apply was given, as it checked them (seal-key.ts parametersDigest), never the
+   *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
+   *  digest warns of this agent. Absent on a revision applied before it was kept. */
+  readonly parameters_digest?: string;
 }
 
 export interface NewRevision {
@@ -522,6 +526,10 @@ export interface TriggerRow {
   readonly maxActiveRuns: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** Its package mark: the id of the template package whose apply made it or last kept it in place, which a later update
+   *  of that package may remove once the package no longer lists it; null for one a person made, one a PATCH moved to
+   *  another agent, and one made before the mark was kept. Written by the apply alone, never from an API body. */
+  readonly templateId: string | null;
 }
 /** A trigger's firing that starts a run. */
 export interface Firing {
@@ -582,6 +590,8 @@ export interface NewTrigger {
   readonly nextAt: number | null;
   readonly catchupWindowS: number;
   readonly maxActiveRuns?: number | null;
+  /** The package mark (TriggerRow.templateId) a template apply makes it with; none for a person's. */
+  readonly templateId?: string | null;
 }
 /** A trigger's fields changed; the ones absent stay. */
 /** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
@@ -589,8 +599,9 @@ export interface NewTrigger {
  *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
  *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
  *  write that must never land over another source write (a seal, an edit) gives both. */
-export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown };
-export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
+/** `ifAgent`: it is still that agent's (a PATCH may move it to another meanwhile). */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string };
+export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns" | "templateId">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {
   readonly status?: FiringStatus;
@@ -714,8 +725,9 @@ export interface Triggers {
    *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written; one that turns it
    *  on, or moves it at all, to an agent being deleted, too (AgentDeleting). */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[], options?: TriggerUpdateOptions): Promise<TriggerRow | undefined>;
-  /** The trigger, its scope rows and its firings gone. */
-  remove(id: string): Promise<void>;
+  /** The trigger, its scope rows and its firings gone: whether there was one to remove. With `ifAgent`, only while it is
+   *  still that agent's, compared in the same statement: one moved to another agent is left, and the answer is false. */
+  remove(id: string, options?: { readonly ifAgent?: string }): Promise<boolean>;
   /** Enables the trigger and writes its scope rows, in one transaction; refused for an archived agent's (AgentArchived). */
   enable(triggerId: string, scopes: readonly TriggerScope[]): Promise<void>;
   /** Disables the trigger (with why, JSON) and deletes its scope rows, in one transaction. */

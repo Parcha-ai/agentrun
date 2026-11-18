@@ -393,6 +393,14 @@ interface Case {
 /** One event of the runner process (child.ts): a claim, a lost claim, a commit's outcome by epoch, and when. */
 export type Seen = { type?: string; at?: number; epoch?: number; name?: string; why?: string; claim?: { epoch: number } };
 
+/** What the process wrote after it said it stops at the point, in its file's order (each line is appended synchronously),
+ *  or everything when it never said so. One millisecond of the clock can hold the loop's last write before the stop and
+ *  the case's going on both, so the order, not the time, says which side of the stop a write is on. */
+export function afterStop<T extends { type?: string }>(events: readonly T[]): readonly T[] {
+  const stop = events.findIndex((event) => event.type === "stopping");
+  return stop < 0 ? events : events.slice(stop + 1);
+}
+
 /**
  * The claim's fence, as the stalled process's own events show it: once it went on (`continuedAt`, its lease run out and no
  * one holding the run yet), its old loop's writes under the claim it was held under are each refused by the fence, by name (ClaimLost
@@ -405,8 +413,10 @@ export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   // process's first claim before the point and take the run again, so the held loop's epoch need not be its first.
   const heldFrom = events.find((event) => event.type === "stopping")?.at ?? continuedAt;
   const first = events.filter((event) => event.type === "claimed" && (event.at ?? 0) <= heldFrom).at(-1)?.claim?.epoch;
-  const old = events.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
+  const after = afterStop(events);
+  const old = after.filter((event) => (event.at ?? 0) >= continuedAt && event.epoch === first && (event.type === "commit-landed" || event.type === "commit-refused"));
   const lost = events.find((event) => event.type === "claim-lost" && event.epoch === first);
+  const lostOnceOn = after.find((event) => event.type === "claim-lost" && event.epoch === first && (event.at ?? 0) >= continuedAt);
   for (const landed of old.filter((event) => event.type === "commit-landed")) {
     const when = lost?.at !== undefined ? `${landed.at! - lost.at} ms after its claim was lost` : `${landed.at! - continuedAt} ms after it went on, its lease run out`;
     assert.fail(`an epoch-${first} commit landed ${when}: ${history}`);
@@ -415,7 +425,7 @@ export function fenceHeld(events: readonly Seen[], continuedAt: number): void {
   // before any write (a loaded box), or the loop's write is tried and refused. The store's refusal of a write past the
   // lease is held on its own, deterministically (store-claim-lease).
   if (old.length === 0) {
-    assert.ok(lost !== undefined && (lost.at ?? 0) >= continuedAt, `the old loop neither tried a write nor was stopped by its claim lost once it went on: ${history}`);
+    assert.ok(lostOnceOn !== undefined, `the old loop neither tried a write nor was stopped by its claim lost once it went on: ${history}`);
     return;
   }
   assert.ok(old.every((event) => event.name === "ClaimLost" || event.name === "Fenced"), `each was refused by the claim's fence, by name: ${history}`);
@@ -572,8 +582,9 @@ async function processCrashThenResume(subject: ConformanceSubject, t: { after(fn
     child.kill("SIGCONT");
     // The fence first, before anything waits on the process's death: its old loop's first write once it went on (landed or
     // refused), or the process's end, bounded. The old loop's epoch is the claim it was held under.
+    // A write after the stop (afterStop): one that landed before it, in the millisecond the case went on, is not one.
     const outcome = (event: Seen) => (event.at ?? 0) >= continuedAt && (event.type === "commit-landed" || event.type === "commit-refused");
-    await until(() => child.exitCode !== null || child.signalCode !== null || childEvents(eventsFile).some((event) => outcome(event as Seen)), "the old loop writes once it goes on, or the process ends", 15_000);
+    await until(() => child.exitCode !== null || child.signalCode !== null || afterStop(childEvents(eventsFile) as Seen[]).some(outcome), "the old loop writes once it goes on, or the process ends", 15_000);
     fenceHeld(childEvents(eventsFile) as Seen[], continuedAt);
   }
   // The process's unanswered first claim (its events file) is run out while the case waits for its death.
@@ -720,8 +731,9 @@ const CASES: readonly Case[] = [
       await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
       await w.began(slowStarted, "the slow tool to start");
       const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "check the totals" } });
-      // One command poll and then some: the steer reaches the loop while the tool runs.
-      await sleep(TIMING.commandPollMs * 4);
+      // The tool goes on once the loop has answered the steer: the turn in flight has it, never a timer (as in
+      // message-mid-turn-kept). A steer that reaches a CLI only after the tool's end is the next turn by its facts.
+      await until(() => w.answered(steer.id), "the steer placed by the loop mid-turn");
       letSlowGo();
       await w.ended("ended");
       const { calls, messages } = await w.read();
