@@ -256,7 +256,8 @@ export async function startIcsFaux(options: { port?: number; text?: string } = {
     serve: (text, path = secret) => hold(text, path),
     move: (path, to) => {
       own.add(path);
-      if (!/^[a-z]+:\/\//i.test(to)) own.add(to);
+      // A target on it is counted by its path, as `answer` reads every request's (its query left off).
+      if (!/^[a-z]+:\/\//i.test(to)) own.add(to.split("?")[0]!);
       moves.set(path, to);
     },
     failing: (status) => void (failure = status),
