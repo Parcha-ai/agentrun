@@ -57,6 +57,21 @@ describe("each promoted revision as a point", () => {
   it("is one point a revision, however many records it has: a promotion and a hold of one digest are one", () => {
     expect(revisions().map((p) => p.digest)).toEqual([FIRST, SECOND]);
   });
+  it("says a revision promoted again by its latest promotion's check and its audits since, and its standing by its latest decision", () => {
+    // v1 was promoted, held by its audits, replayed and promoted again on a new check: 19 of 20 this time.
+    const [promote, hold] = PROMOTIONS.promotions;
+    const again = { ...promote!, at: "2026-10-27T00:00:00.000Z", check: { ...promote!.check!, n: 20, alone: 20, agreed: 19 } };
+    const records = [promote!, hold!, again];
+    const serves = [{ ...PROMOTIONS.serving[0]!, digest: FIRST }];
+    const since = { ...AUDITS[0]!, run: "run-since", promoted_at: again.at, agreed: true };
+    const [first] = revisionsOf(COST, records, serves, [...AUDITS, since]);
+    expect(first).toMatchObject({ digest: FIRST, state: "serving", check: { agreed: 19, alone: 20 }, audits: { agreed: 1, rows: 1 } });
+    // Promoted again and then held again: held is its latest decision.
+    const heldAgain = { ...hold!, at: "2026-10-28T00:00:00.000Z" };
+    expect(revisionsOf(COST, [...records, heldAgain], [{ ...serves[0]!, digest: null, state: "held" as const }], AUDITS)[0]).toMatchObject({ state: "held", check: { agreed: 19, alone: 20 } });
+    // Still one point for the digest, in the place its first promotion gave it.
+    expect(revisionsOf(COST, [...PROMOTIONS.promotions, again], PROMOTIONS.serving, AUDITS).map((p) => p.digest)).toEqual([FIRST, SECOND]);
+  });
   it("counts the check alone while the audit ledger is unread or its read failed, never 0 audits", () => {
     for (const unread of ["loading", "failed"] as const) {
       const second = revisions(unread)[1]!;

@@ -97,6 +97,15 @@ describe("CostAgreement", () => {
     expect(xs[1]!).toBeLessThan(xs[0]!);
     expect(host.textContent).toContain("Revisions that cost nearly the same are drawn side by side");
   });
+  it("leaves the agent off the log axis when a run cost it nothing before takeover, and still draws the revisions", () => {
+    const free: LearningCost = { ...COST, summary: { ...COST.summary, before: { runs: 20, mean_usd: 0 } } };
+    const host = draw(createElement(CostAgreement, { cost: free, revisions: REVISIONS, width: 560 }));
+    expect(host.querySelector('[data-testid="agreement-agent"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="agreement-revision"]')).toHaveLength(2);
+    // No coordinate of the plot is NaN or infinite.
+    expect(host.querySelector("svg[aria-hidden]")!.outerHTML).not.toMatch(/NaN|Infinity/);
+    expect(host.textContent).not.toContain("The agent, before takeover");
+  });
   it("draws a revision with no check by its audits, with no bar to serve (the bar is the check's) and no second mark", () => {
     const approved = REVISIONS.map((p) => ({ ...p, check: null }));
     const host = draw(createElement(CostAgreement, { cost: COST, revisions: approved, width: 560 }));

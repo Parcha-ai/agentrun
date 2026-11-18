@@ -35,7 +35,10 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
     return () => ro.disconnect();
   }, [fixed]);
   const [active, setActive] = useState<number | null>(null);
-  const before = cost?.summary.before ?? null;
+  // The agent's level before takeover, when it has a place on a log axis: a level of $0 has none, so the agent's mark
+  // is left off and the revisions are drawn without it.
+  const level0 = cost?.summary.before ?? null;
+  const before = level0 && level0.mean_usd > 0 ? level0 : null;
   // What the plot draws: the agent where its level before takeover is known, then each revision with a served cost
   // and a verdict. A revision short of either is in the table, with what it lacks.
   const marks = useMemo<Mark[]>(() => [

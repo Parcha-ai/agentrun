@@ -57,31 +57,41 @@ export const auditWords = (audits: NonNullable<RevisionPoint["audits"]>) => `${a
 
 const servedBy = (r: CostRun) => r.path === "workflow" || r.path === "handed_back";
 
-/** Each revision that was promoted, in the order it first served: from the promotion records (a `promote`), the runs
- *  of the cost read it ran first and the audit ledger. A revision still replaying, or held before it ever served, is
- *  not a point: it has no served run to cost. */
+/** Each revision that was promoted, in the order it first served: from the promotion records (oldest first, as the
+ *  server lists them), the runs of the cost read it ran first and the audit ledger. A revision promoted more than once
+ *  (held, replayed, promoted again) is still one point: its check is its latest promotion's, its audits the rows that
+ *  count for that promotion (the ledger's `promoted_at`, as the server's hold window reads it; a row that names none
+ *  counts), and its standing its latest decision. A revision still replaying, or held before it ever served, is not a
+ *  point: it has no served run to cost. */
 export function revisionsOf(cost: Pick<LearningCost, "runs">, promotions: readonly Promotion[], serving: readonly Serving[], audits: Audits): RevisionPoint[] {
   const ledger = typeof audits === "string" ? null : audits;
-  const seen = new Set<string>();
-  const out: RevisionPoint[] = [];
+  const keyOf = (record: Pick<Promotion, "workflow" | "digest">) => `${record.workflow}\n${record.digest}`;
+  const newer = (a: Promotion, b: Promotion | undefined) => !b || !(Date.parse(a.at) < Date.parse(b.at));
+  const order: string[] = [];
+  const promoted = new Map<string, Promotion>();
+  const decided = new Map<string, Promotion>();
   for (const record of promotions) {
-    const key = `${record.workflow}\n${record.digest}`;
-    if (record.decided !== "promote" || seen.has(key)) continue;
-    seen.add(key);
-    const runs = cost.runs.filter((r) => servedBy(r) && r.digest === record.digest && (r.workflow ?? record.workflow) === record.workflow && r.total_usd !== null);
-    const rows = ledger?.filter((row) => row.workflow === record.workflow && row.digest === record.digest && row.agreed !== null) ?? null;
-    const c = record.check;
-    const check = c?.n ? { agreed: c.agreed ?? 0, alone: c.alone ?? 0, n: c.n, agree_min: c.agree_min } : null;
-    const tally = rows === null ? null : { agreed: rows.filter((row) => row.agreed).length, rows: rows.length, grades: rows.filter((row) => row.source === "grade").length };
-    const now = serving.find((one) => one.workflow === record.workflow);
-    const held = promotions.some((later) => later.workflow === record.workflow && later.digest === record.digest && later.decided === "hold" && Date.parse(later.at) >= Date.parse(record.at));
-    out.push({
-      workflow: record.workflow, digest: record.digest, label: "",
-      state: now?.digest === record.digest && now.state !== "held" && now.state !== "stopped" ? "serving" : held ? "held" : "served",
-      served: runs.length ? { runs: runs.length, mean_usd: runs.reduce((sum, r) => sum + r.total_usd!, 0) / runs.length } : null,
-      check, audits: tally,
-    });
+    const key = keyOf(record);
+    if (record.decided === "promote") {
+      if (!promoted.has(key)) order.push(key);
+      if (newer(record, promoted.get(key))) promoted.set(key, record);
+    }
+    if (record.decided !== "replaying" && newer(record, decided.get(key))) decided.set(key, record);
   }
+  const out: RevisionPoint[] = order.map((key) => {
+    const record = promoted.get(key)!;
+    const runs = cost.runs.filter((r) => servedBy(r) && r.digest === record.digest && (r.workflow ?? record.workflow) === record.workflow && r.total_usd !== null);
+    const rows = ledger?.filter((row) => row.workflow === record.workflow && row.digest === record.digest && row.agreed !== null && (row.promoted_at === null || row.promoted_at === record.at)) ?? null;
+    const c = record.check;
+    const now = serving.find((one) => one.workflow === record.workflow);
+    return {
+      workflow: record.workflow, digest: record.digest, label: "",
+      state: now?.digest === record.digest && now.state !== "held" && now.state !== "stopped" ? "serving" : decided.get(key)?.decided === "hold" ? "held" : "served",
+      served: runs.length ? { runs: runs.length, mean_usd: runs.reduce((sum, r) => sum + r.total_usd!, 0) / runs.length } : null,
+      check: c?.n ? { agreed: c.agreed ?? 0, alone: c.alone ?? 0, n: c.n, agree_min: c.agree_min } : null,
+      audits: rows === null ? null : { agreed: rows.filter((row) => row.agreed).length, rows: rows.length, grades: rows.filter((row) => row.source === "grade").length },
+    };
+  });
   // Numbered within each workflow, in the order promoted; with more than one workflow the name goes before the number.
   const many = new Set(out.map((p) => p.workflow)).size > 1;
   const count = new Map<string, number>();
