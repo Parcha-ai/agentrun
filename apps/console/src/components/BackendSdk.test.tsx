@@ -1,3 +1,4 @@
+import type { BackendSdkRuntime } from '../lib/backendSdk';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -14,7 +15,7 @@ vi.mock('./CodingAgentAction', () => ({ CodingAgentAction: ({ label, prompt, pla
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ''; });
-const agent = (runtime: 'claude-agent-sdk' | 'codex-sdk'): Agent => ({ agent_id: 'backend', kind: 'agentic', revision: 'r1', revisions: 1, archived_at: null,
+const agent = (runtime: BackendSdkRuntime): Agent => ({ agent_id: 'backend', kind: 'agentic', revision: 'r1', revisions: 1, archived_at: null,
   definition: { version: 1, name: 'Release backend', instructions: 'Report accurately.', sdk: { runtime }, tools: [], skills: [], learning: 'notes' }, runs: { count: 0, live: 0 } });
 const settle = async () => { for (let n = 0; n < 5; n++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); };
 const show = (element: React.ReactElement) => {
@@ -38,7 +39,7 @@ describe('backend SDK agents', () => {
     expect(host.querySelector('[data-handoff="Edit agent"]')?.getAttribute('data-prompt')).toContain('existing backend');
   });
 
-  for (const [runtime, label] of [['claude-agent-sdk', 'Claude Agent SDK'], ['codex-sdk', 'Codex SDK']] as const) {
+  for (const [runtime, label] of [['claude-agent-sdk', 'Claude Agent SDK'], ['codex-sdk', 'Codex SDK'], ['openclaw', 'OpenClaw'], ['capy', 'Capy']] as const) {
     it(`${label} shows backend facts and delegates editing/running to its source application`, async () => {
       const a = agent(runtime);
       const v2 = { getAgent: async () => ({ agent: a, etag: 'r1' }), statsOver: async () => ({}), listAgentRuns: async () => ({ runs: [], next_cursor: null }) };

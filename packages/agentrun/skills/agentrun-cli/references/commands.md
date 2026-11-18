@@ -904,7 +904,7 @@ Register a task executed by an existing backend SDK.
 Route: `POST /agents/{agent_id}/sdk-runs`.
 
 - `--idempotency-key STRING` (string, required)
-- `--runtime claude-agent-sdk|codex-sdk` (string, one of these, required)
+- `--runtime claude-agent-sdk|codex-sdk|openclaw|capy` (string, one of these, required)
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)

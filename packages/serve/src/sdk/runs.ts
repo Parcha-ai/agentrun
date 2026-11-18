@@ -18,7 +18,8 @@ import { decodedStrings, draftProblems, servedSkill } from "../learn/skills.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 
-export type SdkRuntime = "claude-agent-sdk" | "codex-sdk";
+import { SDK_WORKFLOW_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
+export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export type SdkUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
@@ -96,7 +97,7 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   return result;
 };
 export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
-  isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk")
+  isObject(body) && isObject(body.sdk) && isSdkRuntime(body.sdk.runtime)
     ? { runtime: body.sdk.runtime }
     : undefined;
 export async function sdkInbox(store: Pick<Store, "settings">, runId: string): Promise<SdkInbox> {
@@ -211,6 +212,10 @@ export class SdkRuns {
       throw new ApiError("agent_not_runnable", "This agent is not registered as a backend SDK agent.");
     if (entry.agent.archivedAt !== null) throw new ApiError("agent_archived", "This SDK agent is archived.");
     if (body.runtime !== binding.runtime) refuse("The SDK runtime must match the registered agent.");
+    // A learned workflow runs through a wrapper's local MCP bridge. A platform runtime has none, so accepting its
+    // catalog would pin workflows nothing on that platform can execute: it learns notes and skills instead.
+    if (workflow && !SDK_WORKFLOW_RUNTIMES.includes(binding.runtime))
+      refuse(`${binding.runtime} runs learn notes and skills; workflow_tools needs a backend workflow bridge (claude-agent-sdk or codex-sdk).`);
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);
