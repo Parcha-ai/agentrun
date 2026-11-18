@@ -342,6 +342,10 @@ For a server elsewhere, the commands above run from here with the command alone 
 the person saves in their own terminal with `~/.agentrun/bin/agentrun login --base-url <address>/v2` (it reads
 standard input). Or they create and run the agent in the console.
 
+When something doesn't work, at any step, run `~/.agentrun/bin/agentrun doctor` on the machine AgentRun runs on: it
+checks the setup read-only and prints each problem with what to change (`--json` for you to read; exit 3 means no
+server answers).
+
 Report the console address, the run's link and cost, the data folder, `server.version` and any step still pending.
 On this computer, say how it runs: as a service that starts again at login (`~/.agentrun/bin/agentrun service
 uninstall` removes it and keeps the data), or in the background until the machine stops. Offer **Learning** (off by
