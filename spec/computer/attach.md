@@ -105,8 +105,10 @@ folder to a paired computer yet, and a sandbox needs one.
    2100-01-01T00:00:00Z`, with `AGENTRUN_COMPUTERD_SOCKET` naming a socket in a directory of that user's alone (0700).
 2. **Pair.** With init running, as the same user: `computerd pair https://agentrun.example.com --name build-box`,
    and type the code (or pipe it in: never an argument, since the code is a credential too). The name defaults to the
-   hostname. Pair sends init's own `hello`, as attach will answer it, and writes the token to
-   `$XDG_CONFIG_HOME/agentrun/computer.token` (`~/.config` by default; root's is `/etc/agentrun/computer.token`):
+   hostname. The URL is `https://` (`http://` only on loopback) and pair follows no redirect. One pair runs at a time
+   per user (it locks the token file's directory). Pair sends init's own `hello`, as attach will answer it, and writes
+   the token to `$XDG_CONFIG_HOME/agentrun/computer.token` (`~/.config` by default; root's is
+   `/etc/agentrun/computer.token`):
    created `0600` from its first byte (a file in the same directory made with `O_EXCL|O_NOFOLLOW`, then renamed into
    place), in a directory it makes `0700`. It prints the computer's id, the attach URL and the file, never the token.
    A refused code or `hello` is the server's words, and nothing is written. A box with a token file already is refused
@@ -124,7 +126,7 @@ As systemd system units, both running as the box's user, the token passed throug
 # /etc/systemd/system/agentrun-computerd.service
 [Unit]
 Description=AgentRun computer daemon (computerd init)
-After=graphical.target
+After=display-manager.service
 
 [Service]
 User=ada
@@ -139,7 +141,7 @@ ExecStart=/usr/local/bin/computerd init --deadline 2100-01-01T00:00:00Z
 Restart=always
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 ```
 
 ```ini
@@ -160,7 +162,7 @@ Restart=on-failure
 RestartPreventExitStatus=2 3 4 5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 ```
 
 Start the first, run `computerd pair` as `ada` with the same `AGENTRUN_COMPUTERD_SOCKET`, then enable the second.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,6 +39,13 @@ func Pair(ctx context.Context, server, code, name, socket, tokenFile string, max
 	if err != nil {
 		return Paired{}, err
 	}
+	// One pairing at a time from the check to the write: two at once would each make a computer, and the later rename
+	// would replace the other's token.
+	unlock, err := lockTokenDir(tokenFile)
+	if err != nil {
+		return Paired{}, err
+	}
+	defer unlock()
 	if _, err := os.Lstat(tokenFile); err == nil {
 		return Paired{}, fmt.Errorf("this machine is paired already: its token is at %s; to pair it again, run computerd unpair first", tokenFile)
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -62,11 +70,16 @@ func Pair(ctx context.Context, server, code, name, socket, tokenFile string, max
 		return Paired{}, err
 	}
 	req.Header.Set("content-type", "application/json")
-	res, err := http.DefaultClient.Do(req)
+	// No redirect is followed: one would resend the code, perhaps over plain http or to another host.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := client.Do(req)
 	if err != nil {
 		return Paired{}, fmt.Errorf("cannot reach %s: %w", pairURL, err)
 	}
 	defer res.Body.Close()
+	if res.StatusCode/100 == 3 {
+		return Paired{}, fmt.Errorf("the server answered the pairing %d, a redirect to %q, which pair doesn't follow: pair with the server's own URL", res.StatusCode, res.Header.Get("Location"))
+	}
 	answer, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 	if err != nil {
 		return Paired{}, fmt.Errorf("the server's answer to the pairing: %w", err)
@@ -101,16 +114,28 @@ func Pair(ctx context.Context, server, code, name, socket, tokenFile string, max
 	return out, nil
 }
 
-// serverURLs gives the pair route and the attach socket of a server's URL, http:// or https:// and a host, with any
-// path it is served under.
+// serverURLs gives the pair route and the attach socket of a server's URL, https:// and a host (http:// only on this
+// machine's loopback, since the code and the token cross it), with any path it is served under.
 func serverURLs(server string) (string, string, error) {
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", "", fmt.Errorf("the server's URL is http:// or https:// and its host, such as https://agentrun.example.com, not %q", server)
+		return "", "", fmt.Errorf("the server's URL is https:// and its host, such as https://agentrun.example.com, not %q", server)
+	}
+	if u.Scheme == "http" && !loopback(u.Hostname()) {
+		return "", "", fmt.Errorf("the server's URL is https://, not %q: the pairing code and the machine's token would cross the network in the clear (http:// is for a server on this machine's loopback)", server)
 	}
 	base := strings.TrimSuffix(u.EscapedPath(), "/")
 	ws := map[string]string{"http": "ws", "https": "wss"}[u.Scheme]
 	return u.Scheme + "://" + u.Host + base + "/v2/computers/pair", ws + "://" + u.Host + base + "/v2/computers/attach", nil
+}
+
+// loopback is a host name that stays on this machine: localhost or a loopback address.
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // helloOf is init's answer to hello at socket: the hello attach's socket gives the server, as the pairing records it.

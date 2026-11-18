@@ -704,6 +704,9 @@ func computerdIn(t *testing.T, stdin string, args ...string) (int, string, strin
 // lands in the 0600 file and in no output; attach then reads that file and, refused, says to delete it; unpair deletes
 // it and says how the owner removes the computer.
 func TestPairAttachAndUnpairKeepTheTokenInItsFileAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: root's token file is /etc/agentrun/computer.token, which a test must not write")
+	}
 	token := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
 	config := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", config)

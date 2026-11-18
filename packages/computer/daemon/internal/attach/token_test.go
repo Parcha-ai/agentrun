@@ -93,6 +93,9 @@ func TestReadTokenRefusesALinkAnotherUsersFileAndOneOthersMayRead(t *testing.T) 
 // AGENTRUN_ATTACH_TOKEN wins over the file, a refused file included; with it empty, attach reads pair's file, and
 // says where it came from.
 func TestFromEnvTakesTheEnvironmentsTokenElsePairsFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: root's token file is /etc/agentrun/computer.token, which a test must not write")
+	}
 	config := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", config)
 	t.Setenv(URLEnv, "wss://agentrun.example.com/v2/computers/attach")

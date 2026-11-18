@@ -30,6 +30,40 @@ func TokenPath() (string, error) {
 	return filepath.Join(dir, "agentrun", "computer.token"), nil
 }
 
+// lockTokenDir holds an exclusive lock on path's directory, which it makes 0700 when it is not there, until unlock: one
+// pairing at a time checks for the token file and writes it. A directory it made and nothing was written to is removed
+// at unlock.
+func lockTokenDir(path string) (unlock func(), err error) {
+	dir := filepath.Dir(path)
+	_, statErr := os.Lstat(dir)
+	made := errors.Is(statErr, fs.ErrNotExist)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("cannot make the token file's directory: %w", err)
+	}
+	d, err := os.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err == nil {
+		if err = syscall.Flock(int(d.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = d.Close()
+		}
+	}
+	unmake := func() {
+		if made {
+			_ = os.Remove(dir) // only an empty directory goes
+		}
+	}
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil, fmt.Errorf("another computerd pair is pairing this machine as this user now (it holds %s): let it finish", dir)
+	}
+	if err != nil {
+		unmake()
+		return nil, fmt.Errorf("cannot lock the token file's directory %s: %w", dir, err)
+	}
+	return func() {
+		unmake()
+		_ = d.Close()
+	}, nil
+}
+
 // WriteToken keeps token at path, its user's alone from the start: a file in the same directory made with O_EXCL and
 // O_NOFOLLOW, mode 0600, then renamed over path, so no reader ever sees a part of it or a wider mode. A directory it
 // makes is 0700. The token is in no error it gives.

@@ -107,9 +107,47 @@ func TestARefusedPairingIsTheServersWordsAndWritesNothing(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.words) {
 			t.Fatalf("%d: %v; want %q", tc.status, err, tc.words)
 		}
-		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("%d: the token file is there (%v)", tc.status, err)
+		if _, err := os.Lstat(filepath.Dir(path)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%d: the token file's directory is there (%v)", tc.status, err)
 		}
+	}
+}
+
+// A redirect is not followed: the code goes to the URL given and no other, and nothing is written.
+func TestPairFollowsNoRedirect(t *testing.T) {
+	var elsewhere atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhere.Add(1) }))
+	t.Cleanup(other.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	path := filepath.Join(t.TempDir(), "agentrun", "computer.token")
+	_, err := Pair(context.Background(), srv.URL, "K7PD-W3QX", "box", helloInit(t), path, 1<<20)
+	if err == nil || !strings.Contains(err.Error(), "307, a redirect to") || elsewhere.Load() != 0 {
+		t.Fatalf("redirected: %v, and the other server was sent %d", err, elsewhere.Load())
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the token file is there (%v)", err)
+	}
+}
+
+// Two pairings at once: while one holds the token file's directory, another is refused before it sends anything, so
+// neither makes a computer whose token the other's rename would replace.
+func TestOnePairingAtATime(t *testing.T) {
+	srv, bodies, _ := pairServer(t, http.StatusCreated, `{"computer":"cmp-8f2k3jq7m4xw9tnb","token":"`+pairedToken+`","runs_refused":null}`)
+	path := filepath.Join(t.TempDir(), "agentrun", "computer.token")
+	unlock, err := lockTokenDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Pair(context.Background(), srv.URL+"/base", "K7PD-W3QX", "box", helloInit(t), path, 1<<20)
+	if err == nil || !strings.Contains(err.Error(), "another computerd pair is pairing this machine") || len(*bodies) != 0 {
+		t.Fatalf("pairing while another holds the lock: %v after %d tries", err, len(*bodies))
+	}
+	unlock()
+	if _, err := Pair(context.Background(), srv.URL+"/base", "K7PD-W3QX", "box", helloInit(t), path, 1<<20); err != nil || len(*bodies) != 1 {
+		t.Fatalf("pairing once the other is done: %v after %d tries", err, len(*bodies))
 	}
 }
 
@@ -120,7 +158,7 @@ func TestPairWithNoInitOrABadServerURLSendsNothing(t *testing.T) {
 	if _, err := Pair(context.Background(), srv.URL+"/base", "K7PD-W3QX", "box", filepath.Join(t.TempDir(), "none.sock"), path, 1<<20); err == nil || !strings.Contains(err.Error(), "start computerd init first") {
 		t.Fatalf("no init: %v", err)
 	}
-	for _, server := range []string{"", "agentrun.example.com", "ftp://agentrun.example.com", "https://", "https://user:pass@agentrun.example.com", "https://agentrun.example.com/?code=K7PD-W3QX"} {
+	for _, server := range []string{"", "agentrun.example.com", "ftp://agentrun.example.com", "https://", "https://user@agentrun.example.com", "http://agentrun.example.com", "http://192.0.2.10:8080", "https://agentrun.example.com/?code=K7PD-W3QX"} {
 		if _, err := Pair(context.Background(), server, "K7PD-W3QX", "box", helloInit(t), path, 1<<20); err == nil || !strings.Contains(err.Error(), "the server's URL is") {
 			t.Fatalf("%q: %v", server, err)
 		}
@@ -137,14 +175,15 @@ func TestARefusedTokenFromTheFileSaysWhichFileToDelete(t *testing.T) {
 		s := &server{t: t, sockets: []func(net.Conn, *bufio.Reader) int{socket}}
 		srv := s.start()
 		out := &lines{}
-		cfg := Config{URL: wsURL(srv), Token: pairedToken, TokenFile: "/home/box/.config/agentrun/computer.token", Socket: fakeInit(t), Steady: time.Minute, Delay: RedialDelay}
+		file := filepath.Join(t.TempDir(), "agentrun", "computer.token")
+		cfg := Config{URL: wsURL(srv), Token: pairedToken, TokenFile: file, Socket: fakeInit(t), Steady: time.Minute, Delay: RedialDelay}
 		cfg.Options = testOptions()
 		cfg.Options.Token, cfg.MaxMessage = pairedToken, 1<<20
 		code := Run(context.Background(), cfg, log.New(out, "computerd: ", log.LstdFlags))
 		out.mu.Lock()
 		said := out.b.String()
 		out.mu.Unlock()
-		if code != ExitUnauthorized || !strings.Contains(said, "this machine's pairing was removed or revoked: delete /home/box/.config/agentrun/computer.token and pair again") || strings.Contains(said, pairedToken) {
+		if code != ExitUnauthorized || !strings.Contains(said, "this machine's pairing was removed or revoked: delete "+file+" and pair again") || strings.Contains(said, pairedToken) {
 			t.Fatalf("exit %d: %s", code, said)
 		}
 	}
