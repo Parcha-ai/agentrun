@@ -91,7 +91,8 @@ async function main() {
     // Read as 1000 itself (an exec runs as the container's user, root here, unless told): a root process would show as 0.
     const status = docker("exec", "--user", "1000", name, "sh", "-c", "grep -h '^Uid:' /proc/[0-9]*/status 2>/dev/null; true");
     const uids = [...new Set(status.split("\n").map((l) => l.split(/\s+/)[1]))].sort().join(" ");
-    if (owner !== "1000:1000 700" || uids !== "1000") throw new Error(`${mountPath} is ${owner} and the container's processes run as uid ${uids}: the server should own ${mountPath} (1000:1000 700) and nothing run as root`);
+    // 711: a run's process (a uid of its own) crosses the volume to its own folders without listing it, as the image's /data.
+    if (owner !== "1000:1000 711" || uids !== "1000") throw new Error(`${mountPath} is ${owner} and the container's processes run as uid ${uids}: the server should own ${mountPath} (1000:1000 711) and nothing run as root`);
     row("server's own user", "PASS", `${mountPath}: ${owner}; every process in the container: uid ${uids}`);
 
     const session = await (await fetch(`${local}/v2/auth/session`)).json();

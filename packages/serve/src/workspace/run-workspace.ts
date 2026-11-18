@@ -8,7 +8,7 @@
 // log in words and never fails the run: the next sweep takes what is left.
 // Mode 1: the run's local folder (runFolder). Its end does nothing here; the tools' end clears what they keep in it.
 import { mkdir } from "node:fs/promises";
-import type { ArchilClaim } from "./archil-claim.js";
+import { type ArchilClaim, HELD_ARCHIL } from "./archil-claim.js";
 import { archilWorkspace } from "./archil.js";
 import { localWorkspace } from "./local.js";
 import { runFolder, runKey } from "./paths.js";
@@ -50,6 +50,9 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
   }
   const claim = options.archil;
   if (claim === undefined) throw new TypeError("a Mode 2 run's Workspace is opened with its claim's Archil claim (archilClaim)");
+  // A run's own process: the folder its runner opened on the disk (archil-claim.ts archilWhereHeld).
+  const heldThere = HELD_ARCHIL.get(claim);
+  if (heldThere) return { workspace: heldThere, end: async () => {} };
   const say = (message: string): void => {
     try { log(message); } catch { /* the caller's log */ }
   };

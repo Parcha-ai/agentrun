@@ -6,7 +6,7 @@
 // these groups.
 // The providers Settings offers (PROVIDERS) are derived from the providers' descriptors (descriptor.ts), each declared
 // once in its descriptor module: loading this loads descriptors (data) alone, never a provider module or a vendor SDK.
-import type { DescriptorKey, DescriptorSetting, HostCommand, ParkedConfiguration, ProviderDescriptor } from "./descriptor.js";
+import { type DescriptorKey, type DescriptorSetting, derivedMounts, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
 import type { MountKind, Unmounted } from "./mount.js";
 import type { ComputerKind, Group, HelloResult } from "./protocol.js";
@@ -122,7 +122,7 @@ export interface ProviderEntry {
 	readonly settings?: readonly DescriptorSetting[];
 	/** Whether its machines dial the server: always ("dial"), or as its connect option says ("either"); descriptor.ts connectOf. */
 	readonly connect?: "dial" | "either";
-	/** The mount kinds its computers take; [] cannot mount the run's folder. */
+	/** The mount kinds its computers take, sync derived (derivedMounts); [] cannot mount the run's folder. */
 	readonly mounts: readonly MountKind[];
 	/** Why its computers take none of these mount kinds, each in one sentence (descriptor.ts). */
 	readonly unmounted?: Unmounted;
@@ -161,7 +161,7 @@ export interface ProviderEntry {
 /** A descriptor as Settings shows it: its data, and the setting kinds its capabilities serve, derived by serves(). */
 export function entryOf(descriptor: ProviderDescriptor): ProviderEntry {
 	const { load: _load, ...data } = descriptor;
-	return { ...data, kinds: SETTING_KIND_NAMES.filter((kind) => descriptor.capabilities.some((one) => serves(one, kind))) };
+	return { ...data, mounts: derivedMounts(descriptor), kinds: SETTING_KIND_NAMES.filter((kind) => descriptor.capabilities.some((one) => serves(one, kind))) };
 }
 
 /** Every provider Settings offers: each built-in descriptor (descriptors/index.ts), as entryOf gives it. */

@@ -181,8 +181,8 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   `--own-network` needs, or `--cap-add ALL`, as 1000:1000, the refusal of 0:0 and the refusal without CAP_SETPCAP), and
   computerd's end at its deadline with the Docker live tests. The test binaries (`CGO_ENABLED=0 go test -c`) also run
   as root in a container by hand: `internal/isolate`'s and the isolated `TestBecome...` need CAP_SYS_ADMIN and
-  CAP_NET_ADMIN (`docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN`), and the refusal without them a container
-  with Docker's defaults.
+  CAP_NET_ADMIN (`docker run --cap-add SYS_ADMIN --cap-add NET_ADMIN`), and the refusal without them needs a
+  container with Docker's defaults.
 - `computerd probe [--sockets] [--connect <host:port>[/udp]]...` prints one JSON line: the uid and gid it runs as, the
   kernel's release, `interfaces` (the network interfaces its network namespace holds: `["lo"]` alone under
   `--own-network`), `reached` (the targets that answered), `accepted` (the targets that accepted a TCP connection and
@@ -197,7 +197,7 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   [Network none, read from inside](#network-none-read-from-inside-nothing-answers). `computerd probe --diagnose` asks
   more: for 1.1.1.1, 8.8.8.8, 9.9.9.9 and 151.101.1.57 (Fastly's anycast edge, which is no resolver) on 443/tcp,
   80/tcp and 53/udp it reports `refused` (no TCP accept, no UDP answer), `accepted` (an accept, no answer) or
-  `answered` (a TLS ServerHello, an `HTTP/1.` status line, a DNS response with the query's id), with 3 s to connect and
+  `answered` (a TLS ServerHello, an `HTTP/1.x` status line, a DNS response with the query's id), with 3 s to connect and
   3 s to answer, 15 s in all and at most 4 KiB read per check, and a `verdict`: `egress`, `accepted-only` or `none`.
   It sends nothing of the computer's: a ClientHello with a random nonce, `HEAD / HTTP/1.0`, a query for `example.com`.
 - `computerd stdio` is a thin bridge: it connects to the socket (waiting up to 3 s for a computer that has just

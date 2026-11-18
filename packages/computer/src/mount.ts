@@ -16,27 +16,32 @@ export function epochProblem(epoch: unknown): string | undefined {
 export const WORKSPACE = "/workspace";
 
 /**
- * The run's folder, mounted at WORKSPACE. bind: a folder on the provider's host, bound in (the local Docker computer).
- * archil: the run's folder inside an Archil disk in its region, mounted in the computer with the disk's token (a remote
- * computer).
+ * The run's folder, at WORKSPACE. bind: a folder on the provider's host, bound in (the local Docker computer). archil:
+ * the run's folder inside an Archil disk in its region, mounted in the computer with the disk's token (a remote
+ * computer). sync: a plain directory the computer's user owns, with nothing mounted there; the runner holds the folder
+ * and keeps a working copy there, pushed at claim and pulled back after every call that may change it, so the computer
+ * holds no disk, region or token.
  */
-export type MountSpec = { kind: "bind"; path: string } | { kind: "archil"; disk: string; region: string; folder: string; token: string };
+export type MountSpec = { kind: "bind"; path: string } | { kind: "archil"; disk: string; region: string; folder: string; token: string } | { kind: "sync" };
 export type MountKind = MountSpec["kind"];
-export const MOUNT_KINDS: readonly MountKind[] = ["bind", "archil"];
+export const MOUNT_KINDS: readonly MountKind[] = ["bind", "archil", "sync"];
 
 /**
  * A computer's mount as read back from the computer itself: its kind and where it comes from, never the token. `other`
  * is a mount at WORKSPACE the provider never makes (read-only, a volume), in words. An Archil mount also reads back
  * whether it holds the folder exclusively (no other client writes it) and the claim epoch it was made under: the
- * computer's agentrun.epoch label (labels.ts), since Archil's hold on a folder carries no epoch of its own.
+ * computer's agentrun.epoch label (labels.ts), since Archil's hold on a folder carries no epoch of its own. A synced
+ * folder reads back the claim epoch alone, the same label's, as nothing in the computer carries one.
  */
 export type MountReadBack =
 	| { kind: "bind"; path: string }
 	| { kind: "archil"; disk: string; region: string; folder: string; exclusive: boolean; epoch: number }
+	| { kind: "sync"; epoch: number }
 	| { other: string };
 
-const SHAPE = 'mount is { kind: "bind", path } or { kind: "archil", disk, region, folder, token }';
-const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "region", "folder", "token"] };
+const SHAPE = 'mount is { kind: "bind", path }, { kind: "archil", disk, region, folder, token } or { kind: "sync" }';
+const FIELDS: Record<MountKind, readonly string[]> = { bind: ["kind", "path"], archil: ["kind", "disk", "region", "folder", "token"], sync: ["kind"] };
+const NAMES: Record<MountKind, string> = { bind: "a bind", archil: "an archil", sync: "a sync" };
 const NUL = "a NUL byte cannot be passed to a mount";
 const filled = (value: unknown): value is string => typeof value === "string" && value !== "";
 
@@ -51,7 +56,7 @@ export type Unmounted = Readonly<Partial<Record<MountKind, string>>>;
  * words (the provider's own reason, `unmounted`, where it gives one); a bind's path is absolute, canonical (its own
  * realpath: what a provider reads back is what is bound), an existing directory on the host, with no NUL; an Archil
  * mount's disk, region, folder and token are non-empty strings with no NUL, the folder relative to the disk's root and
- * never above it. Each refusal names a field, never an Archil value.
+ * never above it; a synced folder has no field but its kind. Each refusal names a field, never an Archil value.
  */
 export function checkMount(mount: unknown, declared: readonly MountKind[] | undefined, unmounted: Unmounted = {}): Refusal[] {
 	if (mount === undefined) return [];
@@ -70,8 +75,9 @@ export function checkMount(mount: unknown, declared: readonly MountKind[] | unde
 		);
 	}
 	const extra = Object.keys(given).find((field) => !FIELDS[kind as MountKind].includes(field) && given[field] !== undefined);
-	if (extra !== undefined) return refuse(`mount.${extra} is not a field of ${kind === "bind" ? "a bind" : "an archil"} mount`);
-	return kind === "bind" ? bindRefusals(given.path).map((message) => ({ field: "mount", message })) : archilRefusals(given).map((message) => ({ field: "mount", message }));
+	if (extra !== undefined) return refuse(`mount.${extra} is not a field of ${NAMES[kind as MountKind]} mount`);
+	const found = kind === "bind" ? bindRefusals(given.path) : kind === "archil" ? archilRefusals(given) : [];
+	return found.map((message) => ({ field: "mount", message }));
 }
 
 function bindRefusals(path: unknown): string[] {
@@ -109,12 +115,14 @@ function archilRefusals({ disk, region, folder, token }: Record<string, unknown>
 
 /**
  * What a provider reads back of a mount it made as asked: its kind and source, never the token. An Archil mount is
- * always exclusive, and is read back under `epoch`, the computer's claim epoch. With no epoch, or a value that is not
- * one, it is `{ other }` in words: a mount under no claim, which no attach takes, never a guessed epoch. A bind takes none.
+ * always exclusive, and it and a synced folder are read back under `epoch`, the computer's claim epoch. With no epoch,
+ * or a value that is not one, either is `{ other }` in words: a folder under no claim, which no attach takes, never a
+ * guessed epoch. A bind takes none.
  */
 export function readBackOf(mount: MountSpec, epoch?: number): MountReadBack {
 	if (mount.kind === "bind") return { kind: "bind", path: mount.path };
 	const problem = epochProblem(epoch);
+	if (mount.kind === "sync") return problem === undefined ? { kind: "sync", epoch: epoch as number } : { other: `a synced folder with no epoch to read it back under (${problem})` };
 	if (problem !== undefined) return { other: `an Archil mount of ${mount.disk}:/${mount.folder} with no epoch to read it back under (${problem})` };
 	return { kind: "archil", disk: mount.disk, region: mount.region, folder: mount.folder, exclusive: true, epoch: epoch as number };
 }

@@ -413,7 +413,7 @@ let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
 // Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
 // under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
-const { loops, drainMs } = besideRunnerOptions(serveOptions, process.env);
+const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {
   try {
@@ -426,7 +426,8 @@ if (!values["no-runner"] && askedAt === undefined) {
     // server's AttachHub: a paired computer's socket is in this process, so only this runner takes one (--no-runner's
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
-    runnerProc = await runnerBeside(data, { loops, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
+    // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
   } catch (error) {
     console.error(`agentrun-serve: the runner could not start: ${(error as Error).message}`);
     await serve.close();

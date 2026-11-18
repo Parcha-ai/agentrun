@@ -13,16 +13,16 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ATTACH_PATH, type AttachHub, DAEMON_PATH, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
+import { syncs } from "../descriptor.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import { BACKSTOP_MARGIN_MS, type HostCall, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "../host.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
 import type { KindCapabilities } from "../kinds.js";
-import { RUN_LABEL } from "../labels.js";
-import { checkMount, type MountReadBack, readBackOf } from "../mount.js";
+import { EPOCH_LABEL, epochOf, RUN_LABEL } from "../labels.js";
+import { checkMount, type MountReadBack } from "../mount.js";
 import {
-	ARCHIL_MOUNT_LABEL,
 	ARCHIL_TOOL_UID,
 	type ArchilEgress,
 	type ArchilMount,
@@ -32,13 +32,16 @@ import {
 	archilMount,
 	archilRefusals,
 	archilRelease,
+	archilSync,
 	claimEpoch,
+	MOUNT_LABEL,
 	mountDrift,
 	type ProviderNote,
-	type RecordedArchil,
-	readArchilMount,
-	recordedArchil as recordedArchilOf,
+	type RecordedFolder,
+	readMount,
+	recordedFolder as recordedFolderOf,
 	recordedMount,
+	SYNC_LABELS,
 	syncingClient,
 } from "../mount-archil.js";
 import {
@@ -244,11 +247,11 @@ export const deadlineOf = (machine: Pick<Machine, "labels">): Date | undefined =
 export const ours = (labels: Record<string, string> | undefined, name?: string) =>
 	labels?.[COMPUTER_LABEL] === "1" && NAME.test(labels[NAME_LABEL] ?? "") && (name === undefined || labels[NAME_LABEL] === name);
 
-/** The Archil mount a computer's agentrun.mount label records, or undefined when it has none. */
-function recordedArchil(labels: Record<string, string> | undefined): RecordedArchil | undefined {
-	if (labels?.[ARCHIL_MOUNT_LABEL] === undefined) return undefined;
+/** The mount (an Archil mount, a synced folder) a computer's agentrun.mount label records, or undefined when it has none. */
+function recordedFolder(labels: Record<string, string> | undefined): RecordedFolder | undefined {
+	if (labels?.[MOUNT_LABEL] === undefined) return undefined;
 	const mount = recordedMount(labels);
-	return recordedArchilOf(labels, mount === undefined ? { other: `the label ${ARCHIL_MOUNT_LABEL} records a mount this provider never makes` } : { mount });
+	return recordedFolderOf(labels, mount === undefined ? { other: `the label ${MOUNT_LABEL} records a mount this provider never makes` } : { mount });
 }
 
 function filterProblem(labels: unknown): string | undefined {
@@ -276,8 +279,8 @@ function gpuOf(written: string | undefined): { gpu?: { type: string; count: numb
 	return isWhole(count) ? { gpu: { type: written.slice(0, at), count } } : {};
 }
 
-/** The caller's labels of a machine: every one but the adapter's own namespace and the Archil mount's. */
-const callerLabels = (labels: Record<string, string>) => Object.fromEntries(Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== ARCHIL_MOUNT_LABEL));
+/** The caller's labels of a machine: every one but the adapter's own namespace and the mount's. */
+const callerLabels = (labels: Record<string, string>) => Object.fromEntries(Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && !key.startsWith(`${COMPUTER_LABEL}.`) && key !== MOUNT_LABEL));
 
 /** What create made before the machine: its deadlines, its labels, the daemon with its sha256, and its scripts. */
 interface Made {
@@ -398,7 +401,9 @@ export class HostedProvider implements ComputerProvider {
 			groups: [...this.#configuration.groups],
 			maxLifetimeMs: this.#maxLifetimeMs,
 			release: ["delete"],
-			mount: descriptor.mounts.filter((kind) => !(this.#dialing && kind === "archil")),
+			// A synced folder is derived for this configuration alone (descriptor.ts syncs), whatever the descriptor's list
+			// says: a dial machine takes one too, its /workspace made by the box image's agentrun-dial.
+			mount: [...descriptor.mounts.filter((kind) => kind !== "sync" && !(this.#dialing && kind === "archil")), ...(syncs(descriptor, this.#configuration) ? (["sync"] as const) : [])],
 			vendorAgentPorts: [...facts.vendorAgentPorts],
 			...(gpu === undefined ? {} : { gpu: structuredClone(gpu) }),
 			...(facts.user === undefined ? {} : { user: [...facts.user] }),
@@ -417,6 +422,11 @@ export class HostedProvider implements ComputerProvider {
 		// A machine that dials takes no Archil mount yet: its helper's steps run as root through exec, which it has none of.
 		const unmounted = this.#dialing ? { ...this.host.descriptor.unmounted, archil: `${label}'s machines dial this server, and a machine that dials takes no Archil mount yet` } : this.host.descriptor.unmounted;
 		refusals.push(...checkMount(mount, capabilities.mount ?? [], unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
+		// A synced folder reads back under the run's claim epoch, as an Archil mount does: nothing in the computer holds one.
+		if ((mount as { kind?: unknown } | undefined)?.kind === "sync" && (capabilities.mount ?? []).includes("sync")) {
+			const epoch = epochOf(typeof labels === "object" && labels !== null ? (labels as Record<string, string>) : undefined);
+			if (!epoch.ok) refuse("labels", `a synced folder is made under the run's claim epoch: the label ${EPOCH_LABEL} is required (${epoch.error.message})`);
+		}
 		const daemonUser = `${this.#uid}:${this.#gid}`;
 		const asked = this.#takesUser ? given.user : undefined;
 		if (asked !== undefined) {
@@ -738,7 +748,7 @@ export class HostedProvider implements ComputerProvider {
 	}
 
 	/**
-	 * The labels create gives a computer: the caller's, the adapter's own, and an Archil mount's (never its token). The
+	 * The labels create gives a computer: the caller's, the adapter's own, and its mount's (never an Archil token). The
 	 * most its deadline may reach only where the host can extend it, the label's one reader: a host with no extend (Modal,
 	 * Daytona) spends none of its label bytes on it (Modal's 512 hold the box image's tag beside an Archil mount's label).
 	 */
@@ -752,7 +762,7 @@ export class HostedProvider implements ComputerProvider {
 			[IMAGE_LABEL]: spec.image,
 			...(this.host.extend ? { [MAX_LABEL]: maxDeadline } : {}),
 			...(network === "" ? {} : { [NETWORK_LABEL]: network }),
-			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : {}),
+			...(spec.mount?.kind === "archil" ? archilLabels(spec.mount) : spec.mount?.kind === "sync" ? SYNC_LABELS : {}),
 			...(typeof spec.gpu?.type === "string" && typeof spec.gpu.count === "number" ? { [GPU_LABEL]: `${spec.gpu.type}:${spec.gpu.count}` } : {}),
 		};
 	}
@@ -791,6 +801,8 @@ export class HostedProvider implements ComputerProvider {
 			...(archil && this.host.facts.daemon === "pid1" ? { gate: ARCHIL_GATE } : {}),
 			rootOnly: this.host.facts.rootOnly ?? [],
 			network: formOf(spec.network),
+			// A synced folder's /workspace, the computer's user's, made by install before init.
+			workspace: spec.mount?.kind === "sync",
 		});
 		const backstopAt = new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString();
 		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network) }, sha256) : undefined;
@@ -1026,8 +1038,8 @@ export class HostedProvider implements ComputerProvider {
 		}
 		let notes: string[];
 		try {
-			const archil = spec.mount?.kind === "archil" ? { mount: { kind: "archil" as const, disk: spec.mount.disk, region: spec.mount.region, folder: spec.mount.folder }, epoch: claimEpoch(spec.labels) } : undefined;
-			const expected = archil === undefined ? undefined : { ...archil, expected: readBackOf({ ...archil.mount, token: "" }, archil.epoch) };
+			const mount = spec.mount?.kind === "archil" ? { kind: "archil" as const, disk: spec.mount.disk, region: spec.mount.region, folder: spec.mount.folder } : spec.mount?.kind === "sync" ? spec.mount : undefined;
+			const expected = mount === undefined ? undefined : recordedFolderOf(spec.labels, { mount });
 			const inside = await this.#checkInside(opened.value, ref.name, networkOfForm(formOf(spec.network)), true, want, signal, expected);
 			if (!inside.ok) return inside;
 			notes = inside.value;
@@ -1053,8 +1065,8 @@ export class HostedProvider implements ComputerProvider {
 	/**
 	 * Inside the computer: for a desktop just made, the X server started through the daemon and hello declaring the
 	 * display; then the daemon's own report (hello, credentials, home, binary) and, for network none, the probe, which
-	 * refuses on an answer and records a silent accept in the notes it returns; and, for an Archil computer, the mount
-	 * read back from inside, held to the one expected. want.user is the uid:gid the daemon runs as (undefined: read back,
+	 * refuses on an answer and records a silent accept in the notes it returns; and, for an Archil computer or a synced
+	 * folder, the mount read back from inside, held to the one expected. want.user is the uid:gid the daemon runs as (undefined: read back,
 	 * never root), want.runtime the kernel the probe must report. Its value says what was read back of the mount (mount)
 	 * and, through the probe, the user the computer's programs run as (user).
 	 */
@@ -1065,7 +1077,7 @@ export class HostedProvider implements ComputerProvider {
 		starting: boolean,
 		want: Expected,
 		signal?: AbortSignal,
-		archil?: RecordedArchil,
+		folder?: RecordedFolder,
 	): Promise<Result<string[]> & { mount?: MountReadBack; user?: string }> {
 		let current = connection;
 		if (starting && this.#desktop) {
@@ -1092,10 +1104,10 @@ export class HostedProvider implements ComputerProvider {
 			notes.push(`fence: userns-netns: init made its programs' network namespace inside a user namespace of its own, as root on ${want.isolation ?? "this machine"} may not make one itself`);
 		}
 		const said = user === undefined ? {} : { user };
-		if (archil === undefined) return drift.length === 0 ? { ...ok(notes), ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
-		const mount = await readArchilMount(current.client, archil, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
+		if (folder === undefined) return drift.length === 0 ? { ...ok(notes), ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
+		const mount = await readMount(current.client, folder, { name, timeoutMs: this.#timeouts.helloMs, ...(signal ? { signal } : {}) });
 		if (!mount.ok) return mount;
-		drift.push(...mountDrift(archil.expected, mount.value));
+		drift.push(...mountDrift(folder.expected, mount.value));
 		const read = mount.value === undefined ? {} : { mount: mount.value };
 		return drift.length === 0 ? { ...ok(notes), ...read, ...said } : this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 	}
@@ -1267,8 +1279,9 @@ export class HostedProvider implements ComputerProvider {
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
 		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.host.facts.arch, fence: true });
-		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers.
-		if (drifted.length === 0) return recordedArchil(found.value.labels) === undefined ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client) });
+		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers. A synced
+		// folder's sync is its runner's (the sink is serve's), which wraps the client itself.
+		if (drifted.length === 0) return recordedFolder(found.value.labels)?.mount?.kind !== "archil" ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client, archilSync(opened.value.client)) });
 		await opened.value.close();
 		return this.#fail("refused", `the daemon in ${ref.name} does not match this provider: ${drifted.join("; ")}`);
 	}
@@ -1308,7 +1321,7 @@ export class HostedProvider implements ComputerProvider {
 		const found: string[] = [];
 		const deadline = deadlineOf(machine);
 		if (deadline === undefined) found.push(`deadline: the label ${DEADLINE_LABEL} reads ${show(machine.labels[DEADLINE_LABEL])}, not the ISO time create writes`);
-		const archil = recordedArchil(machine.labels);
+		const folder = recordedFolder(machine.labels);
 		// Its tools' network as create recorded it, read from inside (#checkInside: the probe, and the proxy's policy):
 		// no vendor's read of it is taken.
 		const network = networkOfForm(machine.labels[NETWORK_LABEL]);
@@ -1325,8 +1338,8 @@ export class HostedProvider implements ComputerProvider {
 			try {
 				// A host that takes a spec's user made this computer's daemon run as the one its spec named: read back, never root
 				// (an Archil computer's is the tool user); every other runs as the provider's daemon user.
-				const want = this.#takesUser ? (archil === undefined ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
-				const inside = await this.#checkInside(opened.value, name, network, false, want, signal, archil);
+				const want = this.#takesUser ? (folder?.mount?.kind !== "archil" ? {} : { user: ARCHIL_USER }) : { user: `${this.#uid}:${this.#gid}` };
+				const inside = await this.#checkInside(opened.value, name, network, false, want, signal, folder);
 				if (!inside.ok && inside.error.code !== "refused") return inside;
 				if (!inside.ok) found.push(inside.error.message.replace(/^it did not match its spec: /, ""));
 				else {
@@ -1338,7 +1351,7 @@ export class HostedProvider implements ComputerProvider {
 				await opened.value.close();
 			}
 			kind = opened.value.hello.kind;
-		} else if (archil !== undefined) found.push(`mount: ${name} is ${machine.state}, so its mount cannot be read back from inside`);
+		} else if (folder !== undefined) found.push(`mount: ${name} is ${machine.state}, so its mount cannot be read back from inside`);
 		if (found.length > 0) return this.#fail("refused", `the computer ${name} does not match this provider, so attach refuses it and it is left as it is: ${found.join("; ")}`);
 		return ok({
 			...ref,
@@ -1380,15 +1393,15 @@ export class HostedProvider implements ComputerProvider {
 		const infos: ComputerInfo[] = [];
 		for (const machine of listed.value) {
 			if (!ours(machine.labels) || (machine.state !== "running" && machine.state !== "stopped")) continue;
-			// list runs nothing in a computer: an Archil computer's mount is the one its label records, under its epoch label.
-			const archil = recordedArchil(machine.labels);
+			// list runs nothing in a computer: a computer's mount is the one its label records, under its epoch label.
+			const folder = recordedFolder(machine.labels);
 			infos.push({
 				ref: { id: machine.id, name: machine.labels[NAME_LABEL] as string },
 				labels: { ...machine.labels },
 				deadline: deadlineOf(machine),
 				state: machine.state,
 				network: networkOfForm(machine.labels[NETWORK_LABEL]),
-				...(archil === undefined ? {} : { mount: archil.expected }),
+				...(folder === undefined ? {} : { mount: folder.expected }),
 			});
 		}
 		return ok(infos);
@@ -1536,9 +1549,13 @@ export class HostedProvider implements ComputerProvider {
 		return { letGo, gone: killed.ok ? await this.#settle(ref, signal) : killed };
 	}
 
-	/** #letGo where machine, as read, is a running Archil computer: a stopped one holds no folder. */
+	/**
+	 * #letGo where machine, as read, is a running Archil computer: a stopped one holds no folder, and a synced folder's
+	 * final delta is its runner's, before it releases.
+	 */
 	#letGoOf(ref: ComputerRef, machine: Machine | undefined, signal?: AbortSignal): Promise<Result<void>> {
-		return machine !== undefined && recordedArchil(machine.labels) !== undefined && machine.state === "running" ? this.#letGo(ref, signal) : Promise.resolve(ok(undefined));
+		const folder = machine === undefined ? undefined : recordedFolder(machine.labels);
+		return folder !== undefined && folder.mount?.kind !== "sync" && machine?.state === "running" ? this.#letGo(ref, signal) : Promise.resolve(ok(undefined));
 	}
 
 	/** A running Archil computer's folder let go: the final sync through a connection when it answers, then checkin as root. */
@@ -1755,7 +1772,7 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key.includes("\0") || value.includes("\0")) return `the label ${JSON.stringify(key)}: a NUL byte cannot be sent to the vendor`;
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
-	if (key === ARCHIL_MOUNT_LABEL) return `the label ${key} is the provider's own: it records an Archil computer's mount`;
+	if (key === MOUNT_LABEL) return `the label ${key} is the provider's own: it records a computer's mount`;
 	return undefined;
 }
 

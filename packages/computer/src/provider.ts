@@ -90,7 +90,7 @@ export interface GpuCapability {
 	region?: string;
 	/** The size a GPU computer gets for each GPU (the vendor's defaults). */
 	perGpu?: { cpus: number; memoryMb: number; diskMb: number };
-	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: none yet proven on its GPU computers. */
+	/** The mount kinds a GPU computer takes, where fewer than capabilities().mount: a synced folder, which needs no FUSE. */
 	mounts?: MountKind[];
 	/**
 	 * Why a GPU computer takes none of the other mounts, in words naming no field: a fact of the vendor's runtime, or

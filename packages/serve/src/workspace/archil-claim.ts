@@ -24,6 +24,8 @@ import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, 
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens, removeRunMountTokens } from "./archil-mount-credential.js";
 import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
 import type { LaunchDisk } from "../run-launch.js";
+import { heldOrThrow } from "../runner/held.js";
+import type { Workspace } from "./workspace.js";
 import { type RunDisk, type RunDiskOptions, runDiskOf } from "./run-disk.js";
 
 export { ARCHIL_API_KEY_ROW, type ArchilSettings };
@@ -89,6 +91,34 @@ const RELEASED = "the run's Archil keys were released (its loop ended or its cla
 const LOST_MINT_REREAD_MS = 2_000;
 
 /** The Archil step of a claim: its disk made, its API key opened; the run's mount credential minted when a mount asks. */
+/** The run's folder on its disk where its runner opened it (held.ts archil), by the claim that stands for it in a run's own
+ *  process: openRunWorkspace opens this Workspace for it. */
+export const HELD_ARCHIL = new WeakMap<object, Workspace>();
+
+/** archilClaim where the run is: with the runner's seal key, its own; in a run's own process, its runner's (held.ts), as
+ *  a claim that holds no key, whose revoke, inherit and release its runner makes. */
+export async function archilWhereHeld(options: ArchilClaimOptions): Promise<ArchilClaim> {
+  if (options.sealKey) return archilClaim(options);
+  const given = await heldOrThrow("a Mode 2 run's disk").archil();
+  if (!given) throw new Error("the runner opened no Archil disk for this Mode 2 run");
+  const none = (what: string): never => {
+    throw new Error(`a Mode 2 run's ${what} is its runner's, not its own process's`);
+  };
+  const claim = {
+    get disk(): never { return none("disk"); },
+    get diskKind(): never { return none("disk"); },
+    get region(): never { return none("region"); },
+    get image(): never { return none("image"); },
+    token: async (): Promise<never> => none("mount credential"),
+    revoke: () => given.revoke(),
+    inherit: () => void given.inherit().catch(() => undefined),
+    secrets: new Set<string>(),
+    release: () => void given.release().catch(() => undefined),
+  } as unknown as ArchilClaim;
+  HELD_ARCHIL.set(claim, given.workspace);
+  return claim;
+}
+
 export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilClaim> {
   const { settings, sealKey } = options;
   if (settings === undefined) {

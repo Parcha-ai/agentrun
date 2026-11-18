@@ -113,12 +113,12 @@ test("the constructor refuses a size that is not boxd's and the machine user's u
 	assert.doesNotThrow(make({ kind: "desktop" }));
 });
 
-test("capabilities: a child daemon in a microVM, network none, janitor lifetime, delete only, boxd's agent port; desktop too", () => {
+test("capabilities: a child daemon in a microVM, network none, janitor lifetime, delete only, a synced folder, boxd's agent port; desktop too", () => {
 	const { provider, host } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ ...caps },
-		{ kind: "linux", lifetime: "janitor", network: ["none"], networkReadBack: false, isolation: "microvm", os: "linux", daemon: "child", groups: LINUX_GROUPS, maxLifetimeMs: 24 * HOUR, release: ["delete"], mount: [], vendorAgentPorts: [57073] },
+		{ kind: "linux", lifetime: "janitor", network: ["none"], networkReadBack: false, isolation: "microvm", os: "linux", daemon: "child", groups: LINUX_GROUPS, maxLifetimeMs: 24 * HOUR, release: ["delete"], mount: ["sync"], vendorAgentPorts: [57073] },
 	);
 	assert.deepEqual(kindRefusals(caps), []);
 	assert.deepEqual(setup({ kind: "desktop" }).provider.capabilities().groups, DESKTOP_GROUPS);

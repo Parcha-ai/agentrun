@@ -280,6 +280,18 @@ describe("the Dev tools tab", () => {
     expect(callRows(host)).toHaveLength(320);
   });
 
+  it("every pane of the tab that scrolls is the place its out-of-flow content is set against, so none of it scrolls the page", async () => {
+    // A Segmented's hidden radios are absolutely placed. Under a pane that is not `relative` they are set against the
+    // page: the one beside the Breakdown's chart, far down that pane, made the whole page scroll with nothing under it.
+    const host = await open(TRACE, { open: "m:0:24", view: "breakdown" });
+    expect(host.querySelector("section[aria-label='Each request'] input[type=radio]")).toBeTruthy();
+    const scrolls = [...host.querySelectorAll<HTMLElement>("*")].filter((el) => /(^|\s)(xl:)?overflow-auto(\s|$)/.test(el.className) && !/overflow-x-auto/.test(el.className));
+    expect(scrolls.map((el) => el.getAttribute("aria-label") ?? el.tagName)).toEqual(["DIV", "Trace", "Call details"]);
+    for (const pane of scrolls) expect(pane.className.split(/\s+/)).toContain("relative");
+    // Each hidden radio's nearest positioned ancestor is a pane of the tab, never something outside it.
+    for (const radio of host.querySelectorAll("input.sr-only")) expect(radio.closest(".relative")?.closest("[data-scroll-pane]")).toBe(host.querySelector("[data-scroll-pane]"));
+  });
+
   it("says when spans were left out, and when the run made none", async () => {
     expect((await open({ ...TRACE, dropped: 310 })).textContent).toContain("This is the run's first 24 requests and calls. 310 later ones are not shown.");
     act(() => root?.unmount());

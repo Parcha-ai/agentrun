@@ -67,7 +67,7 @@ import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, 
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
 import { readKept } from "./workspace/computer-kept.js";
-import { liveReachOf } from "./live-reach.js";
+import { liveReachOf, reachForRun } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
@@ -835,7 +835,7 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
  *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
  *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process") {
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
@@ -849,6 +849,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     /** What runs a run here (the contract's `runtimes`, informational): this server's runners, over its one store. */
     runtimes: ["runner"],
+    /** How a run is kept from another here (run-child-host.ts runIsolationOf): each a process of its own, and `uid`, each
+     *  a user of its own too. */
+    run_isolation: isolation,
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
     harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
@@ -1216,7 +1219,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // With accounts off no one can answer an ask (the answer route takes the owner's session alone): each tool ask is
   // offered for says it needs the password sign-in, as learning's approve does.
   const askNeeds = (made: ReturnType<typeof capabilitiesWith>) => (options.accounts ? made : { ...made, tools: made.tools.map((tool) => (tool.permissions.includes("ask") ? { ...tool, ask_needs: "password" as const } : tool)) });
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell));
+  // How this host keeps runs apart, as its runners decide it from the same setting and helper: `uid` where the helper can
+  // switch and AGENTRUN_RUN_USER is not `same`. A helper that cannot switch is a runner that refuses to start, in words
+  // naming the setting; no run here is then a user of its own, so `process`. Imported here, as the runner beside it
+  // imports it (runner/beside.ts): its module reaches the runner's, which reach back to this one's.
+  const { runIsolationName, runIsolationOf } = await import("./runner/run-child-host.js");
+  const isolation = await runIsolationOf(base, 1, () => {}).then(runIsolationName, () => "process" as const);
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -1314,7 +1323,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
   const reach = liveReachOf(env, sealKey);
-  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
+  // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
+  const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1657,7 +1667,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -4020,10 +4030,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id, answers);
+              const link = await liveViewerLink(store, sealKey, run.id, answers(run.id));
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id, answers);
+            return computerViewerLink(store, sealKey, run.id, answers(run.id));
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
@@ -4877,7 +4887,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reachForRun(reach, run!.id));
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   };
   // The CLI's early listener answers with this server's routes from here on, where a new one would start to listen.

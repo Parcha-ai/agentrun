@@ -1043,6 +1043,7 @@ export type Capabilities = {
     condition: string;
     limit: string;
   };
+  run_isolation?: "uid" | "process";
 };
 
 export type Features = {

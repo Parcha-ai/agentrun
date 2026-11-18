@@ -326,11 +326,11 @@ const ARCHIL = {
 
 test("COMPUTER_DAYTONA_ARCHIL_EGRESS is the provider's archilEgress: set, it takes an Archil mount; unset, it refuses one; a malformed one is refused at createProvider()", () => {
 	const fetch = async () => assert.fail("no request");
-	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY }, fetch }).capabilities().mount, []);
-	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: EGRESS }, fetch }).capabilities().mount, ["archil"]);
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY }, fetch }).capabilities().mount, ["sync"]);
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: EGRESS }, fetch }).capabilities().mount, ["archil", "sync"]);
 	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.archilEgress]: "192.0.2.40:8100:42050" }, fetch }), /the Archil egress is/);
 	assert.throws(() => createProvider({ env: { DAYTONA_ARCHIL_EGRESS: EGRESS } }), /COMPUTER_DAYTONA_API_KEY/, "a bare DAYTONA_ name is never read");
-	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, DAYTONA_ARCHIL_EGRESS: EGRESS }, fetch }).capabilities().mount, [], "the bare name is not the module's");
+	assert.deepEqual(createProvider({ env: { [DAYTONA_ENV.key]: KEY, DAYTONA_ARCHIL_EGRESS: EGRESS }, fetch }).capabilities().mount, ["sync"], "the bare name is not the module's");
 });
 
 test('mountFor("archil") gives a fresh run folder on the COMPUTER_ARCHIL_* disk only with COMPUTER_DAYTONA_ARCHIL_EGRESS set (the provider takes the mount only then), and none for a bind', async () => {

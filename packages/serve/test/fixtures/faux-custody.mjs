@@ -24,5 +24,7 @@ export default function reply(context, faux) {
     pipe: secrets.handoverState() ?? null,
   };
   keep(report);
-  return faux.message(JSON.stringify(report));
+  // One entry a line: an answer is served with no run of text past 8 KiB without whitespace (redactedAnswer), and the
+  // environment's names alone, on one line, pass that on a host with a large environment.
+  return faux.message(JSON.stringify(report, null, 1));
 }
