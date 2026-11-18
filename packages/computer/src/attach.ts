@@ -574,8 +574,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	const mine = (asked: { id: string }) => named(asked) !== undefined;
 	/** The hold each create request made: a request id makes one hold, ever. */
 	const holdsBy = new Map<string, string>();
-	/** A create still readying the box's synced folder, by its request id: a retry meanwhile shares its answer. */
-	const startingBy = new Map<string, Promise<Result<ComputerRef & { notes: string[] }>>>();
+	/** A create still readying the box's synced folder, by its request id: its hold, and the answer a retry meanwhile
+	 *  shares once it asks for the same labels. */
+	const startingBy = new Map<string, { readonly hold: string; readonly answer: Promise<Result<ComputerRef & { notes: string[] }>> }>();
 	const ended = () => fail("gone", `this run's hold on ${paired.name} has ended (released, or at its deadline): another run may hold it now`);
 	const unknown = (id: string) => fail("not_found", `no attached computer ${id}: this provider is ${paired.name}'s (${paired.id})`);
 	const offline = () => fail("gone", `${paired.name} is not attached now: open its driver, which dials this server`);
@@ -634,9 +635,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (typeof context?.requestId !== "string" || context.requestId === "") return fail("invalid", "create needs a request id (CreateContext.requestId): pass the same one to retry the same request");
 			// One hold per request id (provider.md, Idempotent create): a retry while it holds answers it, and after it ended
 			// is refused, so a retry never takes the machine from the run that holds it next.
+			// A retry while its synced folder is still being readied is checked as one after, then shares that answer.
 			const starting = startingBy.get(context.requestId);
-			if (starting !== undefined) return starting;
-			const before = holdsBy.get(context.requestId);
+			const before = starting?.hold ?? holdsBy.get(context.requestId);
 			if (before !== undefined) {
 				if (hub.hold(paired.id) !== before) return fail("exists", `${paired.name}'s hold ${before} was made for this request and has ended: create with a new request id`);
 				// The hold carries the labels of the request that made it: a retry that asks for other labels is another request.
@@ -644,7 +645,7 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 				const asked = spec.labels ?? {};
 				const same = Object.keys(asked).length === Object.keys(claimed).length && holds(claimed, asked);
 				if (!same) return fail("exists", `${paired.name}'s hold ${before} was made for this request with other labels: create with a new request id`);
-				return ok({ ...holdRef(before), notes: [ATTACHED_NOTE] });
+				return starting?.answer ?? ok({ ...holdRef(before), notes: [ATTACHED_NOTE] });
 			}
 			if (!hub.online(paired.id)) return offline();
 			// A run's hold ends at its lifetime, released or not: a run that never releases cannot keep the machine from the next.
@@ -659,7 +660,7 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			// anything is pushed there, and is cleared of an earlier run's programs and files: one that is not lets the hold
 			// go, in words. A retry of this request meanwhile shares this answer.
 			const requestId = context.requestId;
-			const made = (async () => {
+			const answer = (async () => {
 				const read = await folder(context.signal, true);
 				if (!read.ok || "other" in read.value) {
 					hub.unclaim(paired.id, hold);
@@ -669,8 +670,8 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 				holdsBy.set(requestId, hold);
 				return ok({ ...holdRef(hold), notes: [ATTACHED_NOTE] });
 			})().finally(() => startingBy.delete(requestId));
-			startingBy.set(requestId, made);
-			return made;
+			startingBy.set(requestId, { hold, answer });
+			return answer;
 		},
 		async attach(asked, context) {
 			if ("id" in asked) {

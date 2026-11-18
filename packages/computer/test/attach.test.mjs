@@ -546,6 +546,7 @@ test("a paired Linux box is a sandbox that takes the run's folder as a synced fo
 	const making = provider.create(SYNCED, first);
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	const retried = provider.create(SYNCED, first);
+	assert.deepEqual((await provider.create({ ...SYNCED, labels: { "agentrun.run": "r2", "agentrun.epoch": "4" } }, first)).error?.code, "exists", "a retry with other labels is another request, while the first is pending too");
 	assert.match((await provider.create(SYNCED, req())).error?.message ?? "", /^lab is held by another run/);
 	stat();
 	const held = (await making).value;
