@@ -144,6 +144,9 @@ function likelySlug(slug: string, listed: readonly string[]): string | undefined
   let best: { slug: string; d: number } | undefined;
   let tie = false;
   for (const s of listed) {
+    // An edit distance is at least the length difference: a slug that far off is skipped before the O(n·m) distance, so a
+    // huge pasted value against a big toolkit costs one length compare per action.
+    if (Math.abs(s.length - want.length) > reach) continue;
     const d = distance(want, s.toUpperCase());
     if (d > reach) continue;
     if (!best || d < best.d) [best, tie] = [{ slug: s, d }, false];
@@ -191,9 +194,11 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     const known = new Set(offered.tools.map((tool) => tool.slug));
     const unknown = offered.complete ? [...new Set(tools as string[])].filter((slug) => !known.has(slug)) : [];
     if (unknown.length) {
+      // A slug past 128 characters is named by its first 64 and its length, so the refusal never carries a pasted megabyte back.
       const names = unknown.map((slug) => {
         const likely = likelySlug(slug, [...known]);
-        return likely ? `${slug} (did you mean ${likely}?)` : slug;
+        const shown = slug.length > 128 ? `${slug.slice(0, 64)}… (${slug.length} characters)` : slug;
+        return likely ? `${shown} (did you mean ${likely}?)` : shown;
       });
       throw invalid([issue("tools", "not_found", `Composio's ${toolkit} toolkit has no action ${names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`}: pick from its list (POST /settings/mcp-servers/composio/tools). Nothing was saved.`)]);
     }
