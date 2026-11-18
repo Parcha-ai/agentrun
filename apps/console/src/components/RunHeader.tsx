@@ -11,8 +11,7 @@ import { pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 import { goBack } from "@/lib/back";
 import { ManageUsage } from "@/components/ChatGPTSignIn";
-import { PLAN_NO_DOLLARS } from "@/lib/chatgpt";
-import { costOfCap, isEstimate, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
+import { costOfCap, isEstimate, planNoDollars, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { runPlaceWords } from "@/lib/place";
@@ -25,7 +24,8 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
 const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  const plan = planOf(c) ? PLAN_NO_DOLLARS : undefined;
+  const used = planOf(c);
+  const plan = used ? planNoDollars(used) : undefined;
   if (known) return plan ? `${soFarNote(known, { ended })} ${plan}` : soFarNote(known, { ended });
   if (c && c.usd !== null && isEstimate(c)) return plan ? `A local estimate, not a bill. ${plan}` : "A local estimate, not a bill";
   return plan;
@@ -51,6 +51,8 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
+  // ChatGPT's usage page is for a ChatGPT plan's run only.
+  const chatGPTPlan = onPlan && planOf(run.cost)?.on !== "claude_code";
   return (
     <header>
       {/* The breadcrumb is the page's top bar, so its edge is level with the one under the navigation's logo. */}
@@ -84,7 +86,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. The
                 graph's totals are dollars alone, so a workflow on the plan reads its run's cost (tokens, the plan). */}
             {costText !== undefined && !onPlan ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
-              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{onPlan && <> · <ManageUsage /></>}</span>}
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{chatGPTPlan && <> · <ManageUsage /></>}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
