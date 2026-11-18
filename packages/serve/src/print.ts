@@ -36,6 +36,19 @@ const value = (v: string | number) => {
 export const logLine = (event: string, fields: Record<string, string | number> = {}): string =>
   [`at=${new Date().toISOString()}`, `event=${event}`, ...Object.entries(fields).map(([k, v]) => `${k}=${value(v)}`)].join(" ");
 
+/** The warn line of a paid request whose answer billed more input than the bound its hold was priced on (the kernel's
+ *  HoldShort), the cap's tripwire for a hold that was too small: `cap_hold_short` with the run, the request's session and
+ *  turn, the harness, the model, the bound and what it billed in tokens, and in USD what was held and, when its answer was
+ *  priced, what it billed and the shortfall (billed less held). Ids and figures only: no prompt, answer, header, key or
+ *  token. */
+export function holdShortLine(o: { run: string; session: string; turn: number; harness: string; model: string; boundTokens: number; billedTokens: number; heldUsd: number; billedUsd?: number }): string {
+  const usd = (figure: number) => Number(figure.toFixed(6));
+  return logLine("cap_hold_short", {
+    run: o.run, session: o.session, turn: o.turn, harness: o.harness, model: o.model, bound_tokens: o.boundTokens, billed_tokens: o.billedTokens, held_usd: usd(o.heldUsd),
+    ...(o.billedUsd === undefined ? {} : { billed_usd: usd(o.billedUsd), short_usd: usd(o.billedUsd - o.heldUsd) }),
+  });
+}
+
 /** The log line of a runner's start or end event (runner.ts RunnerEvent): `run_started` (run, agent, kind) once a run's
  *  first claim, `run_ended` (run, agent, status, cost_usd) once it is final: `cost_usd` the exact cost or "unknown", and
  *  beside an unknown one `cost_usd_at_most` when the run's stored cost is the most it can have cost. Any other event has
