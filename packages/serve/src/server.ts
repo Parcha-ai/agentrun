@@ -149,7 +149,7 @@ import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js
 import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
-import type { TriggerAdapter } from "./trigger-adapter.js";
+import type { Source, TriggerAdapter } from "./trigger-adapter.js";
 import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
@@ -2728,6 +2728,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // a trigger the owner made with the very name of a dropped one still pending is the package's, and is removed.
     const recorded = new Set([...(onto?.template?.triggers ?? []), ...(onto?.template?.removing ?? [])]);
     const removing = [...new Set(had.map((row) => row.name))].filter((name) => recorded.has(name) && !listed.has(name)).sort();
+    const hadByName = new Map(had.map((row) => [row.name, row]));
+    // A Composio trigger the update keeps by name is checked here, before the revision is written, as its PATCH will be:
+    // its server, event and config made its instance on Composio, so a change to one (a sealed key too) refuses the apply
+    // with nothing changed. A sealed value the package sends again as it is (filled in from a parameter, in the clear) is
+    // left out of the PATCH (ComposioTriggers.resent), so the trigger keeps it sealed. Neither the PATCH nor a refusal
+    // holds the value.
+    const resent = new Map<number, Source>();
+    for (const [i, trigger] of made.triggers.entries()) {
+      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
+      try {
+        resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "input_invalid" && error.extra.fields)) throw error;
+        const message = `The ${pkg.name} template's trigger ${was.name} is a Composio trigger, and this apply changes its server, event or config (a sealed key counts), which made its instance on Composio and can't change: nothing was changed. To change it, delete that trigger, then apply the template again with agent_id, which makes it anew.`;
+        throw invalid(error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}`, message })));
+      }
+    }
     // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
     // imported, its SHA; a keyed digest of the parameters it was given (never the parameters: one may be a credential), its
     // triggers' names and the ones it is removing, which a later apply reads.
@@ -2751,7 +2769,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
     // owner turned it off; a new name is made; one the package had last time and has no more is removed. A trigger the
     // owner added to the agent is never the package's: only names its last apply recorded are removed (`removing`).
-    const hadByName = new Map(had.map((row) => [row.name, row]));
     const ids: string[] = [];
     // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
     const madeNow: string[] = [];
@@ -2770,7 +2787,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         try {
           if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind) {
             const { enabled: _owners, ...patch } = aimed;
-            await triggers.update(was.id, patch);
+            const source = resent.get(i);
+            await triggers.update(was.id, source ? { ...patch, source } : patch);
             ids.push(was.id);
             continue;
           }

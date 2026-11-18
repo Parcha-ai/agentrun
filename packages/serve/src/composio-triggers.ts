@@ -22,7 +22,7 @@
 //   its key in the clear is answered masked all the same (shownSource), and sealed at the next start (sealKept).
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
@@ -75,6 +75,18 @@ const sealedOf = (source: Source): string[] => (Array.isArray(source[SEALED_FIEL
 /** The settings field a sealed config value is kept under: one the list of the server's secrets can hold (8 bytes or
  *  more, no whitespace), else the unlisted one. */
 const configFieldFor = (value: string) => (!/\s/.test(value) && Buffer.byteLength(value, "utf8") >= 8 ? CONFIG_SECRET : CONFIG_UNLISTED);
+
+/** The keys of a sealed_config name's place in the config: a top-level name as it is, a JSON Pointer's unescaped. */
+const placeOf = (name: string): string[] => (name.startsWith("/") ? name.slice(1).split("/").map((key) => key.replace(/~1/g, "/").replace(/~0/g, "~")) : [name]);
+/** The value at `path` in `config` where it is still kept in the clear (a trigger an earlier server saved), as text. */
+const clearAt = (config: unknown, path: readonly string[]): string | undefined => {
+  let node: unknown = config;
+  for (const key of path) node = isObject(node) ? node[key] : Array.isArray(node) ? node[Number(key)] : undefined;
+  return (typeof node === "string" || typeof node === "number") && node !== SEALED_MASK ? String(node) : undefined;
+};
+/** Whether two secrets are equal, in time that does not depend on where they differ: each digested first, so two of
+ *  different lengths compare as two equal-length buffers. */
+const sameSecret = (a: string, b: string): boolean => timingSafeEqual(createHash("sha256").update(a, "utf8").digest(), createHash("sha256").update(b, "utf8").digest());
 
 /** `said` with each of `values` (sealed config values) put as the mask. */
 /** An error's words for a log line: none with sealed config values (`values`) in play, as a quote of one may be in a form
@@ -169,6 +181,31 @@ export class ComposioTriggers implements TriggerUpstream {
         throw error;
       }
     });
+  }
+
+  /** A source sent whole again for trigger `id` (`was`), as an apply with agent_id sends its package's, its credentials in
+   *  the clear: each sealed field whose value it sends is the value sealed (compared in constant time) is left out, so the
+   *  PATCH keeps it (patched); then patched's own check, so another value, or any other change to the config, is refused
+   *  here, before the caller writes anything, in patched's words (none holds a value). The answer is the source to PATCH
+   *  the trigger with: no sealed value is in it. */
+  resent(was: Source, id: string, given: Source): Source {
+    const config = isObject(given.config) ? (structuredClone(given.config) as Json) : given.config;
+    if (isObject(config)) {
+      for (const name of sealedOf(shownSource(was))) {
+        const path = placeOf(name);
+        let node: unknown = config;
+        for (const key of path.slice(0, -1)) node = isObject(node) ? node[key] : undefined;
+        const last = path.at(-1)!;
+        if (!isObject(node)) continue;
+        const sent = node[last];
+        if (!(typeof sent === "string" || typeof sent === "number") || sent === SEALED_MASK) continue;
+        const kept = this.deps.sealed.get(configScope(id, name), CONFIG_SECRET) ?? this.deps.sealed.get(configScope(id, name), CONFIG_UNLISTED) ?? clearAt(was.config, path);
+        if (kept !== undefined && sameSecret(String(sent), kept)) delete node[last];
+      }
+    }
+    const source: Source = { ...given, config };
+    this.patched(was, source);
+    return source;
   }
 
   patched(was: Source, given: Source): Source {
