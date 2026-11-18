@@ -338,11 +338,17 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
   /** `agentrun open`, and the end of a start: the page to open first, in this machine's browser. With no owner yet, the
    *  setup page: its code filled in when setup takes one (a code still good is kept; an expired or spent one is replaced
    *  first, as the page's Get a new code does), or `/setup` where setup takes none. With an owner, the console, unless
-   *  `setupOnly`. Where no browser can open, the link is printed for the person at this terminal: theirs to open, and a
-   *  setup code works once and for 30 minutes, unlike the API token, which never leaves its file. Exit 0, or 1 when no
-   *  server answers. */
+   *  `setupOnly`. The link is printed for the person at this terminal as well, for when no browser opens (an opener can
+   *  start and still find none): theirs to open, and a setup code works once and for 30 minutes, unlike the API token,
+   *  which never leaves its file. The code comes from the log the service (or the installer's background start) writes,
+   *  so only for the data folder that log is for: another server prints its own elsewhere. Exit 0, or 1 when no server
+   *  answers. */
   async function openPage(data, { setupOnly = false, url = undefined } = {}) {
-    url ??= (await healthOf(data, { fetch: get })).url;
+    if (url === undefined) {
+      // A record a crash or a forced stop left behind names an address no server answers.
+      const now = await healthOf(data, { fetch: get });
+      if (now.health === "ok") url = now.url;
+    }
     if (!url) {
       if (setupOnly) return 0;
       io.stderr.write(`No AgentRun answers for ${data}: start it with agentrun service start, or agentrun.\n`);
@@ -358,16 +364,17 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         return undefined;
       }
     };
+    const logged = resolve(data) === (installed() ? dataOf(argsNow(), home) : resolve(root));
     const session = await ask("/auth/session");
     let link;
     let coded = false;
     if (session?.accounts !== false && session?.password_set === false) {
       if (session.setup_code) {
-        const before = newestSetup();
+        const before = logged ? newestSetup() : undefined;
         const renewed = await ask("/setup/code", { method: "POST" });
         // A new code goes to the log as the answer is sent: wait for its line.
-        for (let waited = 0; renewed?.printed && newestSetup() === before && waited < 3_000; waited += 100) await new Promise((done) => setTimeout(done, 100));
-        link = newestSetup();
+        for (let waited = 0; logged && renewed?.printed && newestSetup() === before && waited < 3_000; waited += 100) await new Promise((done) => setTimeout(done, 100));
+        link = logged ? newestSetup() : undefined;
         coded = link !== undefined;
         if (!link) {
           link = url;
@@ -379,8 +386,10 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     const opener = platform === "darwin" ? "open" : "xdg-open";
     const opened = canOpen(env, platform) && (await launch(opener, [link], env));
     const setup = !(link === url && session?.password_set !== false);
-    if (opened) say(setup ? "Opened the setup page in your browser: set the owner password there." : "Opened the console in your browser.");
-    else say(setup ? `Set the owner password at the setup page: ${link}` : `The console: ${link}`);
+    if (opened) {
+      say(setup ? "Opened the setup page in your browser: set the owner password there." : "Opened the console in your browser.");
+      say(`If no browser opened, open ${link}`);
+    } else say(setup ? `Set the owner password at the setup page: ${link}` : `The console: ${link}`);
     if (coded) say("Its setup code works once and for 30 minutes; agentrun open gives a new one after that.");
     return 0;
   }

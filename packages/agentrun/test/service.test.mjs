@@ -220,7 +220,35 @@ test("service install on a server with no owner opens its setup page in the brow
   assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open https://box.example.test/setup#code=OLDCODE1"]);
   assert.ok(asked.includes("POST /v2/setup/code"), "a code still good is kept; an expired or spent one is replaced first");
   assert.match(out.join(""), /Opened the setup page in your browser: set the owner password there\./);
+  // An opener can start and still find no browser: the link is there to open by hand.
+  assert.match(out.join(""), /If no browser opened, open https:\/\/box\.example\.test\/setup#code=OLDCODE1\n/);
   assert.match(out.join(""), /works once and for 30 minutes/);
+});
+
+// The service's log holds the setup lines of the server in ~/.agentrun alone: a server started on another --data prints
+// its own in its own terminal, so its page opens without a code, never with the service's.
+test("agentrun open --data on another server never fills in the service log's code; it says where that server's code is", async () => {
+  const box = setupHome();
+  const other = join(box.home, "other");
+  mkdirSync(other);
+  writeFileSync(join(other, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7399/v2", pid: process.pid }));
+  const { out, io } = ioOf();
+  const service = serviceOf({ platform: "linux", home: box.home, uid: 1000, user: "a", env: { DISPLAY: ":0" }, exec: box.exec, io, fail, get: box.get, launch: box.launch });
+  assert.equal(await service.open({ data: other }), 0);
+  assert.deepEqual(box.calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open http://127.0.0.1:7399/"]);
+  assert.doesNotMatch(out.join(""), /OLDCODE1/);
+  assert.match(out.join(""), /Its setup code is in the log of the terminal or service AgentRun runs in/);
+});
+
+// A crash or a forced stop leaves .server.json behind: its address answers nothing, so there is nothing to open.
+test("agentrun open on a record no server answers says no AgentRun answers, exit 1, and opens nothing", async () => {
+  const box = setupHome();
+  writeFileSync(join(box.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
+  const { err, io } = ioOf();
+  const refused = async () => { throw new Error("refused"); };
+  assert.equal(await serviceOf({ platform: "darwin", home: box.home, uid: 501, user: "a", env: {}, exec: box.exec, io, fail, get: refused, launch: box.launch }).open({}), 1);
+  assert.match(err.join(""), /No AgentRun answers for /);
+  assert.deepEqual(box.calls.filter((call) => call.startsWith("open ")), []);
 });
 
 test("with no browser here (a remote machine), the setup link is printed for the person, never opened; a new code is waited for", async () => {
