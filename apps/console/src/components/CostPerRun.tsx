@@ -199,7 +199,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
     p.n === null ? "Replay run" : `Run ${p.n}`,
     `${usd(p.total_usd)} all-in${p.learning_usd ? ` (${usd(p.cost_usd ?? 0)} the run, ${usd(p.learning_usd)} learning)` : ""}`,
     `${pathOf(p.path).label}${p.workflow ? `: ${p.workflow}` : ""}`,
-    p.digest ? `Workflow revision ${p.digest.slice(0, 7)}` : "No learned workflow ran",
+    // A missing digest only means the revision is not known: a run that took the workflow itself still ran it.
+    ...(p.digest ? [`Workflow revision ${p.digest.slice(0, 7)}`] : p.path === "agent" ? ["No learned workflow ran"] : []),
     ...(p.audited ? ["Audited: a shadow run of the agent checked it"] : []),
     ...(p.path === "replay" ? ["A replay: learning's spend, out of the line"] : []),
   ];
