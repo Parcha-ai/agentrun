@@ -70,6 +70,8 @@ on this machine.
 1. Write a small MCP server that runs a fixed set of read-only commands. Don't expose a general shell.
 2. Have it listen on `127.0.0.1` and require a bearer token you generate for it.
 3. Start AgentRun with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. Without it, a `127.0.0.1` or `localhost` address is refused.
+   Where AgentRun runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1` saves it there and
+   restarts it.
 4. Add the server in **Settings → MCP servers** with its `http://127.0.0.1:<port>/...` address and **Bearer token**.
 
 The CLI's own credential then stays with your server, on this machine, and never enters the box.
