@@ -12,14 +12,14 @@ const API = "https://api.example.test";
 const CTX = { timeoutMs: 5_000 };
 const ID = "mach-0123";
 
-/** A fetch that records each call and answers what route(method, path) gives: [status, json] or a function of the body. */
+/** A fetch that records each call and answers what route(method, path, body, signal) gives, or settles to: [status, json]. */
 function recorder(route) {
 	const calls = [];
 	const fetch = async (url, init) => {
 		const { pathname, search } = new URL(url);
 		const body = init.body === undefined ? undefined : typeof init.body === "string" ? JSON.parse(init.body) : Buffer.from(init.body);
 		calls.push({ method: init.method, path: `${pathname}${search}`, body, auth: init.headers.Authorization });
-		const [status, json] = route(init.method, `${pathname}${search}`, body) ?? [404, { detail: "no such route" }];
+		const [status, json] = (await route(init.method, `${pathname}${search}`, body, init.signal)) ?? [404, { detail: "no such route" }];
 		return new Response(json === undefined ? null : JSON.stringify(json), { status });
 	};
 	const provider = new SmolcloudProvider({ apiKey: KEY, apiUrl: API, fetch });
@@ -97,6 +97,26 @@ test("exec sends argv as given, an argv with an empty word as one /bin/sh -c lin
 	assert.deepEqual(started.body.command, ["cat"]);
 	await plain.kill();
 	assert.deepEqual(calls.at(-1), { method: "DELETE", path: `/v1/machines/${ID}/execs/${started.body.execId}`, body: undefined, auth: `Bearer ${KEY}` });
+});
+
+test("a start whose answer never came is sent again with the same execId, which smol cloud answers with the first try's session: one exec", async () => {
+	const sessions = new Map();
+	const { calls, host } = recorder((method, path, body, signal) => {
+		if (method === "POST" && path.endsWith("/execs")) {
+			const first = !sessions.has(body.execId);
+			sessions.set(body.execId, body.command);
+			// smol cloud started the command, and its answer to the first try is lost.
+			if (first) return new Promise((_, fail) => signal.addEventListener("abort", () => fail(signal.reason), { once: true }));
+			return [200, { execId: body.execId, done: false }];
+		}
+		if (method === "GET") return [200, { output: [], next: 0, done: true, exitCode: 0 }];
+	});
+	const proc = await host.exec(ID, ["true"], { timeoutMs: 50 });
+	assert.equal(await proc.wait(), 0);
+	const starts = calls.filter((c) => c.method === "POST" && c.path.endsWith("/execs")).map((c) => c.body);
+	assert.equal(starts.length, 2, "the start was sent again");
+	assert.deepEqual(starts[1], starts[0], "with the same execId and command");
+	assert.equal(sessions.size, 1);
 });
 
 /** A recorder whose exec starts, then answers every read of its output 503 and refuses its delete. */

@@ -183,6 +183,8 @@ class SmolcloudHost implements MachineHost {
 					// smol cloud refuses an argv with an empty word (400 "command arguments cannot be empty"), which the adapter's
 					// scripts pass for an unset option: such an argv runs as one quoted line under /bin/sh -c.
 					const command = argv.includes("") ? ["/bin/sh", "-c", `exec ${shellLine(argv)}`] : argv;
+					// Safe to send again: smol cloud answers a start retried with the same execId with the session the first try made,
+					// never running the command twice (its OpenAPI, POST /v1/machines/{id}/execs).
 					await this.#call("POST", base, { execId, command, interactive: true }, ctx, { retry: true });
 					return execId;
 				},
