@@ -23,7 +23,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
 import { type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
-import { folderAt, type FolderRead, type LearningFolder, readLearning, readRunDiff, readSnapshot, runDiffKey, snapshotAt, textsAt } from "../learn/folder.js";
+import { folderAt, type FolderRead, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion } from "../learn/promote.js";
@@ -566,8 +566,9 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     };
     // A round that merged already (a crash between its commit and its end): main holds its own merge, so the turn is
     // decided again on main as that merge read it (its parent), and the replayed answer lands on the merge it made
-    // (learn/commit.ts learningCommit: a round merges once), never a drop that leaves its commit unrecorded.
-    const own = await readRunDiff(folder.workspace, runDiffKey(input.runId, input.round));
+    // (learn/commit.ts learningCommit: a round merges once), never a drop that leaves its commit unrecorded. A stop
+    // between the merge and its diff file is read back from the run's ref (runMergeOf).
+    const own = await runMergeOf(folder.workspace, input.runId, input.round);
     const before = own ? await folderAt(folder.workspace, own.parent) : undefined;
     read = before
       ? await readFrom({ snapshot: before.snapshot, body: async (path, oid) => { const blob = before.blobs.get(oid); if (!blob) throw new Error(`${path} is not in ${own!.parent}`); return blob.toString("utf8"); } })

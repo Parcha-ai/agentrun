@@ -9,7 +9,7 @@
 import type { Workspace } from "../workspace/index.js";
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, type Snapshot, writeLearning } from "./folder.js";
+import { blobOid, type FolderChange, FolderMerged, FolderRefused, FolderTooLarge, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -85,7 +85,7 @@ const landed = (done: { result: Exclude<Computed, { merged: RunDiff }>; main?: s
 export async function learningCommit(ws: Workspace, change: LearningChange, opts: { retries?: number } = {}): Promise<LearningCommitResult> {
   const key = runDiffKey(change.runId, change.round);
   try {
-    const known = await readRunDiff(ws, key);
+    const known = await runMergeOf(ws, change.runId, change.round);
     if (known) return await already(ws, change, known.merge, known);
     const line = change.correction === undefined ? undefined : correctionLine(change.correction);
     // The line alone first: what it holds is refused whatever the file around it holds.
@@ -154,7 +154,7 @@ export async function correctionRefused(ws: Workspace, text: string, refuseValue
   const line = correctionLine(text);
   const own = correctionProblems(line, refuseValues);
   if (own.length) return own;
-  if (merge && (await readRunDiff(ws, runDiffKey(merge.runId, merge.round)))) return [];
+  if (merge && (await runMergeOf(ws, merge.runId, merge.round))) return [];
   const before = await readLearning(ws, ({ snapshot, body }) => correctionsOf(snapshot, body));
   const full = capProblem(appended(before, line));
   return full ? [full] : [];

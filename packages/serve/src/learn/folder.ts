@@ -543,9 +543,19 @@ export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff |
   return diff;
 }
 
-/** Run `runId`'s merge of `round` (readRunDiff), or undefined when it never merged here. */
+/** Run `runId`'s merge of `round` (readRunDiff), or undefined when it never merged here. A stop between a merge's commit
+ *  and its diff file leaves main and the run's ref moved with no diff: when main's log names the run and the round has no
+ *  diff, the script's `merged` writes the diff from the run's ref (one exec), and it is read. */
 export async function runMergeOf(ws: Workspace, runId: string, round = 1): Promise<RunDiff | undefined> {
-  return readRunDiff(ws, runDiffKey(runId, round));
+  const key = runDiffKey(runId, round);
+  const kept = await readRunDiff(ws, key);
+  if (kept || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(key)) return kept;
+  const named = (await readSnapshot(ws))?.log.some(({ by }) => "run" in by && by.run === runId);
+  if (!named) return undefined;
+  const done = await runScript(ws, ["merged", key]);
+  if (done.code === 1) return undefined;
+  if (done.code !== 0) throw failed("merged", done);
+  return readRunDiff(ws, key);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
