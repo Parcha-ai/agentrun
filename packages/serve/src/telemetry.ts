@@ -187,9 +187,17 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
 
   // The start that printed the notice sends nothing until its first heartbeat, a day later: a first run that completes
   // before then is kept as held and said with that heartbeat, or at the next start, whichever comes first.
+  // Debug prints first_run_completed once a start and marks nothing as sent or said: what it printed never left, so a
+  // start that can send after it still sends the event.
   let holding = first;
+  let printed = false;
   const sayHeld = (): void => {
     if (!state.first_run_held || state.first_run_sent) return;
+    if (mode === "debug") {
+      if (!printed) emit("first_run_completed");
+      printed = true;
+      return;
+    }
     state.first_run_sent = true;
     delete state.first_run_held;
     keepLater();
@@ -212,6 +220,12 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     ...(first ? { notice: TELEMETRY_NOTICE } : {}),
     runEnded(status) {
       state.runs += 1;
+      if (mode === "debug") {
+        keepLater();
+        if (status === "ended" && !state.first_run_sent && !printed) emit("first_run_completed");
+        if (status === "ended") printed = true;
+        return;
+      }
       const completed = status === "ended" && !state.first_run_sent && !state.first_run_held;
       const held = completed && holding;
       if (held) state.first_run_held = true;

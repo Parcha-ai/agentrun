@@ -166,6 +166,44 @@ test("debug prints each event at every start and sends none", async () => {
   for (const line of lines) assert.match(line, /^agentrun-serve telemetry \(debug, not sent\): \{"event":"server_started"/);
 });
 
+test("debug only prints first_run_completed: a held one, or a run completed under debug, is still sent by a start that can send", async () => {
+  const debug = (data, r, lines) => start(data, r, { env: { AGENTRUN_TELEMETRY: "debug" }, say: (line) => lines.push(line) });
+  const printed = (lines) => lines.map((line) => JSON.parse(line.slice(line.indexOf("{"))).event);
+  // Held at the notice's start, then a start under debug: printed once, and still held in the file.
+  const data = await scratch();
+  const r = receiver();
+  const first = start(data, r);
+  first.runEnded("ended");
+  await first.close();
+  const lines = [];
+  const shown = debug(data, r, lines);
+  shown.runEnded("ended");
+  await shown.close();
+  assert.deepEqual(printed(lines), ["server_started", "first_run_completed"]);
+  assert.deepEqual(r.got, []);
+  const kept = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8"));
+  assert.equal(kept.first_run_held, true);
+  assert.equal(kept.first_run_sent, undefined);
+  await start(data, r).close();
+  assert.deepEqual(r.got.map(({ body }) => body.event), ["server_started", "first_run_completed"]);
+
+  // A first run completed under debug, on a data directory that never sent: printed once, never marked as sent.
+  const fresh = await scratch();
+  const r2 = receiver();
+  const lines2 = [];
+  const only = debug(fresh, r2, lines2);
+  only.runEnded("ended");
+  only.runEnded("ended");
+  await only.close();
+  assert.deepEqual(printed(lines2), ["server_started", "first_run_completed"]);
+  assert.equal(JSON.parse(await readFile(join(fresh, TELEMETRY_FILE), "utf8")).first_run_sent, undefined);
+  await start(fresh, r2).close(); // the notice's start
+  const after = start(fresh, r2);
+  after.runEnded("ended");
+  await after.close();
+  assert.deepEqual(r2.got.map(({ body }) => body.event), ["server_started", "first_run_completed"]);
+});
+
 test("debug never stands in for the notice: the first start that can send after it prints the notice and sends nothing", async () => {
   const data = await scratch();
   const r = receiver();
