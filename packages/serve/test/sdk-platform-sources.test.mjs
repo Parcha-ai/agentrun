@@ -13,8 +13,8 @@ const register = async (api, id, runtime) => {
 };
 const headers = (key) => ({ "Idempotency-Key": key });
 
-test("the SDK runtimes are the two SDK libraries and the two agent platforms", () => {
-  assert.deepEqual([...SDK_RUNTIMES], ["claude-agent-sdk", "codex-sdk", "openclaw", "capy"]);
+test("the SDK runtimes name supported libraries, frameworks and reporting platforms", () => {
+  assert.deepEqual([...SDK_RUNTIMES], ["claude-agent-sdk", "codex-sdk", "openclaw", "capy", "openai-agents-sdk", "langgraph"]);
 });
 
 for (const runtime of ["openclaw", "capy"]) {

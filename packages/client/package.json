@@ -34,6 +34,14 @@
       "types": "./dist/codex.d.ts",
       "default": "./dist/codex.js"
     },
+    "./openai-agents": {
+      "types": "./dist/openai-agents.d.ts",
+      "default": "./dist/openai-agents.js"
+    },
+    "./langgraph": {
+      "types": "./dist/langgraph.d.ts",
+      "default": "./dist/langgraph.js"
+    },
     "./package.json": "./package.json",
     "./workflows": {
       "types": "./dist/workflows.d.ts",
@@ -75,6 +83,9 @@
     }
   },
   "devDependencies": {
+    "@langchain/core": "1.4.1",
+    "@langchain/langgraph": "1.7.5",
+    "@openai/agents": "0.22.0",
     "@parcha/agentrun-dsl": "0.1.0-beta.44"
   }
 }

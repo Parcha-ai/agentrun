@@ -364,7 +364,7 @@ export async function createWorkflowMcpBridge<
         return { name: workflow.name, description: workflow.description, ...(input_schema ? { input_schema } : {}) };
       }))}\nUse the learned_workflow MCP tool when applicable. Supply capability ${JSON.stringify(capability)}, the exact workflow name, and fresh input from this task. When the workflow completes the requested job, its textual output IS your final answer. Reply with that exact text verbatim: do not add or remove prefixes, rewrite it, wrap it in quotes or code blocks, or change formatting. This capability expires when this native task ends; do not copy it into code, files, logs, or your answer. No workflow is run merely by receiving this context.` : '';
       const matches = (name: string, input: unknown) => nativeServer !== undefined &&
-        (name === `mcp:${nativeServer}/learned_workflow` || name === `mcp__${nativeServer}__learned_workflow`) &&
+        (name === `mcp:${nativeServer}/learned_workflow` || name === `mcp__${nativeServer}__learned_workflow` || name === `mcp_${nativeServer}__learned_workflow`) &&
         object(input) && input.capability === capability && typeof input.name === 'string' && object(input.input) &&
         Object.keys(input).every(key => ['capability', 'name', 'input'].includes(key)) && lease.workflows.some(flow => flow.name === input.name);
       return { context, close: () => lease.close(),

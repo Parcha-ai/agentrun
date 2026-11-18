@@ -213,7 +213,7 @@ export class SdkRuns {
     // A learned workflow runs through a wrapper's local MCP bridge. A platform runtime has none, so accepting its
     // catalog would pin workflows nothing on that platform can execute: it receives owner corrections instead.
     if (workflow && !SDK_WORKFLOW_RUNTIMES.includes(binding.runtime))
-      refuse(`${binding.runtime} runs receive owner corrections; workflow_tools needs a backend workflow bridge (claude-agent-sdk or codex-sdk).`);
+      refuse(`${binding.runtime} runs receive owner corrections; workflow_tools needs a supported backend workflow bridge.`);
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);

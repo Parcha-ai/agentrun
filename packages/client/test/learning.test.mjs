@@ -149,7 +149,7 @@ test('context rendering includes the corrections and workflow context only when 
   assert.equal(renderLearningContext({ ...snapshot, context: '', workflowContext: '' }), '', 'nothing learned: no context');
 });
 
-for (const runtime of ['openclaw', 'capy']) test(`${runtime} is a backend runtime: registered and started under its own name`, async () => {
+for (const runtime of ['openclaw', 'capy', 'openai-agents-sdk', 'langgraph']) test(`${runtime} is a backend runtime: registered and started under its own name`, async () => {
   const server = service({ exists: false, runtime });
   const client = new BackendLearningClient(server.config);
   await client.begin({ runtime, input: 'Overnight job', instructions: 'Platform policy' });
