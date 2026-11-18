@@ -72,8 +72,8 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { cutOfNow, factsOverStore, listedItem, listingOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
-import { type Lister, startLister } from "./run-listing.js";
+import { cutOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunTrace } from "./run-trace.js";
@@ -1235,13 +1235,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
   let needsAsked = 0;
-  /** The runs' listings' builder (run-listing.ts), started once the views' deps are in place below. */
-  let lister: Lister | undefined;
+  // The runs' listings' builder (run-listing.ts): each run's listing, built from its view once per change, so a runs list
+  // reads rows alone. A list builds a listing it finds behind through it too (runsPage). Its own passes start once this
+  // server listens and knows its own address (ownOriginOf, below). Its items keep no console link (a list adds the one for
+  // the address its request reached), so the origin here is never served.
+  const lister = createLister(store, () => viewDepsFor(ownOriginOf()), {
+    log: (what, error) => log?.(logLine(what, { error: error.message })),
+    ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
+  });
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (cutOfNow). A failed run's error words
     // name a refused key by the keys and settings, so those listings are built again.
-    await lister?.keysChanged();
+    await lister.keysChanged();
     env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
     const mine = ++needsAsked;
     const next = await needsOf(env);
@@ -3054,11 +3060,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // builds many.
     // A write that lands while a listing is built moves the run's mark, so the listing is not written (Runs.putListing),
     // and a run still going is left with no status on its row: the build is made again from the mark that write left, up
-    // to LIST_TRIES builds, so a filter never leaves off a run because a write met its build.
+    // to LIST_TRIES builds, so a filter never leaves off a run because a write met its build. Each is the lister's build
+    // (Lister.build), so a held listing built here has its agent's learning folder read by the lister's passes after it.
     const listNow = async (runId: string, read: number) => {
       for (let mark: number | undefined = read, tries = 1; ; tries++) {
-        const listing = await listingOverStore(store, runId, vd);
-        if (!listing || (await store.runs.putListing(runId, mark, listing)) || tries === LIST_TRIES) return listing;
+        const { listing, written } = await lister.build(runId, mark, vd);
+        if (!listing || written || tries === LIST_TRIES) return listing;
         if ((mark = await store.runs.listMark(runId)) === undefined) return listing;
       }
     };
@@ -4576,7 +4583,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A change to a workflow is a write to the agent's learning: in its delete turn (agentWrite).
         const written = await agentWrite(id, () => changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id) }));
         // A run's list row that read a workflow held for the owner's OK says what the folder says now, at the next list.
-        await lister?.learningChanged(id);
+        await lister.learningChanged(id);
         return sendText(res, written.status, { ...written, text: secretsShown(refuse).text(written.text) });
       }
       case "startLearnedWorkflowReplay": {
@@ -4906,13 +4913,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise<void>((done) => server.close(() => done()));
     throw error;
   });
-  // Each run's listing, built from its view once per change, so a runs list reads rows alone (run-listing.ts): started once
-  // this server listens and knows its own address (ownOriginOf). Its items keep no console link (a list adds the one for
-  // the address its request reached), so the origin here is never served.
-  lister = startLister(store, () => viewDepsFor(ownOriginOf()), {
-    log: (what, error) => log?.(logLine(what, { error: error.message })),
-    ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
-  });
+  // The lister's own passes (above), once this server listens and knows its own address (ownOriginOf).
+  lister.start();
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
@@ -5180,7 +5182,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // --faux-github's fake GitHub API, once nothing asks it anything.
     await fauxGitHub?.close();
     // The listings' builder ends its pass before the store it reads and writes closes.
-    await lister?.stop();
+    await lister.stop();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -5206,6 +5208,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     close: () => (stopped ??= stop()),
     // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
     stopping: () => ({ runs: 0, boundMs: 0 }),
-    listingSettled: () => lister?.settled() ?? Promise.resolve(),
+    listingSettled: () => lister.settled(),
   };
 }

@@ -21,7 +21,7 @@ import { landWorkflows } from "./learned-workflow-seed-support.mjs";
 const { Connection } = await import("../dist/store/sqlite/connection.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { listedItem, listingOverStore, summaryOfView, summaryOverStore } = await import("../dist/store-view.js");
-const { startLister } = await import("../dist/run-listing.js");
+const { createLister } = await import("../dist/run-listing.js");
 const { saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
 const { folderTestHooks, learningWorkspace, readSnapshot } = await import("../dist/learn/folder.js");
 const { changeWorkflow } = await import("../dist/learning-routes.js");
@@ -196,7 +196,7 @@ test("the lister builds every run it may, past a pass's worth of runs whose view
   const runs = new Proxy(store.runs, { get: (target, key) => (key === "get" ? (id) => (unreadable.has(id) ? Promise.reject(new Error(`${id} cannot be read`)) : target.get(id)) : Reflect.get(target, key)) });
   const broken = new Proxy(store, { get: (target, key) => (key === "runs" ? runs : typeof target[key] === "function" ? target[key].bind(target) : Reflect.get(target, key)) });
   const failures = [];
-  const lister = startLister(broken, () => ({ origin: "http://127.0.0.1:7340", serverSecrets: () => [] }), { idleMs: Infinity, log: (line) => failures.push(line) });
+  const lister = createLister(broken, () => ({ origin: "http://127.0.0.1:7340", serverSecrets: () => [] }), { idleMs: Infinity, log: (line) => failures.push(line) });
   t.after(() => lister.stop());
   await lister.settled();
   assert.equal(failures.length, 40, "each unreadable run failed once");
@@ -345,7 +345,7 @@ test("a run whose sign-in could not be read while its listing was built is built
   let down = true;
   const signIns = new Proxy(reader, { get: (target, name) => (typeof target[name] === "function" ? (...args) => (down ? Promise.reject(new Error("the sign-ins read timed out")) : target[name](...args)) : Reflect.get(target, name)) });
   const deps = { origin: "http://127.0.0.1:7340", serverSecrets: () => [], signIns, now: () => clock.now };
-  const lister = startLister(store, () => deps, { idleMs: Infinity, now: () => clock.now });
+  const lister = createLister(store, () => deps, { idleMs: Infinity, now: () => clock.now });
   t.after(() => lister.stop());
   await lister.settled();
   const withheld = await listedRow(store, "run-1");
@@ -378,7 +378,7 @@ test("an approval that lands between a background build's read of the learning f
   const approved = new Map([[file, { status: "active" }]]);
   let folder = pending;
   const deps = { origin: "http://127.0.0.1:7340", serverSecrets: () => [], statuses: async () => folder, now: () => clock.now };
-  const lister = startLister(
+  const lister = createLister(
     // The approval lands, and the server marks the agent's held listings behind, after the build read the folder and
     // before it writes its listing.
     new Proxy(store, {
