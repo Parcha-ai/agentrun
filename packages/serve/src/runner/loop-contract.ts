@@ -2,6 +2,7 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
+import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 import type { Redact } from "./redact.js";
@@ -14,6 +15,11 @@ export type { AlsoRow, Claim, Command, Journal };
  *  answer is unfinished, so the run never reads ended. `tokens`: what the cut answer used, when its harness says. */
 export const cutAtLimit = (tokens?: number): string =>
   `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
+
+/** Why a run ends failed when the answer it would end on was cut at the output its cap limited it to (a CLI's turn_end
+ *  capCut): the cap stopped it, not the model, so the words name the cap and the least cap that lets it finish. */
+export const cutByCap = (cut: { capUsd: number; raiseToUsd: number }, tokens?: number): string =>
+  `the run's ${money(cut.capUsd)} cap stopped the model${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` at ${tokens} tokens` : ""} before it finished its answer: raise the cap to at least $${cut.raiseToUsd.toFixed(2)} to let it finish`;
 
 /** What the step keeps with its end-of-run turn as the turn is first asked (EndOfRunTurn ask's `keep`): written with the
  *  turn's prompt, durable before the turn's first request leaves. */
