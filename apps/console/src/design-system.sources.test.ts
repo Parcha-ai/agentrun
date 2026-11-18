@@ -57,6 +57,7 @@ const ALLOWED: { rule: string; file: string; has: string; why: string }[] = [
   { rule: "focus-removed", file: "components/ui/menu.tsx", has: "shadow-float outline-none", why: "An open menu holds the focus itself and shows it on the active item (data-[focus]:bg-accent)." },
   { rule: "focus-removed", file: "components/ui/picker.tsx", has: "shadow-float outline-none", why: "An open list holds the focus itself and shows it on the active option (data-[focus]:bg-accent)." },
   { rule: "shadow", file: "lib/learningBill.ts", has: 'row.source === "shadow"', why: "An audit ledger row's source, the API's word for an audit's shadow run, not a class." },
+  { rule: "shadow", file: "lib/learningTab.fixture.ts", has: 'source: "shadow"', why: "An audit ledger row's source in the tab's invented reads, the API's word for an audit's shadow run, not a class." },
 ];
 
 /** A source with its comments turned to spaces of the same shape, so every line number stays what it was. A `//` or

@@ -61,13 +61,20 @@ it took (the agent by hand, a learned workflow that handed back, or the workflow
 the agent's cost before learning as a dashed line, a marker at the first run the workflow finished alone, and the
 level after it. Once 20 runs stand behind that level, it says how many times cheaper it is.
 
-![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7.0x cheaper (marked Example data); under it, who finished each block of 5 runs, the learned workflow's share growing from run 21](../assets/tutorials/cost-per-run.png)
+![The cost per run chart: about $0.89 a run by hand, a marker where the learned workflow took over at run 21, then about $0.13 a run, 7.0x cheaper (marked Example data); under it, who finished each run, a column a run coloured by its path, the learned workflow's from run 21](../assets/tutorials/cost-per-run.png)
 
 The chart above is an invented agent's runs. `agentrun learning cost <agent> --format csv` writes your agent's series as
 CSV, to plot or check yourself (`GET /v2/agents/{id}/learning/cost` answers it as JSON).
 
-Under the chart, **who finished each run** stacks each block of runs by path on the same run axis, so the learned
-workflow's share grows from the takeover marker.
+Under the chart, **who finished each run** colours each run by its path on the same run axis (a column a run where the
+chart has room for one each, else each block of runs stacked by path), so the learned workflow's share grows from the
+takeover marker.
+
+Above both, the tab opens on one sentence and four figures: the cost ratio, how often the serving revision's answer was
+the agent's, how many of the runs it ran first it finished alone, and the bill's break-even run. Each share has its
+count and its 95% interval. Beside the bill, **cost against agreement** draws each promoted revision as a point: what a
+run it served cost against how often it agreed with the agent, on its check's inputs and its audited runs. Agreement is
+not accuracy: the agent's answer is the reference.
 
 To prove it, keep some inputs it never learns on and compare learning off and on. The
 [learning bench](../../packages/serve/learn-bench/README.md) does that for you.

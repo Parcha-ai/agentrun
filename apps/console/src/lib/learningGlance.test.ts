@@ -1,0 +1,112 @@
+import { describe, expect, it } from "vitest";
+import { evidenceWords, glanceOf, headlineOf, intervalWords, logAxis, revisionsOf, shareOf } from "./learningGlance";
+import { AUDITS, COST, FIRST, PROMOTIONS, SECOND, WORKFLOW } from "./learningTab.fixture";
+import type { LearningCost } from "./v2";
+
+// The Learning tab's headline figures and the cost against agreement chart's points: shares of the server's counts
+// with the interval their sample leaves, and never a figure the server did not give.
+
+const revisions = (audits: Parameters<typeof revisionsOf>[3] = AUDITS) => revisionsOf(COST, PROMOTIONS.promotions, PROMOTIONS.serving, audits);
+const summary = (over: Partial<LearningCost["summary"]>): LearningCost => ({ ...COST, summary: { ...COST.summary, ...over } });
+
+describe("a share and its interval", () => {
+  it("gives the 95% Wilson score interval of a share, which holds the share and stays within 0 to 1", () => {
+    const s = shareOf(28, 29)!;
+    expect(s.share).toBeCloseTo(0.9655, 4);
+    expect(s.lo).toBeCloseTo(0.8283, 3);
+    expect(s.hi).toBeCloseTo(0.9939, 3);
+    expect(intervalWords(s)).toBe("83% to 99%");
+  });
+  it("keeps the interval's end at the share when every answer agreed or none did, never past 0 or 100%", () => {
+    expect(shareOf(7, 7)).toMatchObject({ share: 1, hi: 1 });
+    expect(shareOf(7, 7)!.lo).toBeCloseTo(0.6457, 3);
+    expect(shareOf(0, 10)).toMatchObject({ share: 0, lo: 0 });
+    expect(shareOf(0, 10)!.hi).toBeCloseTo(0.2775, 3);
+  });
+  it("is no share of no rows: nothing is said as 0%", () => {
+    expect(shareOf(0, 0)).toBeNull();
+  });
+});
+
+describe("each promoted revision as a point", () => {
+  it("counts a revision's agreement on its check's alone answers and its audit rows together, and its cost over the runs it served", () => {
+    const [first, second] = revisions();
+    expect(first).toMatchObject({ workflow: WORKFLOW, digest: FIRST, label: "v1", state: "held", check: { agreed: 15, alone: 17, n: 20, agree_min: 0.8 }, audits: { agreed: 5, rows: 8, grades: 0 } });
+    expect(first!.agreement).toMatchObject({ agreed: 20, rows: 25 });
+    expect(first!.served!.runs).toBe(28);
+    expect(second).toMatchObject({ digest: SECOND, label: "v2", state: "serving", audits: { agreed: 7, rows: 7, grades: 1 } });
+    expect(second!.agreement).toMatchObject({ agreed: 28, rows: 29 });
+    expect(second!.served!.runs).toBe(31);
+    // Every served run of the read is one revision's: the two means are of the summary's 59 served runs.
+    expect(first!.served!.runs + second!.served!.runs).toBe(COST.summary.after!.runs);
+    expect(evidenceWords(second!)).toBe("check 21 of 22 · audits 7 of 7, 1 your grade");
+  });
+  it("is one point a revision, however many records it has: a promotion and a hold of one digest are one", () => {
+    expect(revisions().map((p) => p.digest)).toEqual([FIRST, SECOND]);
+  });
+  it("counts the check alone while the audit ledger is unread or its read failed, never 0 audits", () => {
+    for (const unread of ["loading", "failed"] as const) {
+      const second = revisions(unread)[1]!;
+      expect(second.audits).toBeNull();
+      expect(second.agreement).toMatchObject({ agreed: 21, rows: 22 });
+      expect(evidenceWords(second)).toBe("check 21 of 22");
+    }
+  });
+  it("leaves an audit with no verdict (skipped, parked) out of the count", () => {
+    const parked = [...AUDITS, { ...AUDITS.at(-1)!, run: "run-parked", agreed: null, parked: true as const }];
+    expect(revisions(parked)[1]!.audits).toMatchObject({ rows: 7 });
+  });
+  it("has no point for a revision that never served: one replaying or held before its promotion", () => {
+    const replaying = [...PROMOTIONS.promotions, { ...PROMOTIONS.promotions[0]!, digest: "e".repeat(16), decided: "replaying" as const }];
+    expect(revisionsOf(COST, replaying, PROMOTIONS.serving, AUDITS)).toHaveLength(2);
+  });
+  it("names the workflow before the number when the agent has more than one learned workflow", () => {
+    const other = { ...PROMOTIONS.promotions[0]!, workflow: "file-receipt", digest: "f".repeat(16) };
+    expect(revisionsOf(COST, [...PROMOTIONS.promotions, other], PROMOTIONS.serving, AUDITS).map((p) => p.label)).toEqual(["sort-invoice v1", "sort-invoice v2", "file-receipt v1"]);
+  });
+});
+
+describe("the tab at a glance", () => {
+  it("says the server's ratio and the serving revision's agreement, and nothing before a takeover", () => {
+    const g = glanceOf(COST, revisions())!;
+    expect(g.revision!.digest).toBe(SECOND);
+    expect(g.serves).toBe(true);
+    expect(headlineOf(g)).toBe("7.7x cheaper a run, agreeing with the agent on 28 of 29 answers.");
+    expect(g.alone).toMatchObject({ agreed: 56, rows: 59 });
+    expect(g.even).toEqual({ n: COST.bill.break_even!.n });
+    expect(glanceOf(summary({ takeover: null }), [])).toBeNull();
+  });
+  it("never says cheaper for a ratio at or under 1, and works no ratio out when the server gave none", () => {
+    const rev = revisions();
+    expect(headlineOf(glanceOf(summary({ times_cheaper: 0.8, before: { runs: 20, mean_usd: 0.1 }, after: { runs: 59, mean_usd: 0.125 } }), rev)!)).toBe("Not cheaper yet: 1.3x the cost a run, agreeing with the agent on 28 of 29 answers.");
+    expect(headlineOf(glanceOf(summary({ times_cheaper: 1 }), rev)!)).toBe("The same cost a run, agreeing with the agent on 28 of 29 answers.");
+    // Under 20 served runs the server gives no ratio: the two levels are said, never their quotient.
+    const early = headlineOf(glanceOf(summary({ times_cheaper: null, after: { runs: 4, mean_usd: 0.12 } }), rev)!);
+    expect(early).toBe("$0.120 a run instead of $0.890, agreeing with the agent on 28 of 29 answers.");
+    expect(early).not.toMatch(/\dx/);
+  });
+  it("says the agent takes the runs when the revision is held, or the money rule stopped it running first", () => {
+    const held = { ...PROMOTIONS.serving[0]!, digest: null, state: "held" as const };
+    const first = revisionsOf(COST, PROMOTIONS.promotions.slice(0, 2), [held], AUDITS);
+    expect(headlineOf(glanceOf(COST, first)!)).toBe("7.7x cheaper a run. Held now: the agent takes the runs.");
+    const stopped: LearningCost = { ...COST, workflows: [{ workflow: WORKFLOW, digest: SECOND, state: "needs_revision", served: { runs: 20, mean_usd: 0.9 }, by_hand: { runs: 20, mean_usd: 0.89 }, unknown_cost_runs: 0 }] };
+    expect(glanceOf(stopped, revisions())!.serves).toBe(false);
+    expect(headlineOf(glanceOf(stopped, revisions())!)).toBe("7.7x cheaper a run. Not serving now: the agent takes the runs.");
+  });
+  it("says how far over the agent the bill stands when it has not broken even", () => {
+    const over: LearningCost = { ...COST, bill: { ...COST.bill, break_even: null, gap_usd: 1.25 } };
+    expect(glanceOf(over, revisions())!.even).toEqual({ gap_usd: 1.25 });
+  });
+});
+
+describe("the dollar axis", () => {
+  it("holds every value with room on both sides and ticks at 1, 2 and 5 of each power of ten inside it", () => {
+    const axis = logAxis([0.106, 0.128, 0.89]);
+    expect(axis.lo).toBeLessThan(0.106);
+    expect(axis.hi).toBeGreaterThan(0.89);
+    expect(axis.ticks).toEqual([0.1, 0.2, 0.5, 1]);
+  });
+  it("still has an axis with no positive value", () => {
+    expect(logAxis([0]).ticks.length).toBeGreaterThan(1);
+  });
+});
