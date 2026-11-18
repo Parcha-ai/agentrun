@@ -97,6 +97,15 @@
     - The server has `deleteLearning`, the learning half of an agent's delete: the learning folder (its git history and audits.jsonl) and the agent's promotion, grade and eval records, refused while learning work is in flight, and safe to call again after a crash.
     - Upgrading: `cost.usd` on `GET /runs/{id}` is now the job's own spend, so a run's look-back and compile spend move to `cost.learning_usd` (a compile turn's to the runs its revision serves), as does a served run's audit shadow cost. Read `cost.all_in_usd` for what learning added to the run.
 - The server starts on a data directory that is a mounted disk. Its first-start check for an earlier version's files stopped with `EACCES` on the disk's `lost+found`, which belongs to root with mode 700. It now skips any path it can't look into. An earlier version wrote its files as the server's own user, so they can't be hiding there.
+- A Codex run under a small spend cap no longer stops as early on a hold that overstated its next request.
+
+  A request that only adds items to the session's last billed request is now held at that bill plus the bytes of the items it adds, with the local count's margin. The bill is all of that request's `input_tokens`, cached tokens included. Any other difference falls back to the local count, as before: changed instructions, tools, reasoning or model, or an earlier item edited, removed or moved.
+
+  Once the run has seen its model reason, a request's least output is 1,024 tokens plus twice the most reasoning one answer reported, within its effort's allowance. Before that it is the whole allowance, as before.
+
+  The request is still sent with all the output the cap fits, and the hold is still its worst case, so the cap is never passed. When the provider cuts an answer at the output the cap limited it to, the turn says so. A final answer cut that way ends the run with "the run's $0.50 cap stopped the model at N tokens before it finished its answer: raise the cap to at least $X to let it finish", where $X is the cap that sends that request whole with the run's wrap-up reserve still kept beside it.
+
+  An image in a custom tool call's output (Codex code mode's exec) is now counted at its billed tokens, as one in a function call's output already was.
 
 ## 0.1.0-beta.43 (2026-11-17)
 
