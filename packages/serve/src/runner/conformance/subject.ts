@@ -63,6 +63,9 @@ export interface ConformanceSetup {
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;
+  /** Called with each message the subject's model is handed, when the subject can see it (a stand-in's fake reports what
+   *  it consumed and at what priority): for a case's failure message to name, never asserted on. */
+  readonly received?: (message: { readonly text: string; readonly priority?: string }) => void;
 }
 
 export type ConformanceCase =
