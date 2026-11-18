@@ -12,6 +12,8 @@
 // - A kept computer attached again by a new runner has no manifest: one full pull (pullFolder), every file the computer
 //   holds put and what the disk holds beyond them removed.
 // - At release, a final delta (finalWords says a failed one).
+// - A run synced before and claimed again on an Archil mount: sync.json's modes and links put back over the mount, then
+//   sync.json emptied (restoreMeta), since the mount keeps them itself.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
 
 /** A file or a directory of the folder as the store holds it, by its path relative to the folder. */
@@ -105,6 +107,30 @@ export async function pushFolder(store: FolderStore, client: ComputerClient, sto
   const listed = await folder.baseline(options);
   if (!listed.ok) throw new Error(`the run's folder pushed into the computer could not be listed: ${listed.error.message}`);
   return folder;
+}
+
+/**
+ * A folder synced on an earlier claim, now under a mount of the disk itself (Archil), which never reads sync.json: the
+ * modes and links it keeps put back in place through `client` (the files with a mode of their own pushed again, its
+ * links made), then sync.json emptied, as the mount holds them from here on. `client` syncs the mount before a push
+ * answers, so nothing is emptied that has not landed. A folder never synced, or whose sync.json holds nothing, is left
+ * as it is. Throws in words where it fails.
+ */
+export async function restoreMeta(store: FolderStore, client: ComputerClient, signal?: AbortSignal): Promise<void> {
+  const meta = await store.readMeta();
+  if (meta === undefined || (Object.keys(meta.modes).length === 0 && Object.keys(meta.links).length === 0)) return;
+  const entries: StoredEntry[] = [];
+  const links = new Map(Object.entries(meta.links).filter(([path]) => folderPathProblem(path) === undefined));
+  for await (const entry of store.entries()) {
+    if (Object.hasOwn(meta.modes, entry.path)) entries.push(entry);
+    links.delete(entry.path);
+  }
+  if (entries.length > 0 || links.size > 0) {
+    const pushed = await pushTar(client, WORKSPACE, tarStream(tarEntries(store, { entries, meta: { modes: meta.modes, links: Object.fromEntries(links) } })), signal ? { signal } : {});
+    if (!pushed.ok) throw new Error(`the run's folder's modes and links could not be put back: ${pushed.error.message}`);
+  }
+  const emptied = await store.meta({ modes: {}, links: {} });
+  if (!emptied.ok) throw new Error(`the run's folder's sync.json could not be emptied: ${emptied.error.message}`);
 }
 
 /**

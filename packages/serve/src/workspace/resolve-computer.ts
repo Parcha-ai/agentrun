@@ -20,14 +20,14 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
+import { archilSync, type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { finalSyncWords, pullFolder, pushFolder, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { finalSyncWords, pullFolder, pushFolder, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 
 /** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
@@ -506,6 +506,17 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         const said = entry.mounts.includes("bind") && side.daemon ? await side.daemon(entry.id).catch(() => undefined) : undefined;
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      // A folder synced on an earlier claim, now under a new Archil mount: the modes and links its sync.json keeps, which
+      // the mount never reads, put back (and the mount synced) before any tool runs. One that can't be lets the computer go.
+      const synced = folder === "archil" && !again ? workspace.syncStore?.() : undefined;
+      if (synced && launched.client) {
+        try {
+          await restoreMeta(synced, syncingClient(launched.client, archilSync(launched.client)), signal);
+        } catch (error) {
+          await launched.release().catch(() => undefined);
+          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       // A synced folder, before any tool runs there: pushed into a new computer, or pulled whole from a kept one (whose
       // copy may be newer than the disk's). One that can't be had lets the computer go.
