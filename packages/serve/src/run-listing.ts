@@ -14,7 +14,7 @@
 // as it stands there; read for the agents that have such runs, each pass).
 import type { Store } from "./store/store.js";
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
-import { listingOverStore, type ViewDeps } from "./store-view.js";
+import { LISTING_RETRY_MS, listingOverStore, type ViewDeps } from "./store-view.js";
 
 /** Most rows one read of a pass reads. */
 const PASS_ROWS = 32;
@@ -22,8 +22,6 @@ const PASS_ROWS = 32;
 export const LISTER_IDLE_MS = 400;
 /** The least time between two builds of one run a runner holds (ms). */
 const HELD_REBUILD_MS = 1_000;
-/** How long a run whose view failed to build waits before it is tried again (ms). */
-const FAILED_RETRY_MS = 30_000;
 
 export interface Lister {
   /** Resolves once a pass finds nothing it may build now: every run's listing is current, but for a held run built within
@@ -49,7 +47,8 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
   let pass: Promise<number> = Promise.resolve(0);
   /** A held run's last build: when, and how long it took. */
   const built = new Map<string, { at: number; ms: number }>();
-  /** The agents with a run whose learning holds items for the owner's OK, with their folder's statuses as last read. */
+  /** The agents with a run whose learning holds items for the owner's OK, with their folder's statuses as last read (for an
+   *  agent first met in a build, as that build read them). */
   const folders = new Map<string, unknown>();
   /** When each run whose view failed to build last failed. */
   const failed = new Map<string, number>();
@@ -82,15 +81,20 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
       for (const { id, mark, held } of rows) {
         if (closing) break;
         const last = built.get(id);
-        if ((held && last && now() - last.at < Math.max(HELD_REBUILD_MS, 4 * last.ms)) || (failed.get(id) ?? -Infinity) > now() - FAILED_RETRY_MS) {
+        if ((held && last && now() - last.at < Math.max(HELD_REBUILD_MS, 4 * last.ms)) || (failed.get(id) ?? -Infinity) > now() - LISTING_RETRY_MS) {
           passed++;
           continue;
         }
         const start = now();
         let listing: Awaited<ReturnType<typeof listingOverStore>>;
         let written = false;
+        // The folder statuses this build read, by agent: the baseline a later pass compares against, never a read made
+        // after it, which a person's approval landing before this listing's write would already hold.
+        const read = new Map<string, unknown>();
+        const statuses = deps.statuses;
+        const buildDeps: ViewDeps = statuses ? { ...deps, statuses: async (agentId) => { const seen = await statuses(agentId); if (!read.has(agentId)) read.set(agentId, seen); return seen; } } : deps;
         try {
-          listing = await listingOverStore(store, id, deps);
+          listing = await listingOverStore(store, id, buildDeps);
           if (listing) written = await store.runs.putListing(id, mark, listing);
           failed.delete(id);
         } catch (error) {
@@ -105,7 +109,7 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
         if (held) built.set(id, { at: now(), ms: now() - start });
         else built.delete(id);
         const agentId = String(listing.item.agent_id);
-        if (listing.flags & LISTING_HELD && !folders.has(agentId)) folders.set(agentId, await deps.statuses?.(agentId));
+        if (listing.flags & LISTING_HELD && !folders.has(agentId)) folders.set(agentId, read.get(agentId));
       }
       if (closing || count > 0 || rows.length < PASS_ROWS) return count;
     }

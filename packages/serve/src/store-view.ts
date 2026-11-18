@@ -101,6 +101,10 @@ const STATUS_OF: Record<Exclude<RunReadState, "running">, Status> = { completed:
 export const settledStatusOf = (state: RunReadState): Status | undefined => (state === "running" ? undefined : STATUS_OF[state]);
 /** A run that has reached a last state (its view is its ended shape). */
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
+/** How long a run's listing waits before it is built again when its build could not read what it needed (ms): a listing
+ *  that withheld the run for a sign-in it could not read back (listingOverStore), and the lister's build that failed
+ *  (run-listing.ts). */
+export const LISTING_RETRY_MS = 30_000;
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
@@ -505,8 +509,9 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   return run && viewOfRun(store, runId, deps, run);
 }
 
-/** GET /runs/{id}'s answer for a run already read (storeRunOf). */
-async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: StoreRun): Promise<Record<string, unknown>> {
+/** GET /runs/{id}'s answer for a run already read (storeRunOf). `read.withheld` is set to whether the answer withholds the
+ *  run because this server could not read back the sign-in it was handed (its cut, or its error's words). */
+async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: StoreRun, read?: { withheld: boolean }): Promise<Record<string, unknown>> {
   const { row, runRow, launch, view, unshown, values, output, review: kept, structured } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
@@ -551,6 +556,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   const failedReason = run.rows.findLast((r) => r.kind === "error")?.text ?? row.summary ?? null;
   const errorWords = status === "failed" && !unshown ? await runErrorWordsOf({ ...deps, keyEnv: deps.keyEnv ?? (() => process.env) }, store, runId, { workflow: row.kind === "workflow" }) : undefined;
   const withheld = unshown || errorWords === "unreadable";
+  if (read) read.withheld = withheld;
   const error = status === "failed" ? (withheld ? { code: "run_failed", message: WITHHELD_SIGN_IN, retryable: false } : servedRunErrorWith(errorWords ?? shownWords, errorOfRow(failedReason))) : null;
   const review = endedAtMs === null ? null : servedReviewWith(shownWords, unshown, reviewAt(reviewOfRow(row.state, row.summary ?? null, kept), iso(endedAtMs)));
   // The card the run shows while it waits, in the order the file-backed view (runs.ts) picks them: a tool call parked for a
@@ -642,16 +648,19 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
  *  fills in when it reads it (console_url: the origin the request reached; archived_at: the run's or its agent's archive
  *  now) kept empty; the digest of the server's secrets it was cut of (`cut`, so a list cuts it again of any saved since);
  *  its status; whether a runner held the run (its status reads otherwise once that claim runs out); when it goes stale by
- *  the clock alone (the ask it waits on expires); and what outside the run it read (LISTING_HELD, LISTING_KEYED).
- *  Undefined for an unknown run. */
+ *  the clock alone (the ask it waits on expires, or LISTING_RETRY_MS after a build that withheld the run because the
+ *  sign-in it was handed could not be read: that read may fail only for now, and the run reads whole once it recovers);
+ *  and what outside the run it read (LISTING_HELD, LISTING_KEYED). Undefined for an unknown run. */
 export async function listingOverStore(store: Store, runId: string, deps: ViewDeps): Promise<RunListing | undefined> {
   const cut = secretsDigest(deps.serverSecrets());
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
-  const summary = summaryOfView(await viewOfRun(store, runId, deps, run));
+  const read = { withheld: false };
+  const summary = summaryOfView(await viewOfRun(store, runId, deps, run, read));
   const status = String(summary.status);
   const terminal = TERMINAL.has(status as Status);
-  const expiries = terminal ? [] : [run.browserAsk?.expires_at, run.computerAsk?.expires_at].map((at) => (typeof at === "string" ? Date.parse(at) : Number.NaN)).filter((at) => Number.isFinite(at));
+  const asks = terminal ? [] : [run.browserAsk?.expires_at, run.computerAsk?.expires_at].map((at) => (typeof at === "string" ? Date.parse(at) : Number.NaN)).filter((at) => Number.isFinite(at));
+  const expiries = read.withheld ? [...asks, (deps.now ?? Date.now)() + LISTING_RETRY_MS] : asks;
   const flags = (run.shownEnd && holdsForOk(run.shownEnd as Learning) ? LISTING_HELD : 0) | (status === "failed" && run.row.kind !== "workflow" ? LISTING_KEYED : 0);
   return {
     item: { ...summary, console_url: null, archived_at: null },
