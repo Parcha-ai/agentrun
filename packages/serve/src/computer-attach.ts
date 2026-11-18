@@ -362,6 +362,10 @@ const TOKEN_REFUSED = "no paired computer or hosted machine has this token: pair
 /** The daemon route's 401: a token no hosted machine has good. */
 const MACHINE_TOKEN_REFUSED = "no hosted machine has this token: a machine's token ends at its delete or its backstop";
 
+/** A minted machine's dial, as the words about it say it: by its run where its create named one, the machine after;
+ *  else by the machine. Never its token. */
+const dialOf = (row: Pick<MintedTokenRow, "run" | "machine">): string => (row.run !== null ? `a dial for run ${row.run} (machine ${row.machine})` : `a dial for machine ${row.machine}`);
+
 /** Why a minted machine's socket closed at its token's revoke. */
 const machineGone = (machine: string): string => `${machine} was deleted: its token ends`;
 
@@ -417,12 +421,12 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
    *  (its name, from its create's request id) until `expiresAt` (its backstop); a revoke (its delete) ends it and closes
    *  its socket with 4401. */
   const machineTokens: MachineTokens = {
-    async mint(machine, { kind, os, arch, expiresAt }) {
+    async mint(machine, { kind, os, arch, expiresAt, run }) {
       const until = expiresAt.getTime();
       if (!Number.isFinite(until)) throw new TypeError(`a machine token's expiresAt is a time, not ${JSON.stringify(expiresAt)}`);
       const token = newMintedToken();
-      await minted.mint({ machine, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until, ...(options.owner ?? {}) });
-      log("machine_token_minted", { machine, kind, os, arch, expires_at: new Date(until).toISOString() });
+      await minted.mint({ machine, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until, ...(options.owner ?? {}), ...(run !== undefined ? { run } : {}) });
+      log("machine_token_minted", { ...(run !== undefined ? { run } : {}), machine, kind, os, arch, expires_at: new Date(until).toISOString() });
       return token;
     },
     async revoke(machine) {
@@ -464,14 +468,17 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   const takes = (row: MintedTokenRow): boolean => (options.owner ? row.runner === options.owner.runner && row.incarnation === options.owner.incarnation : row.runner === null);
 
   /** The server's relay of machine `row`'s dial (its token `bearer`) to the runner that minted it: refused 503 in words
-   *  that name the machine, never its token, where that runner keeps no fresh listener, restarted since, answers at a
-   *  host this server does not dial, or does not take it; else the machine's socket is joined to one opened to the
-   *  runner's listener with the proxy's proof for this token, runner and incarnation, each with this module's limits. */
+   *  that name its run, then the machine (dialOf), never its token, where that runner keeps no fresh listener, restarted
+   *  since, answers at a host this server does not dial, or does not take it; else the machine's socket is joined to one
+   *  opened to the runner's listener with the proxy's proof for this token, runner and incarnation, each with this
+   *  module's limits. */
   async function relayDial(row: MintedTokenRow, bearer: string, req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string) => void): Promise<void> {
     const runner = row.runner!;
+    const named = { ...(row.run !== null ? { run: row.run } : {}), machine: row.machine, runner };
     const refuse = (why: string) => {
-      log("machine_relay_refused", { machine: row.machine, runner, why });
-      deny("503 Service Unavailable", `a dial for machine ${row.machine}: ${why}`);
+      const words = `${dialOf(row)}: ${why}`;
+      log("machine_relay_refused", { ...named, why: words });
+      deny("503 Service Unavailable", words);
     };
     if (options.relay === undefined) return refuse(`runner ${runner} made it, and this server relays no dial to a runner`);
     const at = await options.relay.relays.get(runner);
@@ -509,7 +516,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
           one.once("close", () => sockets.delete(one));
         }
         joinSockets(ws, upstream, options.timing);
-        log("machine_relayed", { machine: row.machine, runner });
+        log("machine_relayed", named);
       });
     });
   }

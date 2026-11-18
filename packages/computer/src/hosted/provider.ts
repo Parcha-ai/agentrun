@@ -805,7 +805,8 @@ export class HostedProvider implements ComputerProvider {
 			workspace: spec.mount?.kind === "sync",
 		});
 		const backstopAt = new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString();
-		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network) }, sha256) : undefined;
+		const run = spec.labels?.[RUN_LABEL];
+		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network) }, sha256, typeof run === "string" ? run : undefined) : undefined;
 		if (boot !== undefined && !boot.ok) return boot;
 		const request: MachineRequest = {
 			name,
@@ -849,14 +850,15 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * A dial machine's environment (MachineRequest.boot.env, spec/computer/attach.md): its own token, minted here to stop
-	 * at backstopAt, where it dials and fetches the daemon, the daemon's sha256, and init's flags as start gives them.
+	 * at backstopAt and naming the run its labels name (`run`), where it dials and fetches the daemon, the daemon's
+	 * sha256, and init's flags as start gives them.
 	 */
-	async #boot(name: string, backstopAt: string, init: Parameters<typeof initFlags>[0], sha256: string): Promise<Result<Record<string, string>>> {
+	async #boot(name: string, backstopAt: string, init: Parameters<typeof initFlags>[0], sha256: string, run: string | undefined): Promise<Result<Record<string, string>>> {
 		const dialed = this.#dialed();
 		if ("problem" in dialed) return this.#fail("refused", dialed.problem);
 		let token: string;
 		try {
-			token = await dialed.dial.tokens.mint(name, { kind: this.#kind, os: "linux", arch: this.host.facts.arch, expiresAt: new Date(backstopAt) });
+			token = await dialed.dial.tokens.mint(name, { kind: this.#kind, os: "linux", arch: this.host.facts.arch, expiresAt: new Date(backstopAt), ...(run !== undefined ? { run } : {}) });
 		} catch (error) {
 			return this.#fail("refused", `minting ${name}'s machine token failed, so ${this.#label} was not called: ${words(error)}`);
 		}

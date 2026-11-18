@@ -4,12 +4,15 @@
 --
 -- minted_tokens.runner, .incarnation: the runner in a process of its own that minted the machine's token, and its
 -- incarnation (its process since its start); null for a token the server's own process minted.
+-- minted_tokens.run: the run the machine works for, as its create named it, which the words about its dial say; null for
+-- a machine of no run.
 -- runner_relays: one row per runner in a process of its own, where its attach listener takes the dials the server relays
 -- to it (its host and port), under its incarnation, and when it last said it was there.
 -- IF NOT EXISTS: applied again over a store that has them, it changes nothing.
 
 ALTER TABLE minted_tokens ADD COLUMN IF NOT EXISTS runner TEXT COLLATE "C";
 ALTER TABLE minted_tokens ADD COLUMN IF NOT EXISTS incarnation TEXT COLLATE "C";
+ALTER TABLE minted_tokens ADD COLUMN IF NOT EXISTS run TEXT COLLATE "C";
 
 CREATE TABLE IF NOT EXISTS runner_relays (
   runner TEXT COLLATE "C" PRIMARY KEY,

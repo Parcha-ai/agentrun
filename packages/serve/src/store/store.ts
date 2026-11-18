@@ -1213,13 +1213,17 @@ export interface MintedTokenRow {
    *  and that runner's incarnation then; both null for a token the server's own process minted. */
   readonly runner: string | null;
   readonly incarnation: string | null;
+  /** The run the machine works for, as its create named it: what the words about its dial say. Null for a machine of
+   *  no run. */
+  readonly run: string | null;
 }
 
 /** The tokens minted for hosted machines that dial this server (a dial provider's create, spec/computer/attach.md). */
 export interface MintedTokens {
   /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write.
-   *  `runner` and `incarnation`: a runner in a process of its own minting it (dial-relay.ts). */
-  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string; readonly runner?: string; readonly incarnation?: string }): Promise<void>;
+   *  `runner` and `incarnation`: a runner in a process of its own minting it (dial-relay.ts); `run`: the run its machine
+   *  works for. */
+  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string; readonly runner?: string; readonly incarnation?: string; readonly run?: string }): Promise<void>;
   /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
   byToken(tokenSha256: string): Promise<MintedTokenRow | undefined>;
   /** The machine's row, good or not; undefined when it has none (never minted, or gone past its end). */

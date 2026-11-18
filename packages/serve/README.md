@@ -244,7 +244,9 @@ server's public address, `AGENTRUN_PUBLIC_URL` (the image gives both processes t
 the server, and the server relays its socket to the runner that made it: the runner keeps its own attach hub on a
 private listener (loopback; across hosts, its `AGENTRUN_RUNNER_LIVE_HOST`, which the server's `AGENTRUN_RUNNER_HOSTS`
 must list), and the server reaches it only with a proof under the seal key for that machine's token, that runner and a
-time within 10 seconds, taken once. A runner apart with no public address refuses such a create, naming the fix above,
+time within 10 seconds, taken once. A dial it cannot relay (its runner gone, not answering, or restarted since) is
+answered 503 in words that name the run, `a dial for run <run> (machine <machine>)`, and never the machine's token; the
+run makes a new machine at its next claim. A runner apart with no public address refuses such a create, naming the fix above,
 and the server says it sooner: in `GET /v2/computers`, each dial provider's row carries `runs_refused` with that fix,
 and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
 null.

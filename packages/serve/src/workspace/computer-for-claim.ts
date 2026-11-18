@@ -141,8 +141,9 @@ export interface ComputerForClaimDeps {
   /** Its daemon's answer (docker-daemon.ts), asked when a launch on such a provider fails (ClaimSide.daemon). */
   readonly daemon?: ClaimSide["daemon"];
   /** A launch of the server's own in place of the providers' (--faux's desktop), for the providers `launches` takes (by
-   *  id; absent, every one): any other is made by its provider, as with no launch. */
-  readonly launch?: ClaimSide["launch"];
+   *  id; absent, every one): any other is made by its provider, as with no launch. Given the claim's run (`run`), as a
+   *  provider's create is given it in its labels. */
+  readonly launch?: (entry: ProviderEntry, spec: Parameters<ClaimSide["launch"]>[1] & { readonly run?: string }) => ReturnType<ClaimSide["launch"]>;
   readonly launches?: (provider: string) => boolean;
   /** The run's folder (mounted only where the provider mounts it) and the mount check attach runs. */
   readonly workspace: Workspace;
@@ -914,7 +915,7 @@ export async function computerForClaim(
       // which stands in for the vendors', is not its.
       const pairedRow = paired.find((row) => row.id === entry.id);
       if (ownLaunch && !pairedRow) {
-        const own = await ownLaunch(entry, { kind, keys, configuration, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
+        const own = await ownLaunch(entry, { kind, keys, configuration, run: launch.runId, ...(mount ? { mount } : {}), ...(gpu ? { gpu } : {}), ...(signal ? { signal } : {}) });
         const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;

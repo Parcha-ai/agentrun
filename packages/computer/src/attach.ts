@@ -142,6 +142,9 @@ export interface MachineMint {
 	arch: string;
 	/** The machine's backstopAt: past it the token is refused, whatever else holds. */
 	expiresAt: Date;
+	/** The run the machine works for, as its create's labels name it (RUN_LABEL): what a server's words about its dial
+	 *  name. Absent for a computer of no run. */
+	run?: string;
 }
 
 /**

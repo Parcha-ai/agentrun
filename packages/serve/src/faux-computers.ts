@@ -112,9 +112,10 @@ export interface FauxComputers {
   readonly kinds: KindRegistry;
   readonly factories: ProviderFactories;
   readonly keyTable: KeyTable;
-  /** The claim's launch: a faux desktop, or a faux dial machine over `given.dial` (the runner's HostedDial); the faux
-   *  sandboxes start nothing, in words. */
-  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>> }, given?: { readonly dial?: HostedDial }): Promise<FauxDesktop | LaunchedComputer>;
+  /** The claim's launch: a faux desktop, or a faux dial machine over `given.dial` (the runner's HostedDial), its token
+   *  minted for the claim's run (`spec.run`) as a dial provider's create mints it; the faux sandboxes start nothing, in
+   *  words. */
+  launch(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly run?: string }, given?: { readonly dial?: HostedDial }): Promise<FauxDesktop | LaunchedComputer>;
   /** Whether a provider id is one of these (the claim's launch takes it): any other is the package's. */
   owns(provider: string): boolean;
 }
@@ -184,12 +185,12 @@ export function fauxComputers(): FauxComputers {
   /** A faux dial machine for a run: its token minted through `dial`, its socket dialled to the dial's public address, and
    *  the run's calls over the connection the dial's hub gives once it attached; its release revokes the token and ends
    *  the socket. Refused in words where the machine has nowhere to dial, or did not attach within DIAL_WAIT_MS. */
-  async function fauxDial(dial: HostedDial | undefined): Promise<LaunchedComputer> {
+  async function fauxDial(dial: HostedDial | undefined, run: string | undefined): Promise<LaunchedComputer> {
     // The computer package's words for a dial provider with no dial (hosted/provider.ts #dialed).
     if (dial === undefined) throw new Error("Faux dial machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)");
     if (!dial.url) throw new Error("Faux dial machines dial in to this server, which has no public address: set AGENTRUN_PUBLIC_URL");
     const name = `faux-dial-${randomBytes(6).toString("hex")}`;
-    const token = await dial.tokens.mint(name, { kind: "desktop", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + DIAL_LIFE_MS) });
+    const token = await dial.tokens.mint(name, { kind: "desktop", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + DIAL_LIFE_MS), ...(run !== undefined ? { run } : {}) });
     const png = greyPng(WIDTH, HEIGHT);
     const hello: HelloResult = { protocol: "0.2", version: "faux", os: "linux", kind: "desktop", arch: "amd64", groups: [...DESKTOP_GROUPS], screen: { width: WIDTH, height: HEIGHT, scale: 1 } };
     const machine = new WebSocket(`${dial.url.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { authorization: `Bearer ${token}` }, maxPayload: MAX_LINE_BYTES, perMessageDeflate: false });
@@ -240,7 +241,7 @@ export function fauxComputers(): FauxComputers {
     keyTable: KEYS,
     async launch(entryOf, spec, given = {}) {
       if (entryOf.id === "faux-desktop" && spec.kind === "desktop") return fauxDesktop();
-      if (entryOf.id === "faux-dial" && spec.kind === "desktop") return fauxDial(given.dial);
+      if (entryOf.id === "faux-dial" && spec.kind === "desktop") return fauxDial(given.dial, spec.run);
       throw new Error(`${entryOf.label} starts no computer: under --faux, only Faux desktop and Faux dial do (set this agent's computer to desktop on one of them, or none)`);
     },
     owns: (provider) => PROVIDERS.some((one) => one.id === provider),
