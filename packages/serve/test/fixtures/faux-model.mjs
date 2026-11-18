@@ -1,4 +1,6 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
+// The grader's request (learn/promote.ts GRADER_PROMPT) is answered with its verdict (fixtures/faux-grader.mjs).
+import { graderAnswerOfContext } from "./faux-grader.mjs";
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 /** A user message that is only a `<system-reminder>` (the spend cap's wrap-up note): the server's words, which a model
  *  reads as an aside, never as the person's. The replies below count and quote the person's messages only. */
@@ -34,6 +36,8 @@ const abortedOf = (faux) =>
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 
 export default function reply(context, faux) {
+  const verdict = graderAnswerOfContext(context);
+  if (verdict !== undefined) return faux.message(verdict);
   const answer = replyTo(context, faux);
   return faux.signal && answer instanceof Promise ? Promise.race([answer, abortedOf(faux)]) : answer;
 }

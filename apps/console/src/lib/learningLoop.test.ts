@@ -84,6 +84,9 @@ describe("a revision's standing and numbers", () => {
     expect(replayLine(record({ check: { ...CHECK, agree_on: ["verdict.decision", "verdict.risk", "flagged"] } }))).toContain("said what the agent said on verdict.decision, verdict.risk and flagged (94%, 80% needed), 2");
     expect(replayLine(record({ check: { ...CHECK, agree_on: undefined } }))).toContain("17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
   });
+  it("says a check with no agree_on was compared by the fast model when its grader ran (check.grader)", () => {
+    expect(replayLine(record({ check: { ...CHECK, agree_on: undefined, grader: "claude-haiku-5-5" } }))).toContain("17 of those said what the agent said (94%, 80% needed; compared by the fast model), 2 handed back");
+  });
   it("says what a promotion was decided on: checked on n inputs and how many alone, nothing for a check that ran on none; only a checked one is proven", () => {
     const checked = record({ check: { ...CHECK, n: 18, alone: 9 } });
     const none = record({ decided: "hold", check: { ...CHECK, n: 0, agreed: 0, alone: 0, stopped: true }, reason: "nothing to check it on: it stops" });

@@ -2218,6 +2218,7 @@ class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
 
 class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
     agree_on: list[str]
+    grader: str
     n: int
     agreed: int
     alone: int
@@ -2253,6 +2254,7 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     draft: str
     escalated: str
     failed: Literal[True]
+    differs_on: str
 
 
 class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
@@ -2333,6 +2335,7 @@ class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict)
 
 class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
     agree_on: list[str]
+    grader: str
     n: int
     agreed: int
     alone: int
@@ -2368,6 +2371,7 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
     draft: str
     escalated: str
     failed: Literal[True]
+    differs_on: str
 
 
 ListRunsResponse: TypeAlias = "RunList"

@@ -12,8 +12,9 @@
 //     shadow) of an agent every tool of which only reads (learn/audit.ts auditWriterOf, the replay's readOnlyHint rule): a
 //     shadow never writes again.
 //   settleAudits: each open started line (no result row yet) whose two runs, read by id, ended writes its row (agreed:
-//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts sameAnswer, on the served run's
-//     revision's agree_on as the check compares, learning-setting.ts agreeOnOf; a follow-up's answer since is never
+//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts compareAnswers, the check's one
+//     comparison: on the served run's revision's agree_on, learning-setting.ts agreeOnOf, else the grader's verdict the
+//     shadow kept at its end, runner/compare-end.ts; a follow-up's answer since is never
 //     read), oldest served run first; then, rows added or not, the hold rule reads the serving revisions'
 //     rows: a hold is a function of the ledger alone.
 //   applyHold: at least hold_disagree disagreements in the newest hold_window rows of the digest's current promotion
@@ -35,7 +36,7 @@ import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf } from "../learn/compile.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, sameAnswer, servingOf } from "../learn/promote.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
@@ -94,8 +95,15 @@ export async function auditLoopOfRevision(store: Pick<Store, "agents">, revision
 /** The answer paths an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
  *  agreeOnOf: its agree_on); undefined, the whole answer. A read that fails throws: settleAudits leaves the row to a
  *  later claim, never comparing on the whole answer an agent that named its fields (#3182 review). */
-async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
+export async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
   return agreeOnOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
+}
+
+/** The served answer shadow run `shadowRun` audits: its open line's `turn`'s answer, read from the served run by that row's
+ *  id (what settleAudits compares the shadow's answer with); null when no open line names it, or it names no turn. */
+export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" | "folder">, shadowRun: string): Promise<string | null> {
+  const open = openAudits(await readLedger(deps)).find((line) => line.shadow_run === shadowRun);
+  return open ? auditedAnswer(deps, open) : null;
 }
 
 /** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, the newest `n` of them (lastRunsOf: the
@@ -261,8 +269,10 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
       if (shadow?.state !== "ended" || !served) return null;
       // The audited answer (the row's turn), never the run's newest: a follow-up since may have answered again.
       const [a, b] = [await auditedAnswer(deps, row), await answerOf(store, row.shadow_run!, deps.context)];
-      // Compared on the fields the served run's revision says carry the decision, as its check compared.
-      return a === null || b === null ? null : sameAnswer(a, b, await agreeOnOfRevision(store, served.revisionId));
+      // The check's one comparison (compareAnswers): on the fields the served run's revision says carry the decision, else
+      // equal, else the grader's verdict its shadow kept at its end (runner/compare-end.ts), else the whole answer.
+      const verdict = comparedOf(isObject(shadow.metrics as Json) ? (shadow.metrics as { audit?: { compared?: unknown } }).audit?.compared : undefined);
+      return a === null || b === null ? null : compareAnswers(a, b, await agreeOnOfRevision(store, served.revisionId), verdict).same;
     }) : { all: lines, added: [] };
     const written = rowsOf(added);
     if (written.length) log(`workflow-first: ${written.length} audit row${written.length === 1 ? "" : "s"} written (${written.filter((row) => row.agreed === false).length} disagreeing)`);

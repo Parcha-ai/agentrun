@@ -54,6 +54,8 @@ import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
 import { placeRunInputs } from "../uploads.js";
 import { withAudit } from "./audit.js";
+import { compareEndOfRun } from "./compare-end.js";
+import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
@@ -818,8 +820,17 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.
-      // A replay run or an audit's shadow run asks nothing at its end, as the run's spec says (adapter-run-spec.ts).
-      if (launch.replay || launch.audit) return undefined;
+      // A replay run or an audit's shadow run learns nothing at its end, as the run's spec says (adapter-run-spec.ts): it
+      // compares its answer with the other one through its grader, handed in by the run's process (runner/compare-end.ts).
+      // This runner reads both answers and the learning ledger, which no run's process may.
+      if (launch.replay || launch.audit) {
+        const compare = compareEndOfRun(launch, { store, revisionId: run.revisionId, folder: await folderNow(), log, redact: cut });
+        const grade = input.grade;
+        const rows = compare && grade && typeof input.grader === "string"
+          ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, grade: (request) => grade(request), ask: input.ask, signal: input.signal })
+          : undefined;
+        return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
+      }
       const made = await archilOf();
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
