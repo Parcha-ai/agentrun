@@ -497,6 +497,8 @@ export type Cost = {
   so_far_usd?: number;
   unpriced?: number;
   upper_bound?: true;
+  learning_usd?: number | null;
+  all_in_usd?: number | null;
   plan?: {
     requests: number;
     tokens: number;
@@ -789,6 +791,7 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
 };
 
 export type RunResult = {
@@ -1588,6 +1591,52 @@ export type ListLearningPromotionsResponse = {
     } | null;
     audits_off: string | null;
     not_auditable: number;
+    champion: {
+      digest: string;
+      commit: string | null;
+      nodes: Array<{
+        path: string;
+        kind: string;
+        label: string;
+        tier: "fast" | "agent" | null;
+        checks: Array<{
+          on: "when" | "until";
+          predicate: Record<string, unknown>;
+        }>;
+      }> | null;
+      check: {
+        compile_after: number;
+        agree_min: number;
+        alone_min: number;
+        attempt: 1 | 2;
+        n?: number;
+        agreed?: number;
+        alone?: number;
+        of?: Array<string>;
+        cost_usd?: number | null;
+        outcomes?: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        unstarted?: number;
+        skipped_tools?: Array<{
+          tool: string;
+          inputs: number;
+          no_read_only_hint: boolean;
+        }>;
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+        }>;
+        stopped?: true;
+      } | null;
+    } | null;
   }>;
 };
 
@@ -2217,6 +2266,50 @@ export type GetLearningCostResponse = {
       alone: number;
       agree_min: number;
     } | null;
+  };
+  bill: {
+    baseline: {
+      runs: number;
+      mean_usd: number;
+    } | null;
+    promoted: {
+      n: number;
+      run_id: string;
+      at: string;
+    } | null;
+    points: Array<{
+      n: number;
+      run_id: string;
+      actual_usd: number;
+      agent_usd: number | null;
+    }>;
+    break_even: {
+      n: number;
+      run_id: string;
+    } | null;
+    gap_usd: number | null;
+    withheld: number;
+    booked_usd: number;
+    revisions: Array<{
+      workflow: string;
+      digest: string;
+      compile_usd: number | null;
+      check_usd: number | null;
+      spend_usd: number | null;
+      k: number;
+      served: number;
+      attributed_usd: number | null;
+      unattributed_usd: number | null;
+      state: "checking" | "serving" | "stopped";
+    }>;
+    unattributed_usd: number | null;
+    holds: Array<{
+      n: number | null;
+      at: string;
+      workflow: string;
+      by: "audit" | "check" | "dsl";
+      reason: string;
+    }>;
   };
 };
 

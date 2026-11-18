@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Render or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -125,7 +125,7 @@ If Docker is running on your machine, new agents get a Docker sandbox with a she
 which takes a few minutes, and the console says when it's ready. Without Docker, agents still read and write files,
 but get no shell.
 
-Want your own server with a URL? [Self-host on Render](#deploy-it).
+Want your own server with a URL? [Self-host on Railway or Render](#deploy-it).
 
 </details>
 
@@ -513,13 +513,24 @@ or let others run agents on it. Eligible usage in this app uses your ChatGPT pla
 settings. On a server that isn't this computer, the sign-in tab ends on a page that won't load: copy its whole address
 into the console.
 
+**Self-host on Railway.**
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun)
+
+The button deploys the published template: the image, a volume at `/data`, a domain, and the token and seal key made
+for you. About $5 a month on Railway's Hobby plan, which includes $5 of usage; agents get no shell. When it's live, open
+its domain and paste `AGENTRUN_TOKEN` from the service's Variables tab as the setup code. Then Continue with ChatGPT or
+add a model key, and run your first agent. Walked from click to a finished first run in 46 seconds. Details:
+[deploy/README.md](deploy/README.md).
+
 **Self-host on Render.**
 
 <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
 
 The button deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the published image (no
-build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a month for
-the instance and $2.50 for the disk, at Render's prices when this was written. Leave the model keys in Render's form
+build), and the token and seal key generated for you. Render gives the service no Docker, so its agents get file tools
+and `web_fetch` but no shell. It needs a card on your Render workspace: about $25 a month for the instance and $2.50
+for the disk, at Render's prices when this was written. Leave the model keys in Render's form
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration

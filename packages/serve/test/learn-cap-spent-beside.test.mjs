@@ -46,6 +46,10 @@ async function grading(server, runId) {
   }
 }
 
+/** What run `runId`'s own sessions spent (its job, its look-backs and any follow-up), as its cap counts it: its row's.
+ *  GET /runs/{id} `cost.usd` is the job's alone (A8), its look-back in `cost.learning_usd`. */
+const spentOf = async (server, runId) => (await server.store.runs.get(runId)).costUsd;
+
 /** Follows the run's learning run `id` until it ended. */
 async function learningEnded(server, id) {
   for (let i = 0; ; i++) {
@@ -61,9 +65,9 @@ for (const harness of ["pi", "codex"]) {
     const { server, gate } = await heldGrader(t, harness, `beside-${harness}`);
     const runId = await started(server.api, `beside-${harness}`, "Classify Acme Diner.", { max_cost_usd: CAP });
     await grading(server, runId);
-    const job = (await server.api("GET", `/runs/${runId}`)).body;
+    const spent = await spentOf(server, runId);
     const reserved = (await server.store.runs.launch(`${runId}-learning`)).body.max_cost_usd;
-    assert.ok(Math.abs(reserved - (CAP - job.cost.usd)) < EPS, `the grade holds what the cap left: ${JSON.stringify({ reserved, cost: job.cost })}`);
+    assert.ok(Math.abs(reserved - (CAP - spent)) < EPS, `the grade holds what the cap left: ${JSON.stringify({ reserved, spent })}`);
 
     // The follow-up: its first request would take the run past its cap once the grade's hold is counted. Not sent: parked.
     assert.equal((await server.api("POST", `/runs/${runId}/messages`, { content: REVIEW })).status, 202);
@@ -72,7 +76,8 @@ for (const harness of ["pi", "codex"]) {
     assert.deepEqual([parked.status, parked.pending?.kind], ["input_required", "budget"], JSON.stringify(parked));
     // What the cap counted as taken: the run's own spend and the grade's hold beside it, the whole cap; nothing more sent.
     assert.ok(Math.abs(parked.pending.spent_usd - CAP) < 1e-6, `the run's spend and its grade's hold: ${JSON.stringify(parked.pending)}`);
-    assert.ok(Math.abs(parked.cost.usd - job.cost.usd) < EPS, `nothing of the follow-up was spent: ${JSON.stringify([job.cost, parked.cost])}`);
+    const after = await spentOf(server, runId);
+    assert.ok(Math.abs(after - spent) < EPS, `nothing of the follow-up was spent: ${JSON.stringify([spent, after])}`);
 
     // The grade ends (well under its hold); a raise resumes the run, which answers the follow-up and learns again.
     await writeFile(gate, "");
@@ -85,7 +90,7 @@ for (const harness of ["pi", "codex"]) {
     assert.deepEqual([view.status, view.cost.cap_usd], ["completed", RAISED], JSON.stringify(view));
     const second = await server.store.runs.get(`${runId}-learning-2`);
     const grades = first.costUsd + (second?.costUsd ?? 0);
-    assert.ok(view.cost.usd + grades <= RAISED, "the run and its grades together within its cap");
+    assert.ok((await spentOf(server, runId)) + grades <= RAISED, "the run and its grades together within its cap");
   });
 }
 
@@ -97,7 +102,8 @@ test("on pi, a follow-up after an earlier grade that ended is held to what that 
   assert.equal(job.learning?.state, "merged", JSON.stringify(job.learning));
   // The earlier grade spent all but a cent's tenth of what the cap left it (the faux grader's own cost is far smaller; a
   // real grade on a long proposal costs that much): its learning run's row, as its end wrote it, says so.
-  const graded = CAP - job.cost.usd - 0.0001;
+  const spent = await spentOf(server, runId);
+  const graded = CAP - spent - 0.0001;
   setCost(server, `${runId}-learning`, graded);
   assert.equal((await server.store.runs.get(`${runId}-learning`)).costUsd, graded);
 
@@ -105,8 +111,8 @@ test("on pi, a follow-up after an earlier grade that ended is held to what that 
   await follow(server.api, runId, SETTLED, { deadlineMs: 90_000 });
   const parked = (await server.api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([parked.status, parked.pending?.kind], ["input_required", "budget"], JSON.stringify(parked));
-  assert.ok(Math.abs(parked.pending.spent_usd - (job.cost.usd + graded)) < 1e-6, `the run's spend and its grade's: ${JSON.stringify(parked.pending)}`);
-  assert.ok(parked.cost.usd + graded <= CAP + EPS, `the run and its grade within the cap: ${JSON.stringify(parked.cost)}`);
+  assert.ok(Math.abs(parked.pending.spent_usd - (spent + graded)) < 1e-6, `the run's spend and its grade's: ${JSON.stringify(parked.pending)}`);
+  assert.ok((await spentOf(server, runId)) + graded <= CAP + EPS, `the run and its grade within the cap: ${JSON.stringify(parked.cost)}`);
 });
 
 test("on pi, an uncapped run's follow-up while its grade is under way is held to nothing: it answers as before", { timeout: 240_000 }, async (t) => {
