@@ -6,10 +6,12 @@
 // is 404. A fresh apply (no agent_id) of a template whose same parameters already made a live agent still makes another,
 // with a warning naming the one there.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, scratch, serve } from "./support.mjs";
+import { agent, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, firings } from "./trigger-support.mjs";
 import { feed, pull, T0 } from "./feed-support.mjs";
 
@@ -39,6 +41,21 @@ ${triggers.length ? `triggers:\n${triggers.join("\n")}\n` : ""}---
 ${instructions}
 `;
 
+/** digest 0.3.0: its daily trigger a feed now, of another kind than 0.1.0's schedule. */
+const V3 = { version: "0.3.0", triggers: [NEW_PR(), `  - name: daily
+    source: { kind: feed, urls: ["${PULLS}"], every_s: 14400 }
+    target: { kind: start_run, input: { content: "Today's pull requests." } }`] };
+
+/** bare: a package that names its tools, none. */
+const BARE = `---
+name: bare
+version: 1.0.0
+description: Answers from what it is told alone.
+tools: []
+---
+Answer from what you are told.
+`;
+
 /** keyed: one credential-named parameter, which the agent's own words never hold. */
 const KEYED = `---
 name: keyed
@@ -62,11 +79,11 @@ learning: true
 Answer about the project.
 `;
 
-/** A templates folder holding digest at `digest`, the plain package `other`, keyed, and shaped (1.0.0, or 2.0.0 with
- *  `v1` false). */
-async function templates(t, digest, { v1 = true } = {}) {
+/** A templates folder holding digest at `digest`, the plain package `other`, keyed, shaped (1.0.0, or 2.0.0 with `v1`
+ *  false), bare, and each of `extra` (its name, its agent.md). */
+async function templates(t, digest, { v1 = true, extra = {} } = {}) {
   const root = join(await scratch(t), "templates");
-  for (const [name, text] of [["digest", manifest(digest)], ["other", manifest({ name: "other", version: "1.0.0" })], ["keyed", KEYED], ["shaped", shaped(v1)]]) {
+  for (const [name, text] of [["digest", manifest(digest)], ["other", manifest({ name: "other", version: "1.0.0" })], ["keyed", KEYED], ["shaped", shaped(v1)], ["bare", BARE], ...Object.entries(extra)]) {
     mkdirSync(join(root, name), { recursive: true });
     writeFileSync(join(root, name, "agent.md"), text);
   }
@@ -323,4 +340,213 @@ test("an update whose read of the agent went stale before it wrote answers 412 a
   assert.equal(stale.body.error.code, "precondition_failed");
   assert.equal((await api("GET", `/agents/${made.agent_id}`)).body.definition.instructions, "The owner's own words.", "the owner's edit stands");
   assert.equal((await triggersOf(api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "no trigger changed");
+});
+
+test("a trigger made again for a kind change keeps the owner's off: the package's daily, a schedule the owner turned off, made again as a feed, is off", { timeout: 120_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const daily = (await triggersOf(first.api, made.agent_id)).daily;
+  assert.equal((await first.api("PATCH", `/triggers/${daily.id}`, { enabled: false })).status, 200, "the owner turns daily off");
+  await first.stop();
+  const second = await serve(t, { data: first.data, templates: await templates(t, V3), runner: false, feedsAt: () => quiet.url });
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "daily is a feed now");
+  const now = (await triggersOf(second.api, made.agent_id)).daily;
+  assert.equal(now.source.kind, "feed", "made again as a feed");
+  assert.notEqual(now.id, daily.id);
+  assert.equal(now.enabled, false, "the owner's off stays off");
+});
+
+/** A fake docker first on PATH and docker listed in AGENTRUN_BOXES (fixtures/fake-docker.mjs): this server offers the
+ *  Docker box, so a new agent that names no tools is put in it with the shell tools. */
+async function fakeDocker(t) {
+  const dir = await scratch(t);
+  const bin = join(dir, "bin");
+  const state = join(dir, "state");
+  mkdirSync(bin);
+  mkdirSync(state);
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname}' "$@"\n`, { mode: 0o755 });
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
+}
+
+test("an update of a package that names no tools keeps the shell tools a fresh apply gave the agent in the box; one that names none (tools: []) keeps none", { timeout: 90_000 }, async (t) => {
+  await fakeDocker(t);
+  const { NEW_AGENT_TOOLS } = await import("../dist/place.js");
+  const { api } = await served(t);
+  const made = await applied(api, "other", { parameters: { topic: "cats" } });
+  const fresh = (await api("GET", `/agents/${made.agent_id}`)).body.definition;
+  assert.deepEqual([fresh.place, fresh.tools], [{ mode: "sandbox", box: "docker" }, [...NEW_AGENT_TOOLS]], "a fresh apply puts the agent in the box, with its shell tools");
+  await updated(api, "other", { parameters: { topic: "dogs" }, agent_id: made.agent_id }, "the same package again");
+  const after = (await api("GET", `/agents/${made.agent_id}`)).body.definition;
+  assert.deepEqual([after.place, after.tools], [fresh.place, fresh.tools], "the update keeps them, as a fresh apply would give them");
+  const bare = await applied(api, "bare", {});
+  await updated(api, "bare", { agent_id: bare.agent_id }, "bare again");
+  assert.deepEqual((await api("GET", `/agents/${bare.agent_id}`)).body.definition.tools, [], "a package that names no tools keeps none");
+});
+
+// ---- the package's mark on its triggers (triggers.template_id) ---------------------------------------------------------
+
+/** watch: a feed trigger whose feeds are an array parameter left empty by default, so a plain apply skips it. */
+const WATCH = `---
+name: watch
+version: 1.0.0
+description: Watches vendors' status feeds.
+parameters:
+  status_feeds: { type: array, items: { type: string }, required: false, default: [], description: "each vendor's status feed" }
+triggers:
+  - name: status
+    source: { kind: feed, urls: "\${parameters.status_feeds}", every_s: 14400 }
+    target: { kind: start_run, input: { content: "Say what changed." } }
+---
+Say what changed.
+`;
+/** claims: a package whose trigger names a package's mark of its own. */
+const CLAIMS = `---
+name: claims
+version: 1.0.0
+description: Names a mark on its trigger.
+triggers:
+  - name: claimed
+    template_id: digest
+    source: { kind: schedule, cron: "0 9 * * *", timezone: UTC }
+    target: { kind: start_run, input: { content: "Go." } }
+---
+Go.
+`;
+/** A trigger the owner makes on `agentId` by POST /triggers: a noon schedule. */
+const ownerTrigger = (name, agentId, content = "The owner's own note.") => ({ name, source: { kind: "schedule", cron: "0 12 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: agentId, input: { content } } });
+/** The package mark trigger `id`'s row holds (TriggerRow.templateId), read through the test's handle on the server's store. */
+const markOf = async (server, id) => (await server.store.triggers.get(id))?.templateId;
+
+test("a trigger's package mark is the apply's to set: each trigger an apply makes or keeps carries the package's id, a PATCH that moves it to another agent clears it, and moved back it is the owner's, which the next update leaves", { timeout: 120_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const other = await applied(first.api, "other", { parameters: { topic: "dogs" } });
+  const { daily } = await triggersOf(first.api, made.agent_id);
+  assert.equal(await markOf(first, daily.id), made.template, "the apply marks the trigger it made with the package's id");
+  const away = await first.api("PATCH", `/triggers/${daily.id}`, { target: { ...daily.target, agent_id: other.agent_id } });
+  assert.equal(away.status, 200, JSON.stringify(away.body));
+  assert.equal(await markOf(first, daily.id), null, "the move to another agent clears the mark, in the same write");
+  const back = await first.api("PATCH", `/triggers/${daily.id}`, { target: daily.target });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.equal(await markOf(first, daily.id), null, "moved back, it is no package's");
+  assert.ok(!JSON.stringify(back.body).includes("template_id"), "no answer shows the mark");
+  await first.stop();
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2), runner: false, feedsAt: () => quiet.url });
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "0.2.0, which drops daily");
+  const now = await triggersOf(second.api, made.agent_id);
+  assert.equal(now.daily?.id, daily.id, "daily, moved away and back, is the owner's now: the update leaves it");
+  assert.equal(await markOf(second, now["new-pr"].id), made.template, "new-pr, kept in place, is still the package's");
+  assert.equal(await markOf(second, now.weekly.id), made.template, "weekly, made, is the package's");
+});
+
+test("no client writes a trigger's package mark: POST /triggers and PATCH /triggers/{id} naming template_id are refused 422, and so is a package whose trigger names it", { timeout: 90_000 }, async (t) => {
+  const server = await served(t, { templates: await templates(t, V1, { extra: { claims: CLAIMS } }) });
+  const made = await applied(server.api, "digest", { parameters: { topic: "cats" } });
+  const posted = await server.api("POST", "/triggers", { ...ownerTrigger("mine", made.agent_id), template_id: made.template });
+  assert.equal(posted.status, 422, `POST /triggers with template_id: ${JSON.stringify(posted.body)}`);
+  assert.match(JSON.stringify(posted.body), /template_id/, "the refusal names the field");
+  const { daily } = await triggersOf(server.api, made.agent_id);
+  const patched = await server.api("PATCH", `/triggers/${daily.id}`, { template_id: "other" });
+  assert.equal(patched.status, 422, `PATCH with template_id: ${JSON.stringify(patched.body)}`);
+  assert.match(JSON.stringify(patched.body), /template_id/);
+  assert.equal(await markOf(server, daily.id), made.template, "the mark is as the apply set it");
+  const claims = await server.api("POST", "/templates/claims/apply", {});
+  assert.equal(claims.status, 422, `a package's trigger naming template_id is refused: ${JSON.stringify(claims.body)}`);
+  assert.match(JSON.stringify(claims.body), /template_id/);
+  assert.deepEqual((await server.api("GET", "/triggers")).body.triggers.filter((one) => one.name === "claimed"), [], "no trigger made from it");
+});
+
+test("a trigger moved to another agent while an update holds its read of the agent is neither changed nor removed by it: the package's own is made again on its agent", { timeout: 120_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const other = await applied(first.api, "other", { parameters: { topic: "dogs" } });
+  const before = await triggersOf(first.api, made.agent_id);
+  await first.stop();
+  // 0.2.0 changes new-pr's input (in place) and drops daily (removed): both moved to the other agent meanwhile.
+  const hold = readHold();
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2), runner: false, feedsAt: () => quiet.url, templateApplyRead: hold.seam });
+  const update = second.api("POST", "/templates/digest/apply", { parameters: { topic: "cats" }, agent_id: made.agent_id });
+  await Promise.race([hold.reached, update]);
+  for (const name of ["new-pr", "daily"]) {
+    const moved = await second.api("PATCH", `/triggers/${before[name].id}`, { target: { ...before[name].target, agent_id: other.agent_id } });
+    assert.equal(moved.status, 200, `${name} moved: ${JSON.stringify(moved.body)}`);
+  }
+  hold.release();
+  const done = await update;
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  const theirs = await triggersOf(second.api, other.agent_id);
+  assert.deepEqual(Object.keys(theirs).sort(), ["daily", "new-pr"], "both moved triggers are the other agent's still: the update removed neither");
+  assert.equal(theirs["new-pr"].id, before["new-pr"].id);
+  assert.equal(theirs["new-pr"].target.input.content, "Say who opened it.", "nor changed new-pr");
+  assert.equal(theirs.daily.target.input.content, "Today's note on cats.", "nor daily");
+  const ours = await triggersOf(second.api, made.agent_id);
+  assert.deepEqual(Object.keys(ours).sort(), ["new-pr", "weekly"]);
+  assert.notEqual(ours["new-pr"].id, before["new-pr"].id, "the package's new-pr made again on its agent");
+  assert.equal(ours["new-pr"].target.input.content, "Say who opened it, and what it changes.");
+});
+
+test("a feed trigger an apply skipped (its feeds left empty) is no trigger of the package's: one the owner then makes by that name outlives the next update", { timeout: 90_000 }, async (t) => {
+  const server = await served(t, { templates: await templates(t, V1, { extra: { watch: WATCH } }) });
+  const made = await applied(server.api, "watch", {});
+  assert.deepEqual(made.trigger_ids, [], "status, its feeds left empty, was skipped");
+  const mine = await server.api("POST", "/triggers", ownerTrigger("status", made.agent_id));
+  assert.equal(mine.status, 201, JSON.stringify(mine.body));
+  await updated(server.api, "watch", { agent_id: made.agent_id }, "watch again, its feeds still empty");
+  const kept = await server.api("GET", `/triggers/${mine.body.id}`);
+  assert.equal(kept.status, 200, "the owner's status outlives the update");
+  assert.equal(kept.body.source.kind, "schedule", "as the owner made it");
+});
+
+test("a trigger the owner made with the name of one the package then drops outlives the update", { timeout: 120_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const { daily } = await triggersOf(first.api, made.agent_id);
+  assert.equal((await first.api("DELETE", `/triggers/${daily.id}`)).status < 300, true, "the owner removes the package's daily");
+  const mine = await first.api("POST", "/triggers", ownerTrigger("daily", made.agent_id));
+  assert.equal(mine.status, 201, JSON.stringify(mine.body));
+  await first.stop();
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2), runner: false, feedsAt: () => quiet.url });
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "0.2.0, which drops daily");
+  assert.equal((await second.api("GET", `/triggers/${mine.body.id}`)).status, 200, "the owner's daily outlives the update");
+});
+
+test("a store an earlier build made, with no triggers.template_id: the server adds it, its triggers read no package's mark, and an update leaves one the package dropped (it can't tell it from the owner's)", { timeout: 120_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const before = await triggersOf(first.api, made.agent_id);
+  await first.stop();
+  const file = join(first.data, "store.sqlite");
+  const columnOf = () => {
+    const check = new DatabaseSync(file, { readOnly: true });
+    try {
+      const column = check.prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('triggers') WHERE name = 'template_id'").get();
+      return column && { ...column };
+    } finally {
+      check.close();
+    }
+  };
+  // The store as a build before the mark left it: its triggers table with no template_id column.
+  if (columnOf()) {
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("ALTER TABLE triggers DROP COLUMN template_id");
+    } finally {
+      db.close();
+    }
+  }
+  assert.equal(columnOf(), undefined);
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2), runner: false, feedsAt: () => quiet.url });
+  assert.deepEqual(columnOf(), { name: "template_id", type: "TEXT", notnull: 0 }, "the server adds triggers.template_id, nullable");
+  assert.equal(await markOf(second, before.daily.id), null, "a trigger made before reads no package's mark");
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "0.2.0, which drops daily");
+  const now = await triggersOf(second.api, made.agent_id);
+  assert.equal(now.daily?.id, before.daily.id, "daily, unmarked, is left: no mark says it is the package's");
+  assert.equal(now["new-pr"].id, before["new-pr"].id, "new-pr kept in place by name");
+  assert.equal(await markOf(second, now["new-pr"].id), made.template, "and marked from now");
 });
