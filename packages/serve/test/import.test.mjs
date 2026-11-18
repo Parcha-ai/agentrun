@@ -1378,9 +1378,10 @@ test("an imported session its source did not price reads the catalog's estimate 
   const usageOf = async (id) => (await api("GET", `/runs/${id}/timeline`)).body.rows.findLast((r) => r.kind === "usage");
   const [rowEstimated, rowUnpriced, rowRecorded] = [await usageOf(estimated.id), await usageOf(unpriced.id), await usageOf(recorded.id)];
   assert.deepEqual([rowEstimated.usage.usd, rowEstimated.usage.so_far_usd, rowEstimated.usage.unpriced], [costUsdEst, undefined, undefined]);
-  assert.match(rowEstimated.summary, new RegExp(`^Cost: \\$${costUsdEst.toFixed(4).replace(".", "\\.")} over \\d+ model requests?$`));
+  // The catalog's estimate says it is one, as the run's own cost does ("est."); a recorded cost says none.
+  assert.match(rowEstimated.summary, new RegExp(`^Cost: \\$${costUsdEst.toFixed(4).replace(".", "\\.")} est\\. over \\d+ model requests?$`));
   assert.deepEqual([rowRecorded.usage.usd, rowRecorded.usage.so_far_usd], [0.0421, undefined]);
-  assert.match(rowRecorded.summary, /^Cost: \$0\.0421 over \d+ model requests?$/);
+  assert.match(rowRecorded.summary, /^Cost: \$0\.0421 over \d+ model requests?$/, "a recorded cost reads exact, with no est.");
   assert.deepEqual([rowUnpriced.usage.usd, rowUnpriced.usage.so_far_usd], [null, undefined]);
   assert.match(rowUnpriced.summary, /^Cost: unknown over \d+ model requests?$/);
 
