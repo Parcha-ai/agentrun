@@ -18,6 +18,10 @@ import type { RunTrigger, Target } from "./triggers.js";
  *  limits, which AgentRun cannot hold to a dollar cap (server.ts runnable refuses a capped native run). */
 const NATIVE_CAP = "A connected agent's runs keep their own CLI's limits, and AgentRun can't cap them in dollars: remove max_cost_usd from the target and the agent.";
 
+/** Why a trigger's target on a connected agent takes no effort: the run start refuses one (runs-over-store.ts
+ *  prepareLaunch), so a trigger made with one would fail at every firing. Refused when the trigger is made instead. */
+const NATIVE_EFFORT = "A connected agent's runs use the effort its own CLI is set to: remove effort from the target and set it in the source project.";
+
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
@@ -103,6 +107,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         const capped = [
           ...(target.max_cost_usd !== undefined ? [{ field: "target.max_cost_usd", reason: "not_allowed", message: NATIVE_CAP }] : []),
           ...(defaultCap !== undefined ? [{ field: "target.agent_id", reason: "not_allowed", message: NATIVE_CAP }] : []),
+          ...(target.effort !== undefined ? [{ field: "target.effort", reason: "not_allowed", message: NATIVE_EFFORT }] : []),
         ];
         const wrong = await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision);
         return [...capped, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
