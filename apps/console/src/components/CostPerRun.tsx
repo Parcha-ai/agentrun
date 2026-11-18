@@ -3,7 +3,7 @@ import { Bone } from "@/components/Skeleton";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { type Block, blockSizeOf, blocksOf, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
@@ -60,9 +60,7 @@ export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost,
 }
 
 const M = { top: 30, right: 16, bottom: 30, left: 60 };
-/** The gutter right of the plot that holds the levels' labels, off the data; under LABELS_FROM wide the legend and the
- *  headline say the levels and the gutter is not drawn. */
-const GUTTER = 96;
+/** Under this wide the levels have no labels and the plot no gutter for them: the legend and the headline say them. */
 const LABELS_FROM = 520;
 /** The marker lane above the plot: a row of flags is this tall; flags closer than FLAG_GAP stack into the next row. */
 const FLAG_ROW = 17;
@@ -128,15 +126,21 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   // The mix sits under the plot at the card's width, on the plot's own run axis: a run's column is under its dot, and the
   // takeover's marker runs through both.
   const width = Math.max(300, room);
-  const labelled = width >= LABELS_FROM;
-  const plotW = width - M.left - (labelled ? GUTTER : M.right);
   // The axis is every job read (the mix draws the ones whose cost is unknown too), each job one equal slot of the plot and
   // its dot at the slot's middle: a block of runs in the mix is then whole slots, its edges on slot edges. A replay stands
   // half a slot after the job it followed, on a slot's edge (placed).
   const first = jobs[0]?.n ?? 1, last = jobs.at(-1)?.n ?? first;
+  const before = s.before;
+  const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
+  // The levels' words, in a gutter right of the plot as wide as they need; under LABELS_FROM wide none (the legend and the
+  // headline say them). The headline says the ratio; the labels only the levels.
+  const levelWords = width < LABELS_FROM ? [] : [
+    ...(before ? [{ key: "before", words: `Before ${level(before.mean_usd)}`, usd: before.mean_usd }] : []),
+    ...(afterFrom !== null && s.after ? [{ key: "after", words: `After ${level(s.after.mean_usd)}`, usd: s.after.mean_usd }] : []),
+  ];
+  const plotW = width - M.left - (levelWords.length ? gutterFor(levelWords.map((l) => l.words)) : M.right);
   const slot = plotW / (last - first + 1);
   const x = (at: number) => M.left + (at - first + 0.5) * slot;
-  const before = s.before;
   const { top, above } = yTopOf(points, mean, before?.mean_usd ?? null);
   // Each flag's row: the first whose last flag is far enough left of it, so flags never sit on each other at any width.
   const rowOf: number[] = [];
@@ -156,7 +160,6 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   // The takeover's marker shows when its run is on the plot; the level after it shows either way, from the plot's left
   // edge when the takeover is older than the runs read.
   const takeover = s.takeover && s.takeover.n >= first ? s.takeover : null;
-  const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
   const line = job.map((p, i) => `${i ? "L" : "M"}${x(p.at).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
   const at = active === null ? null : points[active]!;
   const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
@@ -168,12 +171,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const afterWords = s.after ? `${level(s.after.mean_usd)} all-in over ${servedWord(s.after.runs)} after` : s.takeover && s.after_state === "cost_unknown" ? "no served run's cost known yet" : null;
   const headline = s.before && afterWords ? `${level(s.before.mean_usd)} a run before takeover, ${afterWords}${cheaper ? `: ${cheaper}` : ""}${backWords ? ` · ${backWords}` : ""}` : null;
   const unknown = data.unknown_cost_runs + data.unknown_path_runs;
-  // The levels' labels in the gutter right of the plot, each at its level, pushed apart to a line's room when close: never
-  // on a dot or a line. The headline says the ratio; the labels only the levels.
-  const levels = labelled ? spread([
-    ...(before ? [{ key: "before", words: `Before ${level(before.mean_usd)}`, at: y(before.mean_usd) }] : []),
-    ...(afterFrom !== null && s.after ? [{ key: "after", words: `After ${level(s.after.mean_usd)}`, at: y(s.after.mean_usd) }] : []),
-  ], T + 4, T + H) : [];
+  // The levels' labels in the gutter, each at its level, pushed apart to a line's room when close: never on a dot or a line.
+  const levels = spread(levelWords.map((l) => ({ ...l, at: y(l.usd) })), T + 4, T + H);
 
   const pick = (e: PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();

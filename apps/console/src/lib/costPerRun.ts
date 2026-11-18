@@ -104,6 +104,9 @@ export function runTicks(first: number, last: number, most = 6): number[] {
 
 /** The least room between two labels in a chart's gutter: one label's line. */
 export const LABEL_GAP = 14;
+/** A gutter right of a plot wide enough for `labels` (the charts' 11px mono, 0.6em a character) 6px off the plot, with
+ *  room to spare at its right edge: a label never runs past the chart. */
+export const gutterFor = (labels: readonly string[]) => Math.ceil(6 + Math.max(0, ...labels.map((l) => l.length)) * 6.6 + 8);
 /** Labels at their places down a gutter (`at`, top down), moved apart so each pair is at least LABEL_GAP apart and all
  *  stay within `lo` to `hi`: a close pair moves out from its middle, never past the gutter's ends. In the order given. */
 export function spread<L extends { at: number }>(labels: readonly L[], lo: number, hi: number): L[] {

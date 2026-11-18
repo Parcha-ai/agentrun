@@ -88,6 +88,11 @@ describe("the bill chart", () => {
     expect(labels.map((l) => l.textContent)).toEqual(["Bill $7.00", "Agent $9.00"]);
     const end = Number(/([\d.]+),[\d.]+$/.exec(host.querySelector("[data-testid=bill-actual]")!.getAttribute("d")!)![1]);
     for (const l of labels) expect(Number(l.getAttribute("x"))).toBeGreaterThan(end);
+    // Each fits the chart: its 11px mono characters (0.6em each) end inside the 900px it is drawn in.
+    for (const l of labels) expect(Number(l.getAttribute("x")) + l.textContent!.length * 6.6).toBeLessThanOrEqual(900);
+    const wide: Bill = { ...BILL, points: BILL.points.map((p) => ({ ...p, agent_usd: p.agent_usd! * 7.91 })) };
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    for (const l of draw(createElement(BillChart, { bill: wide, width: 900 })).querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")) expect(Number(l.getAttribute("x")) + l.textContent!.length * 6.6, l.textContent!).toBeLessThanOrEqual(900);
     const [a, b] = labels.map((l) => Number(l.getAttribute("y")));
     expect(Math.abs(a! - b!)).toBeGreaterThanOrEqual(12);
     // Lines that end together still read apart.

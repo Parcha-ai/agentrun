@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { Client } from "@/lib/client";
-import { niceAxis, runTicks, spread, usd } from "@/lib/costPerRun";
+import { gutterFor, niceAxis, runTicks, spread, usd } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { type Audits, auditLinesOf, billWords, type Champion, checkLineWords, checkWords, tierWords } from "@/lib/learningBill";
 import { cn } from "@/lib/utils";
@@ -44,9 +44,6 @@ export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client
 
 const M = { top: 16, right: 16, bottom: 30, left: 60 };
 const H = 220;
-/** The gutter right of the plot that holds the two lines' end labels, off the data; a narrow card has none (the legend
- *  and the headline say the figures). */
-const GUTTER = 84;
 
 /** The bill as a chart: the booked bill and the agent for all of it, cumulative, on one dollar axis; the break-even
  *  marker; a hover with each run's two figures; a table of every point. */
@@ -66,23 +63,23 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
   const both = points.some((p) => p.agent_usd !== null);
   const width = Math.max(300, room);
   const narrow = width < 520;
-  const plotW = width - M.left - (narrow ? M.right : GUTTER);
-  const first = points[0]?.n ?? 1, last = points.at(-1)?.n ?? 1;
-  const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
   // A reduce, never a spread: a long history's every point as one call's arguments overflows the stack. The top is the
   // clean step just above the most (niceAxis): $1.18 reads to $1.25, never $2 with half the chart empty.
   const { top, ticks } = useMemo(() => niceAxis(points.reduce((max, p) => Math.max(max, p.actual_usd, p.agent_usd ?? 0), -Infinity)), [points]);
   const y = (v: number) => M.top + H - (v / top) * H;
-  const path = (values: readonly (readonly [number, number])[]) => values.map(([n, v], i) => `${i ? "L" : "M"}${x(n).toFixed(1)},${y(v).toFixed(1)}`).join("");
-  const actual = path(points.map((p) => [p.n, p.actual_usd] as const));
-  const agent = both ? path(points.filter((p) => p.agent_usd !== null).map((p) => [p.n, p.agent_usd!] as const)) : null;
   const end = points.at(-1);
-  // The two lines' end labels, in the gutter right of the last point at each line's end, pushed apart when the lines end
-  // close: never on a line.
+  // The two lines' end labels, in a gutter right of the last point as wide as they need, at each line's end, pushed apart
+  // when the lines end close: never on a line. A narrow card has none (the legend and the headline say the figures).
   const ends = end && !narrow ? spread([
     { key: "bill", words: `Bill ${money(end.actual_usd)}`, at: y(end.actual_usd) },
     ...(end.agent_usd !== null ? [{ key: "agent", words: `Agent ${money(end.agent_usd)}`, at: y(end.agent_usd) }] : []),
   ], M.top + 4, M.top + H) : [];
+  const plotW = width - M.left - (ends.length ? gutterFor(ends.map((l) => l.words)) : M.right);
+  const first = points[0]?.n ?? 1, last = points.at(-1)?.n ?? 1;
+  const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
+  const path = (values: readonly (readonly [number, number])[]) => values.map(([n, v], i) => `${i ? "L" : "M"}${x(n).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const actual = path(points.map((p) => [p.n, p.actual_usd] as const));
+  const agent = both ? path(points.filter((p) => p.agent_usd !== null).map((p) => [p.n, p.agent_usd!] as const)) : null;
   const at = active === null ? null : points[active] ?? null;
   const unattributed = bill.unattributed_usd ?? 0;
   const pick = (e: PointerEvent<SVGSVGElement>) => {
