@@ -2955,7 +2955,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : await createAgentOf(made.agent, origin);
     // An update's triggers are reconciled by name with the ones the agent has: the package's trigger of a name the agent
     // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
-    // owner turned it off (an unmarked one is adopted so, and only so: notOurs above); a new name is made; one the package
+    // owner turned it off (an unmarked one is adopted so, and only so: notOurs above), its settings the package's whole
+    // (catchup_window_s and max_active_runs the package leaves out back to their defaults, as a fresh apply makes them); a new name is made; one the package
     // marked and no longer lists is removed (`removing`). Each trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
     // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
     const ids: string[] = [];
@@ -2976,7 +2977,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const own = { templateId: pkg.id, onAgent: entry.agent.id };
         try {
           if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind && !remade.has(i)) {
-            const { enabled: _owners, ...patch } = aimed;
+            const { enabled: _owners, ...sent } = aimed;
+            // The package's settings whole: one its version leaves out goes back to what a fresh apply makes (POST
+            // /triggers' default), never kept from the version before. PATCH reads null as no cap.
+            const patch = { ...sent, catchup_window_s: sent.catchup_window_s ?? CATCHUP_WINDOW_S, max_active_runs: sent.max_active_runs ?? null };
             const source = resent.get(i);
             if (await triggers.update(was.id, source ? { ...patch, source } : patch, own).then(() => true, movedAway)) {
               ids.push(was.id);
