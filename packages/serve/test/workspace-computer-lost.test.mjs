@@ -62,7 +62,7 @@ async function claim({ recreates, kept = false } = {}) {
   const held = new Map();
   if (kept) {
     held.set("c0", fakeComputer(root));
-    await writeKept(store.settings, "run-1", { provider: "modal", kind: "sandbox", id: "c0", name: "c0", epoch: 2, until: Date.now() + KEEP_MS });
+    await writeKept(store.settings, "run-1", { provider: "modal", kind: "sandbox", id: "c0", name: "c0", epoch: 2, until: Date.now() + KEEP_MS, folder: "archil" });
   }
   const provider = {
     id: "fake",

@@ -34,6 +34,7 @@ export type Capability =
 	| "persistence"
 	| "mount:bind"
 	| "mount:archil"
+	| "mount:sync"
 	| "extend"
 	| "stream"
 	| "vendor-agent"
