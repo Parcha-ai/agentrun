@@ -434,6 +434,9 @@ __all__ = [
     "GetRunLearningResponseObjectVerdictItemsItem",
     "GetRunLearningResponseObjectWorkflowsItem",
     "GetRunResponse",
+    "GetRunTraceResponse",
+    "GetRunTraceResponseSpansItem",
+    "GetRunTraceResponseSpansItemTokens",
     "GetSdkRunResponse",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
@@ -6217,6 +6220,45 @@ class TimelineRowLearning(TypedDict):
     detail: str | None
 
 
+class GetRunTraceResponse(TypedDict):
+    run_id: Id
+    model_requests: Literal["priced", "tokens_only", "not_recorded"]
+    spans: list[GetRunTraceResponseSpansItem]
+    dropped: int
+
+
+class GetRunTraceResponseSpansItem(TypedDict):
+    id: str
+    kind: Literal["model", "tool"]
+    parent_id: str | None
+    name: str
+    agent_label: str | None
+    started_at: Timestamp
+    ended_at: str | None
+    status: Literal["ok", "failed", "refused", "interrupted", "waiting", "running"]
+    stop_reason: str | None
+    tokens: GetRunTraceResponseSpansItemTokens | None
+    usd: float | None
+    decision: bool
+    charged: bool
+    not_metered: bool
+    tool_use_id: str | None
+    input_preview: str | None
+    result_preview: str | None
+    result_size_bytes: int | None
+
+
+class _GetRunTraceResponseSpansItemTokensRequired(TypedDict):
+    input: int
+    cache_read: int
+    cache_write: int
+    output: int
+
+
+class GetRunTraceResponseSpansItemTokens(_GetRunTraceResponseSpansItemTokensRequired, total=False):
+    reasoning: int
+
+
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
 
 
@@ -9331,6 +9373,7 @@ OPERATIONS: dict[str, Operation] = {
     "stopRun": Operation(method="POST", path="/runs/{run_id}/stop", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getRunTrace": Operation(method="GET", path="/runs/{run_id}/trace", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9895,6 +9938,10 @@ class RunsResource(Group):
     def timeline(self, run_id: str, *, after: int | None = None, wait_ms: int | None = None, last_event_id: str | None = None, limit: int | None = None, calls: Literal["whole"] | None = None, timeout: float | None = None) -> GetTimelineResponse:
         """The run's timeline, as a page or a stream (GET /runs/{run_id}/timeline)."""
         return self._call("getTimeline", (run_id,), None, {"after": after, "wait_ms": wait_ms, "Last-Event-ID": last_event_id, "limit": limit, "calls": calls}, timeout=timeout)
+
+    def trace(self, run_id: str, *, timeout: float | None = None) -> GetRunTraceResponse:
+        """A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace)."""
+        return self._call("getRunTrace", (run_id,), None, None, timeout=timeout)
 
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""

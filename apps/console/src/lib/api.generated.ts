@@ -3073,6 +3073,40 @@ export interface operations {
       }[];
     };
   };
+  getRunTrace: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      model_requests: "priced" | "tokens_only" | "not_recorded";
+      spans: {
+        id: string;
+        kind: "model" | "tool";
+        parent_id: string | null;
+        name: string;
+        agent_label: string | null;
+        started_at: components["Timestamp"];
+        ended_at: string | null;
+        status: "ok" | "failed" | "refused" | "interrupted" | "waiting" | "running";
+        stop_reason: string | null;
+        tokens: {
+          input: number;
+          cache_read: number;
+          cache_write: number;
+          output: number;
+          reasoning?: number;
+        } | null;
+        usd: number | null;
+        decision: boolean;
+        charged: boolean;
+        not_metered: boolean;
+        tool_use_id: string | null;
+        input_preview: string | null;
+        result_preview: string | null;
+        result_size_bytes: number | null;
+      }[];
+      dropped: number;
+    };
+  };
   getSdkRun: {
     body: never;
     answer: {

@@ -142,7 +142,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
 - `agentrun Observations`: get-observations
 - `agentrun revisions`: list, set-current
-- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, unarchive, wait
+- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, wait
 - `agentrun sdk-runs`: complete, events, get, start
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
