@@ -2,7 +2,7 @@
 // first run completed. Each event holds a random id made for this data directory, the server's version, the platform,
 // and how many runs ended here as a range. It never holds a prompt, a workflow, a key, a name, a path or an address.
 //
-// Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, and under --faux. The start that first could send prints one
+// Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, under a test runner, and under --faux. The start that first could send prints one
 // notice and sends nothing at its start, so a person reads how to turn it off before anything leaves the machine.
 // AGENTRUN_TELEMETRY=debug prints every event and sends none; it never stands in for that notice.
 // Sending never delays a start, a run or a stop, and a send that fails is dropped without a word. A run's end is counted
@@ -39,11 +39,12 @@ export interface TelemetryEvent {
 export type RunsRange = "0" | "1-10" | "11-100" | "101+";
 
 /** Why nothing is sent, or "on" / "debug" (events printed to stderr, none sent). */
-export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" | "off_ci" | "off_faux" | "off_no_key";
+export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" | "off_ci" | "off_faux" | "off_test" | "off_no_key";
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
-/** What this start does, from its environment: the operator's own setting first, then DO_NOT_TRACK, CI and --faux. */
+/** What this start does, from its environment: the operator's own setting first, then DO_NOT_TRACK, CI and --faux; a test runner turns
+ *  off sending, never debug's printing. */
 export function telemetryMode(env: NodeJS.ProcessEnv, o: { faux?: boolean; key?: string } = {}): TelemetryMode {
   const setting = (env.AGENTRUN_TELEMETRY ?? "").trim().toLowerCase();
   if (OFF.has(setting)) return "off_setting";
@@ -52,6 +53,8 @@ export function telemetryMode(env: NodeJS.ProcessEnv, o: { faux?: boolean; key?:
   if (env.CI) return "off_ci";
   if (o.faux) return "off_faux";
   if (setting === "debug") return "debug";
+  // A server a test starts inherits node --test's mark: this repository's suites, and anyone's, are never counted.
+  if (env.NODE_TEST_CONTEXT) return "off_test";
   return (o.key ?? TELEMETRY_KEY) === "" ? "off_no_key" : "on";
 }
 

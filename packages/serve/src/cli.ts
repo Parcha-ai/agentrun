@@ -94,7 +94,7 @@ or not (ChatGPT-plan requests don't count): the next is not sent and the run fai
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (docs/telemetry.md): a random id, the
-version, the platform and how many runs as a range, never prompts, files or keys. Off in CI and under --faux too;
+version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,

@@ -27,6 +27,7 @@ With `npx @parcha/agentrun`, set it in the shell. In a container, set it in the 
 It is also off, with nothing to set:
 
 - in CI (`CI` is set)
+- under a test runner (`NODE_TEST_CONTEXT` is set, as `node --test` sets it for a server a test starts)
 - under `--faux`
 - in every command but the server's start (`import`, `eval-template`, `runner`, the CLI)
 
@@ -76,11 +77,9 @@ That is every field. A test (`packages/serve/test/telemetry.test.mjs`) fails whe
 Prompts, messages, workflows, agents, files, keys, tokens, user names, host names, paths, URLs, model names, costs.
 The id is random: it is not made from the machine, the user or the network.
 
-The request reaches `telemetry.agentrun.ai` from the server's IP address, as any request does. That address is a
-Cloudflare Worker Parcha runs ([`deploy/telemetry/worker.js`](../deploy/telemetry/worker.js)): it sends PostHog the
-fields above and none of the request's headers, so PostHog never gets the server's address, and the Worker logs nothing.
-Cloudflare sees the address, as it does for every visit to agentrun.ai. The PostHog project is set to discard IP
-addresses as well. The Worker refuses anything that isn't one of the three events under the project's key.
+The request reaches the receiver from the server's IP address, as any request does. `telemetry.agentrun.ai` is PostHog's
+managed proxy, under this project's own name. The PostHog project is set to discard the address, and its location lookup
+is off.
 
 ## Where it goes
 

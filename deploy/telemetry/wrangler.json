@@ -1,9 +1,0 @@
-{
-	"name": "agentrun-telemetry",
-	"main": "worker.js",
-	"compatibility_date": "2026-11-01",
-	"observability": { "enabled": false },
-	"workers_dev": false,
-	"routes": [{ "pattern": "telemetry.agentrun.ai", "custom_domain": true }],
-	"vars": { "TELEMETRY_KEY": "phc_kz3ieB34X89r2bv6gLbdeXDiNNn78KiAPRCZCxMzUBuA" }
-}

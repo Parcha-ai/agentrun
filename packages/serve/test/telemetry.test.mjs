@@ -31,6 +31,9 @@ test("the operator's setting, DO_NOT_TRACK, CI and --faux each turn it off; a bu
   assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "debug" }, { key: "" }), "debug");
   assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "debug", DO_NOT_TRACK: "1" }, on), "off_do_not_track");
   assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "debug", CI: "1" }, on), "off_ci");
+  // A server a test starts (node --test sets NODE_TEST_CONTEXT, and the server inherits it) sends nothing; debug still prints.
+  assert.equal(telemetryMode({ NODE_TEST_CONTEXT: "child-v8" }, on), "off_test");
+  assert.equal(telemetryMode({ NODE_TEST_CONTEXT: "child-v8", AGENTRUN_TELEMETRY: "debug" }, on), "debug");
 });
 
 test("this build's key is a PostHog project key or empty, never anything else", () => {
