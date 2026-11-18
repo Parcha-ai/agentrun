@@ -1,5 +1,5 @@
 // The upgrade to each run's listing on its row (store/schema.ts RUN_LISTING_COLUMNS): SQLite version 11 to 12 at the
-// server's open (listingUpgrade), Postgres 0016 to 0017 (migrations/0017_run_listing.sql). A store an earlier release made,
+// server's open (listingUpgrade, then on to this version: store-relay-upgrade.test.mjs), Postgres 0016 to 0017 (migrations/0017_run_listing.sql). A store an earlier release made,
 // its runs in every row state, comes through with its rows as they were, each settled run's status set from its row (a
 // status filter finds it before any listing is built), and every run behind: a list builds what it shows, and what it
 // builds is the run's view's item. A runner refuses the earlier SQLite store until its server has upgraded it.
@@ -58,7 +58,7 @@ async function listsAsViews(store) {
   assert.deepEqual(await store.runs.behind({ limit: 50 }), [], "nothing is left for the lister");
 }
 
-test("SQLite: a version 11 store comes to 12 at its server's open, never at a runner's, every run behind and each settled run's status set", sqliteOnly("the SQLite upgrade"), async (t) => {
+test("SQLite: a version 11 store comes to this version at its server's open, never at a runner's, every run behind and each settled run's status set", sqliteOnly("the SQLite upgrade"), async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-listing-upgrade-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
@@ -69,6 +69,9 @@ test("SQLite: a version 11 store comes to 12 at its server's open, never at a ru
     for (const name of TRIGGERS) old.exec(`DROP TRIGGER ${name}`);
     for (const name of INDEXES) old.exec(`DROP INDEX ${name}`);
     for (const column of COLUMNS) old.exec(`ALTER TABLE runs DROP COLUMN ${column}`);
+    // Nor does it keep version 13's relay: no runner on a token's row, no runners' listeners.
+    old.exec("DROP TABLE runner_relays");
+    for (const column of ["runner", "incarnation", "run", "refused"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
     old.exec("UPDATE store_meta SET schema_version = 11 WHERE singleton = 1");
     for (const sql of ROWS) old.exec(sql);
   } finally {
@@ -83,7 +86,7 @@ test("SQLite: a version 11 store comes to 12 at its server's open, never at a ru
     }
   };
   const before = snapshot();
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to bring this store from version 11 to 12 before opening a runner/);
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), new RegExp(`Start the AgentRun server to bring this store from version 11 to ${SCHEMA_VERSION} before opening a runner`));
   assert.deepEqual(snapshot(), before, "a runner's refusal changes nothing");
 
   const store = await openSqliteStore({ file });
@@ -105,7 +108,7 @@ test("SQLite: a version 11 store comes to 12 at its server's open, never at a ru
   }
   const upgraded = snapshot();
   await (await openSqliteStore({ file })).close();
-  assert.deepEqual(snapshot(), upgraded, "a second open finds version 12 and changes nothing");
+  assert.deepEqual(snapshot(), upgraded, "a second open finds this version and changes nothing");
   await (await openSqliteStore({ file, role: "runner" })).close();
 });
 

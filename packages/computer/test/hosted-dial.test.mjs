@@ -62,6 +62,17 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.deepEqual(fake.live(), []);
 });
 
+test("a dial create's mint names the run its labels name (agentrun.run), and none for a computer of no run", async () => {
+	const { fake, provider, tokens } = setup();
+	const ofRun = made(await create(provider, { ...SPEC, labels: { "agentrun.run": "run-7", "agentrun.epoch": "1" } }));
+	const runToken = fake.calls.filter(([what]) => what === "create").at(-1)[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	assert.equal(tokens.check(runToken)?.mint.run, "run-7", "the token's mint names its run");
+	const ofNone = made(await create(provider));
+	const noneToken = fake.calls.filter(([what]) => what === "create").at(-1)[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	assert.equal(tokens.check(noneToken)?.mint.run, undefined, "a computer of no run names none");
+	for (const ref of [ofRun, ofNone]) made(await provider.release(ref, "delete"));
+});
+
 test("a release of a machine gone already revokes its token and closes its socket", async () => {
 	const { fake, provider, hub, tokens } = setup();
 	const ref = made(await create(provider));
@@ -153,7 +164,7 @@ test("delete revokes the machine's token before it closes the socket, and closes
 	let fails = false;
 	const dial = {
 		url: PUBLIC_URL,
-		tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: async (machine) => (order.push("token"), fails ? Promise.reject(new Error("the store is down")) : tokens.revoke(machine)) },
+		tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: async (machine) => (order.push("token"), fails ? Promise.reject(new Error("the store is down")) : tokens.revoke(machine)), refused: (machine) => tokens.refused(machine) },
 		hub: { online: (id) => hub.online(id), connection: (id) => hub.connection(id), revoke: (id, why) => (order.push("socket"), hub.revoke(id, why)) },
 	};
 	const notes = [];
@@ -171,7 +182,7 @@ test("delete revokes the machine's token before it closes the socket, and closes
 
 test("a token store that never answers a revoke holds a delete back no longer than requestMs: the socket closes and the machine is deleted", async () => {
 	const { fake, tokens, hub } = setup();
-	const dial = { url: PUBLIC_URL, tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: () => new Promise(() => {}) }, hub };
+	const dial = { url: PUBLIC_URL, tokens: { mint: (machine, mint) => tokens.mint(machine, mint), revoke: () => new Promise(() => {}), refused: (machine) => tokens.refused(machine) }, hub };
 	const notes = [];
 	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 300 }, dial, onNote: (note) => notes.push(note.note) });
 	const ref = made(await create(provider));
@@ -179,6 +190,94 @@ test("a token store that never answers a revoke holds a delete back no longer th
 	assert.equal(hub.online(ref.name), false);
 	assert.deepEqual(fake.live(), []);
 	assert.deepEqual(notes, ["its machine token could not be revoked (the token store did not answer within 0.3 s): it is refused past the machine's backstop either way"]);
+});
+
+// A runner apart from the server (serve's dial-relay.ts): the server keeps its refusal to relay a machine's dial on the
+// token's row, and the runner's create reads it (MachineTokens refused) instead of waiting out createMs.
+test("a machine whose dial the server refused ends create at once in the server's words, which name no token, and is deleted", async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const said = new Map();
+	const dial = {
+		url: PUBLIC_URL,
+		tokens: {
+			async mint(machine, mint) {
+				const token = await tokens.mint(machine, mint);
+				setTimeout(() => said.set(machine, `a dial for run run-7 (machine ${machine}): runner runner-b, which made it, is not running now`), 50);
+				return token;
+			},
+			revoke: (machine) => tokens.revoke(machine),
+			refused: async (machine) => said.get(machine),
+		},
+		hub,
+	};
+	const createMs = 20_000;
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs }, dial });
+	const started = Date.now();
+	const refused = await create(provider, { ...SPEC, labels: { "agentrun.run": "run-7" } });
+	const took = Date.now() - started;
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused", refused.error.message);
+	assert.match(refused.error.message, /the server refused a dial for run run-7 \(machine computer-[0-9a-f]{12}\): runner runner-b, which made it, is not running now$/);
+	assert.doesNotMatch(refused.error.message, /art_/);
+	assert.ok(took < createMs / 4, `create ended at the refusal, not at createMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
+// The refusal read never holds the hub check back: a token store that stalls on refused() costs no machine that attached
+// meanwhile, no abort waits on it, and it never holds create past createMs.
+const stalling = (tokens, refused = () => new Promise(() => {})) => ({ mint: (machine, mint) => tokens.mint(machine, mint), revoke: (machine) => tokens.revoke(machine), refused });
+
+test("a machine that attaches while the token store stalls on its refusal read is returned as it attaches, and kept", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup();
+	let reads = 0;
+	let attached = false;
+	const refused = () => {
+		if (reads++ === 0) setTimeout(() => (attached = true), 200);
+		return new Promise(() => {});
+	};
+	// The hub as the provider sees it: the machine's socket is there 200 ms into the first read, which never answers.
+	const seen = { connection: (name) => (attached ? hub.connection(name) : undefined), revoke: (name, why) => hub.revoke(name, why) };
+	const createMs = 3_000;
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 6_000, createMs }, dial: { url: PUBLIC_URL, tokens: stalling(tokens, refused), hub: seen } });
+	const started = Date.now();
+	const ref = made(await create(provider));
+	const took = Date.now() - started;
+	assert.ok(took < createMs / 2, `create answered at the attach, not at the read's end: ${took} ms`);
+	assert.equal(reads, 1, "one refusal read in flight at a time");
+	assert.equal(fake.live().length, 1, "the machine was kept");
+	made(await provider.release(ref, "delete"));
+});
+
+test("an abort while the token store stalls on a refusal read ends create at once as aborted, and the machine is deleted", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const abort = new AbortController();
+	const refused = () => {
+		setTimeout(() => abort.abort(), 100);
+		return new Promise(() => {});
+	};
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 3_000, createMs: 4_000 }, dial: { url: PUBLIC_URL, tokens: stalling(tokens, refused), hub } });
+	const started = Date.now();
+	const aborted = await provider.create(SPEC, { requestId: `dial-${++requests}`, signal: abort.signal });
+	const took = Date.now() - started;
+	assert.equal(aborted.ok, false);
+	assert.equal(aborted.error.code, "aborted", aborted.error.message);
+	assert.ok(took < 1_000, `create ended at the abort, not at the read's requestMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
+});
+
+test("a refusal read the token store never answers holds create no later than createMs: it fails timeout then, and the machine is deleted", { timeout: 15_000 }, async () => {
+	const { fake, tokens, hub } = setup({ dials: false });
+	const createMs = 100;
+	// pollMs 50: a poll of 500 ms, longer than createMs, so a pause past the time left shows too.
+	const provider = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, requestMs: 5_000, createMs, pollMs: 50 }, dial: { url: PUBLIC_URL, tokens: stalling(tokens), hub } });
+	const started = Date.now();
+	const failed = await create(provider);
+	const took = Date.now() - started;
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "timeout", failed.error.message);
+	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach within 0\.1 s/);
+	assert.ok(took < 450, `create ended at createMs, not at the read's requestMs or a poll past createMs: ${took} ms`);
+	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
 // A provider is given no dial in a runner apart from the server (serve's runner subcommand, and the container image's

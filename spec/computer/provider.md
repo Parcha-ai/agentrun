@@ -282,7 +282,11 @@ in words.
   true, since the machine's root reaches the server (its tools' network is init's); the host puts the env in the
   machine's env and runs nothing. Creates of one request take turns on one server, so two machines of a request never
   dial at once. Then it waits up to `createMs` for the machine's socket in the hub; one that
-  never dials is deleted, its token revoked, and create fails `timeout`, naming the address.
+  never dials is deleted, its token revoked, and create fails `timeout`, naming the address. One whose dial the server
+  refused in words (`MachineTokens.refused`: a relay to a runner in a process of its own it could not make) is deleted
+  as that read answers, and create fails `refused` in those words. The read is bounded by `requestMs`, the time left
+  and the caller's signal, and holds no look in the hub back: a token store that stalls costs no machine that dials
+  meanwhile, and the hub is read once more before a timeout.
 - Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
   holds by the daemon's SHA-256, which the machine checks before it runs it. A desktop's X server and window manager
   start over the machine's socket, through `process.start`, as on a host with exec.
