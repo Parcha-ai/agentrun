@@ -1,4 +1,5 @@
-// Real SDK HTTP receipts, compiler checks, journal recovery and learning-merge CAS. Only provider answers are scripted.
+// Real SDK HTTP receipts, compiler checks, journal recovery and the run's own learning commit (its CAS on the compile's
+// base). Only provider answers are scripted.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -7,8 +8,8 @@ import { readmeOf } from "./learned-workflow-seed-support.mjs";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { journalEntries } from "../dist/runner/journal-reader.js";
 import { reflectRequestId } from "../dist/runner/end-of-run.js";
-import { mergeChangeOf } from "../dist/runner/learning-loop.js";
 import { learningCommit } from "../dist/learn/commit.js";
+import { textsAt } from "../dist/learn/folder.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { learningFolderOf, seedOf } from "../dist/learning.js";
@@ -28,7 +29,8 @@ const description = "Read release readiness using the existing backend callback.
 const compiled = flow("revised-status");
 const answer = '````workflow release-status\n---\ndescription: ' + description + '\nexample: {"content":"Report release readiness."}\n---\n' + JSON.stringify(compiled) + '\n````';
 
-function compiler(requests) {
+/** The compiler's provider: each prompt it is sent pushed on `requests`; `onAsk()` awaited before it answers. */
+function compiler(requests, onAsk = async () => {}) {
   return {
     provider: { api: "anthropic-messages", origin: "https://scripted-compile-base.invalid", credential: () => "scripted-provider-credential" },
     model: "scripted-compile-base", price: () => 0.05,
@@ -36,6 +38,7 @@ function compiler(requests) {
       const body = JSON.parse(String(init.body));
       const prompt = body.messages.map(message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n")).join("\n");
       requests.push(prompt);
+      await onAsk();
       const text = prompt.startsWith("One more turn:") ? answer : "No notes.";
       const events = [
         { type: "message_start", message: { id: "compiler", type: "message", role: "assistant", model: "scripted-compile-base", content: [], stop_reason: null, usage: { input_tokens: 20, output_tokens: 0 } } },
@@ -61,7 +64,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
       const folder = learningFolderOf(s.data, id);
       try {
         const merged = await learningCommit(folder.workspace, {
-          kind: "merge", runId: `fixture-${label}`, reason: `Keep ${label}`, graded: {},
+          runId: `fixture-${label}`, reason: `Keep ${label}`,
           files: [
             { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
             { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
@@ -87,7 +90,13 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     assert.equal(done.status, 200);
     const base = await land("before-compile"); await hold("before-compile");
     assert.notEqual(base, seed, "the revision compiler reads a newer workflow than the job's original seed");
-    const requests = [], route = compiler(requests);
+    // The run commits its own revision before its atomic end (learning-end.ts commitDirect), so a later change is one
+    // landed while the compiler answers: after its read of main, before the crashed claim's commit (refused there).
+    let current = base;
+    const requests = [], route = compiler(requests, async () => {
+      if (!moved || current !== base) return;
+      current = await land("concurrent-status"); await hold("concurrent-status");
+    });
     const settle = async crash => {
       const claim = await s.store.claim(runId, "sdk-compile-base-proof", { leaseMs: 60_000 }); assert.ok(claim);
       const launch = (await s.store.runs.launch(runId)).body;
@@ -113,28 +122,31 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     const asked = recorded.find(entry => entry.kind === "agentrun.end-of-run.turn" && entry.data.role === "person" && entry.data.requestId === compileId);
     assert.ok(asked, "a held workflow triggers the actual revision compiler");
     assert.equal(asked.data.kept?.compile_base, base, "the first paid compiler request durably pins its actual read");
-    assert.equal(requests.length, 1, "no look-back (an SDK run has no owner feedback), one successful compiler request");
+    assert.equal(requests.length, 1, "one successful compiler request");
     assert.equal(await s.store.learning.proposal(runId), undefined, "no partial proposal is committed before the atomic end");
-    let current = base;
-    if (moved) { current = await land("concurrent-status"); await hold("concurrent-status"); assert.notEqual(current, base); }
+    if (moved) assert.notEqual(current, base, "main moved while the compiler answered");
     await settle(false);
     assert.equal(requests.length, 1, "reclaim reuses the recorded answer without another paid request");
+    // The run's end commits the revision itself (learning-end.ts commitDirect), checked against the first compiler ask's
+    // base, never the recovered main: a workflow changed on main after that read is a conflict, never written over.
     const kept = await s.store.learning.proposal(runId);
-    assert.equal(kept.proposal.state, "proposed", JSON.stringify(kept.proposal));
-    const proposal = kept.proposal.proposal;
-    assert.equal(proposal.seed, seed);
-    assert.equal(proposal.bases["workflows/release-status/workflow.json"], base, "the merge uses the first compiler ask's base, never the recovered main");
+    assert.equal(kept.proposal.state, moved ? "dropped" : "merged", JSON.stringify(kept.proposal));
+    assert.equal(kept.proposal.compiled?.workflow, "release-status", JSON.stringify(kept.proposal.compiled));
     assert.equal(kept.proposal.job_cost_usd, 0.25);
     assert.ok(Math.abs(kept.proposal.look_back_usd - 0.05) < 1e-9);
     assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd - 0.3) < 1e-9, "the one compiler request is charged once");
-    const change = mergeChangeOf(runId, proposal, { items: [{ file: "workflows/release-status/README.md", keep: true, origin: "run" }] }, {});
-    assert.equal(change.bases["workflows/release-status/workflow.json"], base);
-    const folder = learningFolderOf(s.data, id);
-    let merged;
-    try { merged = await learningCommit(folder.workspace, change); } finally { await folder.end(); }
-    assert.equal(merged.ok, !moved, JSON.stringify(merged));
     const after = (await seedOf(s.data, id)).sha;
-    if (moved) assert.equal(after, current, "the concurrent workflow is never overwritten");
-    else assert.notEqual(after, current, "a change before the compiler read is accepted as its actual base");
+    if (moved) {
+      assert.equal(kept.proposal.reason, "checker", JSON.stringify(kept.proposal));
+      assert.ok((kept.proposal.problems ?? []).some(problem => problem.path === "workflows/release-status/workflow.json"), JSON.stringify(kept.proposal.problems));
+      assert.equal(after, current, "the concurrent workflow is never overwritten");
+    } else {
+      assert.notEqual(after, current, "a change before the compiler read is accepted as its actual base");
+      assert.equal(kept.proposal.merged, after, "the run's own commit is main");
+      const folder = learningFolderOf(s.data, id);
+      let texts;
+      try { texts = await textsAt(folder.workspace, after, ["workflows/release-status/workflow.json"]); } finally { await folder.end(); }
+      assert.deepEqual(JSON.parse(texts["workflows/release-status/workflow.json"]), compiled, "main holds the compiled revision");
+    }
   });
 }

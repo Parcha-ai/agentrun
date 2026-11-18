@@ -11,7 +11,7 @@ import { statsWith } from "./AgentAnalytics.sample";
 let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); });
 
-const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "workstation", version: "0.167.2", model: "gpt-5", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true }, remote: { connector_id: "remote-1", target_id: "target-1" } };
+const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "workstation", version: "0.167.2", model: "gpt-5", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true }, remote: { connector_id: "remote-1", target_id: "target-1" } };
 const agent: Agent = { agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], learning: false, native } };
 const offline: NativeBinding = { ...native, state: "needs_attention", capabilities: { ...native.capabilities, launch: false }, issues: ["The source machine is offline."] };
 

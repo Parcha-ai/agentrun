@@ -1,25 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { demonstrate, TASK } from './sdk-learning/demo.mjs';
+import { CORRECTION, demonstrate, TASK } from './sdk-learning/demo.mjs';
 import { createCodexReleaseBackend } from './sdk-learning/codex.mjs';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-function fixture({ notes = [], skills = [], seedSkills = [], context = '' }) {
+/** A server whose corrections.md starts as `start`; a fresh run of the On agent is given `context(corrections)`. */
+function fixture({ start = '', context = (text) => text } = {}) {
   const requests = [], calls = [];
   const counts = new Map();
+  let corrections = start, version = 1;
   const fetch = async (url, options) => {
     const path = new URL(url).pathname;
     requests.push(path);
-    if (path.endsWith('/learning')) return Response.json({ main: 'accepted-revision', notes: { items: notes }, skills });
+    if (path.endsWith('/learning/corrections')) {
+      if (options?.method === 'PUT') { corrections = JSON.parse(options.body).text; version += 1; }
+      return Response.json({ text: corrections, etag: `"v${version}"`, cap_bytes: 2048 }, { headers: { etag: `"v${version}"` } });
+    }
+    if (path.endsWith('/learning')) return Response.json({ main: `main-${version}`, corrections, workflows: [] });
     if (path.endsWith('/sdk-runs')) {
       const agentId = path.split('/').at(-2), turn = (counts.get(agentId) ?? 0) + 1;
       counts.set(agentId, turn);
-      const enabled = agentId.endsWith('-on'), seeded = enabled && turn > 1;
+      const enabled = agentId.endsWith('-on');
       return Response.json({ run_id: `${agentId}-${turn}`, agent_id: agentId, console_url: 'https://console.example/#/runs/test',
-        learning: { enabled, revision: seeded ? 'accepted-revision' : null,
-          context: seeded ? context : '', skills: seeded ? seedSkills : [] } });
+        learning: { enabled, revision: enabled ? `main-${version}` : null, context: enabled ? context(corrections) : '' } });
     }
     throw new Error(`Unexpected route: ${options?.method} ${path}`);
   };
@@ -34,31 +39,19 @@ function fixture({ notes = [], skills = [], seedSkills = [], context = '' }) {
   return { calls, requests, run: () => demonstrate({ runtime: 'test', createBackend, fetch, baseUrl: 'https://server.example/v2', apiKey: 'fake-test-key', agentPrefix: 'fixture' }) };
 }
 
-test('SDK live demo accepts a checked run-origin note and verifies fresh reuse without the teaching prompt', async () => {
-  const source = fixture({ notes: [{ status: 'active', origin: 'run', file: 'notes/release.md' }], context: 'Approved note content.' });
+test('SDK live demo appends the owner\'s correction to what corrections.md held and verifies fresh reuse without it in the prompt', async () => {
+  const source = fixture({ start: '- Name the service first.' });
   const result = await source.run();
-  assert.deepEqual(result.acceptedLessonFiles, ['notes/release.md']);
-  assert.equal(source.calls[1].prompt, TASK);
-  assert.equal(source.calls[2].prompt, TASK);
-  assert.equal(result.runs[1].contextPresent, true);
+  assert.equal(result.corrections, `- Name the service first.\n- ${CORRECTION}\n`);
+  assert.equal(result.correctedRevision, 'main-2');
+  assert.deepEqual(source.calls.map((call) => call.prompt), [TASK, TASK, TASK]);
+  assert.equal(result.runs[1].correctionGiven, true);
 });
 
-test('SDK live demo also accepts an independently checked active skill, including a skill-only seed', async () => {
-  const source = fixture({ skills: [
-    { name: 'release', file: 'skills/release/SKILL.md', status: 'active', run: 'teaching-run', last_change: { by: 'run' } },
-    { name: 'pending', file: 'skills/pending/SKILL.md', status: 'pending', run: 'teaching-run' },
-    { name: 'manual', file: 'skills/manual/SKILL.md', status: 'active', run: null },
-  ], seedSkills: [{ name: 'release', files: { 'SKILL.md': 'Approved release reporting skill.' } }] });
-  const result = await source.run();
-  assert.deepEqual(result.acceptedLessonFiles, ['skills/release/SKILL.md']);
-  assert.equal(result.runs[1].contextPresent, true);
-});
-
-test('pending notes and skills cannot count as accepted learning or trigger the reuse call', async () => {
-  const source = fixture({ notes: [{ status: 'pending', origin: 'run', file: 'notes/pending.md' }],
-    skills: [{ name: 'pending', file: 'skills/pending/SKILL.md', status: 'pending', run: 'teaching-run' }] });
-  await assert.rejects(source.run(), /No checked (?:note|learning|lesson)/);
-  assert.equal(source.calls.length, 1);
+test('a fresh run not given the correction fails the demo, whatever its answer says', async () => {
+  const source = fixture({ context: () => '' });
+  await assert.rejects(source.run(), /was not given the owner's correction/);
+  assert.equal(source.calls.length, 3);
 });
 
 test('Codex restricted-container example exposes a real read-only MCP tool with observed release facts', { timeout: 20_000 }, async () => {
@@ -81,7 +74,7 @@ test('Codex backend success evidence counts a completed MCP tool and excludes fa
     const path = new URL(url).pathname;
     if (path.endsWith('/agents/backend')) return Response.json({ definition: { sdk: { runtime: 'codex-sdk' } } });
     if (path.endsWith('/sdk-runs')) return Response.json({ run_id: 'run', agent_id: 'backend', token: 'fixture-scoped',
-      console_url: 'https://console.example/#/runs/run', learning: { enabled: false, revision: null, context: '', skills: [] } });
+      console_url: 'https://console.example/#/runs/run', learning: { enabled: false, revision: null, context: '' } });
     if (path.endsWith('/sdk-runs/run')) return Response.json({ run_id: 'run', state: 'completed', learning: null });
     return Response.json({ accepted: true });
   };

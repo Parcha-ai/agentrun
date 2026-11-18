@@ -3,7 +3,7 @@ import type { AuditRow, Bill, Serving } from "@/lib/v2";
 
 // The Learning tab's bill, audit line and serving workflow, read as a person reads them. The bill is the server's (GET
 // /v2/agents/{id}/learning/cost `bill`): booked dollars only, every run that does a job with all learning spent for it
-// (its look-back and grade, its audit's shadow run, its revision's compile and check), cumulative, against the agent for
+// (its compile turn, its audit's shadow run, its revision's compile and check), cumulative, against the agent for
 // all of it (the mean of the agent's own runs before its first served run, times the runs), with each hold at the run the
 // server placed it on. The serving workflow is the promotions read's champion. Nothing here computes a dollar or a node.
 

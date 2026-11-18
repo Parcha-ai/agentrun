@@ -16,7 +16,6 @@ import { test } from "node:test";
 import { agentDiskKey, keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { LearningInFlight } from "../dist/learn/delete.js";
 import { gradesKey, promotionsKey } from "../dist/learn/promote.js";
-import { evalsKey } from "../dist/learning-evals.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
@@ -53,37 +52,22 @@ function fakeLearning(order = []) {
 /** The agent's learning folder on this server's disk (workspace/paths.ts agentLearningFolder). */
 const learningDir = (data, id) => join(data, "disk", "agents", agentDir(id), "learning");
 
-/** What the agent's learning keeps: files in its learning folder, and its promotions, grades and evals records. */
+/** What the agent's learning keeps: files in its learning folder (its corrections.md and a workflow), and its promotions
+ *  and grades records. */
 async function learned(store, data, agentId) {
-  await mkdir(join(learningDir(data, agentId), "notes"), { recursive: true });
-  await mkdir(join(learningDir(data, agentId), "skills", "multiply"), { recursive: true });
-  await writeFile(join(learningDir(data, agentId), "notes", "kept.md"), "Six times seven is 42.\n");
-  await writeFile(join(learningDir(data, agentId), "skills", "multiply", "SKILL.md"), "Multiply the two numbers.\n");
+  await mkdir(join(learningDir(data, agentId), "workflows", "multiply"), { recursive: true });
+  await writeFile(join(learningDir(data, agentId), "corrections.md"), "- Six times seven is 42.\n");
+  await writeFile(join(learningDir(data, agentId), "workflows", "multiply", "workflow.json"), "{}\n");
   await writeFile(join(learningDir(data, agentId), "audits.jsonl"), "{}\n");
   await store.settings.put(promotionsKey(agentId), { r1: { at: 1 } });
   await store.settings.put(gradesKey(agentId), { r1: { correct: true } });
-  await store.settings.put(evalsKey(agentId), [{ name: "bench", n: 10, correct: 9 }]);
 }
 
 /** The agent's learning records still in the store (none once its learning is deleted). */
 async function recordsOf(store, agentId) {
   const left = [];
-  for (const key of [promotionsKey(agentId), gradesKey(agentId), evalsKey(agentId)]) if ((await store.settings.get(key)) !== undefined) left.push(key);
+  for (const key of [promotionsKey(agentId), gradesKey(agentId)]) if ((await store.settings.get(key)) !== undefined) left.push(key);
   return left;
-}
-
-/** What a learning batch (learning-batch.ts) keeps in the store, as its create writes it: the agent's index, then each
- *  row, then the header, `status` its state. */
-async function batchKept(store, agentId, id, status, rows) {
-  const index = (await store.settings.get(`learning_batches/${agentId}`)) ?? [];
-  await store.settings.put(`learning_batches/${agentId}`, [...index, id]);
-  for (const [i, row] of rows.entries()) await store.settings.put(`learning_batch/${id}/row/${i + 1}`, { n: i + 1, input: { question: `Q${i + 1}` }, reference: "42", ...row });
-  const done = rows.filter((row) => row.state === "done").length;
-  await store.settings.put(`learning_batch/${id}`, {
-    id, agent_id: agentId, created_at: new Date(0).toISOString(), ended_at: status === "running" ? null : new Date(1).toISOString(), status, stopped: null,
-    inputs: ["question"], answer: "answer", answer_field: null, effort: null, max_cost_usd: 1, total: rows.length, finished: done, right: done, wrong: 0, failed: 0,
-    spent_usd: 0, unknown_cost_rows: 0, paths: { agent: done, handed_back: 0, workflow: 0 }, lessons: { notes: [], skills: [], workflows: [] }, revisions: [],
-  });
 }
 
 /** The agent's folder's name on the disk (workspace/paths.ts agentDirName). */
@@ -240,7 +224,7 @@ async function stateOf(data, runId, state) {
   }
 }
 
-test("the server's own learning delete: the agent's learning folder emptied and its promotions, grades and evals records gone, after its runs stopped and before its other things went; 204", { timeout: 180_000 }, async (t) => {
+test("the server's own learning delete: the agent's learning folder emptied and its promotions and grades records gone, after its runs stopped and before its other things went; 204", { timeout: 180_000 }, async (t) => {
   const at = { seen: [] };
   const { api, data, store } = await serve(t, {
     agentDeleteAt: async (step, agentId) => {
@@ -252,7 +236,7 @@ test("the server's own learning delete: the agent's learning folder emptied and 
   Object.assign(at, { data, store });
   const { agentId, runId } = await finishedAgent(api);
   await learned(store, data, agentId);
-  assert.equal((await recordsOf(store, agentId)).length, 3);
+  assert.equal((await recordsOf(store, agentId)).length, 2);
 
   const deleted = await api("DELETE", `/agents/${agentId}`);
   assert.equal(deleted.status, 204, `DELETE /agents/{id} with the server's own learning delete: ${deleted.status} ${JSON.stringify(deleted.body)}`);
@@ -262,29 +246,6 @@ test("the server's own learning delete: the agent's learning folder emptied and 
   assert.ok(!existsSync(learningDir(data, agentId)), "nor its learning folder");
   assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
   assert.deepEqual([(await api("DELETE", `/agents/${agentId}`)).status], [404]);
-});
-
-test("the agent's learning batches go with its learning: one still running is cancelled with its runs, then every batch's records (index, header, rows) are deleted; 204", { timeout: 180_000 }, async (t) => {
-  const at = { seen: [] };
-  const { api, store } = await serve(t, {
-    agentDeleteAt: async (step) => {
-      if (step === "after_step_1") at.seen.push((await at.store.settings.get("learning_batch/lb_00000000000000b2"))?.status);
-    },
-  });
-  at.store = store;
-  const { agentId, runId } = await finishedAgent(api);
-  await batchKept(store, agentId, "lb_00000000000000b1", "completed", [{ state: "done", right: true, answer: "42" }]);
-  await batchKept(store, agentId, "lb_00000000000000b2", "running", [{ state: "pending" }, { state: "pending" }]);
-  // Another agent's batch is not this agent's to delete.
-  const other = await finishedAgent(api, "10");
-  await batchKept(store, other.agentId, "lb_00000000000000c1", "completed", [{ state: "done", right: true, answer: "42" }]);
-
-  const deleted = await api("DELETE", `/agents/${agentId}`);
-  assert.equal(deleted.status, 204, `DELETE /agents/{id}: ${deleted.status} ${JSON.stringify(deleted.body)}`);
-  assert.deepEqual(at.seen, ["cancelled"], "the running batch ended (cancelled) in step 1, before its records went");
-  const left = (await store.settings.all({ prefix: "learning_batch" })).map((row) => row.key).sort();
-  assert.deepEqual(left, [`learning_batch/lb_00000000000000c1`, `learning_batch/lb_00000000000000c1/row/1`, `learning_batches/${other.agentId}`], "only the other agent's batch is left");
-  assert.equal((await api("GET", `/runs/${runId}`)).status, 404);
 });
 
 test("a run of the agent open when its learning is deleted: the learning module refuses, 409 learning_busy naming the run, the agent kept and refusing runs with its learning kept; once the run has ended, the DELETE finishes", { timeout: 180_000 }, async (t) => {
@@ -306,8 +267,8 @@ test("a run of the agent open when its learning is deleted: the learning module 
   assert.deepEqual(busy.body.error.details?.runs, [runs[0]], "the run in flight named");
   assert.equal((await api("GET", `/agents/${agentId}`)).status, 200, "the agent is kept");
   assert.equal((await api("GET", `/triggers/${trigger}`)).body.enabled, false);
-  assert.equal((await recordsOf(store, agentId)).length, 3, "nothing of its learning removed");
-  assert.ok(existsSync(join(learningDir(data, agentId), "notes", "kept.md")));
+  assert.equal((await recordsOf(store, agentId)).length, 2, "nothing of its learning removed");
+  assert.ok(existsSync(join(learningDir(data, agentId), "corrections.md")));
   const left = rowsOf(data, agentId, runs);
   assert.ok(left.agents === 1 && left.named === 2 && left.triggers === 1, JSON.stringify(left));
 
@@ -773,7 +734,7 @@ test("an agent being deleted takes no write to its home or its learning: 409 age
   // A home file's route, its parts joined (as home.test.mjs builds it).
   const homeFile = (name) => ["/agents", agentId, "home", "files", name].join("/");
   refusedDeleting(await api("PUT", homeFile("notes.md"), "kept notes"), "a home file");
-  refusedDeleting(await api("POST", `/agents/${agentId}/learning/evals`, { name: "bench", label_source: "people", n: 10, correct: 9 }), "a learning eval");
+  refusedDeleting(await api("PUT", `/agents/${agentId}/learning/corrections`, { text: "- Answer in tables.\n" }), "a corrections write");
   assert.equal((await api("GET", `/agents/${agentId}/home/files`)).body.files?.length ?? 0, 0, "nothing written to its home");
 
   // A write sent while the DELETE is in step 3: it waits for the DELETE, then finds no agent.

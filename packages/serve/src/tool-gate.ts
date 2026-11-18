@@ -27,8 +27,7 @@
 
 import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
-import { LEARNED_DIR } from "./learning.js";
-import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
+import { COMPUTER_ROOT } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { builtinHarness } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
@@ -388,22 +387,6 @@ export const noApproverText = (tool: string, ran: "no" | "unknown" = "no", becau
 export const APPROVAL_ROW = "tool_approval_requested" as const;
 /** A call's arguments shown on its approval, at most this many bytes. */
 export const ARGS_PREVIEW_BYTES = 2048;
-
-
-
-/** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
- *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
-export const NOTE_ONLY_TEXT = "A note is kept only from your answer: write it in a ```note block, not to a file.";
-
-/** Whether `args.path`, as a file tool resolves it (a leading `@` dropped, Unicode spaces made plain, then the port's
- *  path of it, portPath), names .learning/ in the run's folder or a path under it: by the folder's path here (`work`)
- *  or a computer's name for it (COMPUTER_ROOT). */
-export function underLearning(work: string, args: unknown): boolean {
-  const path = (args as { path?: unknown } | null | undefined)?.path;
-  if (typeof path !== "string") return false;
-  const plain = path.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
-  return portPath(plain, [work, COMPUTER_ROOT])?.split("/")[0] === LEARNED_DIR;
-}
 
 /** One call that waits for approval, as the run's store keeps it. */
 export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice; /** Parked on a replay: a crash cut an earlier attempt that may have been sent, so a refusal never says nothing was charged. Kept in the store, so a restart keeps it. */ replayed?: true };

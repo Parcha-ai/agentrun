@@ -1,436 +1,287 @@
-// The learning lane's end-of-run turn on the runner (runner/reflect-hook.ts): the server's rules, moved. Whether a run
-// looks back (learning-run.ts reflectSkip), how its turn ended (closeLearning), and the rows kept beside its end: the
-// turn and its proposal (learning_proposals), and a queued learning run only when there is something to grade.
+// The learning lane's end-of-run step on the runner (runner/reflect-hook.ts): no look-back turn and no grade. A run's
+// owner's words are appended to corrections.md as one line; a due compile turn's draft is checked and committed directly;
+// how it ended is kept beside the run's end (learning_proposals).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createReflectHook } from "../dist/runner/reflect-hook.js";
-import { parseReflection, reflectPrompt } from "../dist/learn/index.js";
+import { COMPILE_TIMEOUT_MS, compilePrompt } from "../dist/learn/compile.js";
 import { said, STOPPED } from "../dist/learning-words.js";
+import { runCostOf } from "../dist/learning-cost.js";
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
-/** The hooks' clock, and what a run that looked back keeps of its answer with it: its spend reads 0.01 throughout. */
+/** The hooks' clock; a run's spend reads 0.01 throughout unless a test says otherwise. */
 const AT = Date.UTC(2026, 10, 9, 5, 0, 0);
 const ANSWERED = { answered_at: new Date(AT).toISOString(), job_cost_usd: 0.01, look_back_usd: 0 };
 
-/** A hook over fake deps; `answer` is what the turn's ask resolves with. */
-function hookWith({ facts = {}, answer = { ended: true, answer: "```note\n...\n```" }, check, nothingNew, compileFacts, ownerSaid, gradeCap } = {}) {
-  const calls = { asked: [], checked: [] };
+const FLOW = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
+const BLOCK = `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${FLOW}\n\`\`\`\``;
+const NEW = { mode: "new", reference: "REF", traces: [], tools: [], judges: false };
+const HELD = { workflow: "answer", digest: "0123456789abcdef", reason: "r" };
+const REVISE = { mode: "revise", workflow: "answer", current: FLOW, held: HELD, base: "base-1", reference: "REF", traces: [], tools: [], judges: false };
+/** What a passing draft commits: its two files. */
+const DRAFT = { name: "answer", files: [{ path: "workflows/answer/workflow.json", text: FLOW }, { path: "workflows/answer/README.md", text: "---\nname: answer\ndescription: d\n---\n" }] };
+
+/** A hook over fake deps. `answers`: what each compile ask resolves with, in turn (a further ask fails the test). */
+function hookWith({ facts = {}, answers = [{ ended: true, answer: BLOCK }], words = [], refused = [], compile, checks, commit, nothingNew, refuse, round } = {}) {
+  const calls = { asked: [], checked: [], committed: [], failed: [], refusedAsked: [] };
+  const checkQueue = [...(checks ?? [])];
   const deps = {
     facts: async () => ({ learns: true, costUsd: 0.01, ...facts }),
-    promptFacts: async () => ({ active: 3, tools: ["read", "web_search"] }),
-    asked: async () => ({ asked: ["Find the bug."] }),
-    check: async (input) => {
+    feedback: async () => words,
+    correctionRefused: async (input) => (calls.refusedAsked.push(input), refused),
+    ...(compile !== undefined ? { compileFacts: async (input) => (typeof compile === "function" ? compile(input) : compile) } : {}),
+    compileFailed: async (input) => void calls.failed.push(input),
+    checkDraft: async (input) => {
       calls.checked.push(input);
-      return check ? check(input) : { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] } };
+      return checkQueue.length ? checkQueue.shift() : { errors: [], kept: DRAFT, digest: "d1" };
     },
-    newRunId: () => "run-learn-1",
-    now: () => AT,
+    commit: async (input) => (calls.committed.push(input), commit ? commit(input) : { ok: true, commit: "c1" }),
     ...(nothingNew ? { nothingNew } : {}),
-    ...(compileFacts ? { compileFacts } : {}),
-    ...(ownerSaid ? { ownerSaid } : {}),
-    ...(gradeCap ? { gradeCap } : {}),
+    ...(refuse ? { refuse } : {}),
+    ...(round ? { round } : {}),
+    now: () => AT,
   };
   const hook = createReflectHook(deps);
   const input = (outcome = "completed") => ({
     runId: "run-1", agentId: "agent-1", claim, outcome, signal: new AbortController().signal,
     ask: async (prompt, opts) => {
       calls.asked.push({ prompt, opts });
-      // The turn and at most one re-ask: a third ask fails the test where it happens, never spinning.
-      if (calls.asked.length > 2) throw new Error(`the end-of-run turn was asked ${calls.asked.length} times`);
-      return answer;
+      if (calls.asked.length > answers.length) throw new Error(`the compile turn was asked ${calls.asked.length} times`);
+      return answers[calls.asked.length - 1];
     },
   });
   return { hook, input, calls };
 }
 
-const dropped = (reason, detail) => ({ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason, detail } } });
+const kept = (rows) => rows.also.find((row) => row.table === "learning_proposals").row.proposal;
+const dropped = (reason, detail, extra = {}) => ({ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason, detail, ...extra } } });
 
 test("a run that does not learn asks nothing and keeps nothing", async () => {
-  const { hook, input, calls } = hookWith({ facts: { learns: false } });
+  const { hook, input, calls } = hookWith({ facts: { learns: false }, compile: NEW, words: ["Keep it short."] });
   assert.equal(await hook(input()), undefined);
-  assert.deepEqual(calls.asked, []);
+  assert.deepEqual([calls.asked, calls.committed], [[], []]);
 });
 
-test("a run cut before it could look back (a person's stop, or a fault) keeps its drop beside its end, and nothing is asked", async () => {
+test("a run cut before its end-of-run step (a person's stop, or a fault) keeps its drop beside its end, and nothing is asked or written", async () => {
   for (const [cut, reason, detail] of [
     ["stopped", "cancelled", said.stopped(STOPPED.cancelled)],
     ["stopped-looking", "cancelled", said.stopped(STOPPED.cancelledLooking)],
     ["faulted", "crashed", said.stopped(STOPPED.crashed)],
   ]) {
-    const { hook, input, calls } = hookWith();
+    const { hook, input, calls } = hookWith({ compile: NEW, words: ["Keep it short."] });
     assert.deepEqual(await hook({ ...input("failed"), cut }), { also: [dropped(reason, detail)] }, cut);
-    assert.deepEqual(calls.asked, [], `${cut}: nothing asked`);
+    assert.deepEqual([calls.asked, calls.committed], [[], []], `${cut}: nothing asked or written`);
   }
   const { hook, input } = hookWith({ facts: { learns: false } });
   assert.equal(await hook({ ...input("failed"), cut: "stopped" }), undefined, "a run that does not learn keeps nothing, cut or not");
 });
 
-test("a cancelled run, one its cap stopped, and one whose spend is unknown under a cap: dropped in the server's words, nothing asked", async () => {
+test("a run stopped during its compile turn (an earlier claim asked it) keeps the job's saved figures and the compile's spend, known or null: its cost is the job's own, the rest is learning's", async () => {
+  // The first ask's figures, as the earlier claim kept them with its prompt.
+  const saved = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
+  for (const [cut, reason, detail, facts] of [
+    ["stopped", "cancelled", said.stopped(STOPPED.cancelled), {}],
+    ["stopped-looking", "cancelled", said.stopped(STOPPED.cancelledLooking), {}],
+    ["faulted", "crashed", said.stopped(STOPPED.crashed), {}],
+    [undefined, "cancelled", said.stopped(STOPPED.cancelled), { cancelled: true }],
+  ]) {
+    const { hook, input, calls } = hookWith({ compile: NEW, facts });
+    const end = kept(await hook({ ...input("failed"), ...(cut ? { cut } : {}), keptOf: (round) => (round === 1 ? saved : undefined) }));
+    assert.deepEqual(end, { state: "dropped", reason, detail, ...saved, look_back_usd: 0.008 }, String(cut));
+    assert.deepEqual(runCostOf(0.01, end), { cost_usd: 0.002, learning_usd: 0.008, total_usd: 0.01 }, `${cut}: the job's own cost, the compile's spend learning's`);
+    assert.deepEqual([calls.asked, calls.committed], [[], []], `${cut}: nothing asked or written`);
+  }
+  // The run's spend unknown now: the compile's spend is unknown, never 0, and the job is still its own.
+  const { hook, input } = hookWith({ compile: NEW, facts: { costUsd: null } });
+  const end = kept(await hook({ ...input("failed"), cut: "stopped", keptOf: () => saved }));
+  assert.deepEqual([end.job_cost_usd, end.look_back_usd], [0.002, null]);
+  assert.deepEqual(runCostOf(0.01, end), { cost_usd: 0.002, learning_usd: null, total_usd: null });
+});
+
+test("a cancelled run is dropped in the server's words; a run its cap stopped, or whose spend is unknown under a cap, asks no compile turn", async () => {
+  const cancelled = hookWith({ facts: { cancelled: true }, compile: NEW });
+  assert.deepEqual(await cancelled.hook(cancelled.input()), { also: [dropped("cancelled", said.stopped(STOPPED.cancelled))] });
   for (const [facts, reason, detail] of [
-    [{ cancelled: true }, "cancelled", said.stopped(STOPPED.cancelled)],
     [{ capReached: true }, "no_budget", said.noBudget],
     [{ capUsd: 1, costUsd: null, spentUsd: null }, "unknown_cost", said.unknownCost],
   ]) {
-    const { hook, input, calls } = hookWith({ facts });
-    assert.deepEqual(await hook(input()), { also: [dropped(reason, detail)] }, reason);
-    assert.deepEqual(calls.asked, [], `${reason}: nothing asked`);
+    const { hook, input, calls } = hookWith({ facts, compile: NEW });
+    const rows = await hook(input());
+    assert.deepEqual([kept(rows).state, kept(rows).reason, kept(rows).detail], ["dropped", reason, detail], reason);
+    assert.deepEqual(calls.asked, [], `${reason}: no compile turn asked`);
   }
 });
 
-test("a capped run whose shown cost is unknown but whose spend under its cap is known (a request booked at its hold) is asked its look-back, never skipped as out of budget", async () => {
-  const { hook, input, calls } = hookWith({ facts: { capUsd: 5, costUsd: null, spentUsd: 2.1 } });
-  const [row] = (await hook(input())).also;
-  assert.equal(calls.asked.length, 1, "the look-back is asked: the cap's own read leaves room");
-  assert.equal(row.row.proposal.state, "proposed", JSON.stringify(row.row.proposal));
+test("a capped run whose shown cost is unknown but whose spend under its cap is known is asked its compile turn, never skipped as out of budget", async () => {
+  const { hook, input, calls } = hookWith({ facts: { capUsd: 5, costUsd: null, spentUsd: 2.1 }, compile: NEW });
+  const rows = await hook(input());
+  assert.equal(calls.asked.length, 1, "the compile turn is asked: the cap's own read leaves room");
+  assert.equal(kept(rows).state, "merged", JSON.stringify(kept(rows)));
 });
 
-test("a capped run's grade, when the spend under its cap is unknown after the look-back, is not queued: dropped as unknown_cost in words that say so, never \"no room under the cap\"", async () => {
-  for (const gradeCap of [async () => null, async () => { throw new Error("the store is gone"); }]) {
-    const { hook, input } = hookWith({ facts: { capUsd: 5, costUsd: 1, spentUsd: 1 }, gradeCap });
-    const { also } = await hook(input());
-    assert.equal(also.length, 1, "no learning run is queued");
-    assert.deepEqual([also[0].table, also[0].row.proposal.state, also[0].row.proposal.reason, also[0].row.proposal.detail], ["learning_proposals", "dropped", "unknown_cost", said.gradeUnknownSpend]);
-    assert.doesNotMatch(also[0].row.proposal.detail, /no room/);
+test("a run whose never-learn list can't be read learns nothing, saying why, and asks nothing", async () => {
+  const { hook, input, calls } = hookWith({ compile: NEW, words: ["Keep it short."], refuse: async () => "unreadable" });
+  assert.deepEqual(await hook(input()), { also: [dropped("reflect_failed", said.stopped(STOPPED.refuseUnread))] });
+  assert.deepEqual([calls.asked, calls.committed], [[], []]);
+});
+
+test("a run with nothing said and no compile due keeps nothing, at no cost; one only its learned workflows answered says so", async () => {
+  const plain = hookWith();
+  assert.deepEqual(await plain.hook(plain.input()), { also: [dropped("empty", said.empty, ANSWERED)] });
+  assert.deepEqual([plain.calls.asked, plain.calls.committed], [[], []]);
+  for (const costUsd of [0.01, null]) {
+    const { hook, input, calls } = hookWith({ facts: { costUsd }, nothingNew: async () => true, compile: undefined });
+    assert.deepEqual(await hook(input()), { also: [dropped("empty", said.onlyWorkflow, { answered_at: ANSWERED.answered_at, job_cost_usd: costUsd, look_back_usd: 0 })] }, `job cost ${costUsd}`);
+    assert.deepEqual(calls.asked, [], "nothing asked");
   }
-  // A known room still queues the grade under it.
-  const { hook, input } = hookWith({ facts: { capUsd: 5, costUsd: 1, spentUsd: 1 }, gradeCap: async () => 4 });
-  const { also } = await hook(input());
-  assert.deepEqual(also.map((row) => row.table), ["learning_proposals", "learning_run"]);
-  assert.equal(also[1].row.capUsd, 4);
 });
 
-test("the turn is asked with the server's prompt, its origin reflect, within its deadline", async () => {
-  const { hook, input, calls } = hookWith();
+test("the owner's words are one line of corrections.md: checked against main first, then committed by the run with no model turn", async () => {
+  const { hook, input, calls } = hookWith({ words: ["Keep the summary", " to three lines. "] });
+  const rows = await hook(input());
+  assert.deepEqual(calls.asked, [], "no model turn for a correction");
+  assert.deepEqual(calls.refusedAsked.map(({ agentId, text }) => [agentId, text]), [["agent-1", "Keep the summary to three lines."]]);
+  assert.deepEqual(calls.committed.map(({ runId, agentId, round, draft, correction }) => ({ runId, agentId, round, draft, correction })), [{ runId: "run-1", agentId: "agent-1", round: 1, draft: undefined, correction: "Keep the summary to three lines." }]);
+  assert.deepEqual(kept(rows), { state: "merged", reason: null, merged: "c1", corrections: 1, detail: said.merged([], 1), ...ANSWERED });
+});
+
+test("a correction the checks refuse is dropped in their words, never written; one past the cap says the cap's own sentence", async () => {
+  const secret = [{ rule: "secret_value", path: "corrections.md", detail: "it holds a value the host keeps secret" }];
+  const refusedOne = hookWith({ words: ["Use the key."], refused: secret });
+  const rows = await refusedOne.hook(refusedOne.input());
+  assert.deepEqual(refusedOne.calls.committed, [], "nothing written");
+  assert.deepEqual([kept(rows).state, kept(rows).reason, kept(rows).detail, kept(rows).problems], ["dropped", "checker", said.checker(secret), secret]);
+  const full = [{ rule: "too_large", path: "corrections.md", detail: "corrections.md would be past its 2 KB cap." }];
+  const capped = hookWith({ words: ["One more."], refused: full });
+  assert.equal(kept(await capped.hook(capped.input())).detail, said.correctionsFull(full[0].detail));
+  // The check itself failing: refused as unchecked, never written.
+  const failing = createReflectHook({ facts: async () => ({ learns: true, costUsd: 0.01 }), feedback: async () => ["One more."], correctionRefused: async () => { throw new Error("gone"); }, checkDraft: async () => ({ errors: [] }), commit: async () => { throw new Error("never"); }, now: () => AT });
+  const failed = kept(await failing({ runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => { throw new Error("never"); } }));
+  assert.deepEqual([failed.state, failed.reason], ["dropped", "checker"]);
+});
+
+test("a due compile turn is asked with the server's prompt, origin reflect, its step and deadline, keeping the job's figures with its first ask", async () => {
+  const { hook, input, calls } = hookWith({ compile: NEW });
   await hook(input());
   assert.equal(calls.asked.length, 1);
-  assert.equal(calls.asked[0].prompt, reflectPrompt({ dir: ".learning", active: 3, tools: ["read", "web_search"] }));
-  assert.deepEqual(calls.asked[0].opts, { origin: "reflect", deadlineMs: 5 * 60_000, keep: { answered_at: ANSWERED.answered_at, job_cost_usd: 0.01 } }, "the job's cost and answer time, kept with the turn's first ask");
+  assert.equal(calls.asked[0].prompt, compilePrompt(NEW));
+  assert.deepEqual(calls.asked[0].opts, { origin: "reflect", deadlineMs: COMPILE_TIMEOUT_MS, step: "compile-1", keep: { answered_at: ANSWERED.answered_at, job_cost_usd: 0.01 } });
 });
 
-test("a turn an earlier claim asked first answers with what that ask kept: the job's cost and answer time are its, and the rest is the look-back's", async () => {
-  // The earlier attempt answered the job at $0.002 and spent $0.004 looking back before its runner was lost; the run reads
-  // $0.01 by the end of this claim's re-ask.
-  const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
-  const { hook, input } = hookWith({ answer: { ended: true, answer: "No notes.", kept }, check: () => ({ state: "dropped", reason: "empty" }) });
-  const [row] = (await hook(input())).also;
-  assert.deepEqual(row.row.proposal, { state: "dropped", reason: "empty", detail: said.empty, answered_at: kept.answered_at, job_cost_usd: 0.002, look_back_usd: 0.008 });
-  const { hook: unknown, input: inputOf } = hookWith({ answer: { ended: true, answer: "No notes.", kept: { ...kept, job_cost_usd: null } }, check: () => ({ state: "dropped", reason: "empty" }) });
-  assert.equal((await unknown(inputOf())).also[0].row.proposal.look_back_usd, null, "the job's cost unknown at the first ask: the look-back's is too");
+test("a draft that passes its checks is committed directly with the run's correction, in one merge; the record is kept with the learning", async () => {
+  const { hook, input, calls } = hookWith({ compile: NEW, words: ["Keep it short."], facts: {} });
+  const rows = await hook(input());
+  assert.equal(calls.checked.length, 1);
+  assert.deepEqual([calls.checked[0].draft.name, calls.checked[0].revised], ["answer", undefined]);
+  assert.equal(calls.committed.length, 1, "one merge a round");
+  assert.deepEqual([calls.committed[0].draft, calls.committed[0].correction], [DRAFT, "Keep it short."]);
+  const end = kept(rows);
+  assert.deepEqual([end.state, end.merged, end.corrections], ["merged", "c1", 1]);
+  assert.deepEqual(end.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
+  assert.deepEqual(end.compiled, { workflow: "answer", attempts: [{ ok: true, errors: [] }], digest: "d1" });
+  assert.equal(end.detail, said.merged([{ name: "answer" }], 1));
 });
 
-test("a turn an earlier claim asked first and this claim never asks (skipped, or cut) still keeps that ask's figures: the job's cost and answer time, its look-back what the run spent since, unknown when that is", async () => {
-  // The earlier attempt answered the job at $0.002 and its look-back request was cut by a lost runner: under a cap the run's
-  // spend is now unknown (bookCut), so this claim skips the turn, and its look-back reads unknown, never $0 or absent.
-  const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
-  const rounds = [];
-  const keptOf = (round) => (rounds.push(round), kept);
-  const { hook, input, calls } = hookWith({ facts: { capUsd: 1, costUsd: null, spentUsd: null } });
-  const [row] = (await hook({ ...input(), keptOf })).also;
-  assert.deepEqual(calls.asked, [], "skipped: nothing asked");
-  assert.deepEqual(row.row.proposal, { state: "dropped", reason: "unknown_cost", detail: said.unknownCost, answered_at: kept.answered_at, job_cost_usd: 0.002, look_back_usd: null });
-  assert.deepEqual(rounds, [1], "the run's first round's turn");
-  // Its cap reached since, or a person's stop: the earlier attempt's spend ($0.008 of the run's $0.01) is the look-back's.
-  for (const [facts, cut, reason] of [[{ capReached: true }, undefined, "no_budget"], [{}, "stopped-looking", "cancelled"]]) {
-    const { hook: skip, input: inputOf } = hookWith({ facts });
-    const [one] = (await skip({ ...inputOf(cut ? "failed" : "completed"), ...(cut ? { cut } : {}), keptOf: () => kept })).also;
-    assert.deepEqual([one.row.proposal.reason, one.row.proposal.answered_at, one.row.proposal.job_cost_usd, one.row.proposal.look_back_usd], [reason, kept.answered_at, 0.002, 0.008], reason);
-  }
-  // A turn no claim asked before: the skip keeps no figures, as before.
-  const { hook: fresh, input: freshInput } = hookWith({ facts: { capUsd: 1, costUsd: null, spentUsd: null } });
-  assert.deepEqual(await fresh({ ...freshInput(), keptOf: () => undefined }), { also: [dropped("unknown_cost", said.unknownCost)] });
+test("a correction the merge refuses beside a passing draft (corrections.md filled during the compile) is reported as the check before the compile reports one; the draft merges", async () => {
+  const full = [{ rule: "too_large", path: "corrections.md", detail: "corrections.md would hold 2090 bytes; the cap is 2048 bytes" }];
+  const { hook, input, calls } = hookWith({ compile: NEW, words: ["Keep it short."], commit: () => ({ ok: true, commit: "c1", refusedCorrection: full }) });
+  const end = kept(await hook(input()));
+  assert.equal(calls.committed[0].correction, "Keep it short.", "the correction went to the merge");
+  assert.deepEqual([end.state, end.merged, end.corrections, end.problems], ["merged", "c1", undefined, full]);
+  assert.deepEqual(end.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
+  assert.equal(end.detail, said.merged([{ name: "answer" }], 0, full));
+  // As the check before the compile reports a correction it refuses.
+  const before = hookWith({ compile: NEW, words: ["Keep it short."], refused: full });
+  const earlier = kept(await before.hook(before.input()));
+  assert.deepEqual([earlier.state, earlier.corrections, earlier.problems, earlier.detail], [end.state, end.corrections, end.problems, end.detail]);
 });
 
-test("the learning run a proposal queues names the grade model the hook is given (gradeModelOf, as main's server resolves it), and none when it is given none", async () => {
-  const deps = (extra = {}) => ({
-    facts: async () => ({ learns: true, costUsd: 0.01 }),
-    promptFacts: async () => ({ active: 0, tools: [] }),
-    asked: async () => ({ asked: ["Find the bug."] }),
-    check: async () => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { notes: [{ file: "a.md", text: "x" }] } }),
-    newRunId: () => "run-learn-1",
-    ...extra,
-  });
-  const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => ({ ended: true, answer: "```note a.md\nx\n```" }) };
-  const queued = async (extra) => (await createReflectHook(deps(extra))(input)).also.find((row) => row.table === "learning_run")?.row;
-  assert.deepEqual(await queued({ gradeModel: "claude-sonnet-5-5" }), { id: "run-learn-1", model: "claude-sonnet-5-5" }, "the grade model, on the learning run");
-  assert.deepEqual(await queued(), { id: "run-learn-1" }, "none given: none named, and the agent's own grades it");
+test("a draft held for its owner's OK (its README held) is merged as pending", async () => {
+  const held = { ...DRAFT, held: ["workflows/answer/README.md"] };
+  const { hook, input } = hookWith({ compile: NEW, checks: [{ errors: [], kept: held, digest: "d1" }] });
+  const end = kept(await hook(input()));
+  assert.deepEqual(end.workflows, [{ file: "workflows/answer/workflow.json", name: "answer", pending: true }]);
+  assert.equal(end.detail, said.merged([{ name: "answer", pending: true }], 0));
 });
 
-test("a proposal keeps the turn and queues one learning run beside the end", async () => {
-  const { hook, input, calls } = hookWith();
-  const rows = await hook(input("failed"));
-  assert.equal(calls.checked.length, 1, "the answer is checked once");
-  assert.deepEqual(calls.checked[0].turn, { answer: "```note\n...\n```", asked: ["Find the bug."] });
-  assert.equal(calls.checked[0].outcome, "failed", "the checks read how the job ended");
-  assert.deepEqual(rows, {
-    also: [
-      { table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [{ file: "a.md", text: "x" }], asked: ["Find the bug."] }, detail: said.proposed(1, 0, 0), ...ANSWERED } } },
-      { table: "learning_run", row: { id: "run-learn-1" } },
-    ],
-  });
+test("a draft the checks refuse goes back with their words; one that never passes is recorded on compile once, never silent, and the correction beside it still lands", async () => {
+  const errors = ["workflows/answer/workflow.json: its dry run failed"];
+  const answers = Array.from({ length: 4 }, () => ({ ended: true, answer: BLOCK }));
+  const refusedAll = hookWith({ compile: NEW, answers, checks: Array.from({ length: 4 }, () => ({ errors })) });
+  const rows = await refusedAll.hook(refusedAll.input());
+  assert.deepEqual(refusedAll.calls.asked.map(({ opts }) => opts.step), ["compile-1", "compile-2", "compile-3", "compile-4"]);
+  assert.match(refusedAll.calls.asked[1].prompt, /its dry run failed/);
+  assert.deepEqual(refusedAll.calls.committed, [], "nothing written");
+  assert.deepEqual(refusedAll.calls.failed.map(({ workflow, errors: said }) => [workflow, said]), [["answer", errors]], "compile once: the failed attempt is on record");
+  const end = kept(rows);
+  assert.deepEqual([end.state, end.reason, end.draft_errors], ["dropped", "checker", errors]);
+  assert.equal(end.compiled.attempts.length, 4);
+  assert.equal(end.detail, said.checker([{ rule: "workflow" }]));
+
+  const beside = hookWith({ compile: NEW, words: ["Keep it short."], answers, checks: Array.from({ length: 4 }, () => ({ errors })) });
+  const merged = kept(await beside.hook(beside.input()));
+  assert.deepEqual([merged.state, merged.corrections, merged.workflows], ["merged", 1, undefined]);
+  assert.deepEqual(merged.problems, [{ rule: "workflow", detail: errors[0] }]);
+  assert.deepEqual([beside.calls.committed[0].draft, beside.calls.committed[0].correction], [undefined, "Keep it short."]);
 });
 
-test("an answer with nothing to keep, or out of format, or refused by the checks, queues no learning run", async () => {
-  for (const [result, detail] of [
-    [{ state: "dropped", reason: "empty" }, said.empty],
-    [{ state: "dropped", reason: "unparsed", detail: "no note blocks" }, said.unparsed],
-    [{ state: "dropped", reason: "checker", problems: [{ rule: "too_many_notes" }] }, said.checker([{ rule: "too_many_notes" }])],
-  ]) {
-    const { hook, input } = hookWith({ check: () => result });
-    const rows = await hook(input());
-    assert.ok(rows !== undefined, `${result.reason}: the learning's end is kept`);
-    assert.equal(rows.also.length, 1, `${result.reason}: one row`);
-    assert.equal(rows.also[0].table, "learning_proposals");
-    assert.deepEqual(rows.also[0].row.proposal, { ...result, state: "dropped", detail, ...ANSWERED }, result.reason);
-    assert.ok(!rows.also.some((row) => row.table === "learning_run"), `${result.reason}: no learning run`);
-  }
+test("a fixed draft after a refused one is committed, every attempt recorded", async () => {
+  const errors = ["workflows/answer/workflow.json: its dry run failed"];
+  const { hook, input, calls } = hookWith({ compile: NEW, answers: [{ ended: true, answer: BLOCK }, { ended: true, answer: BLOCK }], checks: [{ errors }] });
+  const end = kept(await hook(input()));
+  assert.equal(calls.asked.length, 2);
+  assert.deepEqual(end.compiled.attempts, [{ ok: false, errors }, { ok: true, errors: [] }]);
+  assert.deepEqual(calls.failed, [], "a draft that passed records no failure");
+  assert.equal(end.state, "merged");
 });
 
-test("a turn past its deadline, one the cap refused, and one that failed: dropped in the server's words", async () => {
-  for (const [answer, reason, detail] of [
-    [{ timedOut: true }, "reflect_timeout", said.stopped(STOPPED.timedOut)],
-    [{ failed: { code: "run-failed", message: "spend_cap_reached ($1.00): the cap is reached" } }, "no_budget", said.noBudget],
-    [{ failed: { code: "run-failed", message: "the model refused" } }, "reflect_failed", said.stopped(STOPPED.failed)],
-  ]) {
-    const { hook, input, calls } = hookWith({ answer });
-    const after = dropped(reason, detail);
-    assert.deepEqual(await hook(input()), { also: [{ ...after, row: { ...after.row, proposal: { ...after.row.proposal, ...ANSWERED } } }] }, reason);
-    assert.deepEqual(calls.checked, [], `${reason}: nothing checked`);
-  }
-});
-
-/** A skill in the end-of-run format, fenced with `fence` (the format asks for four backticks). */
-const SKILL_TEXT = "---\nname: find-policies\ndescription: Find a store's refund policy\n---\n# Find policies\n\nOpen /policies/ first.\n";
-const skillAnswer = (fence) => `Here is what I learned.\n\n${fence}skill find-policies\n${SKILL_TEXT}${fence}\n`;
-
-/** A hook whose checks are the parser's (parseReflection), its turn answering `answers` in order (one each ask; a third
- *  ask fails the test), on a clock that each ask moves by `askMs`. */
-function parsedHook(answers, { askMs = 0, deadlineMs = 300_000 } = {}) {
-  const calls = { asked: [], checked: [] };
-  let clock = 1_000_000;
-  const hook = createReflectHook({
-    facts: async () => ({ learns: true, costUsd: 0.01 }),
-    promptFacts: async () => ({ active: 0, tools: [] }),
-    asked: async () => ({ asked: ["Find the policy."] }),
-    check: async ({ turn }) => {
-      calls.checked.push(turn.answer);
-      const parsed = parseReflection(turn.answer);
-      if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
-      return { state: "proposed", notes: parsed.notes.length, skills: parsed.skills?.length ?? 0, workflows: parsed.workflows?.length ?? 0, proposal: { skills: parsed.skills } };
-    },
-    newRunId: () => "run-learn-1",
-    deadlineMs,
-    now: () => clock,
-  });
-  const input = {
-    runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal,
-    ask: async (prompt, opts) => {
-      calls.asked.push({ prompt, opts });
-      if (calls.asked.length > answers.length) throw new Error(`asked ${calls.asked.length} times`);
-      clock += askMs;
-      return { ended: true, answer: answers[calls.asked.length - 1] };
-    },
-  };
-  return { hook, input, calls };
-}
-
-test("an answer the parser refuses is asked again once, in the same turn, quoting the parser's detail: a skill opened with three backticks, then four, is proposed", async () => {
-  const { hook, input, calls } = parsedHook([skillAnswer("```"), skillAnswer("````")]);
-  const rows = await hook(input);
-  assert.equal(calls.asked.length, 2, "asked again once");
-  const [, again] = calls.asked;
-  assert.ok(again.prompt.includes("a skill's block must open with four backticks: ````skill <name>"), `the parser's own detail: ${again.prompt}`);
-  assert.match(again.prompt, /give the whole answer again in the format/i);
-  assert.deepEqual(again.opts, { origin: "reflect", deadlineMs: 300_000, again: true }, "the re-ask: the turn's origin, its own request, what is left of the deadline");
-  const kept = rows.also.find((row) => row.table === "learning_proposals").row;
-  assert.equal(kept.turn.answer, skillAnswer("````"), "the turn kept is the answer read");
-  assert.equal(kept.proposal.state, "proposed");
-  assert.equal(kept.proposal.skills, 1, "the skill is proposed");
-  assert.ok(rows.also.some((row) => row.table === "learning_run"), "a learning run is queued");
-});
-
-test("an answer refused twice is dropped as it was, asked twice and never a third time", async () => {
-  const { hook, input, calls } = parsedHook([skillAnswer("```"), skillAnswer("```")]);
-  const rows = await hook(input);
-  assert.equal(calls.asked.length, 2, "one re-ask, no loop");
-  assert.deepEqual(rows.also.map((row) => row.table), ["learning_proposals"], "no learning run");
-  const kept = rows.also[0].row;
-  assert.equal(kept.turn.answer, skillAnswer("```"));
-  assert.deepEqual([kept.proposal.state, kept.proposal.reason, kept.proposal.detail], ["dropped", "unparsed", said.unparsed]);
-});
-
-test("the re-ask is inside the turn's deadline: it gets what the first answer left, and none when the first used it all", async () => {
-  const left = parsedHook([skillAnswer("```"), skillAnswer("````")], { askMs: 240_000, deadlineMs: 300_000 });
-  await left.hook(left.input);
-  assert.deepEqual(left.calls.asked.map((ask) => ask.opts.deadlineMs), [300_000, 60_000], "the second ask has the minute left");
-  const spent = parsedHook([skillAnswer("```"), skillAnswer("````")], { askMs: 300_000, deadlineMs: 300_000 });
-  const rows = await spent.hook(spent.input);
-  assert.equal(spent.calls.asked.length, 1, "no time left: not asked again");
-  assert.deepEqual([rows.also[0].row.proposal.state, rows.also[0].row.proposal.reason], ["dropped", "unparsed"]);
-});
-
-/** A hook whose run's spend reads `spent` in turn (the job's when it answered, then the run's once its turn closed), its
- *  clock at `at`; the turn's ask resolves with `answer`. */
-function timedHook({ spent, at, answer = { ended: true, answer: "```note\n...\n```" }, facts = {} }) {
-  const reads = [...spent];
-  const hook = createReflectHook({
-    facts: async () => ({ learns: true, ...facts, costUsd: reads.length > 1 ? reads.shift() : reads[0] }),
-    promptFacts: async () => ({ active: 1, tools: [] }),
-    asked: async () => ({ asked: ["Find the bug."] }),
-    check: async () => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "abc", notes: [], asked: [] } }),
-    newRunId: () => "run-learn-1",
-    now: () => at,
-  });
-  const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async () => answer };
-  return { hook, input };
-}
-
-test("a run that looked back keeps when its job answered, what the job cost and what looking back cost (learning-run.ts closeLearning), on its proposal and on a drop after the turn", async () => {
-  const at = Date.UTC(2026, 10, 9, 6, 0, 0);
-  const first = timedHook({ spent: [0.3, 0.42], at });
-  const kept = (await first.hook(first.input)).also[0].row.proposal;
-  assert.equal(kept.answered_at, new Date(at).toISOString(), "when the job answered: as the turn starts");
-  assert.equal(kept.job_cost_usd, 0.3, "the run's spend as its job answered");
-  assert.equal(kept.look_back_usd, 0.12, "the run's spend once its turn closed, less the job's");
-  const { hook, input } = timedHook({ spent: [0.3, 0.5], at, answer: { timedOut: true } });
-  const late = (await hook(input)).also[0].row.proposal;
-  assert.deepEqual([late.reason, late.answered_at, late.job_cost_usd, late.look_back_usd], ["reflect_timeout", new Date(at).toISOString(), 0.3, 0.2], "a turn past its deadline keeps them too");
-  const unknown = timedHook({ spent: [0.3, null], at });
-  assert.equal((await unknown.hook(unknown.input)).also[0].row.proposal.look_back_usd, null, "a spend not known once the turn closed: looking back's cost is unknown");
-});
-
-// #3087 r2 (A8): a compile turn's spend is its revision's, never the run's own learning, so the round keeps it apart
-// (`compile_usd`, within `look_back_usd`): the run's spend once the turn closed less its spend as the compile turn was
-// first asked, kept with each attempt's ask (`compile_from_usd`) so a claim that asks it again after a restart reads the
-// earlier claim's. A compile asked alone is the whole look-back.
-test("a compile turn's spend is kept apart within the look-back's: from its first ask (an earlier claim's, after a restart) to the turn's close", async () => {
-  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
-  const block = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
-  const due = async () => ({ mode: "new", reference: "REF", notes: [], traces: [], tools: [], judges: false });
-  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
-  const hookOn = (spent, compileKept) => {
-    const reads = [...spent];
-    const asked = [];
-    const hook = createReflectHook({
-      facts: async () => ({ learns: true, costUsd: reads.length > 1 ? reads.shift() : reads[0] }),
-      promptFacts: async () => ({ active: 1, tools: [] }),
-      asked: async () => ({ asked: ["Find the bug."] }),
-      check: async (input) => check(input),
-      compileFacts: due,
-      newRunId: () => "run-learn-1",
-      now: () => AT,
-    });
-    const input = { runId: "run-1", agentId: "agent-1", claim, outcome: "completed", signal: new AbortController().signal, ask: async (prompt, opts) => {
-      asked.push(opts);
-      if (opts.step === "compile-1") return compileKept ? { ...block, kept: compileKept } : block;
-      return { ended: true, answer: "```note\n...\n```" };
-    } };
-    return { run: async () => (await hook(input)).also.find((row) => row.table === "learning_proposals").row.proposal, asked };
-  };
-  // The job $0.30, its spend $0.42 as the compile turn is first asked, $0.50 once the turn closed.
-  const fresh = hookOn([0.3, 0.42, 0.5]);
-  const kept = await fresh.run();
-  assert.deepEqual([kept.job_cost_usd, kept.look_back_usd, kept.compile_usd], [0.3, 0.2, 0.08], JSON.stringify(kept));
-  assert.deepEqual(fresh.asked.find((one) => one.step === "compile-1").keep, { compile_from_usd: 0.42 }, "its first ask keeps where it began");
-  // A later claim: the earlier one began the compile turn at $0.35 and was lost mid compile.
-  const again = await hookOn([0.3, 0.42, 0.5], { compile_from_usd: 0.35 }).run();
-  assert.equal(again.compile_usd, 0.15, "the earlier claim's compile spend is the compile's");
-  // Unknown where it began, or at the close: unknown, never $0.
-  assert.equal((await hookOn([0.3, null, 0.5]).run()).compile_usd, null);
-  assert.equal((await hookOn([0.3, 0.42, null]).run()).compile_usd, null);
-  // No compile asked: no compile_usd at all.
-  const none = timedHook({ spent: [0.3, 0.42], at: AT });
-  assert.ok(!("compile_usd" in (await none.hook(none.input)).also[0].row.proposal));
-  // A compile asked alone is the whole look-back.
-  const alone = hookWith({ nothingNew: async () => true, compileFacts: async () => ({ mode: "revise", workflow: "answer", current: flow, held: { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" }, reference: "REF", notes: [], traces: [], tools: [], judges: false }), answer: block, check });
-  const solo = (await alone.hook(alone.input())).also.find((row) => row.table === "learning_proposals").row.proposal;
-  assert.deepEqual([solo.look_back_usd, solo.compile_usd], [0, 0], JSON.stringify(solo));
-});
-
-test("a run that never looked back keeps no answer time and no look-back cost", async () => {
-  const { hook, input } = timedHook({ spent: [1], at: 0, facts: { capReached: true } });
-  const kept = (await hook(input)).also[0].row.proposal;
-  assert.equal(kept.reason, "no_budget");
-  assert.ok(!("answered_at" in kept) && !("job_cost_usd" in kept) && !("look_back_usd" in kept), JSON.stringify(kept));
-});
-
-test("checks that fail on their own drop the learning, saying so, and queue no run", async () => {
-  const { hook, input } = hookWith({ check: () => { throw new Error("no seed"); } });
-  assert.deepEqual(await hook(input()), { also: [{ table: "learning_proposals", row: { turn: { answer: "```note\n...\n```", asked: ["Find the bug."] }, proposal: { state: "dropped", reason: "propose_failed", detail: said.stopped(STOPPED.notChecked), ...ANSWERED } } }] });
-});
-
-test("a run that only ran its learned workflows is not asked, and its look back cost $0 even when its job's cost is unknown", async () => {
-  for (const costUsd of [0.01, null]) {
-    const { hook, input, calls } = hookWith({ facts: { costUsd }, nothingNew: async () => true });
-    const kept = await hook(input());
-    assert.deepEqual(calls.asked, [], "nothing asked");
-    assert.deepEqual(kept, { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, answered_at: new Date(AT).toISOString(), job_cost_usd: costUsd, look_back_usd: 0 } } }] }, `job cost ${costUsd}`);
-  }
-});
-
-// S1: an agent run of a job that compiles workflows looks back only on its owner's feedback (ownerSaid: a grade's words,
-// or a message after its first). Without it: no look-back request and $0 looking back; a compile due is asked alone.
-test("a run of a workflow job its owner said nothing on is not asked its look-back: $0 looking back, a due compile asked alone; with feedback it looks back", async () => {
-  const unheard = hookWith({ ownerSaid: async () => false, compileFacts: async () => undefined });
-  assert.deepEqual(await unheard.hook(unheard.input()), { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.noFeedback, ...ANSWERED } } }] });
-  assert.deepEqual(unheard.calls.asked, [], "no look-back request");
-
-  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
-  const due = async () => ({ mode: "new", reference: "REF", notes: [], traces: [], tools: [], judges: false });
-  const answer = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
-  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
-  const compiles = hookWith({ ownerSaid: async () => false, compileFacts: due, answer, check });
-  await compiles.hook(compiles.input());
-  assert.deepEqual(compiles.calls.asked.map(({ opts }) => opts.step), ["compile-1"], "the compile turn alone: no look-back asked");
-  assert.match(compiles.calls.asked[0].prompt, /^One more turn: write this agent's job as a learned workflow\./);
-
-  for (const ownerSaid of [async () => true, async () => { throw new Error("the read failed"); }]) {
-    const heard = hookWith({ ownerSaid, compileFacts: async () => undefined });
-    await heard.hook(heard.input());
-    assert.deepEqual(heard.calls.asked.map(({ prompt }) => prompt), [reflectPrompt({ dir: ".learning", active: 3, tools: ["read", "web_search"] })], "the look-back was asked");
-  }
-});
-
-// #2641 review (class C): a held revision's compile turn is asked while its champion serves. A run its champion answered
-// alone gave nothing new to look back on, so it is asked the compile turn alone (no look-back), and the draft it keeps
-// is proposed as any compiled draft is; with no compile due it is asked nothing, as before.
-test("a run only its learned workflows answered, with a held revision due, is asked the compile turn alone and keeps its draft", async () => {
-  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
-  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
-  const compileFacts = async () => ({ mode: "revise", workflow: "answer", current: flow, held, reference: "REF", notes: [], traces: [], tools: [], judges: false });
-  const answer = { ended: true, answer: `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\`` };
-  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
-  const { hook, input, calls } = hookWith({ nothingNew: async () => true, compileFacts, answer, check });
-  const kept = await hook(input());
-  assert.deepEqual(calls.asked.map(({ opts }) => opts.step), ["compile-1"], "the compile turn alone: no look-back asked");
-  assert.match(calls.asked[0].prompt, /^One more turn: revise your learned workflow `answer`\./);
-  const proposal = kept.also.find((row) => row.table === "learning_proposals").row.proposal;
-  assert.equal(proposal.state, "proposed");
-  assert.deepEqual(proposal.compiled.workflow, "answer");
-  assert.ok(kept.also.some((row) => row.table === "learning_run"), "graded as any compiled draft");
-  // No compile due: nothing asked, dropped in said.onlyWorkflow's words at no cost.
-  const none = hookWith({ nothingNew: async () => true, compileFacts: async () => undefined });
-  assert.deepEqual(await none.hook(none.input()), { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "empty", detail: said.onlyWorkflow, ...ANSWERED } } }] });
-  assert.deepEqual(none.calls.asked, []);
-});
-
-// #2641 review r5 (P2): a run only its learned workflows answered asks its compile turn alone, with no look-back, so the
-// compile turn's first ask is the round's first: it keeps the job's cost and answer time with its prompt (the look-back's
-// own `keep`, #2668), and a claim that asks it again after a restart reads that ask's figures (`kept`). What the earlier
-// claim spent compiling is the learning's, never the job's.
-test("a compile-only turn keeps the job's figures with its first ask; asked again after a restart mid compile, the earlier ask's figures stand and the compile spend is the look-back's", async () => {
-  const flow = JSON.stringify({ v: 2, name: "answer", schemas: {}, root: { node: "chain", steps: [] } });
-  const held = { workflow: "answer", digest: "0123456789abcdef", source: "replay", reason: "r" };
-  const compileFacts = async () => ({ mode: "revise", workflow: "answer", current: flow, held, reference: "REF", notes: [], traces: [], tools: [], judges: false });
-  const block = `\`\`\`\`workflow answer\n---\ndescription: d\n---\n${flow}\n\`\`\`\``;
-  const check = ({ turn }) => ({ state: "proposed", notes: 0, skills: 0, workflows: 1, proposal: { seed: "abc", files: [{ file: "workflows/answer/workflow.json", text: flow }], asked: turn.asked } });
-  // This claim: the first to ask. Its compile ask keeps the job's cost and answer time.
-  const first = hookWith({ nothingNew: async () => true, compileFacts, answer: { ended: true, answer: block }, check });
+test("a revision is checked against the commit its text was read at, kept with its first ask; a restart's answer keeps that ask's commit", async () => {
+  const first = hookWith({ compile: REVISE, nothingNew: async () => true });
   await first.hook(first.input());
-  assert.deepEqual(first.calls.asked.map(({ opts }) => [opts.step, opts.keep]), [["compile-1", { answered_at: ANSWERED.answered_at, job_cost_usd: 0.01 }]]);
-  // A later claim: the earlier one answered the job at $0.002 and was lost mid compile; the run reads $0.01 now.
-  const kept = { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002 };
-  const again = hookWith({ nothingNew: async () => true, compileFacts, answer: { ended: true, answer: block, kept }, check });
-  const rows = await again.hook(again.input());
-  const proposal = rows.also.find((row) => row.table === "learning_proposals").row.proposal;
-  assert.deepEqual([proposal.state, proposal.answered_at, proposal.job_cost_usd, proposal.look_back_usd], ["proposed", kept.answered_at, 0.002, 0.008], JSON.stringify(proposal));
+  assert.deepEqual(first.calls.asked[0].opts.keep, { answered_at: ANSWERED.answered_at, job_cost_usd: 0.01, compile_base: "base-1" });
+  assert.deepEqual(first.calls.checked[0].revised, { workflow: "answer", base: "base-1" });
+  const again = hookWith({ compile: REVISE, nothingNew: async () => true, answers: [{ ended: true, answer: BLOCK, kept: { answered_at: "2026-11-09T04:00:00.000Z", job_cost_usd: 0.002, compile_base: "base-0" } }] });
+  const end = kept(await again.hook(again.input()));
+  assert.deepEqual(again.calls.checked[0].revised, { workflow: "answer", base: "base-0" }, "the earlier claim's commit, never this claim's read");
+  assert.deepEqual([end.state, end.answered_at, end.job_cost_usd, end.look_back_usd], ["merged", "2026-11-09T04:00:00.000Z", 0.002, 0.008], "the job's figures are the earlier ask's; what it spent since is learning's");
+});
+
+test("a compile ask the cap refused keeps nothing, saying so; a turn that failed or timed out is recorded as an attempt and drops as failed, never as a refused draft", async () => {
+  const capped = hookWith({ compile: NEW, answers: [{ failed: { code: "run-failed", message: "spend_cap_reached ($1.00): the cap is reached" } }] });
+  const end = kept(await capped.hook(capped.input()));
+  assert.deepEqual([end.state, end.reason, end.detail], ["dropped", "no_budget", said.noBudget]);
+  for (const answer of [{ timedOut: true }, { failed: { code: "run-failed", message: "the model refused" } }]) {
+    const { hook, input, calls } = hookWith({ compile: NEW, answers: [answer] });
+    const out = kept(await hook(input()));
+    assert.deepEqual([out.state, out.reason, out.detail, out.draft_errors], ["dropped", "reflect_failed", said.stopped(STOPPED.unanswered), ["the turn ended before it answered"]], JSON.stringify(answer));
+    assert.equal(out.problems, undefined, "no draft answered: no check refused it");
+    assert.deepEqual(out.compiled.attempts, [{ ok: false, errors: ["the turn ended before it answered"] }]);
+    assert.deepEqual(calls.failed, [], "no draft answered: no compile-once record");
+  }
+});
+
+test("a merge that could not be written drops the learning: unavailable as failed, a conflict in the checks' words", async () => {
+  const unavailable = hookWith({ words: ["Keep it short."], commit: () => ({ ok: false, reason: "unavailable", problems: [] }) });
+  const one = kept(await unavailable.hook(unavailable.input()));
+  assert.deepEqual([one.state, one.reason, one.detail], ["dropped", "reflect_failed", said.stopped(STOPPED.failed)]);
+  const thrown = hookWith({ words: ["Keep it short."], commit: () => { throw new Error("the folder is gone"); } });
+  assert.equal(kept(await thrown.hook(thrown.input())).reason, "reflect_failed");
+  const problems = [{ rule: "conflict", path: "workflows/answer/workflow.json", detail: "main changed it since the run's seed" }];
+  const conflict = hookWith({ compile: NEW, commit: () => ({ ok: false, reason: "conflict", problems }) });
+  const two = kept(await conflict.hook(conflict.input()));
+  assert.deepEqual([two.state, two.reason, two.problems], ["dropped", "checker", problems]);
+});
+
+test("every string the step keeps is cut of what the run must never learn", async () => {
+  const value = "hold-this-value-0123456789";
+  const { hook, input } = hookWith({ refuse: async () => [value], words: [`Use ${value}.`], refused: [{ rule: "secret_value", path: "corrections.md", detail: `it holds ${value}` }] });
+  const rows = await hook(input());
+  assert.ok(!JSON.stringify(rows).includes(value), JSON.stringify(rows));
+});
+
+test("a later round's rows carry its round", async () => {
+  const { hook, input } = hookWith({ words: ["Keep it short."], round: 2 });
+  const rows = await hook(input());
+  assert.equal(rows.also[0].row.round, 2);
+  assert.equal(rows.also[0].row.proposal.state, "merged");
 });

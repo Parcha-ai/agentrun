@@ -153,24 +153,18 @@ test("a launch body with no files reads none, never an empty list", () => {
   assert.equal(read.files, undefined);
 });
 
-test("a launch body round-trips the learned skills a run's learning start offered it; none is no field", () => {
-  const learning = { given: [], seed: "seed-abc", section: "", seedNotes: 0, skills: ["weekly-report", "find-policies"] };
-  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }));
-  assert.deepEqual(read.learning, learning);
-  const none = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { ...learning, skills: [] } }));
-  assert.equal("skills" in none.learning, false, "no skills: no field");
-});
-
-test("a launch body round-trips the run's learning start (given {file,name}, seed sha, # Learned section, seedNotes)", () => {
-  const learning = { given: [{ file: "a.md", name: "A" }, { file: "b.md", name: "B" }], seed: "seed-abc", section: "# Learned\n\nA note", seedNotes: 5 };
+test("a launch body round-trips the run's learning start (seed sha, # Learned section, the learned workflows it lists); none listed is no field", () => {
+  const learning = { seed: "seed-abc", section: "# Learned\n- Be brief.\n", workflows: ["classify", "answer"] };
   const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning }));
   assert.deepEqual(read.learning, learning);
   assert.deepEqual(learningStartOf(read), learning);
+  const none = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { ...learning, workflows: [] } }));
+  assert.equal("workflows" in none.learning, false, "no workflows: no field");
 });
 
-test("a learning start with a failed seed round-trips as given empty, seed null, section empty", () => {
-  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "" } }));
-  assert.deepEqual(read.learning, { given: [], seed: null, section: "" });
+test("a learning start with a failed seed round-trips as seed null, section empty", () => {
+  const read = readLaunchBody(launchBody({ input: { content: "hi" }, title: "t", place: { mode: "runner" }, learning: { seed: null, section: "" } }));
+  assert.deepEqual(read.learning, { seed: null, section: "" });
 });
 
 test("a launch body with no learning reads none", () => {

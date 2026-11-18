@@ -2,7 +2,7 @@ import { AlertTriangle, Check, Circle, CircleDot, Eye } from "lucide-react";
 import type { Stage } from "@/lib/learningLoop";
 import { cn } from "@/lib/utils";
 
-// The loop at a glance, at the top of the Learning tab: learned notes, compiled a workflow, it took over, it got cheaper,
+// The loop at a glance, at the top of the Learning tab: its corrections, compiled a workflow, it took over, it got cheaper,
 // and where it is unsure, each stage a cell with its state (an icon and a word, never colour alone), its number and one
 // line of what it means or what happens next.
 

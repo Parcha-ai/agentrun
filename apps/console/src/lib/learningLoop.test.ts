@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { compileAfterOf, compiledInto, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
+import { compileAfterOf, kindOf, markersOf, proofOf, proven, replayLine, standingOf, stoppedOf, storyOf, withheldWords } from "./learningLoop";
 import { EMPTY_BILL } from "./learningBill.fixture";
 import type { CostRun, LearningCost, LearningLoop, Promotion } from "./v2";
 
 // The loop's arithmetic for the Learning tab, on an invented invoice-sorter agent: promotion records on the run axis,
-// standings, the check line, notes' compiled_into, and the story.
+// standings, the check line, and the story.
 
 const at = (h: number) => new Date(Date.UTC(2026, 10, 1) + h * 3_600_000).toISOString();
 const run = (n: number, path: CostRun["path"]): CostRun => ({ n, run_id: `r${n}`, started_at: at(n), path, workflow: path === "agent" ? null : "sort-invoice", learned_revision: null, cost_usd: 0.1, cost_upper_bound: false, learning_usd: 0, total_usd: 0.1 });
@@ -74,25 +74,20 @@ describe("a revision's standing and numbers", () => {
   });
 });
 
-describe("notes and the story", () => {
-  it("reads a note's compiled_into from its front matter only", () => {
-    expect(compiledInto("---\nname: x\ncompiled_into: sort-invoice\n---\nbody")).toBe("sort-invoice");
-    expect(compiledInto("---\nname: x\n---\ncompiled_into: sort-invoice")).toBeNull();
-    expect(compiledInto("no front matter")).toBeNull();
-  });
+describe("the story", () => {
   const cost = (over: Partial<LearningCost["summary"]>, runs: CostRun[] = []): LearningCost => ({ agent: "a", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: over.after ? "priced" : "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null, ...over }, workflows: [], bill: EMPTY_BILL });
-  const base = { notes: 0, compiledNotes: 0, runs: 0, workflows: [], cost: null, promotions: [], serving: [], loop: null };
+  const base = { corrections: 0, runs: 0, workflows: [], cost: null, promotions: [], serving: [], loop: null };
   it("champion/challenger: while a revision replays, or after its replay held it, the one promoted before keeps serving and the story says both", () => {
     const champion = record({});
     const replaying = record({ digest: "b".repeat(16), at: at(5), decided: "replaying", check: undefined, reason: "replaying" });
     const held = record({ digest: "b".repeat(16), at: at(6), decided: "hold", check: { ...CHECK, alone: 10, agreed: 7 } });
-    const took = { notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], cost: cost({ takeover: { n: 2, run_id: "r2" } }) };
+    const took = { corrections: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], cost: cost({ takeover: { n: 2, run_id: "r2" } }) };
     const one = storyOf({ ...base, ...took, promotions: [champion, replaying], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: "b".repeat(16), state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([one.value, one.detail, one.state]).toEqual(["Run 2", "revision aaaaaaa serves; revision bbbbbbb is checked on the inputs of its agent's own runs before it serves", "done"]);
     const two = storyOf({ ...base, ...took, promotions: [champion, replaying, held], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([two.detail, two.state]).toEqual(["revision aaaaaaa serves; revision bbbbbbb was held: Checked on 20 inputs of the agent's own runs: 10 answered alone (50%, 70% needed), 7 of those said what the agent said (70%, 80% needed), 2 handed back", "done"]);
     // Before any run of it in the cost series: the stage says it serves.
-    const three = storyOf({ ...base, notes: 3, promotions: [champion, replaying], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: "b".repeat(16), state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
+    const three = storyOf({ ...base, corrections: 3, promotions: [champion, replaying], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: "b".repeat(16), state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([three.value, three.state]).toEqual(["Serving", "done"]);
     // No champion: a held revision warns, and the agent takes the runs.
     const four = storyOf({ ...base, ...took, promotions: [held], serving: [{ workflow: "sort-invoice", digest: null, replaying: null, state: "held", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
@@ -105,37 +100,38 @@ describe("notes and the story", () => {
   });
   it("with nothing yet, says what happens next at each stage", () => {
     const stages = storyOf(base);
-    expect(stages.map((s) => [s.key, s.state])).toEqual([["notes", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
+    expect(stages.map((s) => [s.key, s.state])).toEqual([["corrections", "now"], ["compiled", "later"], ["took_over", "later"], ["cheaper", "later"]]);
     expect(stages[1]!.detail).toBe("0 of 20 completed runs: a workflow compiles at 20, then is checked once on those runs' inputs against the agent's own answers");
   });
-  it("the compile stage counts to the definition's compile_after: notes alone never bring it closer", () => {
-    const stages = storyOf({ ...base, notes: 7, runs: 3, compileAfter: compileAfterOf({ compile_after: 5 }) });
+  it("the compile stage counts to the definition's compile_after: corrections alone never bring it closer", () => {
+    const stages = storyOf({ ...base, corrections: 7, runs: 3, compileAfter: compileAfterOf({ compile_after: 5 }) });
     expect([stages[1]!.state, stages[1]!.detail]).toEqual(["now", "3 of 5 completed runs: a workflow compiles at 5, then is checked once on those runs' inputs against the agent's own answers"]);
-    expect([compileAfterOf(true), compileAfterOf({ agree_min: 0.9 }), compileAfterOf("notes")]).toEqual([20, 20, 20]);
+    expect([compileAfterOf(true), compileAfterOf({ agree_min: 0.9 })]).toEqual([20, 20]);
   });
-  // Review on #2654: an agent with learning "notes" keeps notes and never compiles (the runner skips the compile turn),
-  // so its story promises no workflow, no takeover and no cheaper runs.
-  it("a notes-only agent's story keeps to notes: no compile, takeover or cheaper runs promised", () => {
-    const stages = storyOf({ ...base, notes: 4, runs: 9, mode: "notes" });
-    expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([["notes", "4 notes", "done"], ["compiled", "Notes only", "later"]]);
-    expect(stages[1]!.detail).toBe("this agent learns notes only: no workflow compiles from them. Full learning compiles one at 20 completed runs");
-    expect(stages.some((s) => /compiles at/.test(s.detail) && s.key !== "compiled")).toBe(false);
+  it("the corrections stage counts the owner's lines, and says how one is given when there is none", () => {
+    expect(storyOf({ ...base, corrections: 1 })[0]).toMatchObject({ key: "corrections", value: "1 correction", detail: "yours, given whole to every later run", state: "done" });
+    expect(storyOf(base)[0]).toMatchObject({ value: "0 corrections", detail: "none yet: grade a run with a correction, or write one here", state: "now" });
+  });
+  it("a native agent's story keeps to corrections: no compile, takeover or cheaper runs promised", () => {
+    const stages = storyOf({ ...base, corrections: 4, runs: 9, execution: "native" });
+    expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([["corrections", "4 corrections", "done"], ["compiled", "Corrections", "later"]]);
+    expect(stages.some((s) => /compiles at/.test(s.detail))).toBe(false);
   });
   it("a champion the money rule stopped: the takeover stage says it no longer runs first", () => {
-    const took = { notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }] };
+    const took = { corrections: 3,runs: 4, workflows: [{ name: "sort-invoice", status: "active" }] };
     const stopped = { ...cost({ takeover: { n: 2, run_id: "r2" } }), workflows: [{ workflow: "sort-invoice", digest: "a".repeat(16), state: "needs_revision", served: null, by_hand: null, unknown_cost_runs: 0 }] } as LearningCost;
     const stage = storyOf({ ...base, ...took, cost: stopped, promotions: [record({})], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([stage.value, stage.detail, stage.state]).toEqual(["Run 2", "revision aaaaaaa no longer runs first: it cost as much as the agent by hand; the agent takes its runs", "warn"]);
-    const before = storyOf({ ...base, notes: 3, cost: { ...stopped, summary: cost({}).summary }, promotions: [record({})], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
+    const before = storyOf({ ...base, corrections: 3, cost: { ...stopped, summary: cost({}).summary }, promotions: [record({})], serving: [{ workflow: "sort-invoice", digest: "a".repeat(16), replaying: null, state: "serving", check: null, audit: null, audits_off: null, not_auditable: 0, champion: null }] }).find((s) => s.key === "took_over")!;
     expect([before.value, before.state]).toEqual(["Stopped", "warn"]);
   });
   it("once it took over and got cheaper, tells it whole, with how often it handed back", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
-    const loop = { agent: "a", completed_runs: 0, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", from_notes: ["a", "b", "c"], attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }], } as LearningLoop;
-    const stages = storyOf({ ...base, notes: 3, compiledNotes: 3, runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({})],
+    const loop = { agent: "a", completed_runs: 0, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }], } as LearningLoop;
+    const stages = storyOf({ ...base, corrections: 3,runs: 4, workflows: [{ name: "sort-invoice", status: "active" }], loop, promotions: [record({})],
       cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
-      ["notes", "3 notes", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7x cheaper", "done"], ["unsure", "33% handed back", "warn"],
+      ["corrections", "3 corrections", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7x cheaper", "done"], ["unsure", "33% handed back", "warn"],
     ]);
     expect(stages[4]!.detail).toBe("of 3 runs it ran first");
   });
@@ -143,7 +139,7 @@ describe("notes and the story", () => {
   // same accuracy" (#3064 review: an 80% bar is no equal accuracy); else the ratio alone and why accuracy is not claimed.
   // A ratio whose runs' cost isn't all known is no ratio: the sentence says why.
   const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
-  const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, notes: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
+  const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, corrections: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
   const passed = (agreed: number, alone: number, n = alone) => ({ n, workflow_pct: Math.round((agreed / alone) * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: 0.8 });
   it("with a cleared check: about N times cheaper, the agreement check it passed (N of M agreed, its bar) and what it served under it, never the same accuracy", () => {
     const stage = cheaper({ times_cheaper: 7, replay: passed(32, 40) });
@@ -169,7 +165,7 @@ describe("notes and the story", () => {
     expect([noBase.value, noBase.state]).toEqual(["5 served runs so far", "now"]);
     expect(noBase.detail).toBe("$0.127 all-in over the 5 runs it served; no priced agent runs before takeover to compare with");
     expect(noBase.detail).not.toContain("no served runs");
-    const none = storyOf({ ...base, notes: 3, runs: 80, cost: cost({ before: { runs: 18, mean_usd: 0.89 } }) }).find((s) => s.key === "cheaper")!;
+    const none = storyOf({ ...base, corrections: 3, runs: 80, cost: cost({ before: { runs: 18, mean_usd: 0.89 } }) }).find((s) => s.key === "cheaper")!;
     expect([none.value, none.state]).toEqual(["Not yet", "later"]);
     expect(none.detail).toContain("no served runs yet");
   });
@@ -188,12 +184,12 @@ describe("notes and the story", () => {
   });
   // A workflow that costs as much as the agent, or more, is not a cheaper run: never "0.5x cheaper", never Done.
   it.each([[0.5, "Not cheaper yet: 2.0x the cost", "now"], [1, "Same cost", "now"]])("a times_cheaper of %s does not read as cheaper", (ratio, value, state) => {
-    const stage = storyOf({ ...base, notes: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.1 }, after: { runs: 25, mean_usd: 0.1 / ratio }, times_cheaper: ratio }) }).find((s) => s.key === "cheaper")!;
+    const stage = storyOf({ ...base, corrections: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.1 }, after: { runs: 25, mean_usd: 0.1 / ratio }, times_cheaper: ratio }) }).find((s) => s.key === "cheaper")!;
     expect([stage.value, stage.state]).toEqual([value, state]);
   });
   // The server rounds times_cheaper to one decimal: $0.01 -> $0.30 comes back as 0, never "Infinityx the cost".
   it.each([[0.01, 0.3, "Not cheaper yet: 30x the cost"], [0, 0.3, "Not cheaper yet"]])("from $%s to $%s a run reads %s", (before, after, value) => {
-    const stage = storyOf({ ...base, notes: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: before }, after: { runs: 25, mean_usd: after }, times_cheaper: 0 }) }).find((s) => s.key === "cheaper")!;
+    const stage = storyOf({ ...base, corrections: 3, runs: 4, cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: before }, after: { runs: 25, mean_usd: after }, times_cheaper: 0 }) }).find((s) => s.key === "cheaper")!;
     expect([stage.value, stage.state]).toEqual([value, "now"]);
   });
 });

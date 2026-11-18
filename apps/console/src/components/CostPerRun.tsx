@@ -23,7 +23,7 @@ const LIMIT = 1000;
 export const HOW = "Turn learning on and run the same job about 20 times: each run's cost shows here, and where a learned workflow takes the job over, the line falls.";
 type LearningExecution = "hosted" | "native" | "sdk";
 const howFor = (execution: LearningExecution) => execution === "native"
-  ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; accepted notes and skills do not enable workflow takeover."
+  ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; corrections do not enable workflow takeover."
   : execution === "sdk"
     ? "SDK run costs include reported backend usage and AgentRun learning. Your backend keeps launching jobs and binds the tools an accepted workflow can use."
     : HOW;
