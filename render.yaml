@@ -1,6 +1,7 @@
 # AgentRun Server on Render: one web service and one persistent disk, from the release's published image (no build).
 # The token is generated once; read it in the service's Environment tab.
 # Needs a paid Render instance (plan 1c-2g) and a 10 GB disk: a card on the workspace.
+# Render gives the service no Docker, so its agents get file tools and web_fetch but no shell.
 # Needs no model key: leave the key fields below blank. Once it's live, set your password with the token, then Continue
 # with ChatGPT in the console (Settings → Model keys, or the first screen), then run your first agent. Codex and pi run
 # on the plan; Claude Agent, OpenCode, Jev decisions and paid tools need their own keys, here or in the console.
@@ -11,7 +12,7 @@ services:
     runtime: image
     # The release's published image (ghcr, built by release.yml from the reviewed tag): a deploy pulls it.
     image:
-      url: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.43
+      url: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44
     # 2 GB and a 10 GB disk at the least: Claude Code and Codex install themselves on first use onto the disk (the image
     # leaves them out), which fills 1 GB, and 512 MB is short for them.
     plan: 1c-2g

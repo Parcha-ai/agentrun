@@ -320,12 +320,16 @@ export function servingOf(records: readonly PromotionRecord[]): { workflow: stri
  *  (`shown.text`: a reason, a digest, a run id). Numbers and the rest as they are. A replaying record's `launch` (a run
  *  launch: its notes, model and plane) never leaves: aggregates only. */
 export function promotionsShown(records: readonly PromotionRecord[], shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }): { promotions: PromotionRecord[]; serving: ReturnType<typeof servingOf> } {
-  const cut = (value: unknown, key?: string): unknown =>
-    typeof value === "string" ? (key === "workflow" ? shown.name(value) : shown.text(value))
-    : Array.isArray(value) ? value.map((one) => cut(one))
-    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([field, one]) => [field, cut(one, field)]))
+  return { promotions: records.map(({ launch: _, ...one }) => shownDeep(one, shown) as PromotionRecord), serving: servingOf(records).map((one) => shownDeep(one, shown) as ReturnType<typeof servingOf>[number]) };
+}
+
+/** `value` cut as the promotions read cuts its records (promotionsShown), at any depth and under any field: a workflow's
+ *  name whole (`shown.name`), any other text of its part (`shown.text`). Numbers and the rest as they are. */
+export function shownDeep(value: unknown, shown: { readonly text: (text: string) => string; readonly name: (name: string) => string }, key?: string): unknown {
+  return typeof value === "string" ? (key === "workflow" ? shown.name(value) : shown.text(value))
+    : Array.isArray(value) ? value.map((one) => shownDeep(one, shown))
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([field, one]) => [field, shownDeep(one, shown, field)]))
     : value;
-  return { promotions: records.map(({ launch: _, ...one }) => cut(one) as PromotionRecord), serving: servingOf(records).map((one) => cut(one) as ReturnType<typeof servingOf>[number]) };
 }
 
 /** What a guarded promotion write did: `won`, whether this write kept its record (else `still` did not hold when it

@@ -3,7 +3,7 @@
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
-import type { GateAnswer, GateCall, OwnCalls } from '@parcha/agentrun-kernel';
+import type { CapCut, GateAnswer, GateCall, OwnCalls } from '@parcha/agentrun-kernel';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
 import {
   type AcquireMachine,
@@ -254,12 +254,14 @@ interface TurnOutcome {
   stopReason?: 'length';
   /** The cut answer's output tokens, when the provider said them. */
   outputTokens?: number;
+  /** The limit it was cut at was the run's cap's: the cap, and the least cap that finishes it (ModelTicket.capCut). */
+  capCut?: CapCut;
 }
 
 interface ActiveTurn {
   id?: string;
   /** The provider cut the turn's answer at its output limit (the model proxy read it before Codex had it). */
-  cut?: { outputTokens?: number };
+  cut?: { outputTokens?: number; capCut?: CapCut };
   /** Completed agent messages since the last transcript entry. */
   said: string[];
   /** Agent messages still streaming (item id to text so far). */
@@ -960,7 +962,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         if (said) journal.message({ type: 'message', role: 'assistant', text: said });
         active = undefined;
         // Its answer cut at the output limit: the turn was interrupted for it, and ended there, its answer unfinished.
-        if (t.cut) return { status: 'completed', stopReason: 'length', ...(t.cut.outputTokens !== undefined ? { outputTokens: t.cut.outputTokens } : {}) };
+        if (t.cut) return { status: 'completed', stopReason: 'length', ...(t.cut.outputTokens !== undefined ? { outputTokens: t.cut.outputTokens } : {}), ...(t.cut.capCut ? { capCut: t.cut.capCut } : {}) };
         const status = result.status === 'completed' ? 'completed' : result.status === 'interrupted' ? 'interrupted' : 'failed';
         const error = status === 'completed' ? undefined : (t.error ?? result.error?.message ?? undefined);
         return { status, ...(error ? { error } : {}) };

@@ -7,6 +7,7 @@ import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { CostPerRun } from "@/components/CostPerRun";
+import { LearningBill } from "@/components/LearningBill";
 import { LearnFromCsv } from "@/components/LearnFromCsv";
 import { HeldOutTest } from "@/components/HeldOutTest";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
@@ -92,6 +93,9 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
   const [adding, setAdding] = useRefreshState(refreshHolds);
   // Bumped when a batch from a CSV ends: the chart reads again, with the tab.
   const [batchEnds, setBatchEnds] = useState(0);
+  // Bumped by each refresh but the first (the chart reads its own cost when it mounts): the cost, the bill's among it,
+  // is read again with the tab, timed or by hand.
+  const [costReads, setCostReads] = useState(0);
   const asked = useRef(0);
   const reading = useRef(false);
   const live = useRef(true);
@@ -103,10 +107,11 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
   canRefresh.current = () => !adding && !refreshHolds.items.size && !reading.current && later.pages === 0;
   // Reads the tab again. The answer settles once the list is read, or once that read failed (it never rejects), so an
   // approve or a retire that landed stays busy until then, and is never left busy after it.
-  const refresh = (mode: "background" | "manual" | "write"): Promise<void> => {
+  const refresh = (mode: "background" | "manual" | "write", cost = true): Promise<void> => {
     const background = mode === "background";
     if (!live.current || (background && (refreshing.current || !canRefresh.current()))) return Promise.resolve();
     const n = ++asked.current;
+    if (cost) setCostReads((k) => k + 1);
     refreshing.current = true; setIsRefreshing(true);
     reading.current = false;
     setError(null);
@@ -127,15 +132,16 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
   automatic.current = () => { if (!document.hidden) void refresh("background"); };
   useEffect(() => {
     live.current = true;
-    void read();
-    const refresh = () => automatic.current();
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    const timer = window.setInterval(refresh, REFRESH_MS);
+    // The chart reads its own cost as it mounts: this first read leaves it be.
+    void refresh("manual", false);
+    const wake = () => automatic.current();
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    const timer = window.setInterval(wake, REFRESH_MS);
     return () => {
       live.current = false; asked.current++;
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
       window.clearInterval(timer);
     };
   }, [v2, agent.agent_id, agent.archived_at]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -246,7 +252,8 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
       {on && <LoopStory stages={story} />}
       <HeldOutTest v2={v2} agentId={agent.agent_id} quiet />
       {learnFromTasks}
-      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} execution={execution} />
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
       <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
       <NotKept runs={runs} />
     </div>
@@ -275,7 +282,8 @@ function LearningView({ agent, v2, focus = [], server, onAgent, places, onChange
       <HeldOutTest v2={v2} agentId={agent.agent_id} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} />}
       {learnFromTasks}
-      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} execution={execution} />
+      <CostPerRun key={batchEnds} v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">

@@ -189,7 +189,8 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
     return startedRun.body.run_id;
   };
   const cost = async (query = "") => (await api("GET", `/agents/${id}/learning/cost${query}`)).body;
-  assert.deepEqual(await cost(), { agent: id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: EMPTY, workflows: [] });
+  const bill = { baseline: null, promoted: null, points: [], break_even: null, gap_usd: null, withheld: 0, booked_usd: 0, revisions: [], unattributed_usd: 0, holds: [] };
+  assert.deepEqual(await cost(), { agent: id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: EMPTY, workflows: [], bill });
 
   const byHand = [await runOf("What is six times seven."), await runOf("What is two times three.")];
   const sha = await landFlow(data, id, "answer");

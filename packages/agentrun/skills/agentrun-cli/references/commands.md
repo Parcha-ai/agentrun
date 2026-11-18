@@ -951,8 +951,9 @@ Install AgentRun as a service of this user and start it: it keeps running after 
 
 Route: none, it runs on this machine.
 
-- `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340)
+- `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
+- `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
 
 ### `agentrun service logs`
 
@@ -989,7 +990,7 @@ Route: none, it runs on this machine.
 
 ### `agentrun service uninstall`
 
-Stop the service and remove it; the data directory stays.
+Stop the service and remove it, and the tailscale serve entry --tailscale added; the data directory stays.
 
 Route: none, it runs on this machine.
 
