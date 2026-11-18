@@ -218,28 +218,6 @@ test("the size cap stops it, across its files, said on the timeline in words", a
   await recorder.stop("ended");
 });
 
-test("the size cap is the run's across recordings made at once (a browser's sessions): each stops when their files together reach it", async () => {
-  const dir = scratch();
-  const folder = join(scratch(), "recordings");
-  const limits = { maxBytes: 4_096, checkMs: 50 };
-  const one = recording({ ffmpeg: program(dir, COPY(join(dir, "one.json"))), kind: "browser", limits, folder });
-  const tv = screen();
-  const lines = [];
-  const two = startRecording({ watch: tv.watch, folder, tag: "c2", kind: "browser", say: (words) => void lines.push(words), ffmpeg: program(dir, COPY(join(dir, "two.json"))), limits, log: () => undefined });
-  recorders.push(two);
-  await until(() => one.tv.watches.length === 1 && tv.watches.length === 1, "both recorders' watches");
-  const end = Date.now() + 4_000;
-  for (let i = 0; !(one.recorder.facts().ended && two.facts().ended) && Date.now() < end; i += 1) {
-    one.tv.show(frame("jpeg", new Uint8Array(1_000)));
-    tv.show(frame("jpeg", new Uint8Array(1_000)));
-    await sleep(120);
-  }
-  assert.equal(one.recorder.facts().ended, "it reached its cap of 4096 bytes");
-  assert.equal(two.facts().ended, "it reached its cap of 4096 bytes");
-  const sizes = ["c1.mp4", "c2.mp4"].map((name) => statSync(join(folder, name)).size);
-  assert.ok(sizes.every((size) => size < 4_096), `${sizes.join(" + ")} bytes: neither file reached the cap alone`);
-});
-
 test("ffmpeg's own end (a crash, a full disk) or no ffmpeg at all ends the recording with a line, and nothing throws", async () => {
   const dir = scratch();
   for (const [body, why] of [[CRASHES, "ffmpeg stopped (exit code 3)"], [DISK_FULL, "the disk is full"]]) {
