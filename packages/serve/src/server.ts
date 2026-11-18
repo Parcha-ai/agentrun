@@ -2768,6 +2768,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         remade.add(i);
       }
     }
+    // A trigger the agent has by a package trigger's name is the package's to keep by its mark (TriggerRow.templateId).
+    // Marked with this package, it is changed in place, or made again when its kind or its Composio fixed part changed.
+    // Unmarked (the owner's, or made by an apply before the mark was kept: the two can't be told apart), it is adopted only
+    // by a change in place, and marked then. Marked with another package, it is not this one's. One this package would
+    // have to make again without being its own, or another package's, refuses the apply with nothing written (409 under
+    // triggers.<i>): the owner renames or deletes it, then applies again.
+    const notOurs: InputIssue[] = made.triggers.flatMap((trigger, i) => {
+      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      if (!was || was.templateId === pkg.id) return [];
+      const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+      const wasKind = isObject(was.source) ? String(was.source.kind) : "";
+      if (was.templateId === null && kind === wasKind && !remade.has(i)) return [];
+      const why = was.templateId !== null
+        ? `is another template package's (${was.templateId}), not the ${pkg.name} template's`
+        : `is not the ${pkg.name} template's, and keeping it would mean removing it and making it again: ${kind === wasKind ? "its Composio server, event or config differs from the package's" : `it is a ${wasKind} trigger, and the package's is a ${kind} one`}`;
+      return [{ field: `triggers.${i}.name`, reason: "not_allowed", message: `The agent's trigger ${was.name} ${why}. Nothing was changed: rename or delete that trigger, then apply the template again.` }];
+    });
+    if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
     // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
     // imported, its SHA; and a keyed digest of the parameters it was given (never the parameters: one may be a credential).
     // Which triggers are the package's is on each trigger (its mark), not here.
@@ -2789,8 +2807,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       : await createAgentOf(made.agent, origin);
     // An update's triggers are reconciled by name with the ones the agent has: the package's trigger of a name the agent
     // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
-    // owner turned it off; a new name is made; one the package marked and no longer lists is removed (`removing`). Each
-    // trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
+    // owner turned it off (an unmarked one is adopted so, and only so: notOurs above); a new name is made; one the package
+    // marked and no longer lists is removed (`removing`). Each trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
     // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
     const ids: string[] = [];
     // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
