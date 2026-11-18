@@ -831,9 +831,10 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
     if (end === "stop") {
       const stop = await api("POST", `/runs/${runId}/stop`, {});
       assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
-      // Every read from the 202 on says stopped. The runner cuts the turn and only then takes the stop row, in the commit
-      // that ends the run stopped; a read between the two once saw the cut turn's input_required with nothing pending, a
-      // run that waits on the person with nothing to answer (and run.needs_input fired for it).
+      // No read from the 202 on waits on the person with nothing to answer. The runner cuts the turn and only then takes
+      // the stop row, in the commit that ends the run stopped; a read between the two once saw the cut turn's
+      // input_required with nothing pending (and run.needs_input fired for it). Before the cut it reads working, the
+      // request in flight not yet cut; from the cut on, stopped.
       const reads = [];
       for (const end = Date.now() + 30_000; ; await sleep(25)) {
         const view = (await api("GET", `/runs/${runId}`)).body;
@@ -841,7 +842,7 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
         if (view.pending?.kind === "stopped") break;
         assert.ok(Date.now() < end, "the run reads stopped");
       }
-      assert.deepEqual(reads.filter(([, , pending]) => pending !== "stopped"), [], `no read after the stop's 202 says anything but stopped: ${JSON.stringify(reads)}`);
+      assert.deepEqual(reads.filter(([status, , pending]) => status !== "working" && pending !== "stopped"), [], `every read after the stop's 202 says working or stopped: ${JSON.stringify(reads)}`);
       const view = (await api("GET", `/runs/${runId}`)).body;
       assert.deepEqual([view.status, view.state, view.pending], ["input_required", "idle", { kind: "stopped" }], "stopped: idle, pending kind stopped");
       // Past the turn's 8 s: a turn the stop did not cut would have answered by now.

@@ -352,10 +352,12 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
   // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
   // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it. A stop
-  // asked for and not yet taken (stopAsked) is the mark too, from the stop's answer on, as a cancel's row is (`cancelling`
-  // below): between the turn's cut and the end that takes the stop, a read would otherwise see the cut turn's
-  // input_required with nothing pending.
-  const asked = !terminal && stopAsked(row, runRow, await commandsNow());
+  // asked for and not yet taken (stopAsked) is the mark too once nothing works: between the turn's cut and the end that
+  // takes the stop, a read would otherwise see the cut turn's input_required with nothing pending; a run waiting (on an
+  // approval, a person, a browser) reads stopped from the stop's answer on. While its turn still works it reads working:
+  // the cut is what books the request it cuts (its cost unknown), so a run read stopped before the cut would say the known
+  // sum as its cost.
+  const asked = !terminal && !working && stopAsked(row, runRow, await commandsNow());
   // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
   // reopen leaves) whose journal holds no end, by its row (answersOf `final`); every call still waiting once a stop is
   // asked (stopAsked).
