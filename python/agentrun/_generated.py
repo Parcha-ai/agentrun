@@ -319,6 +319,8 @@ __all__ = [
     "GetCalendarResponse",
     "GetCapabilitiesResponse",
     "GetChatGPTSignInResponse",
+    "GetClaudeLoginResponse",
+    "GetClaudeLoginResponseAccount",
     "GetEmailAccountResponse",
     "GetEmailAccountResponseImap",
     "GetEmailAccountResponseSmtp",
@@ -847,6 +849,8 @@ __all__ = [
     "SkillFiles",
     "Source",
     "StartChatGPTSignInResponse",
+    "StartClaudeLoginResponse",
+    "StartClaudeLoginResponseAccount",
     "StartMcpOAuthBody",
     "StartMcpOAuthResponse",
     "StartRunBody",
@@ -891,6 +895,11 @@ __all__ = [
     "ToolKeysResource",
     "ToolSettingsResource",
     "TriggersResource",
+    "TurnOffClaudeLoginResponse",
+    "TurnOffClaudeLoginResponseAccount",
+    "TurnOnClaudeLoginBody",
+    "TurnOnClaudeLoginResponse",
+    "TurnOnClaudeLoginResponseAccount",
     "UnarchiveAgentResponse",
     "UnarchiveRunResponse",
     "UpdateDefinitionBody",
@@ -2414,6 +2423,7 @@ class Cost(_CostRequired, total=False):
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+    on: Literal["chatgpt", "claude_code"]
 
 
 class RunSummarySdk(TypedDict):
@@ -3454,6 +3464,25 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     models: list[str]
 
 
+class _GetClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: GetClaudeLoginResponseAccount
+
+
+class GetClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
 class GetEmailAccountResponse(TypedDict):
     configured: bool
     preset: Literal["gmail", "fastmail", "icloud", "other"] | None
@@ -4020,6 +4049,25 @@ class StartChatGPTSignInResponse(TypedDict):
     expires_at: str
 
 
+class _StartClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: StartClaudeLoginResponseAccount
+
+
+class StartClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
 class _StartMcpOAuthBodyRequired(TypedDict):
     url: str
 
@@ -4103,6 +4151,52 @@ class TestWorkspaceArchilResponseObject1(TypedDict):
 class TestWorkspaceArchilResponseObject2(TypedDict):
     ok: Literal[False]
     why: str
+
+
+class _TurnOffClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: TurnOffClaudeLoginResponseAccount
+
+
+class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class _TurnOnClaudeLoginBodyRequired(TypedDict):
+    only_me: Literal[True]
+
+
+class TurnOnClaudeLoginBody(_TurnOnClaudeLoginBodyRequired, total=False):
+    place: Literal["agentrun", "machine"]
+
+
+class _TurnOnClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+
+
+class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: TurnOnClaudeLoginResponseAccount
+
+
+class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
 
 
 class DeleteMcpServerResponse(TypedDict):
@@ -8483,6 +8577,7 @@ OPERATIONS: dict[str, Operation] = {
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getCalendar": Operation(method="GET", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8502,11 +8597,14 @@ OPERATIONS: dict[str, Operation] = {
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
     "testCalendar": Operation(method="POST", path="/settings/calendar/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "turnOffClaudeLogin": Operation(method="DELETE", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "turnOnClaudeLogin": Operation(method="PUT", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getMcpServer": Operation(method="GET", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServers": Operation(method="GET", path="/settings/mcp-servers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8826,6 +8924,10 @@ class LocalResource(Group):
         """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
         return self._call("getChatGPTSignIn", (), None, None, timeout=timeout)
 
+    def get_claude_login(self, *, timeout: float | None = None) -> GetClaudeLoginResponse:
+        """Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login)."""
+        return self._call("getClaudeLogin", (), None, None, timeout=timeout)
+
     def get_email_account(self, *, timeout: float | None = None) -> GetEmailAccountResponse:
         """This server's email account: its address, servers and who signs in, never its password (GET /settings/email)."""
         return self._call("getEmailAccount", (), None, None, timeout=timeout)
@@ -8894,6 +8996,10 @@ class LocalResource(Group):
         """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""
         return self._call("startChatGPTSignIn", (), None, None, timeout=timeout)
 
+    def start_claude_login(self, *, timeout: float | None = None) -> StartClaudeLoginResponse:
+        """Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login)."""
+        return self._call("startClaudeLogin", (), None, None, timeout=timeout)
+
     def test_calendar(self, body: TestCalendarBody | None = None, *, timeout: float | None = None) -> TestCalendarResponse:
         """Read the calendar and say what it holds (POST /settings/calendar/test)."""
         return self._call("testCalendar", (), body, None, timeout=timeout)
@@ -8909,6 +9015,14 @@ class LocalResource(Group):
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""
         return self._call("testWorkspaceArchil", (), None, None, timeout=timeout)
+
+    def turn_off_claude_login(self, *, timeout: float | None = None) -> TurnOffClaudeLoginResponse:
+        """Turn off Claude Code's login on this machine (DELETE /settings/claude-login)."""
+        return self._call("turnOffClaudeLogin", (), None, None, timeout=timeout)
+
+    def turn_on_claude_login(self, body: TurnOnClaudeLoginBody, *, timeout: float | None = None) -> TurnOnClaudeLoginResponse:
+        """Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login)."""
+        return self._call("turnOnClaudeLogin", (), body, None, timeout=timeout)
 
 
 class McpServersResource(Group):

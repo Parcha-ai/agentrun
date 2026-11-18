@@ -255,6 +255,8 @@ export interface MessageData {
    *  answer's output tokens when known. The loop reads it as pi's stopReason (loop.ts cutLast). */
   readonly stopReason?: "length";
   readonly outputTokens?: number;
+  /** The limit it was cut at was the run's cap's (turn_end's capCut): the cap, and the least cap that finishes it. */
+  readonly capCut?: { readonly capUsd: number; readonly raiseToUsd: number };
   /** When it was written (ms, the loop's clock): the Timeline dates the message's row by it. */
   readonly at?: number;
 }

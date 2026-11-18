@@ -271,7 +271,7 @@ export function messagesImagesIn(messages: unknown): ImageInput[] {
 }
 
 /** The parts of a Responses body the API reads as images, in order: an `input_image` item, a part of an item's content,
- *  a part of a function call's output. */
+ *  a part of a function call's or a custom tool call's output. */
 function responsesImageParts(input: unknown): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   const image = (part: unknown) => { if (plain(part) && part.type === "input_image") out.push(part); };
@@ -279,7 +279,7 @@ function responsesImageParts(input: unknown): Record<string, unknown>[] {
     if (!plain(item)) continue;
     image(item);
     for (const part of list(item.content)) image(part);
-    if (item.type === "function_call_output") for (const part of list(item.output)) image(part);
+    if (item.type === "function_call_output" || item.type === "custom_tool_call_output") for (const part of list(item.output)) image(part);
   }
   return out;
 }
@@ -519,6 +519,50 @@ export function messagesInputAfter(earlier: BilledRequest, body: Record<string, 
   // Each image's data is part of the added bytes, so the sum is never below the earlier figure.
   const images = messagesImagesIn(added).reduce((sum, image) => sum + imageTokens(model, image) - image.bytes, 0);
   return earlier.inputTokens + Buffer.byteLength(JSON.stringify(added), "utf8") + images;
+}
+
+/** The fields of a Responses body that bill no input, as `UNBILLED_FIELDS` for a Messages body: how much it may answer,
+ *  whether it streams, and who asks. Its `input` is compared item by item (`responsesInputAfter`). */
+const RESPONSES_UNBILLED_FIELDS: ReadonlySet<string> = new Set(["input", "max_output_tokens", "stream", "metadata"]);
+
+/**
+ * The most input tokens a Responses `body` can be billed for, from an earlier request of its session that the provider
+ * billed (`earlier`): that request's billed input (all of its `input_tokens`, the cached ones among them), plus the items
+ * `body` appends after the earlier request's whole `input` (the earlier answer's own output items it carries back, a
+ * reasoning item, a message, a function or custom tool call, and the tools' outputs) at their bytes, each image among them
+ * at the most it is billed as in place of its data's bytes, with the local count's per-item and per-request margin
+ * (`LOCAL_COUNT_MARGIN`). Undefined (no figure: the body keeps its other bounds, its local count or its bytes) when the
+ * two differ in any field but their input and the fields that bill no input (`max_output_tokens`, `stream`, `metadata`):
+ * its instructions, tools, tool choice, reasoning, include, model or any other; when the later input is not the earlier
+ * one, item for item, with items appended (an edit, a reorder or a removal of any earlier item); when either input is not
+ * a list of items; when the earlier request's figure is not a count; or when the items it appends hold a file (billed by
+ * its pages, with no stated bound).
+ *
+ * Why it never undercounts: the provider renders a request as its instructions and tools, then each input item in turn,
+ * and bills each item's tokens whatever follows it, as `messagesInputAfter` argues for a Messages body. The later request
+ * is the earlier one with items after its last, so all the earlier request was billed for, it is billed for again, and
+ * no more. What it appends is bounded as the byte bound bounds any body (`inputTokensMaxOf`): a byte-level BPE token
+ * covers at least one byte, the JSON keys each item spends cover its framing, and the margin adds 16 tokens an item and
+ * 256 beside. Nothing is read through a tokenizer, so the figure rests on no count's accuracy, and a reasoning item's
+ * encrypted content is counted at its bytes, as the byte bound counts it. The Responses API's own context rule (a
+ * reasoning model's reasoning items from turns before the latest user message are dropped) only takes from a later
+ * request what the earlier one may still have been billed for: it adds to the figure's slack, never to the bill.
+ */
+export function responsesInputAfter(earlier: BilledRequest, body: Record<string, unknown>): number | undefined {
+  if (!plain(earlier?.body) || !plain(body) || !Number.isSafeInteger(earlier.inputTokens) || earlier.inputTokens <= 0) return undefined;
+  const fields = new Set([...Object.keys(earlier.body), ...Object.keys(body)].filter((name) => !RESPONSES_UNBILLED_FIELDS.has(name)));
+  for (const name of fields) if (JSON.stringify(earlier.body[name]) !== JSON.stringify(body[name])) return undefined;
+  const before = earlier.body.input;
+  const after = body.input;
+  if (!Array.isArray(before) || !Array.isArray(after) || after.length < before.length) return undefined;
+  for (let i = 0; i < before.length; i++) if (JSON.stringify(before[i]) !== JSON.stringify(after[i])) return undefined;
+  const added = after.slice(before.length);
+  if (itemsIn(added, "input_file") > 0) return undefined;
+  const model = typeof body.model === "string" ? body.model : undefined;
+  // Each image's data is part of the added bytes, so the sum is never below the earlier figure.
+  const images = responsesImagesIn(added).reduce((sum, image) => sum + imageTokens(model, image) - image.bytes, 0);
+  const items = added.length + added.reduce<number>((sum, item) => sum + (plain(item) && item.type === "function_call_output" ? list(item.output).filter(plain).length : 0), 0);
+  return earlier.inputTokens + Buffer.byteLength(JSON.stringify(added), "utf8") + images + LOCAL_COUNT_MARGIN.perItem * items + LOCAL_COUNT_MARGIN.perRequest;
 }
 
 /** The image a body's `data` (base64, or a data URL) carries: the bytes it takes, and its size when its header says it.

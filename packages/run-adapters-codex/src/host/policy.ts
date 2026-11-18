@@ -29,10 +29,11 @@
 //
 // A request's input bound is its bytes less the escapes in the text it carries (the kernel's `responsesInputOverhead`),
 // or the kernel's local o200k_base count with its margin when that is lower (`responsesLocalInputTokens`), on every
-// route: nothing is asked of OpenAI before a request.
+// route: nothing is asked of OpenAI before a request. A later request of the session that only appends items to the last
+// one it billed is bounded by that bill and the bytes it appends, when that is lower (`responsesInputAfter`).
 import type { IncomingHttpHeaders } from "node:http";
 import { PLAN_LIMIT_CODE, PLAN_LIMIT_WORDS } from "@parcha/agentrun-kernel";
-import { lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, responsesInputOverhead, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { lastObjectOf, NATIVE_SEARCH_USD, ProxyRefusal, responsesInputOverhead, responsesInputAfter, responsesLocalInputTokens, type ModelProxyOptions, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage, type ReasoningSeen } from "@parcha/agentrun-kernel/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -195,7 +196,10 @@ function usageFrom(usage: unknown): ProxyUsage | undefined {
   const details = isPlain(usage.input_tokens_details) ? usage.input_tokens_details : {};
   const cacheRead = count(details.cached_tokens) ?? 0;
   const cacheWrite = count(details.cache_write_tokens) ?? 0;
-  return { input: Math.max(0, input - cacheRead - cacheWrite), output, cacheRead, cacheWrite };
+  // The reasoning tokens of its output, when it says them: what the run has seen its model reason (ProxyUsage.reasoning).
+  // Its billed input, input + cacheRead + cacheWrite, is `input_tokens` whole: the cached tokens are part of it.
+  const reasoning = isPlain(usage.output_tokens_details) ? count(usage.output_tokens_details.reasoning_tokens) : undefined;
+  return { input: Math.max(0, input - cacheRead - cacheWrite), output, cacheRead, cacheWrite, ...(reasoning === undefined ? {} : { reasoning }) };
 }
 
 /** The object starting at `text[start]` (a `{`), as JSON text, or undefined when it does not close in `text`. Strings are
@@ -508,11 +512,17 @@ export function responsesOutputAsked(body: Record<string, unknown>): number | un
   return typeof asked === "number" && Number.isSafeInteger(asked) && asked > 0 ? asked : undefined;
 }
 
-/** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus its reasoning effort's
- *  allowance when it reasons. */
-export function responsesOutputLeast(body: Record<string, unknown>): number {
+/** The least output a Responses body may be limited to and still answer: 1,024 tokens, plus, when it reasons, its
+ *  reasoning effort's allowance, or, once the run has seen its model reason (`seen.most`, the most reasoning tokens one
+ *  of its answers reported), twice that most, never past the allowance. OpenAI's reasoning shares the output limit, so a
+ *  limit is a least, not a budget: the request is still sent with all the output the cap fits, and an answer the limit
+ *  cuts is said to be the cap's cut (ModelTicket.capCut). */
+export function responsesOutputLeast(body: Record<string, unknown>, seen?: ReasoningSeen): number {
   const effort = responsesEffort(body);
-  return ANSWER_TOKENS_LEAST + (effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0);
+  const allowed = effort === undefined ? 0 : REASONING_TOKENS_ALLOWED[effort] ?? 0;
+  const most = seen?.most;
+  const reasoning = typeof most === "number" && Number.isSafeInteger(most) && most >= 0 ? Math.min(allowed, 2 * most) : allowed;
+  return ANSWER_TOKENS_LEAST + reasoning;
 }
 
 /** The reasoning effort a Responses body asks its model at (`reasoning.effort`), when it names one. */
@@ -642,6 +652,8 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     ...(plan ? {} : {
       limitOutput: limitResponsesOutput,
       countInputLocally: (body: Record<string, unknown>) => (search && Array.isArray(body.tools) && body.tools.some((tool) => isPlain(tool) && tool.type === "web_search") ? undefined : responsesLocalInputTokens(body)),
+      // A later request of the session, bounded by the earlier one its provider billed and the items it appends.
+      inputAfter: responsesInputAfter,
     }),
     // The content a web search feeds the model is billed as input, and neither it nor the searches one response runs has a
     // stated bound: a body that offers web search has no input bound (undefined), so its input is unmeasured (and never
