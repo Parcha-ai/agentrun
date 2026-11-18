@@ -18,7 +18,7 @@ import type { AgentAdapter } from "@parcha/agentrun-kernel";
 import { acpAdapter, type AcpAdapterOptions } from "./adapter.js";
 import { ACP_CODES } from "./facts.js";
 import { gooseProxy, type GooseProxyOptions } from "./host/goose-proxy.js";
-import { acpPlatform, AcpBinaryRefused, GOOSE_PIN, verifyPinnedBinary } from "./pinned-binary.js";
+import { acpPlatform, AcpBinaryRefused, GOOSE_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync } from "./pinned-binary.js";
 import { recipeProblems, type AcpRecipe } from "./recipe.js";
 
 /** A recipe as its file holds it: everything but the binary, which the host's install puts where it does. */
@@ -61,8 +61,9 @@ export function gooseRecipe(options: GooseRecipeOptions): AcpRecipe {
   return recipe;
 }
 
-export interface GooseAdapterOptions extends Omit<AcpAdapterOptions, "recipe" | "proxy">, Omit<GooseProxyOptions, "log"> {
-  /** The Goose binary, absolute. Its sha256 is checked before the adapter is made, and it is never run for the check. */
+export interface GooseAdapterOptions extends Omit<AcpAdapterOptions, "recipe" | "proxy" | "beforeStart">, Omit<GooseProxyOptions, "log"> {
+  /** The Goose binary, absolute. Its sha256 is checked when the adapter is made and again before every start of a Goose
+   *  process (a restart included), and it is never run for the check. */
   binary: string;
   /** The sha256 it must have. Default: the pin's for this platform (GOOSE_PIN), refused with ACP_BINARY_UNPINNED where
    *  the pin has none. */
@@ -80,6 +81,9 @@ export function gooseAdapter(options: GooseAdapterOptions): AgentAdapter {
   return acpAdapter({
     ...rest,
     recipe: gooseRecipe({ command: binary, model }),
+    // Checked again before each process starts: a binary replaced since the adapter was made never runs unchecked. An
+    // unchanged file is not hashed again (the check remembers it by its identity).
+    beforeStart: (command) => verifyPinnedBinaryAsync(command, pinned),
     proxy: gooseProxy({ model, provider, ...(price ? { price } : {}), ...(maxOutputTokens ? { maxOutputTokens } : {}), ...(fetch ? { fetch } : {}), ...(rest.log ? { log: rest.log } : {}) }),
   });
 }

@@ -39,7 +39,7 @@ function echoTool() {
 }
 
 /** The environment a host passes: the allowlist's names, and what must never reach the agent. */
-const HOST_ENV = { PATH: process.env.PATH, LANG: 'C.UTF-8', TZ: 'UTC', HOST_CANARY: 'never-inherited', ANTHROPIC_API_KEY: 'the-parent-process-key', OPENAI_API_KEY: 'never', GOOSE_PROVIDER: 'openai' };
+const HOST_ENV = { PATH: process.env.PATH, LANG: 'C.UTF-8', TZ: 'UTC', HOST_CANARY: 'never-inherited', ANTHROPIC_API_KEY: 'fake-test-key', OPENAI_API_KEY: 'never', GOOSE_PROVIDER: 'openai' };
 
 /** A Goose session on `store` under key s1, booked by the kernel's model port on the session's writer. `egress`: the
  *  proxy the recipe's HTTP(S)_PROXY name in place of its dead port, so what Goose reaches for is seen. */

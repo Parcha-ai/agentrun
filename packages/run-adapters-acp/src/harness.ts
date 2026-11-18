@@ -78,6 +78,9 @@ export interface AcpHarnessOptions {
   /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it.
    *  `halt` ends the drive the process serves. */
   proxy?: (drive: { halt(reason: unknown): void }) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
+  /** Run before every start of the agent's process, a restart included: the host's check of the binary it runs. A throw
+   *  refuses that start, so a binary replaced after the adapter was made is checked before it ever runs. */
+  beforeStart?: (command: string) => Promise<void>;
   callIdWaitMs?: number;
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -434,6 +437,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       })());
     ctx.signal.addEventListener("abort", () => void rt.dispose(), { once: true });
     try {
+      if (options.beforeStart) await unlessAborted(options.beforeStart(recipe.command), signal);
       if (recipe.billing.kind === "proxy") {
         if (!options.proxy) throw new Error("acp: proxy billing needs the adapter's proxy option");
         proxy = await options.proxy({ halt: (reason) => ctx.halt?.(reason) });

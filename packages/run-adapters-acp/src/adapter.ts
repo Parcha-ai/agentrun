@@ -35,6 +35,9 @@ export interface AcpAdapterOptions {
   /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it, started
    *  on the session's booking. Required for a recipe billed `proxy` (Goose's is `gooseProxy`). */
   proxy?: AcpProxy;
+  /** Run before every start of the agent's process, a restart included (Goose's: its pin, verifyPinnedBinaryAsync). A
+   *  throw refuses that start. */
+  beforeStart?: (command: string) => Promise<void>;
   /** How long an MCP call waits for the agent's tool_call that announces it. Default 10 s. */
   callIdWaitMs?: number;
   /** How long the agent may take to start and open its session. Default 60 s. */
@@ -110,6 +113,7 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
         ...(options.env ? { env: options.env } : {}),
         ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt }) } : {}),
+        ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),
         ...(options.log ? { log: options.log } : {}),
