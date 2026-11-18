@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { duplexPair } from "node:stream";
@@ -15,7 +15,7 @@ import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
 import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
-import { FIRST_RUN_ID, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
+import { FIRST_RUN_ID, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, slotsUnder, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
@@ -51,6 +51,21 @@ test("every slot of a runner is a uid of its own in the helper's range, and a sl
   const ones = Array.from({ length: 15 }, () => slotId(one.take()));
   const twos = Array.from({ length: 15 }, () => slotId(two.take()));
   assert.deepEqual(ones.filter((uid) => twos.includes(uid)), []);
+});
+
+test("a run's folder is given to its next slot however deep an earlier claim's slot wrote in it, and a symlink out of it is never followed", async (t) => {
+  const top = scratchDir(t, "reown-");
+  const outside = scratchDir(t, "outside-");
+  mkdirSync(join(top, "work", "a", "b", "c"), { recursive: true });
+  writeFileSync(join(top, "work", "a", "b", "c", "deep.txt"), "an earlier claim's");
+  writeFileSync(join(outside, "theirs.txt"), "not the run's");
+  symlinkSync(outside, join(top, "work", "out"));
+  // Uids as a slot's would own them (a test cannot chown): the deep file slot 7's, what the symlink reaches slot 9's,
+  // every other entry uid 0 (no slot).
+  const uidOf = (path) => (path.endsWith("deep.txt") ? slotId(7) : path.startsWith(outside) ? slotId(9) : 0);
+  const statOf = async (path) => Object.assign(Object.create(Object.getPrototypeOf(await lstat(path))), await lstat(path), { uid: uidOf(path) });
+  assert.deepEqual(await slotsUnder(top, 3, statOf), [7], "the slot that wrote four levels down is reowned");
+  assert.deepEqual(await slotsUnder(top, 7, statOf), [], "the run's own slot is not another's");
 });
 
 /** A stand-in helper whose `check` exits `code`, saying `said` on stderr. */

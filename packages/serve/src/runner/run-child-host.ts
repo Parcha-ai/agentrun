@@ -11,7 +11,7 @@
 // slot is reaped at each run's end (every process of its uid killed, its files in /tmp removed, what it left readable to
 // the server), and its folders are given back to the server's group.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, type Stats } from "node:fs";
 import { chmod, chown, lstat, mkdir, readdir } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
@@ -189,10 +189,11 @@ async function layRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, 
   }
 }
 
-/** The other slots that own entries at the top of `dir` or one level down. */
-async function slotsUnder(dir: string, slot: number): Promise<number[]> {
+/** The other slots that own an entry anywhere under `dir`, as the helper's reown walks it: the whole tree, a symlink
+ *  never followed (an lstat's, never a directory). `statOf`: the stat it reads (a test's). */
+export async function slotsUnder(dir: string, slot: number, statOf: (path: string) => Promise<Stats> = lstat): Promise<number[]> {
   const found = new Set<number>();
-  const look = async (at: string, depth: number): Promise<void> => {
+  const look = async (at: string): Promise<void> => {
     let names: string[];
     try {
       names = await readdir(at);
@@ -201,14 +202,14 @@ async function slotsUnder(dir: string, slot: number): Promise<number[]> {
     }
     for (const name of names) {
       const path = join(at, name);
-      const stat = await lstat(path).catch(() => undefined);
+      const stat = await statOf(path).catch(() => undefined);
       if (!stat) continue;
       const other = stat.uid - FIRST_RUN_ID;
       if (other >= 0 && other < RUN_SLOTS && other !== slot) found.add(other);
-      if (stat.isDirectory() && depth > 0) await look(path, depth - 1);
+      if (stat.isDirectory()) await look(path);
     }
   };
-  await look(dir, 1);
+  await look(dir);
   return [...found];
 }
 
