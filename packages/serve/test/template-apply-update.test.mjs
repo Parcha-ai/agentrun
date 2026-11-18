@@ -49,6 +49,13 @@ async function templates(t, digest) {
   return root;
 }
 
+/** A server serving digest 0.1.0 and other, with no runner; every feed URL answered by an empty fake feed, so nothing
+ *  reaches GitHub. */
+async function served(t) {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  return serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+}
+
 /** A fresh apply of `name`: 201, its answer. */
 async function applied(api, name, body) {
   const res = await api("POST", `/templates/${name}/apply`, body);
@@ -70,7 +77,7 @@ async function triggersOf(api, agentId) {
 }
 
 test("an apply with agent_id writes a new revision of that agent: the same id, its runs kept, no second agent", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { templates: await templates(t, V1), runner: false });
+  const { api } = await served(t);
   const first = await applied(api, "digest", { parameters: { topic: "cats" } });
   const run = await api("POST", `/agents/${first.agent_id}/runs`, { input: { content: "Go." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -88,7 +95,7 @@ test("an apply with agent_id writes a new revision of that agent: the same id, i
 });
 
 test("an agent not made from the template is refused under agent_id, in words that say why; an unknown agent_id is 404; nothing changes", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { templates: await templates(t, V1), runner: false });
+  const { api } = await served(t);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
   const plain = await api("POST", "/templates/digest/apply", { parameters: { topic: "cats" }, agent_id: "plain" });
   assert.equal(plain.status, 422, JSON.stringify(plain.body));
@@ -109,7 +116,7 @@ test("an agent not made from the template is refused under agent_id, in words th
 });
 
 test("an update's parameters are checked as a fresh apply's, by the same code: the same 422 fields, and the agent as it was", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { templates: await templates(t, V1), runner: false });
+  const { api } = await served(t);
   const first = await applied(api, "digest", { parameters: { topic: "cats" } });
   const fresh = await api("POST", "/templates/digest/apply", { parameters: { repo: 5 } });
   assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
@@ -147,7 +154,7 @@ test("an update reconciles triggers by name: the same name changed in place (a f
 });
 
 test("an update keeps the agent's learned notes", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { templates: await templates(t, V1), runner: false });
+  const { api } = await served(t);
   const first = await applied(api, "digest", { parameters: { topic: "cats" } });
   const text = "---\nname: Kept\ndescription: Kept\ntype: reference\n---\nThe owner likes short pieces.\n";
   const put = await api("PUT", `/agents/${first.agent_id}/learning/files/kept.md`, { text }, { "if-none-match": "*" });
@@ -158,7 +165,7 @@ test("an update keeps the agent's learned notes", { timeout: 60_000 }, async (t)
 });
 
 test("a fresh apply of a template whose same parameters already made a live agent still makes one, with a warning naming the agent there", { timeout: 60_000 }, async (t) => {
-  const { api } = await serve(t, { templates: await templates(t, V1), runner: false });
+  const { api } = await served(t);
   const first = await applied(api, "digest", { parameters: { topic: "cats" } });
   const second = await applied(api, "digest", { parameters: { topic: "cats" } });
   assert.notEqual(second.agent_id, first.agent_id, "it still makes a second agent");
