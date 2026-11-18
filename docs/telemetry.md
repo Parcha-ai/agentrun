@@ -3,9 +3,9 @@
 AgentRun's server counts how many servers run, so the project knows whether it is used and which versions are. The
 counts are anonymous, and one setting turns them off.
 
-**This release sends nothing.** The code is in place and the receiver's key is not set (`TELEMETRY_KEY` in
-[`packages/serve/src/telemetry.ts`](../packages/serve/src/telemetry.ts)). The release that sets it says so in its
-changelog.
+**On from the first release after 0.1.0-beta.44**, whose changelog says so. Releases up to beta.44 send nothing: their
+key (`TELEMETRY_KEY` in [`packages/serve/src/telemetry.ts`](../packages/serve/src/telemetry.ts)) is empty. The first start
+that can send only prints the notice below.
 
 ## Turn it off
 
@@ -69,7 +69,11 @@ That is every field. A test (`packages/serve/test/telemetry.test.mjs`) fails whe
 Prompts, messages, workflows, agents, files, keys, tokens, user names, host names, paths, URLs, model names, costs.
 The id is random: it is not made from the machine, the user or the network.
 
-The request reaches the receiver from the server's IP address, as any request does. The receiver is set to discard it.
+The request reaches `telemetry.agentrun.ai` from the server's IP address, as any request does. That address is a
+Cloudflare Worker Parcha runs ([`deploy/telemetry/worker.js`](../deploy/telemetry/worker.js)): it sends PostHog the
+fields above and none of the request's headers, so PostHog never gets the server's address, and the Worker logs nothing.
+Cloudflare sees the address, as it does for every visit to agentrun.ai. The PostHog project is set to discard IP
+addresses as well. The Worker refuses anything that isn't one of the three events under the project's key.
 
 ## Where it goes
 

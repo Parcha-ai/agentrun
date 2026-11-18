@@ -15,8 +15,8 @@ import { tempOf, writeDurableSync } from "./server-fs.js";
 
 /** Where events go: PostHog's capture route, behind this project's own name. */
 export const TELEMETRY_URL = "https://telemetry.agentrun.ai/i/v0/e/";
-/** The project's write-only key, public by design. Empty: this build sends nothing and prints no notice. */
-export const TELEMETRY_KEY = "";
+/** The PostHog project's write-only key, public by design: that project holds these counts and nothing else. Empty, a build sends nothing and prints no notice. */
+export const TELEMETRY_KEY = "phc_kz3ieB34X89r2bv6gLbdeXDiNNn78KiAPRCZCxMzUBuA";
 /** The file in the data directory that keeps the id, when the notice was printed and how many runs ended. */
 export const TELEMETRY_FILE = ".telemetry.json";
 /** How often a running server says it still runs. */
