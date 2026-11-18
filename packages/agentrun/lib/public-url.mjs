@@ -13,7 +13,9 @@ const same = (value) => (URL.canParse(value) ? new URL(value).href.replace(/\/+$
  *  https address, or http on this machine only; no user name or password; no path beyond `/`, no query or fragment. */
 export function publicUrlOf(value, name = "--public-url") {
   const example = `such as https://box.tailnet.example/`;
-  if (typeof value !== "string" || value === "" || !URL.canParse(value)) return { error: `${name} takes the https address people open AgentRun at, ${example}${value ? `, not ${value}` : ""}.` };
+  // A value that is no address is repeated only when it has no "@": one with user info in it may hold a password, and an
+  // address that fails to parse has not been checked for one yet.
+  if (typeof value !== "string" || value === "" || !URL.canParse(value)) return { error: `${name} takes the https address people open AgentRun at, ${example}${value && !value.includes("@") ? `, not ${value}` : ""}.` };
   const url = new URL(value);
   // Never repeated: a password in the address is the one part that must not reach a log.
   if (url.username !== "" || url.password !== "") return { error: `${name} takes an address with no user name or password in it, ${example}.` };

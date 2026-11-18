@@ -531,6 +531,9 @@ test("the lines after the Open line go on, one whole line at a time, however the
 // --public-url: the address people open, through a proxy in front of the server on loopback. The example names are a
 // reserved one and a made-up tailnet's, never a real machine's.
 const TAILNET_URL = "https://box.tailnet.example/";
+/** An address with a password and a port that is no number, so it does not parse: built from its parts, so no address
+ *  with a password in it is written in the source. */
+const MALFORMED_WITH_PASSWORD = `https://${["someone", "hunter2"].join(":")}${"@"}box.tailnet.example:invalid/`;
 
 test("--public-url URL is the server's public address: the server gets it as AGENTRUN_PUBLIC_URL, never as a flag, and the line names it", { timeout: 60_000 }, async (t) => {
   const run = await throughStub(t, ["--no-open", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL });
@@ -557,6 +560,9 @@ test("--public-url on loopback trusts the proxy in front (AGENTRUN_TRUSTED_PROXI
   assert.equal(named.proxies, "loopback", named.err);
   const operator = await throughStub(t, ["--no-open", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL, AGENTRUN_TRUSTED_PROXIES: "10.0.0.0/8" });
   assert.deepEqual([operator.code, operator.proxies], [0, "10.0.0.0/8"], operator.err);
+  // Set to nothing, it trusts no proxy: an operator's choice too, never replaced with loopback.
+  const none = await throughStub(t, ["--no-open", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL, AGENTRUN_TRUSTED_PROXIES: "" });
+  assert.deepEqual([none.code, none.proxies], [0, ""], none.err);
   const wide = await throughStub(t, ["--no-open", "--listen", "0.0.0.0", "--public-url", TAILNET_URL], { STUB_OPEN: TAILNET_URL });
   assert.deepEqual([wide.code, wide.public, wide.proxies], [0, TAILNET_URL, null], wide.err);
   // No --public-url: nothing trusted, as before.
@@ -573,6 +579,8 @@ test("--public-url is refused, exit 2 before the server starts, when it is no ht
     [Object.assign(new URL(TAILNET_URL), { username: "someone", password: "hunter2" }).href]: /--public-url takes an address with no user name or password in it/,
     "ftp://box.tailnet.example/": /--public-url takes an https address/,
     "box.tailnet.example": /--public-url takes the https address people open AgentRun at, such as https:\/\/box\.tailnet\.example\/, not box\.tailnet\.example\./,
+    // No address, so not yet checked for a password: it is not repeated.
+    [MALFORMED_WITH_PASSWORD]: /^--public-url takes the https address people open AgentRun at, such as https:\/\/box\.tailnet\.example\/\.$/m,
   };
   for (const [given, why] of Object.entries(refused)) {
     const run = await throughStub(t, ["--no-open", "--public-url", given]);
@@ -594,6 +602,7 @@ test("publicUrlOf and chosenPublicUrl: the root of an https address, http on loo
   assert.deepEqual(publicUrlOf("https://Box.Tailnet.Example"), { url: TAILNET_URL });
   assert.deepEqual(publicUrlOf("https://agentrun.example.com:8443/"), { url: "https://agentrun.example.com:8443/" });
   for (const local of ["http://localhost:7340/", "http://127.0.0.1:7340", "http://[::1]:7340/"]) assert.equal(publicUrlOf(local).error, undefined, local);
+  assert.equal(publicUrlOf(MALFORMED_WITH_PASSWORD).error.includes("hunter2"), false, "a malformed address is not repeated when it may hold a password");
   for (const bad of ["http://10.0.0.5:7340/", "http://agentrun.example.com/", "https://agentrun.example.com/#x", "https://user@agentrun.example.com/", "", "not a url"]) assert.ok(publicUrlOf(bad).error, bad);
   assert.deepEqual(chosenPublicUrl(undefined, undefined), { url: undefined });
   assert.deepEqual(chosenPublicUrl(undefined, "https://agentrun.example.com"), { url: "https://agentrun.example.com" }, "the variable alone is the server's to check");

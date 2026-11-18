@@ -351,8 +351,9 @@ export async function main(argv, env = process.env) {
   if (publicUrl !== undefined) childEnv.AGENTRUN_PUBLIC_URL = publicUrl;
   // --public-url on loopback means a proxy on this machine sends every request (tailscale serve, a reverse proxy), as
   // --tailscale's does: the server counts sign-ins by the address its X-Forwarded-For names, not one for everyone. An
-  // operator's own AGENTRUN_TRUSTED_PROXIES stays; a server on another address trusts no one it was not told to.
-  if (publicFlag !== undefined && onLoopback(rest) && !env.AGENTRUN_TRUSTED_PROXIES) childEnv.AGENTRUN_TRUSTED_PROXIES = "loopback";
+  // operator's own AGENTRUN_TRUSTED_PROXIES stays, an empty one (trust no proxy) too; a server on another address trusts no
+  // one it was not told to.
+  if (publicFlag !== undefined && onLoopback(rest) && env.AGENTRUN_TRUSTED_PROXIES === undefined) childEnv.AGENTRUN_TRUSTED_PROXIES = "loopback";
   const dataDir = dir ?? join(homedir(), ".agentrun");
   // A name that starts with a dash keeps the equals form: the server's parser reads "--data -x" as a missing value.
   const data = dataDir.startsWith("-") ? [`--data=${dataDir}`] : ["--data", dataDir];
